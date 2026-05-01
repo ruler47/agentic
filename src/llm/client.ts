@@ -1,5 +1,8 @@
 import { LlmConfig, Message, ModelTier } from "../types.js";
-import { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
+import {
+  ModelTierSettingsInput,
+  ModelTierSettingsStore,
+} from "../settings/modelTierSettings.js";
 
 type ChatCompletionResponse = {
   choices?: Array<{
@@ -12,6 +15,8 @@ type ChatCompletionResponse = {
   };
 };
 
+const tierOrder: ModelTier[] = ["S", "M", "L", "XL"];
+
 export class LlmClient {
   constructor(
     private readonly config: LlmConfig,
@@ -19,28 +24,41 @@ export class LlmClient {
   ) {}
 
   async complete(messages: Message[], options?: { temperature?: number; modelTier?: ModelTier }): Promise<string> {
-    const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: await this.modelForTier(options?.modelTier),
-        messages,
-        temperature: options?.temperature ?? this.config.temperature,
-      }),
-    });
+    const attempts = await this.modelAttemptsForTier(options?.modelTier);
+    const errors: string[] = [];
 
-    const data = (await response.json()) as ChatCompletionResponse;
+    for (const model of attempts) {
+      try {
+        const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: options?.temperature ?? this.config.temperature,
+          }),
+        });
 
-    if (!response.ok) {
-      throw new Error(data.error?.message ?? `LLM request failed with ${response.status}`);
+        const data = (await response.json()) as ChatCompletionResponse;
+
+        if (!response.ok) {
+          errors.push(`${model}: ${data.error?.message ?? `HTTP ${response.status}`}`);
+          continue;
+        }
+
+        const content = data.choices?.[0]?.message?.content;
+        if (!content) {
+          errors.push(`${model}: empty assistant content`);
+          continue;
+        }
+
+        return content.trim();
+      } catch (error) {
+        errors.push(`${model}: ${error instanceof Error ? error.message : "request failed"}`);
+      }
     }
 
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error("LLM response did not contain assistant content");
-    }
-
-    return content.trim();
+    throw new Error(`LLM request failed for all model candidates: ${errors.join("; ")}`);
   }
 
   async modelForTier(tier?: ModelTier): Promise<string> {
@@ -49,16 +67,54 @@ export class LlmClient {
   }
 
   async modelsForTier(tier: ModelTier): Promise<string[]> {
+    return (await this.policyForTier(tier)).models;
+  }
+
+  async modelAttemptsForTier(tier?: ModelTier): Promise<string[]> {
+    if (!tier) return [this.config.model];
+
+    const attempts: string[] = [];
+    let currentTier: ModelTier | undefined = tier;
+
+    while (currentTier) {
+      const policy = await this.policyForTier(currentTier);
+      for (const model of policy.models) {
+        for (let attempt = 0; attempt < policy.maxAttempts; attempt += 1) {
+          attempts.push(model);
+        }
+      }
+
+      if (!policy.escalateOnFailure) break;
+      currentTier = nextTier(currentTier);
+    }
+
+    return attempts;
+  }
+
+  private async policyForTier(tier: ModelTier): Promise<Required<ModelTierSettingsInput>> {
     if (this.modelTierSettings) {
       const settings = await this.modelTierSettings.list();
-      const models = settings.find((item) => item.tier === tier)?.models ?? [];
-      if (models.length > 0) return models;
+      const policy = settings.find((item) => item.tier === tier);
+      if (policy && policy.models.length > 0) {
+        return {
+          tier,
+          models: policy.models,
+          maxAttempts: policy.maxAttempts,
+          escalateOnFailure: policy.escalateOnFailure,
+        };
+      }
     }
 
     const configured = this.config.tierModelCandidates[tier] ?? [];
     const legacy = this.config.tierModels[tier];
-    const candidates = [...configured, ...(legacy ? [legacy] : []), this.config.model];
-    return [...new Set(candidates.map((model) => model.trim()).filter(Boolean))];
+    const models = uniqueModels([...configured, ...(legacy ? [legacy] : []), this.config.model]);
+
+    return {
+      tier,
+      models,
+      maxAttempts: tier === "XL" ? 1 : 2,
+      escalateOnFailure: tier !== "XL",
+    };
   }
 }
 
@@ -89,4 +145,13 @@ function parseModelList(value: string | undefined): string[] {
         .map((model) => model.trim())
         .filter(Boolean)
     : [];
+}
+
+function uniqueModels(models: string[]): string[] {
+  return [...new Set(models.map((model) => model.trim()).filter(Boolean))];
+}
+
+function nextTier(tier: ModelTier): ModelTier | undefined {
+  const nextIndex = tierOrder.indexOf(tier) + 1;
+  return tierOrder[nextIndex];
 }

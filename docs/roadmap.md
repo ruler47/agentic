@@ -206,14 +206,15 @@ Implemented:
 - Postgres-backed model tier settings.
 - API/UI for viewing and updating model tier policy.
 - `LlmClient` reads current tier settings for each request.
+- `LlmClient` retries failed model requests inside the same tier, then escalates to the
+  next tier when policy allows.
 - UI trace tier badges.
 
 Remaining:
 
-- Retry within the same tier when a model fails or produces review-rejected output.
+- Retry/escalation when a model produces review-rejected output, not only transport or
+  empty-response failures.
 - Reviewer-generated failure reasons attached to model attempts.
-- Fallback to the next model in the same tier.
-- Escalation to the next tier after same-tier candidates fail.
 - Persist model-attempt telemetry per run event.
 - Per-agent budget accounting.
 - LLM-driven tier choice with hard runtime caps.

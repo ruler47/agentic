@@ -60,6 +60,9 @@ environment overrides (`LLM_MODEL_TIER_S`, `LLM_MODEL_TIER_M`, `LLM_MODEL_TIER_L
 `LLM_MODEL_TIER_XL`) and falls back to `LLM_MODEL` when a tier-specific model is not set.
 In the web server, tier policy is loaded from `model_tier_settings` on each request so UI
 changes affect subsequent LLM calls without rebuilding the container.
+For transport failures, HTTP errors, or empty assistant content, `LlmClient` retries each
+configured model up to the tier's attempt limit, then escalates to the next tier when the
+policy permits it.
 
 ## Review And Revision Loop
 
