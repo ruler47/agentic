@@ -37,6 +37,10 @@ Environment overrides:
 - `LLM_BASE_URL`
 - `LLM_MODEL`
 - `LLM_TEMPERATURE`
+- `LLM_MODEL_TIER_S`
+- `LLM_MODEL_TIER_M`
+- `LLM_MODEL_TIER_L`
+- `LLM_MODEL_TIER_XL`
 
 ## Commands
 
@@ -79,6 +83,7 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [README.md](README.md) - quick start and request execution summary.
 - [docs/architecture.md](docs/architecture.md) - detailed architecture and delegation model.
 - [src/agents/universalAgent.ts](src/agents/universalAgent.ts) - main coordinator runtime.
+- [src/agents/modelTier.ts](src/agents/modelTier.ts) - model tier selection policy.
 - [src/agents/prompts.ts](src/agents/prompts.ts) - prompts for classification, planning,
   workers, reviewers, synthesis, and learning.
 - [src/llm/client.ts](src/llm/client.ts) - OpenAI-compatible LLM client.

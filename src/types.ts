@@ -14,7 +14,10 @@ export type LlmConfig = {
   baseUrl: string;
   model: string;
   temperature: number;
+  tierModels: Partial<Record<ModelTier, string>>;
 };
+
+export type ModelTier = "S" | "M" | "L" | "XL";
 
 export type SkillMemoryEntry = {
   id: string;
@@ -45,6 +48,7 @@ export type WorkerResult = {
   subtask: Subtask;
   output: string;
   traceSpanId?: string;
+  modelTier?: ModelTier;
 };
 
 export type ReviewResult = {

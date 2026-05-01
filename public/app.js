@@ -319,12 +319,16 @@ function updateTraceNode(item, node) {
 
   const badges = document.createElement("div");
   badges.className = "event-badges";
+  const modelTier = modelTierFor(node);
   badges.append(
     badge(node.actor),
     badge(node.activity),
     badge(node.status, `status-${node.status}`),
     badge(formatDuration(node.durationMs, node.status)),
   );
+  if (modelTier) {
+    badges.append(badge(`Tier ${modelTier}`, "tier-badge"));
+  }
 
   title.replaceChildren(titleText, badges);
   meta.textContent = `${node.startedAt ? new Date(node.startedAt).toLocaleTimeString() : ""}${
@@ -377,6 +381,7 @@ function buildTraceNodes(events) {
       startedAt: event.startedAt ?? event.timestamp,
       completedAt: event.completedAt,
       durationMs: event.durationMs,
+      payload: event.payload,
       firstTimestamp: event.timestamp,
       lastTimestamp: event.timestamp,
     };
@@ -392,6 +397,7 @@ function buildTraceNodes(events) {
       startedAt: existing.startedAt ?? event.startedAt ?? event.timestamp,
       completedAt: event.completedAt ?? existing.completedAt,
       durationMs: event.durationMs ?? existing.durationMs,
+      payload: event.payload ?? existing.payload,
       lastTimestamp: event.timestamp,
     });
   }
@@ -453,8 +459,15 @@ function nodeSignature(node) {
     node.activity,
     node.status,
     node.durationMs ?? "",
+    modelTierFor(node) ?? "",
     node.detail ?? "",
   ].join("::");
+}
+
+function modelTierFor(node) {
+  if (!node?.payload || typeof node.payload !== "object") return undefined;
+  const tier = node.payload.modelTier;
+  return typeof tier === "string" ? tier : undefined;
 }
 
 function formatDuration(durationMs, status = "completed") {

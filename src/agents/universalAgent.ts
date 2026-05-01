@@ -22,6 +22,7 @@ import {
   synthesizePrompt,
   workerSystemPrompt,
 } from "./prompts.js";
+import { selectModelTier } from "./modelTier.js";
 
 type PlanResponse = {
   subtasks: Subtask[];
@@ -95,7 +96,8 @@ export class UniversalAgent {
     });
 
     const classificationStartedAt = new Date();
-    const complexity = await this.classify(task, memories);
+    const classificationTier = selectModelTier("classification");
+    const complexity = await this.classify(task, memories, classificationTier);
     await emit({
       spanId: classificationSpanId,
       parentSpanId: runSpanId,
@@ -108,12 +110,13 @@ export class UniversalAgent {
       startedAt: classificationStartedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(classificationStartedAt),
-      payload: complexity,
+      payload: { ...complexity, modelTier: classificationTier },
     });
 
     if (complexity.mode === "direct") {
       const synthesisSpanId = createSpanId("synthesis");
       const synthesisStartedAt = new Date();
+      const synthesisTier = selectModelTier("synthesis", complexity);
       await emit({
         spanId: synthesisSpanId,
         parentSpanId: runSpanId,
@@ -123,6 +126,7 @@ export class UniversalAgent {
         status: "started",
         title: "Direct answer synthesis started",
         startedAt: synthesisStartedAt.toISOString(),
+        payload: { modelTier: synthesisTier },
       });
       const finalAnswer = await this.llm.complete([
         { role: "system", content: coordinatorSystemPrompt },
@@ -130,7 +134,7 @@ export class UniversalAgent {
           role: "user",
           content: synthesizePrompt(task, complexity, [], [], memories),
         },
-      ]);
+      ], { modelTier: synthesisTier });
       await emit({
         spanId: synthesisSpanId,
         parentSpanId: runSpanId,
@@ -142,11 +146,12 @@ export class UniversalAgent {
         startedAt: synthesisStartedAt.toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: elapsedMs(synthesisStartedAt),
-        payload: { finalAnswer },
+        payload: { finalAnswer, modelTier: synthesisTier },
       });
 
       const learningStartedAt = new Date();
-      const learnedSkill = await this.learn(task, finalAnswer, []);
+      const learningTier = selectModelTier("learning", complexity);
+      const learnedSkill = await this.learn(task, finalAnswer, [], learningTier);
       await emit({
         spanId: createSpanId("learning"),
         parentSpanId: runSpanId,
@@ -158,7 +163,7 @@ export class UniversalAgent {
         startedAt: learningStartedAt.toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: elapsedMs(learningStartedAt),
-        payload: learnedSkill,
+        payload: { learnedSkill, modelTier: learningTier },
       });
 
       await emit({
@@ -186,7 +191,8 @@ export class UniversalAgent {
 
     const planningSpanId = createSpanId("planning");
     const planningStartedAt = new Date();
-    const subtasks = await this.plan(task, complexity, memories);
+    const planningTier = selectModelTier("planning", complexity);
+    const subtasks = await this.plan(task, complexity, memories, planningTier);
     await emit({
       spanId: planningSpanId,
       parentSpanId: runSpanId,
@@ -198,18 +204,19 @@ export class UniversalAgent {
       startedAt: planningStartedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(planningStartedAt),
-      payload: subtasks,
+      payload: { subtasks, modelTier: planningTier },
     });
 
     const reviewedWorkerResults = await Promise.all(
       subtasks.map((subtask) =>
-        this.runWorkerAndRequestReview(task, subtask, memories, emit, planningSpanId),
+        this.runWorkerAndRequestReview(task, complexity, subtask, memories, emit, planningSpanId),
       ),
     );
     const workerResults = reviewedWorkerResults.map((result) => result.workerResult);
     const reviews = reviewedWorkerResults.flatMap((result) => result.reviews);
     const synthesisSpanId = createSpanId("synthesis");
     const synthesisStartedAt = new Date();
+    const synthesisTier = selectModelTier("synthesis", complexity);
     await emit({
       spanId: synthesisSpanId,
       parentSpanId: runSpanId,
@@ -219,6 +226,7 @@ export class UniversalAgent {
       status: "started",
       title: "Final synthesis started",
       startedAt: synthesisStartedAt.toISOString(),
+      payload: { modelTier: synthesisTier },
     });
     const finalAnswer = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
@@ -226,7 +234,7 @@ export class UniversalAgent {
         role: "user",
         content: synthesizePrompt(task, complexity, workerResults, reviews, memories),
       },
-    ]);
+    ], { modelTier: synthesisTier });
     await emit({
       spanId: synthesisSpanId,
       parentSpanId: runSpanId,
@@ -238,11 +246,12 @@ export class UniversalAgent {
       startedAt: synthesisStartedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(synthesisStartedAt),
-      payload: { finalAnswer },
+      payload: { finalAnswer, modelTier: synthesisTier },
     });
 
     const learningStartedAt = new Date();
-    const learnedSkill = await this.learn(task, finalAnswer, workerResults);
+    const learningTier = selectModelTier("learning", complexity);
+    const learnedSkill = await this.learn(task, finalAnswer, workerResults, learningTier);
     await emit({
       spanId: createSpanId("learning"),
       parentSpanId: runSpanId,
@@ -254,7 +263,7 @@ export class UniversalAgent {
       startedAt: learningStartedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(learningStartedAt),
-      payload: learnedSkill,
+      payload: { learnedSkill, modelTier: learningTier },
     });
 
     await emit({
@@ -280,11 +289,15 @@ export class UniversalAgent {
     };
   }
 
-  private async classify(task: string, memories: SkillMemoryEntry[]): Promise<TaskComplexity> {
+  private async classify(
+    task: string,
+    memories: SkillMemoryEntry[],
+    modelTier: ReturnType<typeof selectModelTier>,
+  ): Promise<TaskComplexity> {
     const output = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
       { role: "user", content: classifyPrompt(task, memories) },
-    ]);
+    ], { modelTier });
 
     return extractJson<TaskComplexity>(output);
   }
@@ -293,17 +306,19 @@ export class UniversalAgent {
     task: string,
     complexity: TaskComplexity,
     memories: SkillMemoryEntry[],
+    modelTier: ReturnType<typeof selectModelTier>,
   ): Promise<Subtask[]> {
     const output = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
       { role: "user", content: planPrompt(task, complexity, memories) },
-    ]);
+    ], { modelTier });
 
     return extractJson<PlanResponse>(output).subtasks;
   }
 
   private async runWorker(
     originalTask: string,
+    complexity: TaskComplexity,
     subtask: Subtask,
     memories: SkillMemoryEntry[],
     emit: AgentEventEmitter,
@@ -311,6 +326,7 @@ export class UniversalAgent {
     revisionInstructions?: string,
   ): Promise<WorkerResult> {
     const isRevision = Boolean(revisionInstructions);
+    const modelTier = selectModelTier("worker", complexity, subtask);
     const spanId = createSpanId(isRevision ? `worker-revision-${subtask.id}` : `worker-${subtask.id}`);
     const startedAt = new Date();
     await emit({
@@ -323,7 +339,7 @@ export class UniversalAgent {
       title: isRevision ? `Worker revision: ${subtask.title}` : `Worker: ${subtask.title}`,
       detail: revisionInstructions ?? subtask.role,
       startedAt: startedAt.toISOString(),
-      payload: subtask,
+      payload: { subtask, modelTier },
     });
 
     const output = await this.llm.complete([
@@ -341,7 +357,7 @@ export class UniversalAgent {
             : "Execute only your assigned subtask."
         }`,
       },
-    ]);
+    ], { modelTier });
 
     await emit({
       spanId,
@@ -355,10 +371,10 @@ export class UniversalAgent {
       startedAt: startedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(startedAt),
-      payload: { subtask, output },
+      payload: { subtask, output, modelTier },
     });
 
-    return { subtask, output, traceSpanId: spanId };
+    return { subtask, output, traceSpanId: spanId, modelTier };
   }
 
   private async collectToolEvidence(
@@ -414,13 +430,14 @@ export class UniversalAgent {
 
   private async runWorkerAndRequestReview(
     originalTask: string,
+    complexity: TaskComplexity,
     subtask: Subtask,
     memories: SkillMemoryEntry[],
     emit: AgentEventEmitter,
     parentSpanId: string,
   ): Promise<ReviewedWorkerResult> {
-    const workerResult = await this.runWorker(originalTask, subtask, memories, emit, parentSpanId);
-    const review = await this.review(workerResult, emit, workerResult.traceSpanId ?? parentSpanId);
+    const workerResult = await this.runWorker(originalTask, complexity, subtask, memories, emit, parentSpanId);
+    const review = await this.review(complexity, workerResult, emit, workerResult.traceSpanId ?? parentSpanId);
 
     if (review.verdict === "pass") {
       return { workerResult, review, attempts: [workerResult], reviews: [review] };
@@ -428,6 +445,7 @@ export class UniversalAgent {
 
     const revisedWorkerResult = await this.runWorker(
       originalTask,
+      complexity,
       subtask,
       memories,
       emit,
@@ -435,6 +453,7 @@ export class UniversalAgent {
       review.notes,
     );
     const revisedReview = await this.review(
+      complexity,
       revisedWorkerResult,
       emit,
       revisedWorkerResult.traceSpanId ?? workerResult.traceSpanId ?? parentSpanId,
@@ -449,12 +468,14 @@ export class UniversalAgent {
   }
 
   private async review(
+    complexity: TaskComplexity,
     workerResult: WorkerResult,
     emit: AgentEventEmitter,
     parentSpanId: string,
   ): Promise<ReviewResult> {
     const spanId = createSpanId(`review-${workerResult.subtask.id}`);
     const startedAt = new Date();
+    const modelTier = selectModelTier("review", complexity, workerResult.subtask);
     await emit({
       spanId,
       parentSpanId,
@@ -464,13 +485,13 @@ export class UniversalAgent {
       status: "started",
       title: `Review: ${workerResult.subtask.title}`,
       startedAt: startedAt.toISOString(),
-      payload: workerResult,
+      payload: { workerResult, modelTier },
     });
 
     const output = await this.llm.complete([
       { role: "system", content: reviewerSystemPrompt(workerResult) },
       { role: "user", content: "Review the worker result now." },
-    ]);
+    ], { modelTier });
 
     const review = extractJson<ReviewResult>(output);
     await emit({
@@ -485,7 +506,7 @@ export class UniversalAgent {
       startedAt: startedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(startedAt),
-      payload: review,
+      payload: { ...review, modelTier },
     });
 
     return review;
@@ -495,11 +516,12 @@ export class UniversalAgent {
     task: string,
     finalAnswer: string,
     workerResults: WorkerResult[],
+    modelTier: ReturnType<typeof selectModelTier>,
   ): Promise<SkillMemoryEntry | undefined> {
     const output = await this.llm.complete([
       { role: "system", content: "You extract compact reusable operational knowledge." },
       { role: "user", content: learningPrompt(task, finalAnswer, workerResults) },
-    ]);
+    ], { modelTier });
     const learning = extractJson<LearningResponse>(output);
 
     if (!learning.shouldStore || !learning.title || !learning.summary || !learning.reusableProcedure) {

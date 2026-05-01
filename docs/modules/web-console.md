@@ -68,6 +68,7 @@ Trace events are rendered as a horizontal execution map with one column per call
 - `activity`
 - `status`
 - `durationMs`
+- `payload.modelTier`
 
 This makes it visible which agent called which worker/reviewer and how long each step took.
 The current runtime emits `memory`, `planning`, `worker`, `review`, `synthesis`, `tool`,

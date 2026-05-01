@@ -144,7 +144,12 @@ Each agent should not need to know:
 
 ## Phase 5: Model Tier Selection
 
-Agents choose model tier by risk and complexity.
+Status: partially implemented.
+
+Agents choose model tier by risk and complexity. The current implementation selects a
+tier for each LLM call, sends it through `LlmClient`, and shows the tier in trace cards.
+All tiers fall back to the default local model unless environment-specific model names are
+provided.
 
 Example tiers:
 
@@ -155,6 +160,20 @@ Example tiers:
 
 Reviewers should be able to select a stronger model than the worker when the content is
 complex or risky.
+
+Implemented:
+
+- Tier labels: `S`, `M`, `L`, `XL`.
+- Heuristic tier selection for classification, planning, worker, review, synthesis, and
+  learning.
+- Environment model overrides per tier.
+- UI trace tier badges.
+
+Remaining:
+
+- Per-agent budget accounting.
+- LLM-driven tier choice with hard runtime caps.
+- Metrics comparing worker tier vs reviewer tier quality.
 
 ## Phase 6: Better UI Observability
 

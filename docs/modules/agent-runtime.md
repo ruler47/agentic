@@ -20,6 +20,7 @@ Main file:
 - Store reusable skill memory.
 - Emit typed events for external observers.
 - Run registered tools, such as `web.search`, and inject tool evidence into worker prompts.
+- Select a model tier for each LLM step and expose it in trace payloads.
 
 ## Public Contract
 
@@ -41,6 +42,19 @@ intentional: another project can import the runtime and provide its own interfac
 - Add tool execution to worker agents through a tool registry.
 - Add deeper retry policy and budget controls for repeated `needs_revision` verdicts.
 - Allow recursive child-agent creation instead of coordinator-owned orchestration.
+
+## Model Tiers
+
+The runtime chooses a tier for each LLM call:
+
+- `S`: cheap bookkeeping, classification, memory learning.
+- `M`: normal planning, worker execution, synthesis.
+- `L`: strict review or riskier reasoning.
+- `XL`: high-risk architecture, migration, security, audit, or similar work.
+
+Tier selection is implemented in `src/agents/modelTier.ts`. `LlmClient` maps tiers to
+environment overrides (`LLM_MODEL_TIER_S`, `LLM_MODEL_TIER_M`, `LLM_MODEL_TIER_L`,
+`LLM_MODEL_TIER_XL`) and falls back to `LLM_MODEL` when a tier-specific model is not set.
 
 ## Review And Revision Loop
 
