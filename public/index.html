@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agentic Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace" aria-label="Agent workspace">
+        <header class="topbar">
+          <div>
+            <h1>Agentic Console</h1>
+            <p>Universal coordinator with visible specialist-agent execution.</p>
+          </div>
+          <div class="status-pill" id="connectionStatus">Ready</div>
+        </header>
+
+        <form class="task-form" id="taskForm">
+          <label for="taskInput">Task</label>
+          <textarea
+            id="taskInput"
+            name="task"
+            rows="5"
+            placeholder="Например: найди города Испании с IT-сектором, украинским комьюнити, аэропортом и близостью к морю"
+            required
+          ></textarea>
+          <div class="form-actions">
+            <button type="submit" id="submitButton">Run agent</button>
+            <span id="activeRunLabel">No active run</span>
+          </div>
+        </form>
+
+        <section class="answer-panel" aria-label="Final answer">
+          <div class="panel-heading">
+            <h2>Answer</h2>
+            <div class="answer-status">
+              <span id="runStatus">idle</span>
+              <span id="runDuration">0 ms</span>
+            </div>
+          </div>
+          <pre id="answerOutput">Submit a task to start.</pre>
+        </section>
+      </section>
+
+      <section class="trace" aria-label="Agent trace">
+        <div class="panel-heading">
+          <div>
+            <h2>Execution Map</h2>
+            <p>Calls, parallel branches, tools, statuses, and durations.</p>
+          </div>
+          <button type="button" id="refreshButton" title="Refresh current run">↻</button>
+        </div>
+        <div id="eventList" class="trace-board"></div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

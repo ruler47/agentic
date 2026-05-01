@@ -1,0 +1,14 @@
+[
+  {
+    "title": "Multi-Criteria Set Intersection with Qualitative Proxies",
+    "tags": [
+      "research",
+      "data-synthesis",
+      "multi-criteria-filtering"
+    ],
+    "summary": "When a task requires finding entities that satisfy multiple specific criteria—particularly qualitative or rapidly changing ones (e.g., 'notable community' or 'active tech sector')—use measurable proxy indicators to validate presence before performing a logical intersection of the resulting sets.",
+    "reusableProcedure": "1. Decompose the complex query into independent research subtasks, one for each specific criterion.\n2. For qualitative/subjective criteria, define and use verifiable proxies (e.g., for 'community,' use social media engagement or NGO presence; for 'IT sector,' use tech parks or coworking density).\n3. Execute each subtask to generate distinct candidate lists.\n4. Perform a logical intersection (A ∩ B ∩ C) across all lists to identify the final set of entities that satisfy every condition simultaneously.",
+    "id": "multi-criteria-set-intersection-with-qualitative-1777636042453",
+    "createdAt": "2026-05-01T11:47:22.453Z"
+  }
+]
