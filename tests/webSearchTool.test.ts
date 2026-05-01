@@ -39,3 +39,20 @@ test("WebSearchTool formats SearXNG results", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("WebSearchTool exposes module metadata and healthcheck", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("ok", { status: 200 });
+
+  try {
+    const tool = new WebSearchTool("http://search.local");
+    const health = await tool.healthcheck();
+
+    assert.equal(tool.version, "1.0.0");
+    assert.equal(tool.startupMode, "always-on");
+    assert.equal(tool.inputSchema.required?.includes("query"), true);
+    assert.equal(health.ok, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

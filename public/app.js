@@ -130,7 +130,10 @@ async function loadInventory() {
     inventorySummary.textContent = `${tools.length} tools · ${memories.length} memories`;
     toolList.replaceChildren(
       ...tools.map((tool) =>
-        inventoryItem(tool.name, `${tool.description} (${tool.capabilities.join(", ")})`),
+        inventoryItem(
+          `${tool.name} v${tool.version}`,
+          `${tool.description} · ${tool.startupMode} · ${tool.capabilities.join(", ")}`,
+        ),
       ),
     );
     memoryList.replaceChildren(

@@ -53,10 +53,29 @@ async function routeRequest(
       tools:
         options.toolRegistry?.list().map((tool) => ({
           name: tool.name,
+          version: tool.version ?? "0.0.0",
           description: tool.description,
           capabilities: tool.capabilities,
+          startupMode: tool.startupMode ?? "on-demand",
+          inputSchema: tool.inputSchema,
+          outputSchema: tool.outputSchema,
         })) ?? [],
     });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/tools/health") {
+    const tools = options.toolRegistry?.list() ?? [];
+    const health = await Promise.all(
+      tools.map(async (tool) => ({
+        name: tool.name,
+        ...(tool.healthcheck
+          ? await tool.healthcheck()
+          : { ok: true, detail: "No healthcheck registered." }),
+      })),
+    );
+
+    sendJson(response, 200, { tools: health });
     return;
   }
 

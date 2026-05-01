@@ -20,6 +20,8 @@ test("ToolRegistry registers, lists, and retrieves tools", async () => {
     ["echo"],
   );
   assert.equal(registry.get("echo"), tool);
+  assert.deepEqual(registry.findByCapability("echo"), [tool]);
+  assert.deepEqual(registry.findByCapability("missing"), []);
   assert.deepEqual(await registry.get("echo")?.run({ message: "hello" }), {
     ok: true,
     content: "hello",

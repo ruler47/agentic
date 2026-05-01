@@ -13,10 +13,45 @@ type SearxngResponse = {
 
 export class WebSearchTool implements Tool {
   readonly name = "web.search";
+  readonly version = "1.0.0";
   readonly description = "Searches the web through a SearXNG-compatible JSON endpoint.";
   readonly capabilities = ["web-search", "research", "current-information"];
+  readonly startupMode = "always-on";
+  readonly inputSchema = {
+    type: "object" as const,
+    properties: {
+      query: { type: "string", minLength: 1 },
+      limit: { type: "number", minimum: 1, maximum: 10 },
+    },
+    required: ["query"],
+  };
+  readonly outputSchema = {
+    type: "object" as const,
+    properties: {
+      ok: { type: "boolean" },
+      content: { type: "string" },
+      data: { type: "array" },
+    },
+    required: ["ok", "content"],
+  };
 
   constructor(private readonly baseUrl = process.env.SEARXNG_BASE_URL ?? "http://searxng:8080") {}
+
+  async healthcheck() {
+    try {
+      const url = new URL("/", this.baseUrl);
+      const response = await fetch(url, { headers: { accept: "text/html,application/json" } });
+      return {
+        ok: response.ok,
+        detail: response.ok ? "SearXNG is reachable." : `SearXNG returned HTTP ${response.status}.`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        detail: error instanceof Error ? error.message : "SearXNG healthcheck failed.",
+      };
+    }
+  }
 
   async run(input: ToolInput): Promise<ToolResult> {
     const query = typeof input.query === "string" ? input.query.trim() : "";

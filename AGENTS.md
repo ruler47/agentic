@@ -89,6 +89,7 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/llm/client.ts](src/llm/client.ts) - OpenAI-compatible LLM client.
 - [src/memory/skillMemory.ts](src/memory/skillMemory.ts) - shared file-based skill memory.
 - [src/tools/registry.ts](src/tools/registry.ts) - tool registry skeleton.
+- [src/tools/tool.ts](src/tools/tool.ts) - versioned tool module contract.
 - [src/server/http.ts](src/server/http.ts) - web API and static UI server.
 - [src/runs/inMemoryRunStore.ts](src/runs/inMemoryRunStore.ts) - replaceable run store.
 - [src/runs/postgresRunStore.ts](src/runs/postgresRunStore.ts) - Postgres-backed run store.

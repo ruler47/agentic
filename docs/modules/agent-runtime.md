@@ -7,6 +7,8 @@ The agent runtime owns task execution. It can be reused without the web UI.
 Main file:
 
 - `src/agents/universalAgent.ts`
+- `src/tools/tool.ts`
+- `src/tools/registry.ts`
 
 ## Responsibilities
 
@@ -40,6 +42,7 @@ intentional: another project can import the runtime and provide its own interfac
 - Replace `LlmClient` with another OpenAI-compatible or provider-specific client.
 - Replace `SkillMemory` with a database-backed implementation.
 - Add tool execution to worker agents through a tool registry.
+- Add self-service tool scaffolding on top of the versioned tool contract.
 - Add deeper retry policy and budget controls for repeated `needs_revision` verdicts.
 - Allow recursive child-agent creation instead of coordinator-owned orchestration.
 

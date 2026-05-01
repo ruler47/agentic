@@ -146,8 +146,21 @@ test("web server exposes memory and tool registries", async () => {
         return [
           {
             name: "web.search",
+            version: "1.0.0",
             description: "Searches the web.",
             capabilities: ["web-search"],
+            startupMode: "always-on",
+            inputSchema: {
+              type: "object",
+              properties: {},
+            },
+            outputSchema: {
+              type: "object",
+              properties: {},
+            },
+            async healthcheck() {
+              return { ok: true, detail: "healthy" };
+            },
             async run() {
               return { ok: true, content: "ok" };
             },
@@ -161,9 +174,12 @@ test("web server exposes memory and tool registries", async () => {
     const baseUrl = await listen(server);
     const memories = await (await fetch(`${baseUrl}/api/memories`)).json();
     const tools = await (await fetch(`${baseUrl}/api/tools`)).json();
+    const health = await (await fetch(`${baseUrl}/api/tools/health`)).json();
 
     assert.equal(memories.memories[0].title, "Reusable research funnel");
     assert.equal(tools.tools[0].name, "web.search");
+    assert.equal(tools.tools[0].version, "1.0.0");
+    assert.equal(health.tools[0].ok, true);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

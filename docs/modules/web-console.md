@@ -42,6 +42,13 @@ List runs:
 GET /api/runs
 ```
 
+List tools:
+
+```http
+GET /api/tools
+GET /api/tools/health
+```
+
 ## Run Record
 
 Each run contains:

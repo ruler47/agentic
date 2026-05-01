@@ -14,4 +14,8 @@ export class ToolRegistry {
   get(name: string): Tool | undefined {
     return this.tools.get(name);
   }
+
+  findByCapability(capability: string): Tool[] {
+    return this.list().filter((tool) => tool.capabilities.includes(capability));
+  }
 }

@@ -60,12 +60,12 @@ SearXNG.
 Tool contract:
 
 - name;
-- version;
-- input schema;
-- output schema;
-- capabilities;
-- startup mode;
-- healthcheck;
+- version; DONE
+- input schema; DONE
+- output schema; DONE
+- capabilities; DONE
+- startup mode; DONE
+- healthcheck; DONE
 - trace event mapping.
 
 Initial tools:

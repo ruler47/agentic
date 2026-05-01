@@ -89,6 +89,9 @@ SearXNG is part of Docker Compose and powers the `web.search` tool. Worker agent
 it when a subtask looks research-oriented. Search calls are visible as tool cards in the
 execution map.
 
+`web.search` is registered as a versioned tool module with input/output schemas, startup
+mode, capabilities, and a healthcheck exposed through `GET /api/tools/health`.
+
 ## Module Boundaries
 
 The project should keep these boundaries:
