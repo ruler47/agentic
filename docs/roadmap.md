@@ -26,28 +26,33 @@ orchestrated, but the trace contract is ready for nested agent calls.
 
 ## Phase 1: Reliable Memory
 
-Replace file-backed lexical memory with persistent database-backed memory.
+Status: partially implemented.
+
+The runtime now uses Postgres-backed memory when `DATABASE_URL` is present. Search uses
+Postgres full-text search plus lexical rescoring. The next step is semantic retrieval with
+`pgvector`.
 
 Tasks:
 
-- Store skill memories in Postgres.
+- Store skill memories in Postgres. DONE
 - Add embeddings with `pgvector`.
 - Store source run IDs and evidence.
 - Search by semantic similarity plus tags.
 - Show memory hits in UI with confidence and why they matched.
 - Add tests proving repeated similar tasks retrieve prior memories.
 
-Why current memory misses:
+Remaining memory gaps:
 
-- It uses `memory/skills.json`, not Postgres.
-- In Docker it is not mounted as durable project state.
 - Search is token-based, not semantic.
 - The agent only stores a memory when the LLM returns `shouldStore: true`.
 - Stored lessons are generic, so specific repeated requests may not match well.
 
 ## Phase 2: Tool Registry
 
-Add a first-class tool registry.
+Status: partially implemented.
+
+The runtime has a first-class tool registry and an initial `web.search` tool powered by
+SearXNG.
 
 Tool contract:
 
@@ -62,7 +67,7 @@ Tool contract:
 
 Initial tools:
 
-- `web.search`
+- `web.search` DONE
 - `web.open`
 - `file.read`
 - `file.write`

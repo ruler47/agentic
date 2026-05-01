@@ -67,9 +67,9 @@ Trace events are rendered as a horizontal execution map with one column per call
 - `durationMs`
 
 This makes it visible which agent called which worker/reviewer and how long each step took.
-The current runtime emits `memory`, `planning`, `worker`, `review`, `synthesis`, and `llm`
-activities. Tool-level activities such as web search, file reads/writes, screenshots, and
-database operations should be emitted by future tool adapters through the same event contract.
+The current runtime emits `memory`, `planning`, `worker`, `review`, `synthesis`, `tool`,
+and `llm` activities. `web.search` calls appear as tool cards. Future adapters for file
+reads/writes, screenshots, and database operations should use the same event contract.
 
 ## Extension Points
 

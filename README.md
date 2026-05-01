@@ -24,6 +24,8 @@ docker compose up --build
 
 Then open `http://127.0.0.1:3000`.
 
+The compose stack includes the app, Postgres, Redis, MinIO, and SearXNG-powered web search.
+
 Run the browser console directly on the host:
 
 ```bash

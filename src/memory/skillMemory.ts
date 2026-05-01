@@ -2,7 +2,13 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { SkillMemoryEntry } from "../types.js";
 
-export class SkillMemory {
+export type SkillMemoryStore = {
+  list(): Promise<SkillMemoryEntry[]>;
+  search(query: string, limit?: number): Promise<SkillMemoryEntry[]>;
+  add(entry: Omit<SkillMemoryEntry, "id" | "createdAt">): Promise<SkillMemoryEntry>;
+};
+
+export class SkillMemory implements SkillMemoryStore {
   constructor(private readonly filePath = "memory/skills.json") {}
 
   async list(): Promise<SkillMemoryEntry[]> {
@@ -78,4 +84,16 @@ function createId(title: string): string {
     .slice(0, 48);
 
   return `${slug || "skill"}-${Date.now()}`;
+}
+
+export function tokenizeMemoryText(text: string): Set<string> {
+  return tokenize(text);
+}
+
+export function scoreMemoryEntry(entry: SkillMemoryEntry, queryTokens: Set<string>): number {
+  return scoreEntry(entry, queryTokens);
+}
+
+export function createMemoryId(title: string): string {
+  return createId(title);
 }

@@ -18,6 +18,7 @@ Main file:
 - Synthesize the final answer.
 - Store reusable skill memory.
 - Emit typed events for external observers.
+- Run registered tools, such as `web.search`, and inject tool evidence into worker prompts.
 
 ## Public Contract
 
@@ -38,6 +39,7 @@ intentional: another project can import the runtime and provide its own interfac
 - Replace `SkillMemory` with a database-backed implementation.
 - Add tool execution to worker agents through a tool registry.
 - Add retry and revision loops when reviewer verdict is `needs_revision`.
+- Allow recursive child-agent creation instead of coordinator-owned orchestration.
 
 ## Tests
 

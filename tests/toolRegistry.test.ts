@@ -7,6 +7,7 @@ test("ToolRegistry registers, lists, and retrieves tools", async () => {
   const tool = {
     name: "echo",
     description: "Returns the input message.",
+    capabilities: ["echo"],
     async run(input: Record<string, unknown>) {
       return { ok: true, content: String(input.message ?? "") };
     },

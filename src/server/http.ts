@@ -2,12 +2,16 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { readFile } from "node:fs/promises";
 import { UniversalAgent } from "../agents/universalAgent.js";
+import { SkillMemoryStore } from "../memory/skillMemory.js";
 import { RunStore } from "../runs/types.js";
+import { ToolRegistry } from "../tools/registry.js";
 
 export type WebAppOptions = {
   agent: UniversalAgent;
   runStore: RunStore;
   publicDir: string;
+  skillMemory?: SkillMemoryStore;
+  toolRegistry?: Pick<ToolRegistry, "list">;
 };
 
 export function createWebApp(options: WebAppOptions) {
@@ -36,6 +40,23 @@ async function routeRequest(
 
   if (request.method === "GET" && url.pathname === "/api/runs") {
     sendJson(response, 200, { runs: await options.runStore.list() });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/memories") {
+    sendJson(response, 200, { memories: options.skillMemory ? await options.skillMemory.list() : [] });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/tools") {
+    sendJson(response, 200, {
+      tools:
+        options.toolRegistry?.list().map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          capabilities: tool.capabilities,
+        })) ?? [],
+    });
     return;
   }
 

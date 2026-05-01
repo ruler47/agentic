@@ -1,5 +1,7 @@
 import { LlmClient } from "../llm/client.js";
-import { SkillMemory } from "../memory/skillMemory.js";
+import { SkillMemoryStore } from "../memory/skillMemory.js";
+import { ToolRegistry } from "../tools/registry.js";
+import { shouldUseWebSearch } from "../tools/webSearchTool.js";
 import {
   AgentEvent,
   AgentEventSink,
@@ -51,7 +53,8 @@ type ReviewedWorkerResult = {
 export class UniversalAgent {
   constructor(
     private readonly llm: LlmClient,
-    private readonly skillMemory: SkillMemory,
+    private readonly skillMemory: SkillMemoryStore,
+    private readonly tools = new ToolRegistry(),
   ) {}
 
   async run(task: string, options: RunOptions = {}): Promise<AgentRunResult> {
@@ -323,7 +326,12 @@ export class UniversalAgent {
       { role: "system", content: workerSystemPrompt(subtask, memories) },
       {
         role: "user",
-        content: `Original user task for context:\n${originalTask}\n\nExecute only your assigned subtask.`,
+        content: `Original user task for context:\n${originalTask}\n\n${await this.collectToolEvidence(
+          originalTask,
+          subtask,
+          emit,
+          spanId,
+        )}\n\nExecute only your assigned subtask.`,
       },
     ]);
 
@@ -343,6 +351,57 @@ export class UniversalAgent {
     });
 
     return { subtask, output, traceSpanId: spanId };
+  }
+
+  private async collectToolEvidence(
+    originalTask: string,
+    subtask: Subtask,
+    emit: AgentEventEmitter,
+    parentSpanId: string,
+  ): Promise<string> {
+    const webSearch = this.tools.get("web.search");
+    const toolNeedText = `${originalTask}\n${subtask.title}\n${subtask.role}\n${subtask.prompt}`;
+
+    if (!webSearch || !shouldUseWebSearch(toolNeedText)) {
+      return "No external tool evidence was collected for this subtask.";
+    }
+
+    const spanId = createSpanId(`tool-${webSearch.name}`);
+    const startedAt = new Date();
+    const query = `${subtask.title}: ${subtask.prompt}`;
+
+    await emit({
+      spanId,
+      parentSpanId,
+      type: "tool-started",
+      actor: webSearch.name,
+      activity: "tool",
+      status: "started",
+      title: `Tool: ${webSearch.name}`,
+      detail: query,
+      startedAt: startedAt.toISOString(),
+      payload: { tool: webSearch.name, query },
+    });
+
+    const result = await webSearch.run({ query, limit: 5 });
+    await emit({
+      spanId,
+      parentSpanId,
+      type: "tool-completed",
+      actor: webSearch.name,
+      activity: "tool",
+      status: result.ok ? "completed" : "failed",
+      title: `Tool: ${webSearch.name}`,
+      detail: result.content,
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(startedAt),
+      payload: result,
+    });
+
+    return result.ok
+      ? `External tool evidence from ${webSearch.name}:\n${result.content}`
+      : `External tool ${webSearch.name} failed:\n${result.content}`;
   }
 
   private async runWorkerAndRequestReview(

@@ -111,6 +111,63 @@ test("web server validates required task and serves static UI", async () => {
   }
 });
 
+test("web server exposes memory and tool registries", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    skillMemory: {
+      async list() {
+        return [
+          {
+            id: "memory-1",
+            title: "Reusable research funnel",
+            tags: ["research"],
+            summary: "Use staged filtering.",
+            reusableProcedure: "Filter, verify, synthesize.",
+            createdAt: new Date().toISOString(),
+          },
+        ];
+      },
+      async search() {
+        return [];
+      },
+      async add(entry) {
+        return { ...entry, id: "memory-2", createdAt: new Date().toISOString() };
+      },
+    },
+    toolRegistry: {
+      list() {
+        return [
+          {
+            name: "web.search",
+            description: "Searches the web.",
+            capabilities: ["web-search"],
+            async run() {
+              return { ok: true, content: "ok" };
+            },
+          },
+        ];
+      },
+    },
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const memories = await (await fetch(`${baseUrl}/api/memories`)).json();
+    const tools = await (await fetch(`${baseUrl}/api/tools`)).json();
+
+    assert.equal(memories.memories[0].title, "Reusable research funnel");
+    assert.equal(tools.tools[0].name, "web.search");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 async function listen(server: ReturnType<typeof createWebApp>): Promise<string> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;

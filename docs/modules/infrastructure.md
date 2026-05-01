@@ -8,6 +8,7 @@ The project is intended to run through Docker Compose:
 - `postgres`: primary run/event store using `pgvector/pgvector:pg16`.
 - `redis`: future queue and event stream.
 - `minio`: future artifact storage.
+- `searxng`: local metasearch service for `web.search`.
 - local OpenAI-compatible LLM endpoint exposed to the app as `host.docker.internal`.
 
 Run:
@@ -33,6 +34,7 @@ Current tables:
 
 - `runs`
 - `run_events`
+- `skill_memories`
 
 Future tables:
 
@@ -41,9 +43,10 @@ Future tables:
 - `skill_memories`
 - `artifacts`
 
-### Vector Memory
+### Memory Search
 
-Use `pgvector` first.
+The current memory store is Postgres-backed and uses full-text search plus lexical
+rescoring. `pgvector` remains the next upgrade for semantic retrieval.
 
 Why:
 
@@ -76,6 +79,12 @@ Use S3-compatible storage for generated artifacts:
 - exported documents.
 
 MinIO is already part of Docker Compose for local S3-compatible artifact storage.
+
+### Web Search
+
+SearXNG is part of Docker Compose and powers the `web.search` tool. Worker agents can use
+it when a subtask looks research-oriented. Search calls are visible as tool cards in the
+execution map.
 
 ## Module Boundaries
 

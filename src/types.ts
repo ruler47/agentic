@@ -71,6 +71,8 @@ export type AgentEventType =
   | "worker-completed"
   | "review-started"
   | "review-completed"
+  | "tool-started"
+  | "tool-completed"
   | "synthesis-started"
   | "synthesis-completed"
   | "learning-completed"

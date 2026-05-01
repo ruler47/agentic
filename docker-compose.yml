@@ -8,6 +8,7 @@ services:
       LLM_BASE_URL: http://host.docker.internal:1234/v1
       LLM_MODEL: google/gemma-4-26b-a4b
       LLM_TEMPERATURE: "0.2"
+      SEARXNG_BASE_URL: http://searxng:8080
     ports:
       - "3000:3000"
     depends_on:
@@ -17,6 +18,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      searxng:
+        condition: service_started
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -62,6 +65,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  searxng:
+    image: searxng/searxng:latest
+    environment:
+      SEARXNG_BASE_URL: http://127.0.0.1:8080/
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
 
 volumes:
   postgres-data:

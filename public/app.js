@@ -8,11 +8,16 @@ const runStatus = document.querySelector("#runStatus");
 const runDuration = document.querySelector("#runDuration");
 const activeRunLabel = document.querySelector("#activeRunLabel");
 const connectionStatus = document.querySelector("#connectionStatus");
+const inventorySummary = document.querySelector("#inventorySummary");
+const toolList = document.querySelector("#toolList");
+const memoryList = document.querySelector("#memoryList");
 
 let activeRunId = null;
 let pollTimer = null;
 let traceLayoutTimer = null;
 let currentTraceNodes = [];
+
+void loadInventory();
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -50,7 +55,45 @@ refreshButton.addEventListener("click", () => {
   if (activeRunId) {
     void loadRun(activeRunId);
   }
+  void loadInventory();
 });
+
+async function loadInventory() {
+  try {
+    const [toolsResponse, memoriesResponse] = await Promise.all([
+      fetch("/api/tools"),
+      fetch("/api/memories"),
+    ]);
+    const [{ tools }, { memories }] = await Promise.all([
+      toolsResponse.json(),
+      memoriesResponse.json(),
+    ]);
+
+    inventorySummary.textContent = `${tools.length} tools · ${memories.length} memories`;
+    toolList.replaceChildren(
+      ...tools.map((tool) =>
+        inventoryItem(tool.name, `${tool.description} (${tool.capabilities.join(", ")})`),
+      ),
+    );
+    memoryList.replaceChildren(
+      ...memories
+        .slice(0, 8)
+        .map((memory) => inventoryItem(memory.title, `${memory.tags.join(", ")} · ${memory.summary}`)),
+    );
+  } catch {
+    inventorySummary.textContent = "Inventory unavailable";
+  }
+}
+
+function inventoryItem(title, detail) {
+  const item = document.createElement("li");
+  const strong = document.createElement("strong");
+  const span = document.createElement("span");
+  strong.textContent = title;
+  span.textContent = detail;
+  item.append(strong, span);
+  return item;
+}
 
 function startPolling() {
   stopPolling();
@@ -244,7 +287,7 @@ function columnLabel(depth) {
   if (depth === 0) return "Coordinator";
   if (depth === 1) return "Coordinator steps";
   if (depth === 2) return "Specialists";
-  if (depth === 3) return "Reviews";
+  if (depth === 3) return "Tools & reviews";
   return `Layer ${depth + 1}`;
 }
 

@@ -17,6 +17,25 @@
           <div class="status-pill" id="connectionStatus">Ready</div>
         </header>
 
+        <section class="system-inventory" aria-label="System inventory">
+          <details>
+            <summary>
+              <span>System Inventory</span>
+              <span id="inventorySummary">Loading tools and memory...</span>
+            </summary>
+            <div class="inventory-grid">
+              <div>
+                <h2>Tools</h2>
+                <ul id="toolList"></ul>
+              </div>
+              <div>
+                <h2>Memories</h2>
+                <ul id="memoryList"></ul>
+              </div>
+            </div>
+          </details>
+        </section>
+
         <form class="task-form" id="taskForm">
           <label for="taskInput">Task</label>
           <textarea

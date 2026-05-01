@@ -46,6 +46,28 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       create index if not exists runs_created_at_idx
       on runs(created_at desc);
     `);
+
+    await pool.query(`
+      create table if not exists skill_memories (
+        id text primary key,
+        title text not null,
+        tags text[] not null default '{}',
+        summary text not null,
+        reusable_procedure text not null,
+        created_at timestamptz not null,
+        search_document tsvector not null
+      );
+    `);
+
+    await pool.query(`
+      create index if not exists skill_memories_search_document_idx
+      on skill_memories using gin(search_document);
+    `);
+
+    await pool.query(`
+      create index if not exists skill_memories_created_at_idx
+      on skill_memories(created_at desc);
+    `);
   } finally {
     await pool.end();
   }
