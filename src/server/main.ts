@@ -10,6 +10,7 @@ import { InMemoryModelTierSettingsStore } from "../settings/modelTierSettings.js
 import { PostgresModelTierSettingsStore } from "../settings/postgresModelTierSettings.js";
 import { createWebApp } from "./http.js";
 import { ToolRegistry } from "../tools/registry.js";
+import { FileReadTool, FileWriteTool } from "../tools/fileTools.js";
 import { WebSearchTool } from "../tools/webSearchTool.js";
 
 const port = Number(process.env.PORT ?? "3000");
@@ -18,6 +19,8 @@ const pool = process.env.DATABASE_URL ? createPool() : undefined;
 const skillMemory = pool ? new PostgresSkillMemory(pool) : new SkillMemory();
 const tools = new ToolRegistry();
 tools.register(new WebSearchTool());
+tools.register(new FileReadTool());
+tools.register(new FileWriteTool());
 const runStore = process.env.DATABASE_URL
   ? new PostgresRunStore(pool ?? createPool())
   : new InMemoryRunStore();

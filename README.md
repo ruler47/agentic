@@ -25,6 +25,8 @@ docker compose up --build
 Then open `http://127.0.0.1:3000`.
 
 The compose stack includes the app, Postgres, Redis, MinIO, and SearXNG-powered web search.
+It also mounts `./workspace` into the app container for the sandboxed `file.read` and
+`file.write` tools.
 
 Run the browser console directly on the host:
 

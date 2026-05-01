@@ -72,8 +72,8 @@ Initial tools:
 
 - `web.search` DONE
 - `web.open`
-- `file.read`
-- `file.write`
+- `file.read` DONE
+- `file.write` DONE
 - `browser.screenshot`
 - `db.query`
 

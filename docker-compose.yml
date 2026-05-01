@@ -9,8 +9,11 @@ services:
       LLM_MODEL: google/gemma-4-26b-a4b
       LLM_TEMPERATURE: "0.2"
       SEARXNG_BASE_URL: http://searxng:8080
+      FILE_TOOL_ROOT: /app/workspace
     ports:
       - "3000:3000"
+    volumes:
+      - ./workspace:/app/workspace
     depends_on:
       postgres:
         condition: service_healthy

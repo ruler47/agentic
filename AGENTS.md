@@ -94,6 +94,7 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/memory/skillMemory.ts](src/memory/skillMemory.ts) - shared file-based skill memory.
 - [src/tools/registry.ts](src/tools/registry.ts) - tool registry skeleton.
 - [src/tools/tool.ts](src/tools/tool.ts) - versioned tool module contract.
+- [src/tools/fileTools.ts](src/tools/fileTools.ts) - sandboxed workspace file tools.
 - [src/settings/modelTierSettings.ts](src/settings/modelTierSettings.ts) - model tier
   policy contract and in-memory implementation.
 - [src/settings/postgresModelTierSettings.ts](src/settings/postgresModelTierSettings.ts)
@@ -169,3 +170,5 @@ For documentation-only changes:
 - Add links here when introducing new core docs, modules, commands, or workflows.
 - UI changes must be checked through the HTTP server, not only by reading static files.
 - Prefer Docker Compose for project runtime and manual verification.
+- File tools must stay inside the configured workspace root (`FILE_TOOL_ROOT`, default
+  `workspace`).

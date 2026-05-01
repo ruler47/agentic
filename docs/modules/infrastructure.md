@@ -84,6 +84,13 @@ Use S3-compatible storage for generated artifacts:
 
 MinIO is already part of Docker Compose for local S3-compatible artifact storage.
 
+### Workspace Files
+
+The app container mounts `./workspace` to `/app/workspace`. The `file.read` and
+`file.write` tools are restricted to that workspace root so generated reports, code
+prototypes, and intermediate text artifacts do not escape into the project tree unless
+explicitly copied or promoted.
+
 ### Web Search
 
 SearXNG is part of Docker Compose and powers the `web.search` tool. Worker agents can use
