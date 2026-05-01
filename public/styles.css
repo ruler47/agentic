@@ -38,7 +38,8 @@ body {
 }
 
 button,
-textarea {
+textarea,
+input {
   font: inherit;
 }
 
@@ -270,6 +271,70 @@ h2 {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.model-tier-settings {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.model-tier-settings .section-heading {
+  align-items: center;
+}
+
+#saveModelTiersButton {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.model-tier-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.model-tier-item {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 58px auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(21, 27, 37, 0.9);
+}
+
+.model-tier-name {
+  font-size: 12px;
+}
+
+.model-tier-models,
+.model-tier-attempts {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(8, 10, 15, 0.74);
+  color: var(--text);
+  padding: 7px 8px;
+  outline: none;
+}
+
+.model-tier-models:focus,
+.model-tier-attempts:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(67, 217, 184, 0.13);
+}
+
+.model-tier-escalate {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .task-form label {
@@ -569,6 +634,11 @@ button:disabled {
   }
 
   .inventory-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .model-tier-list,
+  .model-tier-item {
     grid-template-columns: 1fr;
   }
 }

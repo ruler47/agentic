@@ -35,6 +35,7 @@ Current tables:
 - `runs`
 - `run_events`
 - `skill_memories`
+- `model_tier_settings`
 
 On app startup, stale `queued` or `running` runs from a previous process are marked as
 `failed` with an interruption message. This keeps the UI honest after container restarts.

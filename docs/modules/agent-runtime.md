@@ -58,6 +58,8 @@ The runtime chooses a tier for each LLM call:
 Tier selection is implemented in `src/agents/modelTier.ts`. `LlmClient` maps tiers to
 environment overrides (`LLM_MODEL_TIER_S`, `LLM_MODEL_TIER_M`, `LLM_MODEL_TIER_L`,
 `LLM_MODEL_TIER_XL`) and falls back to `LLM_MODEL` when a tier-specific model is not set.
+In the web server, tier policy is loaded from `model_tier_settings` on each request so UI
+changes affect subsequent LLM calls without rebuilding the container.
 
 ## Review And Revision Loop
 

@@ -15,9 +15,18 @@ export type LlmConfig = {
   model: string;
   temperature: number;
   tierModels: Partial<Record<ModelTier, string>>;
+  tierModelCandidates: Partial<Record<ModelTier, string[]>>;
 };
 
 export type ModelTier = "S" | "M" | "L" | "XL";
+
+export type ModelTierSettings = {
+  tier: ModelTier;
+  models: string[];
+  maxAttempts: number;
+  escalateOnFailure: boolean;
+  updatedAt: string;
+};
 
 export type SkillMemoryEntry = {
   id: string;

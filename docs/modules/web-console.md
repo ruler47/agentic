@@ -49,6 +49,13 @@ GET /api/tools
 GET /api/tools/health
 ```
 
+Model tier settings:
+
+```http
+GET /api/settings/model-tiers
+PUT /api/settings/model-tiers
+```
+
 ## Run Record
 
 Each run contains:
@@ -66,6 +73,8 @@ The UI polls `GET /api/runs/:id` once per second while a run is active.
 On page load it also calls `GET /api/runs`, renders the latest persisted runs, and opens
 the newest run automatically so the trace survives browser refreshes and container
 restarts.
+The System Inventory panel also exposes model tier settings so operators can assign
+multiple local models to `S`, `M`, `L`, and `XL` tiers.
 
 Trace events are rendered as a horizontal execution map with one column per call depth:
 

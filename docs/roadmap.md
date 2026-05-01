@@ -183,8 +183,8 @@ Status: partially implemented.
 
 Agents choose model tier by risk and complexity. The current implementation selects a
 tier for each LLM call, sends it through `LlmClient`, and shows the tier in trace cards.
-All tiers fall back to the default local model unless environment-specific model names are
-provided.
+Tier model lists are configurable and persisted in Postgres so the user can run several
+local LLMs and assign multiple candidates to each tier.
 
 Example tiers:
 
@@ -202,10 +202,19 @@ Implemented:
 - Heuristic tier selection for classification, planning, worker, review, synthesis, and
   learning.
 - Environment model overrides per tier.
+- Multiple comma-separated model candidates per tier.
+- Postgres-backed model tier settings.
+- API/UI for viewing and updating model tier policy.
+- `LlmClient` reads current tier settings for each request.
 - UI trace tier badges.
 
 Remaining:
 
+- Retry within the same tier when a model fails or produces review-rejected output.
+- Reviewer-generated failure reasons attached to model attempts.
+- Fallback to the next model in the same tier.
+- Escalation to the next tier after same-tier candidates fail.
+- Persist model-attempt telemetry per run event.
 - Per-agent budget accounting.
 - LLM-driven tier choice with hard runtime caps.
 - Metrics comparing worker tier vs reviewer tier quality.

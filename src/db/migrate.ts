@@ -68,6 +68,16 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       create index if not exists skill_memories_created_at_idx
       on skill_memories(created_at desc);
     `);
+
+    await pool.query(`
+      create table if not exists model_tier_settings (
+        tier text primary key check (tier in ('S', 'M', 'L', 'XL')),
+        models text[] not null default '{}',
+        max_attempts integer not null default 2 check (max_attempts >= 1 and max_attempts <= 5),
+        escalate_on_failure boolean not null default true,
+        updated_at timestamptz not null
+      );
+    `);
   } finally {
     await pool.end();
   }

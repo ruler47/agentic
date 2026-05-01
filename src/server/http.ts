@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { UniversalAgent } from "../agents/universalAgent.js";
 import { SkillMemoryStore } from "../memory/skillMemory.js";
 import { RunStore } from "../runs/types.js";
+import { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
 import { ToolRegistry } from "../tools/registry.js";
 
 export type WebAppOptions = {
@@ -12,6 +13,7 @@ export type WebAppOptions = {
   publicDir: string;
   skillMemory?: SkillMemoryStore;
   toolRegistry?: Pick<ToolRegistry, "list">;
+  modelTierSettings?: ModelTierSettingsStore;
 };
 
 export function createWebApp(options: WebAppOptions) {
@@ -76,6 +78,40 @@ async function routeRequest(
     );
 
     sendJson(response, 200, { tools: health });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/settings/model-tiers") {
+    sendJson(response, 200, {
+      tiers: options.modelTierSettings ? await options.modelTierSettings.list() : [],
+    });
+    return;
+  }
+
+  if (request.method === "PUT" && url.pathname === "/api/settings/model-tiers") {
+    if (!options.modelTierSettings) {
+      sendJson(response, 503, { error: "Model tier settings are not configured" });
+      return;
+    }
+
+    const body = await readJsonBody<{ tiers?: unknown }>(request);
+    if (!Array.isArray(body.tiers)) {
+      sendJson(response, 400, { error: "tiers must be an array" });
+      return;
+    }
+
+    let parsedTiers;
+    try {
+      parsedTiers = body.tiers.map((item) => parseTierSettingsInput(item));
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid model tier settings",
+      });
+      return;
+    }
+
+    const tiers = await options.modelTierSettings.replace(parsedTiers);
+    sendJson(response, 200, { tiers });
     return;
   }
 
@@ -163,6 +199,38 @@ async function serveStatic(pathname: string, response: ServerResponse, publicDir
 function sendJson(response: ServerResponse, statusCode: number, payload: unknown): void {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
+}
+
+function parseTierSettingsInput(item: unknown) {
+  if (!item || typeof item !== "object") {
+    throw new Error("Invalid tier settings item");
+  }
+
+  const candidate = item as {
+    tier?: unknown;
+    models?: unknown;
+    maxAttempts?: unknown;
+    escalateOnFailure?: unknown;
+  };
+
+  if (!["S", "M", "L", "XL"].includes(String(candidate.tier))) {
+    throw new Error("Invalid model tier");
+  }
+
+  if (!Array.isArray(candidate.models)) {
+    throw new Error("models must be an array");
+  }
+
+  return {
+    tier: candidate.tier as "S" | "M" | "L" | "XL",
+    models: candidate.models.map((model) => String(model)),
+    maxAttempts:
+      typeof candidate.maxAttempts === "number" ? candidate.maxAttempts : undefined,
+    escalateOnFailure:
+      typeof candidate.escalateOnFailure === "boolean"
+        ? candidate.escalateOnFailure
+        : undefined,
+  };
 }
 
 function contentType(filePath: string): string {

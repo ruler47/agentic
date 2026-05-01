@@ -6,6 +6,8 @@ import { SkillMemory } from "../memory/skillMemory.js";
 import { PostgresSkillMemory } from "../memory/postgresSkillMemory.js";
 import { InMemoryRunStore } from "../runs/inMemoryRunStore.js";
 import { PostgresRunStore } from "../runs/postgresRunStore.js";
+import { InMemoryModelTierSettingsStore } from "../settings/modelTierSettings.js";
+import { PostgresModelTierSettingsStore } from "../settings/postgresModelTierSettings.js";
 import { createWebApp } from "./http.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { WebSearchTool } from "../tools/webSearchTool.js";
@@ -16,11 +18,25 @@ const pool = process.env.DATABASE_URL ? createPool() : undefined;
 const skillMemory = pool ? new PostgresSkillMemory(pool) : new SkillMemory();
 const tools = new ToolRegistry();
 tools.register(new WebSearchTool());
-const agent = new UniversalAgent(new LlmClient(readLlmConfigFromEnv()), skillMemory, tools);
 const runStore = process.env.DATABASE_URL
   ? new PostgresRunStore(pool ?? createPool())
   : new InMemoryRunStore();
-const server = createWebApp({ agent, runStore, publicDir, skillMemory, toolRegistry: tools });
+const modelTierSettings = pool
+  ? new PostgresModelTierSettingsStore(pool)
+  : new InMemoryModelTierSettingsStore();
+const agent = new UniversalAgent(
+  new LlmClient(readLlmConfigFromEnv(), modelTierSettings),
+  skillMemory,
+  tools,
+);
+const server = createWebApp({
+  agent,
+  runStore,
+  publicDir,
+  skillMemory,
+  toolRegistry: tools,
+  modelTierSettings,
+});
 
 const recoveredRuns = await runStore.recoverInterrupted(
   "Run was interrupted by an application restart before it could finish.",

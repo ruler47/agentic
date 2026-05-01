@@ -1,4 +1,5 @@
 import { LlmConfig, Message, ModelTier } from "../types.js";
+import { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
 
 type ChatCompletionResponse = {
   choices?: Array<{
@@ -12,14 +13,17 @@ type ChatCompletionResponse = {
 };
 
 export class LlmClient {
-  constructor(private readonly config: LlmConfig) {}
+  constructor(
+    private readonly config: LlmConfig,
+    private readonly modelTierSettings?: ModelTierSettingsStore,
+  ) {}
 
   async complete(messages: Message[], options?: { temperature?: number; modelTier?: ModelTier }): Promise<string> {
     const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: this.modelForTier(options?.modelTier),
+        model: await this.modelForTier(options?.modelTier),
         messages,
         temperature: options?.temperature ?? this.config.temperature,
       }),
@@ -39,9 +43,22 @@ export class LlmClient {
     return content.trim();
   }
 
-  modelForTier(tier?: ModelTier): string {
+  async modelForTier(tier?: ModelTier): Promise<string> {
     if (!tier) return this.config.model;
-    return this.config.tierModels[tier] ?? this.config.model;
+    return (await this.modelsForTier(tier))[0] ?? this.config.model;
+  }
+
+  async modelsForTier(tier: ModelTier): Promise<string[]> {
+    if (this.modelTierSettings) {
+      const settings = await this.modelTierSettings.list();
+      const models = settings.find((item) => item.tier === tier)?.models ?? [];
+      if (models.length > 0) return models;
+    }
+
+    const configured = this.config.tierModelCandidates[tier] ?? [];
+    const legacy = this.config.tierModels[tier];
+    const candidates = [...configured, ...(legacy ? [legacy] : []), this.config.model];
+    return [...new Set(candidates.map((model) => model.trim()).filter(Boolean))];
   }
 }
 
@@ -56,5 +73,20 @@ export function readLlmConfigFromEnv(): LlmConfig {
       L: process.env.LLM_MODEL_TIER_L,
       XL: process.env.LLM_MODEL_TIER_XL,
     },
+    tierModelCandidates: {
+      S: parseModelList(process.env.LLM_MODEL_TIER_S),
+      M: parseModelList(process.env.LLM_MODEL_TIER_M),
+      L: parseModelList(process.env.LLM_MODEL_TIER_L),
+      XL: parseModelList(process.env.LLM_MODEL_TIER_XL),
+    },
   };
+}
+
+function parseModelList(value: string | undefined): string[] {
+  return value
+    ? value
+        .split(",")
+        .map((model) => model.trim())
+        .filter(Boolean)
+    : [];
 }

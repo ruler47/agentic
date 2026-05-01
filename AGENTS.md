@@ -42,6 +42,10 @@ Environment overrides:
 - `LLM_MODEL_TIER_L`
 - `LLM_MODEL_TIER_XL`
 
+Tier variables can contain one model or a comma-separated fallback list. In the web app,
+the editable tier policy is stored in Postgres and exposed through the System Inventory
+panel.
+
 ## Commands
 
 Install dependencies:
@@ -90,6 +94,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/memory/skillMemory.ts](src/memory/skillMemory.ts) - shared file-based skill memory.
 - [src/tools/registry.ts](src/tools/registry.ts) - tool registry skeleton.
 - [src/tools/tool.ts](src/tools/tool.ts) - versioned tool module contract.
+- [src/settings/modelTierSettings.ts](src/settings/modelTierSettings.ts) - model tier
+  policy contract and in-memory implementation.
+- [src/settings/postgresModelTierSettings.ts](src/settings/postgresModelTierSettings.ts)
+  - Postgres-backed model tier policy.
 - [src/server/http.ts](src/server/http.ts) - web API and static UI server.
 - [src/runs/inMemoryRunStore.ts](src/runs/inMemoryRunStore.ts) - replaceable run store.
 - [src/runs/postgresRunStore.ts](src/runs/postgresRunStore.ts) - Postgres-backed run store.

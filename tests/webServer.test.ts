@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { AddressInfo } from "node:net";
 import { createWebApp } from "../src/server/http.js";
 import { InMemoryRunStore } from "../src/runs/inMemoryRunStore.js";
+import { InMemoryModelTierSettingsStore } from "../src/settings/modelTierSettings.js";
 import { AgentEventSink, AgentRunResult } from "../src/types.js";
 import { UniversalAgent } from "../src/agents/universalAgent.js";
 
@@ -180,6 +181,55 @@ test("web server exposes memory and tool registries", async () => {
     assert.equal(tools.tools[0].name, "web.search");
     assert.equal(tools.tools[0].version, "1.0.0");
     assert.equal(health.tools[0].ok, true);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server exposes and updates model tier settings", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    modelTierSettings: new InMemoryModelTierSettingsStore([
+      { tier: "S", models: ["small-a"], maxAttempts: 2 },
+      { tier: "M", models: ["medium-a"], maxAttempts: 2 },
+    ]),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const initial = await (await fetch(`${baseUrl}/api/settings/model-tiers`)).json();
+    const updateResponse = await fetch(`${baseUrl}/api/settings/model-tiers`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tiers: [
+          {
+            tier: "S",
+            models: ["small-a", "small-b"],
+            maxAttempts: 3,
+            escalateOnFailure: true,
+          },
+          {
+            tier: "M",
+            models: ["medium-a"],
+            maxAttempts: 2,
+            escalateOnFailure: true,
+          },
+        ],
+      }),
+    });
+    const updated = await updateResponse.json();
+
+    assert.equal(initial.tiers[0].tier, "S");
+    assert.equal(updateResponse.status, 200);
+    assert.deepEqual(updated.tiers[0].models, ["small-a", "small-b"]);
+    assert.equal(updated.tiers[0].maxAttempts, 3);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

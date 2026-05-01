@@ -42,14 +42,16 @@ LLM_BASE_URL=http://127.0.0.1:1234/v1 LLM_MODEL=google/gemma-4-26b-a4b npm run d
 Optional tier-specific model overrides:
 
 ```bash
-LLM_MODEL_TIER_S=cheap-model \
-LLM_MODEL_TIER_M=balanced-model \
+LLM_MODEL_TIER_S=cheap-model,cheap-backup \
+LLM_MODEL_TIER_M=balanced-model,balanced-backup \
 LLM_MODEL_TIER_L=strong-review-model \
 LLM_MODEL_TIER_XL=deep-review-model \
 docker compose up --build
 ```
 
 If a tier override is not set, the app falls back to `LLM_MODEL`.
+In the web console, open System Inventory to edit and persist model tier policy in
+Postgres.
 
 ## Verify
 

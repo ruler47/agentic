@@ -12,6 +12,8 @@ const inventorySummary = document.querySelector("#inventorySummary");
 const toolList = document.querySelector("#toolList");
 const memoryList = document.querySelector("#memoryList");
 const runList = document.querySelector("#runList");
+const modelTierList = document.querySelector("#modelTierList");
+const saveModelTiersButton = document.querySelector("#saveModelTiersButton");
 
 let activeRunId = null;
 let pollTimer = null;
@@ -20,6 +22,10 @@ let currentTraceNodes = [];
 
 void loadInventory();
 void loadRuns();
+
+saveModelTiersButton.addEventListener("click", () => {
+  void saveModelTiers();
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -141,8 +147,94 @@ async function loadInventory() {
         .slice(0, 8)
         .map((memory) => inventoryItem(memory.title, `${memory.tags.join(", ")} · ${memory.summary}`)),
     );
+    await loadModelTiers();
   } catch {
     inventorySummary.textContent = "Inventory unavailable";
+  }
+}
+
+async function loadModelTiers() {
+  const response = await fetch("/api/settings/model-tiers");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error ?? "Failed to load model tiers");
+
+  renderModelTiers(data.tiers ?? []);
+}
+
+function renderModelTiers(tiers) {
+  modelTierList.replaceChildren(
+    ...tiers.map((tier) => {
+      const item = document.createElement("div");
+      item.className = "model-tier-item";
+      item.dataset.tier = tier.tier;
+
+      const title = element("strong", "model-tier-name");
+      title.textContent = `Tier ${tier.tier}`;
+
+      const models = document.createElement("input");
+      models.className = "model-tier-models";
+      models.value = tier.models.join(", ");
+      models.setAttribute("aria-label", `Tier ${tier.tier} models`);
+
+      const attempts = document.createElement("input");
+      attempts.className = "model-tier-attempts";
+      attempts.type = "number";
+      attempts.min = "1";
+      attempts.max = "5";
+      attempts.value = String(tier.maxAttempts);
+      attempts.setAttribute("aria-label", `Tier ${tier.tier} max attempts`);
+
+      const escalateLabel = document.createElement("label");
+      escalateLabel.className = "model-tier-escalate";
+      const escalate = document.createElement("input");
+      escalate.type = "checkbox";
+      escalate.checked = tier.escalateOnFailure;
+      escalateLabel.append(escalate, document.createTextNode("Escalate"));
+
+      item.append(title, models, attempts, escalateLabel);
+      return item;
+    }),
+  );
+}
+
+async function saveModelTiers() {
+  saveModelTiersButton.disabled = true;
+  const originalText = saveModelTiersButton.textContent;
+  saveModelTiersButton.textContent = "Saving...";
+
+  try {
+    const tiers = [...modelTierList.querySelectorAll(".model-tier-item")].map((item) => ({
+      tier: item.dataset.tier,
+      models: item
+        .querySelector(".model-tier-models")
+        .value.split(",")
+        .map((model) => model.trim())
+        .filter(Boolean),
+      maxAttempts: Number(item.querySelector(".model-tier-attempts").value),
+      escalateOnFailure: item.querySelector(".model-tier-escalate input").checked,
+    }));
+
+    const response = await fetch("/api/settings/model-tiers", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tiers }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error ?? "Failed to save model tiers");
+
+    renderModelTiers(data.tiers);
+    saveModelTiersButton.textContent = "Saved";
+    window.setTimeout(() => {
+      saveModelTiersButton.textContent = originalText;
+    }, 1200);
+  } catch (error) {
+    saveModelTiersButton.textContent = "Error";
+    connectionStatus.textContent = error instanceof Error ? error.message : "Error";
+    window.setTimeout(() => {
+      saveModelTiersButton.textContent = originalText;
+    }, 1800);
+  } finally {
+    saveModelTiersButton.disabled = false;
   }
 }
 
