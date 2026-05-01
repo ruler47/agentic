@@ -96,13 +96,36 @@ Flow:
 agent needs capability
   -> searches tool registry
   -> activates existing tool if available
-  -> otherwise proposes new tool module
-  -> scaffold tool
-  -> test tool
-  -> register tool
-  -> use tool
+  -> otherwise delegates tool creation to a Tool Builder agent
+  -> Tool Builder agent scaffolds the module
+  -> Tool Builder agent delegates verification to a Tool QA agent
+  -> Tool QA agent writes/runs tests and performs a manual smoke check when applicable
+  -> Tool Registrar agent registers the verified tool contract
+  -> original agent delegates usage to a Tool User agent
+  -> Tool User agent invokes the new tool and returns evidence
+  -> original agent finishes the user task with that evidence
   -> shut down if ephemeral
 ```
+
+Example:
+
+```text
+agent needs browser screenshot
+  -> registry has no browser.screenshot
+  -> create child agent: build browser.screenshot tool
+       -> create child agent: QA browser.screenshot tool
+       -> create child agent: register browser.screenshot tool
+  -> create child agent: use browser.screenshot tool on target page
+  -> parent agent uses screenshot evidence in final answer
+```
+
+Target agent roles:
+
+- `Capability Detector`: decides which capability is missing.
+- `Tool Builder`: creates a module that satisfies the tool contract.
+- `Tool QA`: tests the module with automated and manual checks.
+- `Tool Registrar`: records the verified tool in the registry.
+- `Tool User`: uses the tool for the original task and reports evidence.
 
 Guardrails:
 
@@ -110,6 +133,18 @@ Guardrails:
 - Generated tools must include tests.
 - Tool activation must have resource limits.
 - Tools must be reviewed before becoming reusable.
+- A failed QA step must prevent registration.
+- Ephemeral tools must be cleaned up after the run unless explicitly promoted.
+
+Next implementation tasks:
+
+- Add a tool registry persistence table.
+- Add `tool.missing-capability` trace events.
+- Add a Tool Builder agent contract.
+- Add a Tool QA agent contract.
+- Add a Tool Registrar service with version conflict checks.
+- Implement `browser.screenshot` as the first self-service tool target.
+- Prove the full loop with a test task that requires a missing screenshot capability.
 
 ## Phase 4: Recursive Universal Agents
 

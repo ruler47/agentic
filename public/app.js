@@ -518,7 +518,7 @@ function renderTraceArrows() {
   const marker = `
     <defs>
       <marker id="arrow-head" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
-        <path d="M0,0 L8,4.5 L0,9 Z" fill="#8fa1ad"></path>
+        <path d="M0,0 L8,4.5 L0,9 Z" fill="#7ce5ff"></path>
       </marker>
     </defs>
   `;
