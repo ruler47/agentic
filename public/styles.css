@@ -54,7 +54,7 @@ textarea {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -66,6 +66,7 @@ textarea {
 
 .topbar,
 .system-inventory,
+.recent-runs,
 .task-form,
 .answer-panel,
 .trace {
@@ -126,6 +127,85 @@ h2 {
   display: grid;
   gap: 10px;
   border-bottom: 1px solid var(--line);
+}
+
+.recent-runs {
+  display: grid;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-heading span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.run-list {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.run-list-item {
+  display: grid;
+  flex: 0 0 250px;
+  gap: 4px;
+  min-height: 58px;
+  padding: 9px 10px;
+  border-color: var(--line);
+  border-left: 4px solid var(--amber);
+  background: #ffffff;
+  color: var(--text);
+  text-align: left;
+  box-shadow: none;
+}
+
+.run-list-item:hover {
+  border-color: var(--accent);
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.run-list-item[data-active="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(15, 111, 141, 0.12);
+}
+
+.run-list-item.status-completed {
+  border-left-color: var(--green);
+}
+
+.run-list-item.status-failed {
+  border-left-color: var(--red);
+}
+
+.run-list-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.run-list-meta,
+.run-list-empty {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.run-list-empty {
+  padding: 9px 0;
 }
 
 .system-inventory {

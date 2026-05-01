@@ -72,11 +72,13 @@ test("web server creates a run and exposes completed trace", async () => {
     assert.equal(createResponse.status, 202);
     const created = (await createResponse.json()) as { run: { id: string } };
     const completed = await waitForRun(baseUrl, created.run.id);
+    const listed = await (await fetch(`${baseUrl}/api/runs`)).json();
 
     assert.equal(completed.run.status, "completed");
     assert.equal(completed.run.result.finalAnswer, "answer for hello");
     assert.equal(completed.run.events.length, 2);
     assert.equal(completed.run.events[1].type, "worker-completed");
+    assert.equal(listed.runs[0].id, created.run.id);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

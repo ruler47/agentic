@@ -11,6 +11,8 @@ coordinator
   -> planner
        -> worker
             -> reviewer
+            -> revision worker, only if reviewer requests changes
+                 -> reviewer
        -> worker
             -> reviewer
   -> synthesizer
@@ -19,7 +21,8 @@ coordinator
 
 Workers now request their own review immediately after finishing, so reviews can run while
 other workers are still active. The coordinator waits for reviewed worker results before
-calling the synthesizer.
+calling the synthesizer. A failed review triggers one bounded revision pass before
+synthesis.
 
 This is not yet a fully autonomous recursive agent society. It is still centrally
 orchestrated, but the trace contract is ready for nested agent calls.
@@ -165,6 +168,18 @@ Improve the execution map:
 - run comparison view;
 - memory hit panel;
 - artifact panel.
+
+Implemented:
+
+- Direct SVG arrows between parent and child spans.
+- Collapsible trace cards with stable incremental rendering.
+- Status, actor, activity, duration, and parent-child metadata.
+
+Remaining:
+
+- Timeline mode by wall-clock time.
+- Filters and run comparison.
+- Rich artifact and memory-hit panels.
 
 ## Phase 7: Durable Artifacts
 

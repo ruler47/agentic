@@ -60,3 +60,30 @@ test("InMemoryRunStore returns cloned records", async () => {
 
   assert.equal((await store.get(run.id))?.events.length, 0);
 });
+
+test("InMemoryRunStore recovers interrupted queued and running runs", async () => {
+  const store = new InMemoryRunStore();
+  const queued = await store.create("queued task");
+  const running = await store.create("running task");
+  const completed = await store.create("completed task");
+
+  await store.markRunning(running.id);
+  await store.complete(completed.id, {
+    finalAnswer: "done",
+    complexity: { mode: "direct", reason: "test", domains: ["test"], riskLevel: "low" },
+    subtasks: [],
+    workerResults: [],
+    reviews: [],
+  });
+
+  const recovered = await store.recoverInterrupted("restart");
+  const recoveredQueued = await store.get(queued.id);
+  const recoveredRunning = await store.get(running.id);
+  const untouchedCompleted = await store.get(completed.id);
+
+  assert.equal(recovered, 2);
+  assert.equal(recoveredQueued?.status, "failed");
+  assert.equal(recoveredQueued?.error, "restart");
+  assert.equal(recoveredRunning?.status, "failed");
+  assert.equal(untouchedCompleted?.status, "completed");
+});

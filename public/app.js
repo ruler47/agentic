@@ -11,6 +11,7 @@ const connectionStatus = document.querySelector("#connectionStatus");
 const inventorySummary = document.querySelector("#inventorySummary");
 const toolList = document.querySelector("#toolList");
 const memoryList = document.querySelector("#memoryList");
+const runList = document.querySelector("#runList");
 
 let activeRunId = null;
 let pollTimer = null;
@@ -18,6 +19,7 @@ let traceLayoutTimer = null;
 let currentTraceNodes = [];
 
 void loadInventory();
+void loadRuns();
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -43,6 +45,7 @@ form.addEventListener("submit", async (event) => {
 
     activeRunId = data.run.id;
     renderRun(data.run);
+    void loadRuns();
     startPolling();
   } catch (error) {
     setBusy(false);
@@ -56,7 +59,62 @@ refreshButton.addEventListener("click", () => {
     void loadRun(activeRunId);
   }
   void loadInventory();
+  void loadRuns();
 });
+
+async function loadRuns() {
+  try {
+    const response = await fetch("/api/runs");
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error ?? "Failed to load runs");
+    }
+
+    renderRunList(data.runs ?? []);
+
+    if (!activeRunId && data.runs?.[0]) {
+      activeRunId = data.runs[0].id;
+      renderRun(data.runs[0]);
+
+      if (data.runs[0].status === "running" || data.runs[0].status === "queued") {
+        startPolling();
+      }
+    }
+  } catch {
+    runList.replaceChildren(emptyRunListItem("Runs unavailable"));
+  }
+}
+
+function renderRunList(runs) {
+  const items = runs.slice(0, 8).map((run) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `run-list-item status-${run.status}`;
+    button.dataset.active = run.id === activeRunId ? "true" : "false";
+    button.addEventListener("click", () => {
+      activeRunId = run.id;
+      void loadRun(run.id);
+    });
+
+    const title = element("span", "run-list-title");
+    title.textContent = run.task;
+    const meta = element("span", "run-list-meta");
+    meta.textContent = `${run.status} · ${formatRunDuration(run)}`;
+    button.append(title, meta);
+
+    return button;
+  });
+
+  runList.replaceChildren(...(items.length > 0 ? items : [emptyRunListItem("No runs yet")]));
+}
+
+function emptyRunListItem(text) {
+  const item = document.createElement("div");
+  item.className = "run-list-empty";
+  item.textContent = text;
+  return item;
+}
 
 async function loadInventory() {
   try {
@@ -144,10 +202,12 @@ function renderRun(run) {
     answerOutput.textContent = run.result?.finalAnswer ?? "Completed without final answer.";
     setBusy(false);
     stopPolling();
+    void loadRuns();
   } else if (run.status === "failed") {
     answerOutput.textContent = run.error ?? "Run failed.";
     setBusy(false);
     stopPolling();
+    void loadRuns();
   } else {
     answerOutput.textContent = latestMeaningfulEvent(run.events) ?? "Agent is working...";
     setBusy(true);

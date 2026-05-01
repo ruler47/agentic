@@ -267,3 +267,70 @@ test("UniversalAgent starts each review as soon as its worker finishes", async (
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("UniversalAgent revises failed worker output before synthesis", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"requires checked work","domains":["research"],"riskLevel":"medium"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "research",
+          title: "Research answer",
+          role: "researcher",
+          prompt: "Produce a checked answer.",
+          expectedOutput: "A complete answer.",
+          reviewCriteria: ["No missing evidence"],
+        },
+      ],
+    }),
+    "Initial answer with a gap.",
+    '{"subtaskId":"research","verdict":"needs_revision","notes":"Add the missing evidence before returning."}',
+    "Revised answer with evidence.",
+    '{"subtaskId":"research","verdict":"pass","notes":"Revision fixed the missing evidence."}',
+    "Final answer uses the revised evidence.",
+    '{"shouldStore":false}',
+  ]);
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+  const events: Array<{ type: string; title: string; spanId: string; parentSpanId?: string; status: string }> = [];
+
+  try {
+    const result = await agent.run("Research with a mandatory review loop", {
+      onEvent: (event) => {
+        events.push({
+          type: event.type,
+          title: event.title,
+          spanId: event.spanId,
+          parentSpanId: event.parentSpanId,
+          status: event.status,
+        });
+      },
+    });
+
+    const initialWorker = events.find(
+      (event) => event.type === "worker-completed" && event.title === "Worker: Research answer",
+    );
+    const failedReview = events.find(
+      (event) => event.type === "review-completed" && event.status === "failed",
+    );
+    const revisedWorker = events.find(
+      (event) => event.type === "worker-completed" && event.title === "Worker revision: Research answer",
+    );
+    const passedReview = events.find(
+      (event) => event.type === "review-completed" && event.status === "completed",
+    );
+
+    assert.equal(result.workerResults.length, 1);
+    assert.equal(result.workerResults[0]?.output, "Revised answer with evidence.");
+    assert.equal(result.reviews.length, 2);
+    assert.equal(result.reviews[0]?.verdict, "needs_revision");
+    assert.equal(result.reviews[1]?.verdict, "pass");
+    assert.equal(fakeLlm.callCount, 8);
+    assert.equal(failedReview?.parentSpanId, initialWorker?.spanId);
+    assert.equal(revisedWorker?.parentSpanId, initialWorker?.spanId);
+    assert.equal(passedReview?.parentSpanId, revisedWorker?.spanId);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

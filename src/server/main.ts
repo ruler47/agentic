@@ -22,6 +22,13 @@ const runStore = process.env.DATABASE_URL
   : new InMemoryRunStore();
 const server = createWebApp({ agent, runStore, publicDir, skillMemory, toolRegistry: tools });
 
+const recoveredRuns = await runStore.recoverInterrupted(
+  "Run was interrupted by an application restart before it could finish.",
+);
+if (recoveredRuns > 0) {
+  console.log(`Recovered ${recoveredRuns} interrupted run(s).`);
+}
+
 server.listen(port, () => {
   console.log(`Agentic web console is running at http://127.0.0.1:${port}`);
 });

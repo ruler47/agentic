@@ -56,6 +56,22 @@ export class InMemoryRunStore implements RunStore {
     run.updatedAt = new Date().toISOString();
   }
 
+  async recoverInterrupted(error: string): Promise<number> {
+    let recovered = 0;
+    const now = new Date().toISOString();
+
+    for (const run of this.runs.values()) {
+      if (run.status !== "queued" && run.status !== "running") continue;
+
+      run.status = "failed";
+      run.error = error;
+      run.updatedAt = now;
+      recovered += 1;
+    }
+
+    return recovered;
+  }
+
   private mustGet(id: string): AgentRunRecord {
     const run = this.runs.get(id);
     if (!run) {

@@ -130,6 +130,19 @@ export class PostgresRunStore implements RunStore {
     );
   }
 
+  async recoverInterrupted(error: string): Promise<number> {
+    const result = await this.pool.query(
+      `
+        update runs
+        set status = 'failed', error = $1, updated_at = $2
+        where status in ('queued', 'running')
+      `,
+      [error, new Date()],
+    );
+
+    return result.rowCount ?? 0;
+  }
+
   private async updateStatus(id: string, status: RunStatus): Promise<void> {
     await this.pool.query("update runs set status = $1, updated_at = $2 where id = $3", [
       status,

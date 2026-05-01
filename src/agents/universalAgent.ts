@@ -48,6 +48,8 @@ type AgentEventDraft = Omit<AgentEvent, "id" | "timestamp" | "spanId"> & {
 type ReviewedWorkerResult = {
   workerResult: WorkerResult;
   review: ReviewResult;
+  attempts: WorkerResult[];
+  reviews: ReviewResult[];
 };
 
 export class UniversalAgent {
@@ -205,7 +207,7 @@ export class UniversalAgent {
       ),
     );
     const workerResults = reviewedWorkerResults.map((result) => result.workerResult);
-    const reviews = reviewedWorkerResults.map((result) => result.review);
+    const reviews = reviewedWorkerResults.flatMap((result) => result.reviews);
     const synthesisSpanId = createSpanId("synthesis");
     const synthesisStartedAt = new Date();
     await emit({
@@ -306,8 +308,10 @@ export class UniversalAgent {
     memories: SkillMemoryEntry[],
     emit: AgentEventEmitter,
     parentSpanId: string,
+    revisionInstructions?: string,
   ): Promise<WorkerResult> {
-    const spanId = createSpanId(`worker-${subtask.id}`);
+    const isRevision = Boolean(revisionInstructions);
+    const spanId = createSpanId(isRevision ? `worker-revision-${subtask.id}` : `worker-${subtask.id}`);
     const startedAt = new Date();
     await emit({
       spanId,
@@ -316,8 +320,8 @@ export class UniversalAgent {
       actor: `worker:${subtask.role}`,
       activity: "worker",
       status: "started",
-      title: `Worker: ${subtask.title}`,
-      detail: subtask.role,
+      title: isRevision ? `Worker revision: ${subtask.title}` : `Worker: ${subtask.title}`,
+      detail: revisionInstructions ?? subtask.role,
       startedAt: startedAt.toISOString(),
       payload: subtask,
     });
@@ -331,7 +335,11 @@ export class UniversalAgent {
           subtask,
           emit,
           spanId,
-        )}\n\nExecute only your assigned subtask.`,
+        )}\n\n${
+          revisionInstructions
+            ? `Revise your previous work using these review notes:\n${revisionInstructions}`
+            : "Execute only your assigned subtask."
+        }`,
       },
     ]);
 
@@ -342,7 +350,7 @@ export class UniversalAgent {
       actor: `worker:${subtask.role}`,
       activity: "llm",
       status: "completed",
-      title: `Worker: ${subtask.title}`,
+      title: isRevision ? `Worker revision: ${subtask.title}` : `Worker: ${subtask.title}`,
       detail: output,
       startedAt: startedAt.toISOString(),
       completedAt: new Date().toISOString(),
@@ -414,7 +422,30 @@ export class UniversalAgent {
     const workerResult = await this.runWorker(originalTask, subtask, memories, emit, parentSpanId);
     const review = await this.review(workerResult, emit, workerResult.traceSpanId ?? parentSpanId);
 
-    return { workerResult, review };
+    if (review.verdict === "pass") {
+      return { workerResult, review, attempts: [workerResult], reviews: [review] };
+    }
+
+    const revisedWorkerResult = await this.runWorker(
+      originalTask,
+      subtask,
+      memories,
+      emit,
+      workerResult.traceSpanId ?? parentSpanId,
+      review.notes,
+    );
+    const revisedReview = await this.review(
+      revisedWorkerResult,
+      emit,
+      revisedWorkerResult.traceSpanId ?? workerResult.traceSpanId ?? parentSpanId,
+    );
+
+    return {
+      workerResult: revisedWorkerResult,
+      review: revisedReview,
+      attempts: [workerResult, revisedWorkerResult],
+      reviews: [review, revisedReview],
+    };
   }
 
   private async review(

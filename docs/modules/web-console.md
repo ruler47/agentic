@@ -56,6 +56,9 @@ Each run contains:
 - `error`
 
 The UI polls `GET /api/runs/:id` once per second while a run is active.
+On page load it also calls `GET /api/runs`, renders the latest persisted runs, and opens
+the newest run automatically so the trace survives browser refreshes and container
+restarts.
 
 Trace events are rendered as a horizontal execution map with one column per call depth:
 

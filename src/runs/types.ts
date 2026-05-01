@@ -25,4 +25,5 @@ export type RunStore = {
   appendEvent(id: string, event: AgentEvent): Promise<void>;
   complete(id: string, result: AgentRunResult): Promise<void>;
   fail(id: string, error: string): Promise<void>;
+  recoverInterrupted(error: string): Promise<number>;
 };

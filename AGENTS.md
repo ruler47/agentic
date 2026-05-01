@@ -105,7 +105,7 @@ User task
   -> Complexity classification
   -> Direct answer or delegated plan
   -> Worker agents
-  -> Reviewer agents
+  -> Reviewer agents, with one bounded worker revision if review returns `needs_revision`
   -> Final synthesis
   -> SkillMemory.add()
 ```
@@ -150,6 +150,8 @@ For documentation-only changes:
 - Do not store full transcripts in skill memory; store compressed reusable lessons.
 - Keep worker context narrow: original task summary, one subtask, relevant memory, output
   expectations, and review criteria.
+- Preserve trace parent links when adding orchestration steps; the UI depends on
+  `parentSpanId` to draw direct arrows.
 - Add links here when introducing new core docs, modules, commands, or workflows.
 - UI changes must be checked through the HTTP server, not only by reading static files.
 - Prefer Docker Compose for project runtime and manual verification.
