@@ -301,6 +301,13 @@ For documentation-only changes:
   `parentSpanId` to draw direct arrows.
 - For DAG dependencies, also preserve `payload.dependencySpanIds` so the UI can draw
   additional upstream arrows.
+- Worker/reviewer LLM failures should emit explicit failed spans before throwing, so a
+  failed run still explains which agent failed and why.
+- Keep LLM prompt inputs compact. Tool evidence, dependency context, memories, worker
+  outputs, synthesis inputs, and learning inputs should be truncated/summarized before
+  being sent to local OpenAI-compatible models with limited context.
+- Runtime memory retrieval should pass visible scopes for the active group, requester,
+  thread, and run so unrelated scoped memory does not enter the prompt.
 - Add links here when introducing new core docs, modules, commands, or workflows.
 - UI changes must be checked through the HTTP server, not only by reading static files.
 - The web console uses `GET /api/runs/:id/events` as an additive SSE stream for live run

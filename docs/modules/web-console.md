@@ -127,8 +127,10 @@ contracts. The System Inventory panel shows the latest build queue items next to
 memories.
 
 `POST /api/tool-build-requests` accepts a missing capability payload (`capability`,
-`reason`, optional inputs/outputs/QA criteria) and creates the same durable contract the
-runtime uses after `tool-missing`.
+`reason`, optional source run/span IDs, task summary, inputs/outputs/QA criteria) and
+creates the same durable contract the runtime uses after `tool-missing`. Trace Lab's span
+inspector uses this endpoint for contextual "Create tool request / bug" forms, preserving
+the selected run/span context in the build request.
 
 `GET /api/tool-build-requests/:id` and `PATCH /api/tool-build-requests/:id` provide the
 builder lifecycle handoff. Builder, QA, and Registrar agents can mark a request as

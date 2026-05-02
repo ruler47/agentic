@@ -223,9 +223,12 @@ function formatMemories(memories: SkillMemoryEntry[]): string {
     .map(
       (memory) => `
 - ${memory.title}
+  scope: ${memory.scope ?? "global"}${memory.scopeId ? `:${memory.scopeId}` : ""}
+  confidence: ${Math.round((memory.confidence ?? 0.75) * 100)}%
+  match: ${memory.match?.reason ?? "selected by memory search"}
   tags: ${memory.tags.join(", ")}
-  summary: ${memory.summary}
-  procedure: ${memory.reusableProcedure}`,
+  summary: ${truncatePromptText(memory.summary, 900)}
+  procedure: ${truncatePromptText(memory.reusableProcedure, 900)}`,
     )
     .join("\n");
 }
@@ -239,4 +242,10 @@ function formatArtifacts(artifacts: AgentArtifact[]): string {
         `- ${artifact.kind}: ${artifact.filename} (${artifact.mimeType}, ${artifact.sizeBytes} bytes) ${artifact.url}`,
     )
     .join("\n");
+}
+
+function truncatePromptText(text: string | undefined, maxChars: number): string {
+  const value = text ?? "";
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars).trimEnd()}\n  [...truncated...]`;
 }

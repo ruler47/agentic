@@ -969,7 +969,8 @@ function renderTraceGraph(nodes) {
       <svg class="graph-edge-layer" data-graph-edge-layer aria-hidden="true"></svg>
       <div class="graph-legend" aria-label="Graph edge legend">
         <span><i class="legend-line solid"></i> Direct call</span>
-        <span><i class="legend-line dashed"></i> Waits for dependency</span>
+        <span><i class="legend-line dashed"></i> Dependency: waits for upstream result</span>
+        <span><i class="legend-line failed"></i> Calls a failed span</span>
       </div>
       <div class="graph-board" data-graph-board>
         ${columns
@@ -1048,7 +1049,7 @@ function renderInspector(node) {
       ${contextBlock("Output summary", node.detail || "No detail payload.")}
       ${node.dependencySpanIds.length ? contextBlock("Dependency spans", node.dependencySpanIds.join("\n")) : ""}
       ${renderInspectorEvidence(node)}
-      <button type="button" class="ghost-button">Create tool request / bug</button>
+      ${renderSpanToolRequestForm(node)}
     </div>
   `;
 }
@@ -1071,12 +1072,10 @@ function renderInspectorEvidence(node) {
   const artifacts = artifactsFromPayload(node.payload);
   if (artifacts.length) {
     blocks.push(
-      contextBlock(
-        "Artifacts",
-        artifacts
-          .map((artifact) => `${artifact.filename ?? artifact.id ?? "artifact"}\n${artifact.url ?? artifact.description ?? ""}`)
-          .join("\n\n"),
-      ),
+      `<section class="context-block inspector-artifacts">
+        <h3>Artifacts</h3>
+        <div class="artifact-grid compact-grid">${artifacts.map(normalizeArtifactForCard).map(renderArtifactCard).join("")}</div>
+      </section>`,
     );
   }
 
@@ -1086,6 +1085,48 @@ function renderInspectorEvidence(node) {
   }
 
   return blocks.join("");
+}
+
+function renderSpanToolRequestForm(node) {
+  const capability = inferCapabilityFromSpan(node);
+  const reason = [
+    `Trace span needs operator review or tool improvement.`,
+    `Run: ${activeRun()?.id ?? "unknown"}`,
+    `Span: ${node.spanId}`,
+    `Title: ${node.title}`,
+    `Actor: ${node.actor}`,
+    `Activity: ${node.activity}`,
+    `Status: ${node.status}`,
+    node.parentTitle ? `Called by: ${node.parentTitle}` : "",
+    node.detail ? `Observed output/error:\n${truncate(node.detail, 1200)}` : "",
+    `Context note: classify whether this is tool logic, tool contract, prompt/planning, site limitation, credential/policy limitation, or an external blocker before rebuilding.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return `
+    <details class="rework-box span-request-box">
+      <summary>Create tool request / bug from this span</summary>
+      <form data-action="create-tool-build-request" class="rework-form">
+        <input type="hidden" name="sourceRunId" value="${escapeHtml(activeRun()?.id ?? "")}" />
+        <input type="hidden" name="sourceSpanId" value="${escapeHtml(node.spanId)}" />
+        <input type="hidden" name="taskSummary" value="${escapeHtml(activeRun()?.task ?? "")}" />
+        <label>
+          <span>Capability or bug bucket</span>
+          <input name="capability" value="${escapeHtml(capability)}" required />
+        </label>
+        <label>
+          <span>Context and requested fix</span>
+          <textarea name="reason" required>${escapeHtml(reason)}</textarea>
+        </label>
+        <label>
+          <span>QA criteria</span>
+          <input name="qaCriteria" value="reproduce span failure, add regression test, prove useful evidence, no secret leakage" />
+        </label>
+        <button type="submit" class="ghost-button">Create contextual request</button>
+      </form>
+    </details>
+  `;
 }
 
 function renderConversationsList() {
@@ -1975,6 +2016,9 @@ async function createToolBuildRequest(form) {
         capability: String(formData.get("capability") ?? ""),
         reason: String(formData.get("reason") ?? ""),
         desiredToolName: String(formData.get("desiredToolName") ?? ""),
+        sourceRunId: String(formData.get("sourceRunId") ?? "") || undefined,
+        sourceSpanId: String(formData.get("sourceSpanId") ?? "") || undefined,
+        taskSummary: String(formData.get("taskSummary") ?? "") || undefined,
         qaCriteria,
       }),
     });
@@ -2429,6 +2473,20 @@ function artifactsFromPayload(payload) {
   return artifacts;
 }
 
+function normalizeArtifactForCard(artifact) {
+  return {
+    id: artifact.id ?? artifact.filename ?? "artifact",
+    runId: artifact.runId ?? activeRun()?.id ?? "",
+    kind: artifact.kind ?? "output",
+    filename: artifact.filename ?? artifact.id ?? "artifact",
+    mimeType: artifact.mimeType ?? "application/octet-stream",
+    sizeBytes: Number.isFinite(artifact.sizeBytes) ? artifact.sizeBytes : 0,
+    url: artifact.url ?? "#",
+    description: artifact.description,
+    contentPreview: artifact.contentPreview,
+  };
+}
+
 function isArtifactLike(value) {
   return Boolean(value) && typeof value === "object" && (typeof value.url === "string" || typeof value.filename === "string");
 }
@@ -2462,6 +2520,19 @@ function graphColumn(node) {
   }
   if (node.activity === "synthesis" || node.actor === "synthesizer" || title.includes("synthesized")) return "Synthesis";
   return "Output";
+}
+
+function inferCapabilityFromSpan(node) {
+  const payload = node.payload && typeof node.payload === "object" ? node.payload : {};
+  if (typeof payload.tool === "string") return payload.tool;
+  if (typeof payload.toolName === "string") return payload.toolName;
+  if (typeof payload.capability === "string") return payload.capability;
+  if (node.actor?.startsWith("web.search")) return "web-search";
+  if (node.actor?.includes("browser")) return "browser-operate";
+  if (node.activity === "tool") return node.actor || "tool-rework";
+  if (node.activity === "artifact") return "artifact-generation";
+  if (node.status === "failed") return `${node.activity || "agent"}-bug`;
+  return "agent-workflow-bug";
 }
 
 function dependencySpanIdsFor(node) {

@@ -1,7 +1,10 @@
 import { PgPool } from "../db/pool.js";
 import { MemoryScope, MemorySensitivity, MemoryStatus, SkillMemoryEntry } from "../types.js";
 import {
+  applyMemoryVisibility,
+  attachMemoryMatch,
   createMemoryId,
+  matchMemoryEntry,
   MemoryListOptions,
   MemoryUpdateInput,
   normalizeEntry,
@@ -9,7 +12,6 @@ import {
   normalizeMemoryScope,
   normalizeMemorySensitivity,
   normalizeMemoryStatus,
-  scoreMemoryEntry,
   SkillMemoryStore,
   tokenizeMemoryText,
 } from "./skillMemory.js";
@@ -103,12 +105,12 @@ export class PostgresSkillMemory implements SkillMemoryStore {
         ? lexical.rows.map(mapRow)
         : await this.list({ ...options, status: "accepted", limit });
 
-    return candidates
-      .map((entry) => ({ entry, score: scoreMemoryEntry(entry, queryTokens) }))
-      .filter(({ score }, index) => score > 0 || lexical.rows.length > 0 || index < limit)
-      .sort((a, b) => b.score - a.score)
+    return applyMemoryVisibility(candidates, options)
+      .map((entry) => ({ entry, match: matchMemoryEntry(entry, queryTokens) }))
+      .filter(({ match }, index) => match.score > 0 || lexical.rows.length > 0 || index < limit)
+      .sort((a, b) => b.match.score - a.match.score)
       .slice(0, limit)
-      .map(({ entry }) => entry);
+      .map(({ entry, match }) => attachMemoryMatch(entry, match));
   }
 
   async add(entry: Omit<SkillMemoryEntry, "id" | "createdAt">): Promise<SkillMemoryEntry> {

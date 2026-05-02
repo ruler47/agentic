@@ -1,5 +1,5 @@
 import { LlmClient } from "../llm/client.js";
-import { SkillMemoryStore } from "../memory/skillMemory.js";
+import { MemoryScopeFilter, SkillMemoryStore } from "../memory/skillMemory.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { shouldUseWebSearch } from "../tools/webSearchTool.js";
 import {
@@ -55,6 +55,7 @@ type RunOptions = {
     openQuestions: string[];
     relevantArtifactIds: string[];
   };
+  memoryScopes?: MemoryScopeFilter[];
   saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>;
   requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>;
   now?: Date;
@@ -84,6 +85,18 @@ type CollectedToolEvidence = {
   text: string;
   evidence: string[];
   artifacts: AgentArtifact[];
+};
+
+const promptBudget = {
+  taskContextChars: 8_000,
+  memoryEntryChars: 1_200,
+  memoryEvidenceChars: 800,
+  toolEvidenceChars: 7_000,
+  dependencyContextChars: 6_000,
+  workerUserPromptChars: 16_000,
+  reviewWorkerOutputChars: 8_000,
+  synthesisWorkerOutputChars: 14_000,
+  learningWorkerOutputChars: 10_000,
 };
 
 export class UniversalAgent {
@@ -135,7 +148,7 @@ export class UniversalAgent {
       options.timeZone,
     );
     const memoryStartedAt = new Date();
-    const memories = await this.skillMemory.search(taskContext);
+    const memories = await this.skillMemory.search(taskContext, 5, { visibleScopes: options.memoryScopes });
     await emit({
       spanId: memorySpanId,
       parentSpanId: runSpanId,
@@ -197,11 +210,18 @@ export class UniversalAgent {
         payload: { modelTier: synthesisTier },
       });
       const rawFinalAnswer = await this.llm.complete([
-        { role: "system", content: coordinatorSystemPrompt },
-        {
-          role: "user",
-          content: synthesizePrompt(taskContext, complexity, [], [], memories, artifacts),
-        },
+      { role: "system", content: coordinatorSystemPrompt },
+      {
+        role: "user",
+        content: synthesizePrompt(
+          limitText(taskContext, promptBudget.taskContextChars),
+          complexity,
+          [],
+          [],
+          compactMemoriesForPrompt(memories),
+          artifacts,
+        ),
+      },
       ], { modelTier: synthesisTier });
       const finalAnswer = withArtifactLinks(rawFinalAnswer, artifacts);
       await emit({
@@ -327,7 +347,14 @@ export class UniversalAgent {
       { role: "system", content: coordinatorSystemPrompt },
       {
         role: "user",
-        content: synthesizePrompt(taskContext, complexity, workerResults, reviews, memories, artifacts),
+        content: synthesizePrompt(
+          limitText(taskContext, promptBudget.taskContextChars),
+          complexity,
+          compactWorkerResultsForPrompt(workerResults, promptBudget.synthesisWorkerOutputChars),
+          reviews,
+          compactMemoriesForPrompt(memories),
+          artifacts,
+        ),
       },
     ], { modelTier: synthesisTier });
     const finalAnswer = withArtifactLinks(rawFinalAnswer, artifacts);
@@ -391,9 +418,11 @@ export class UniversalAgent {
     memories: SkillMemoryEntry[],
     modelTier: ReturnType<typeof selectModelTier>,
   ): Promise<TaskComplexity> {
+    const promptTask = limitText(task, promptBudget.taskContextChars);
+    const promptMemories = compactMemoriesForPrompt(memories);
     const output = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
-      { role: "user", content: classifyPrompt(task, memories) },
+      { role: "user", content: classifyPrompt(promptTask, promptMemories) },
     ], { modelTier });
 
     return extractJson<TaskComplexity>(output);
@@ -405,9 +434,11 @@ export class UniversalAgent {
     memories: SkillMemoryEntry[],
     modelTier: ReturnType<typeof selectModelTier>,
   ): Promise<Subtask[]> {
+    const promptTask = limitText(task, promptBudget.taskContextChars);
+    const promptMemories = compactMemoriesForPrompt(memories);
     const output = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
-      { role: "user", content: planPrompt(task, complexity, memories) },
+      { role: "user", content: planPrompt(promptTask, complexity, promptMemories) },
     ], { modelTier });
 
     return extractJson<PlanResponse>(output).subtasks;
@@ -495,28 +526,50 @@ export class UniversalAgent {
       payload: { subtask, modelTier, dependencySpanIds },
     });
 
-    const collectedEvidence = await this.collectToolEvidence(
-      originalTask,
-      subtask,
-      emit,
-      spanId,
-      dependencyContext,
-      dependencyArtifacts,
-      saveArtifact,
-      requestToolBuild,
-    );
+    let collectedEvidence: CollectedToolEvidence | undefined;
+    let output = "";
+    try {
+      collectedEvidence = await this.collectToolEvidence(
+        originalTask,
+        subtask,
+        emit,
+        spanId,
+        dependencyContext,
+        dependencyArtifacts,
+        saveArtifact,
+        requestToolBuild,
+      );
 
-    const output = await this.llm.complete([
-      { role: "system", content: workerSystemPrompt(subtask, memories) },
-      {
-        role: "user",
-        content: `Original user task for context:\n${originalTask}\n\n${collectedEvidence.text}\n\nRuntime rule: available tools have already been executed and their evidence is above. Do not emit tool-call syntax, hidden browser commands, or pretend to navigate/click. Use only the evidence and artifact URLs you were given.\n\n${dependencyContext ? `${dependencyContext}\n\n` : ""}${
-          revisionInstructions
-            ? `Revise your previous work using these review notes:\n${revisionInstructions}`
-            : "Execute only your assigned subtask."
-        }`,
-      },
-    ], { modelTier });
+      output = await this.llm.complete([
+        { role: "system", content: workerSystemPrompt(subtask, compactMemoriesForPrompt(memories)) },
+        {
+          role: "user",
+          content: buildWorkerUserPrompt(originalTask, collectedEvidence.text, dependencyContext, revisionInstructions),
+        },
+      ], { modelTier });
+    } catch (error) {
+      await emit({
+        spanId,
+        parentSpanId,
+        type: "worker-failed",
+        actor: `worker:${subtask.role}`,
+        activity: "worker",
+        status: "failed",
+        title: isRevision ? `Worker revision failed: ${subtask.title}` : `Worker failed: ${subtask.title}`,
+        detail: formatErrorMessage(error),
+        startedAt: startedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(startedAt),
+        payload: {
+          subtask,
+          modelTier,
+          dependencySpanIds,
+          error: formatErrorMessage(error),
+          evidencePreview: collectedEvidence ? limitText(collectedEvidence.text, 2000) : undefined,
+        },
+      });
+      throw error;
+    }
 
     await emit({
       spanId,
@@ -625,8 +678,8 @@ export class UniversalAgent {
     }
 
     return {
-      text: `External tool evidence collected for this subtask:\n${evidence.join("\n\n")}`,
-      evidence,
+      text: `External tool evidence collected for this subtask:\n${summarizeEvidenceList(evidence, promptBudget.toolEvidenceChars)}`,
+      evidence: evidence.map((item) => limitText(item, promptBudget.toolEvidenceChars)),
       artifacts,
     };
   }
@@ -673,8 +726,8 @@ export class UniversalAgent {
     });
 
     return result.ok
-      ? `External tool evidence from ${webSearch.name}:\n${result.content}`
-      : `External tool ${webSearch.name} failed:\n${result.content}`;
+      ? `External tool evidence from ${webSearch.name}:\n${limitText(result.content, promptBudget.toolEvidenceChars)}`
+      : `External tool ${webSearch.name} failed:\n${limitText(result.content, 3000)}`;
   }
 
   private async collectDeclaredToolInputs(
@@ -1288,12 +1341,30 @@ export class UniversalAgent {
       return deterministicReview;
     }
 
-    const output = await this.llm.complete([
-      { role: "system", content: reviewerSystemPrompt(workerResult) },
-      { role: "user", content: "Review the worker result now." },
-    ], { modelTier });
-
-    const review = extractJson<ReviewResult>(output);
+    let review: ReviewResult;
+    try {
+      const output = await this.llm.complete([
+        { role: "system", content: reviewerSystemPrompt(compactWorkerResultForPrompt(workerResult, promptBudget.reviewWorkerOutputChars)) },
+        { role: "user", content: "Review the worker result now." },
+      ], { modelTier });
+      review = extractJson<ReviewResult>(output);
+    } catch (error) {
+      await emit({
+        spanId,
+        parentSpanId,
+        type: "review-failed",
+        actor: "reviewer",
+        activity: "review",
+        status: "failed",
+        title: `Review failed: ${workerResult.subtask.title}`,
+        detail: formatErrorMessage(error),
+        startedAt: startedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(startedAt),
+        payload: { workerResult: compactWorkerResultForPrompt(workerResult, 2000), modelTier, error: formatErrorMessage(error) },
+      });
+      throw error;
+    }
     await emit({
       spanId,
       parentSpanId,
@@ -1320,7 +1391,14 @@ export class UniversalAgent {
   ): Promise<SkillMemoryEntry | undefined> {
     const output = await this.llm.complete([
       { role: "system", content: "You extract compact reusable operational knowledge." },
-      { role: "user", content: learningPrompt(task, finalAnswer, workerResults) },
+      {
+        role: "user",
+        content: learningPrompt(
+          limitText(task, promptBudget.taskContextChars),
+          limitText(finalAnswer, 8_000),
+          compactWorkerResultsForPrompt(workerResults, promptBudget.learningWorkerOutputChars),
+        ),
+      },
     ], { modelTier });
     const learning = extractJson<LearningResponse>(output);
 
@@ -1438,7 +1516,7 @@ function normalizeSubtask(subtask: Subtask): Subtask {
 function formatDependencyContext(dependencyResults: ReviewedWorkerResult[]): string | undefined {
   if (dependencyResults.length === 0) return undefined;
 
-  return `Dependency results from earlier reviewed agents:
+  return limitText(`Dependency results from earlier reviewed agents:
 ${dependencyResults
   .map(
     (result) => `
@@ -1449,7 +1527,7 @@ ${indent(formatWorkerArtifacts(result.workerResult.artifacts))}
   worker output:
 ${indent(result.workerResult.output)}`,
   )
-  .join("\n")}`;
+  .join("\n")}`, promptBudget.dependencyContextChars);
 }
 
 function formatWorkerArtifacts(artifacts: AgentArtifact[] | undefined): string {
@@ -1458,6 +1536,93 @@ function formatWorkerArtifacts(artifacts: AgentArtifact[] | undefined): string {
   return artifacts
     .map((artifact) => `- ${artifact.filename} (${artifact.mimeType}) ${artifact.url}`)
     .join("\n");
+}
+
+function buildWorkerUserPrompt(
+  originalTask: string,
+  toolEvidence: string,
+  dependencyContext?: string,
+  revisionInstructions?: string,
+): string {
+  return joinPromptSections(
+    [
+      ["Original user task for context", limitText(originalTask, promptBudget.taskContextChars)],
+      ["External tool evidence", limitText(toolEvidence, promptBudget.toolEvidenceChars)],
+      [
+        "Runtime rule",
+        "Available tools have already been executed and their evidence is above. Do not emit tool-call syntax, hidden browser commands, or pretend to navigate/click. Use only the evidence and artifact URLs you were given.",
+      ],
+      dependencyContext ? ["Dependency context", limitText(dependencyContext, promptBudget.dependencyContextChars)] : undefined,
+      [
+        "Instruction",
+        revisionInstructions
+          ? `Revise your previous work using these review notes:\n${limitText(revisionInstructions, 3_000)}`
+          : "Execute only your assigned subtask.",
+      ],
+    ],
+    promptBudget.workerUserPromptChars,
+  );
+}
+
+function joinPromptSections(
+  sections: Array<[string, string] | undefined>,
+  maxChars: number,
+): string {
+  const rendered = sections
+    .filter((section): section is [string, string] => Boolean(section))
+    .map(([title, content]) => `${title}:\n${content.trim()}`)
+    .join("\n\n");
+
+  return limitText(rendered, maxChars);
+}
+
+function compactMemoriesForPrompt(memories: SkillMemoryEntry[]): SkillMemoryEntry[] {
+  return memories.map((memory) => ({
+    ...memory,
+    summary: limitText(memory.summary, promptBudget.memoryEntryChars),
+    reusableProcedure: limitText(memory.reusableProcedure, promptBudget.memoryEntryChars),
+    evidence: (memory.evidence ?? []).slice(0, 4).map((item) => limitText(item, promptBudget.memoryEvidenceChars)),
+  }));
+}
+
+function compactWorkerResultsForPrompt(workerResults: WorkerResult[], maxTotalOutputChars: number): WorkerResult[] {
+  const perWorkerBudget = Math.max(1_500, Math.floor(maxTotalOutputChars / Math.max(1, workerResults.length)));
+  return workerResults.map((workerResult) => compactWorkerResultForPrompt(workerResult, perWorkerBudget));
+}
+
+function compactWorkerResultForPrompt(workerResult: WorkerResult, outputBudget: number): WorkerResult {
+  return {
+    ...workerResult,
+    output: limitText(workerResult.output, outputBudget),
+    toolEvidence: workerResult.toolEvidence?.slice(0, 6).map((item) => limitText(item, 1_500)),
+    artifacts: workerResult.artifacts?.map((artifact) => ({
+      ...artifact,
+      contentPreview: artifact.contentPreview ? limitText(artifact.contentPreview, 1_000) : undefined,
+    })),
+  };
+}
+
+function summarizeEvidenceList(evidence: string[], maxChars: number): string {
+  if (evidence.length === 0) return "";
+  const perItemBudget = Math.max(800, Math.floor(maxChars / evidence.length));
+  return evidence.map((item) => limitText(item, perItemBudget)).join("\n\n");
+}
+
+function limitText(text: string | undefined, maxChars: number): string {
+  const value = text ?? "";
+  if (value.length <= maxChars) return value;
+  if (maxChars <= 32) return value.slice(0, maxChars);
+
+  const headChars = Math.floor(maxChars * 0.72);
+  const tailChars = Math.max(0, maxChars - headChars - 80);
+  const head = value.slice(0, headChars).trimEnd();
+  const tail = tailChars > 0 ? value.slice(-tailChars).trimStart() : "";
+  const omitted = value.length - head.length - tail.length;
+  return `${head}\n\n[...truncated ${omitted} characters to fit model context...]\n\n${tail}`.trim();
+}
+
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function createEmitter(sink?: AgentEventSink): AgentEventEmitter {
@@ -1711,10 +1876,10 @@ function formatDeclaredToolEvidence(
     const extractedText = result.data.extractedText
       .map((item) => `\n[${item.label}]\n${item.text.slice(0, 2500)}`)
       .join("\n");
-    return `Declared tool evidence from ${toolName}:\n${result.content}${artifactText}${extractedText}`;
+    return limitText(`Declared tool evidence from ${toolName}:\n${result.content}${artifactText}${extractedText}`, promptBudget.toolEvidenceChars);
   }
 
-  return `Declared tool evidence from ${toolName}:\n${result.content}${artifactText}`;
+  return limitText(`Declared tool evidence from ${toolName}:\n${result.content}${artifactText}`, promptBudget.toolEvidenceChars);
 }
 
 function improveDeclaredToolInput(

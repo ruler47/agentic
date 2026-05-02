@@ -106,3 +106,30 @@ test("LlmClient retries same-tier models then escalates when configured", async 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("LlmClient preserves string error bodies from OpenAI-compatible servers", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ error: "n_keep exceeds context length" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+
+  try {
+    const client = new LlmClient({
+      baseUrl: "http://llm.local/v1",
+      model: "local-small-context",
+      temperature: 0.2,
+      tierModels: {},
+      tierModelCandidates: {},
+    });
+
+    await assert.rejects(
+      () => client.complete([{ role: "user", content: "hello" }]),
+      /local-small-context: n_keep exceeds context length/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

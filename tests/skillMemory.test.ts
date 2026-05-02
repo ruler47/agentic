@@ -63,6 +63,45 @@ test("SkillMemory keeps proposed scoped facts out of retrieval until accepted", 
   }
 });
 
+test("SkillMemory filters search by visible scopes and explains matches", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+
+  try {
+    const family = await memory.add({
+      title: "Family pharmacy preference",
+      tags: ["family", "pharmacy"],
+      summary: "Use Spanish pharmacy sources for the family.",
+      reusableProcedure: "Prefer AEMPS and Spanish pharmacies before generic marketplaces.",
+      scope: "group",
+      scopeId: "family-a",
+      status: "accepted",
+      confidence: 0.9,
+    });
+    await memory.add({
+      title: "Company pharmacy preference",
+      tags: ["company", "pharmacy"],
+      summary: "Use enterprise procurement sources for the company.",
+      reusableProcedure: "Prefer internal vendor systems.",
+      scope: "group",
+      scopeId: "company-b",
+      status: "accepted",
+      confidence: 0.9,
+    });
+
+    const results = await memory.search("Spanish pharmacy sources", 5, {
+      visibleScopes: [{ scope: "global" }, { scope: "group", scopeId: "family-a" }],
+    });
+
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.id, family.id);
+    assert.match(results[0]?.match?.reason ?? "", /Matched/);
+    assert.equal(results[0]?.match?.scope, "group");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("SkillMemory returns empty list when file does not exist", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
   const memory = new SkillMemory(join(dir, "missing.json"));

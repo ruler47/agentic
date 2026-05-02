@@ -120,21 +120,24 @@ The runtime now uses Postgres-backed memory when `DATABASE_URL` is present. Memo
 carry scope (`global`, `group`, `user`, `thread`, `run`), status (`proposed`, `accepted`,
 `rejected`, `archived`), confidence, sensitivity, source run/thread IDs, and evidence.
 Agent retrieval only uses accepted memory; proposed facts stay in a review queue until an
-operator accepts them. Search still uses Postgres full-text search plus lexical rescoring.
+operator accepts them. Runtime calls now pass visible scopes for the active group,
+requester user, thread, and run, so scoped entries outside that context are not injected
+into agent prompts. Search still uses Postgres full-text search plus lexical rescoring.
 The next retrieval step is semantic similarity with `pgvector`.
 
 Tasks:
 
 - Store skill memories in Postgres. DONE
 - Store source run IDs and evidence. DONE for the base fields/API.
-- Add memory scopes: global, group, user, thread, run. DONE for storage/API/UI metadata;
-  runtime permission-aware retrieval remains.
+- Add memory scopes: global, group, user, thread, run. DONE for storage/API/UI metadata
+  and runtime visible-scope retrieval.
 - Add memory write review so personal facts are classified before storage. PARTIAL:
   `proposed`/`accepted`/`rejected` lifecycle, UI review queue, API updates, and audit
   events exist; automatic classifier-driven proposals remain.
 - Add embeddings with `pgvector`.
 - Search by semantic similarity plus tags.
-- Show memory hits in UI with confidence and why they matched.
+- Show memory hits in UI with confidence and why they matched. PARTIAL: search results now
+  carry match reason/matched tokens for prompt context; richer UI drilldown remains.
 - Add tests proving repeated similar tasks retrieve prior memories.
 - Add permissions so agents cannot read another user's private memory unless policy and
   task context allow it.
@@ -145,8 +148,8 @@ Remaining memory gaps:
 - Search is token-based, not semantic.
 - The agent only stores a memory when the LLM returns `shouldStore: true`.
 - Stored lessons are generic, so specific repeated requests may not match well.
-- Runtime memory retrieval does not yet enforce user/private-memory policy beyond only
-  retrieving accepted memories.
+- Runtime memory retrieval enforces accepted-only and visible-scope filtering, but does
+  not yet evaluate full role/policy rules for sensitive/private memories.
 - Memory proposals are not yet automatically classified into group/user/thread scope by an
   LLM reviewer.
 
@@ -314,17 +317,12 @@ Remaining Phase 3 gaps:
   stale-version rejection, same-version rejection, and builtin replacement protection.
   Remaining work is to wire Tool Builder/Registrar automatically from a rework request to
   this promotion endpoint after QA passes.
-- Add span-context bug/rework creation from Trace Lab. The "Create tool request / bug"
-  action should open a form prefilled from the selected span: run id, span id, parent span,
-  actor, activity, model tier, tool name/capability, input summary, output summary,
-  artifact URLs, QA/reviewer notes, error/status, and nearby dependency context. The
-  operator adds a comment, and the system creates either a generic bug report or a
-  tool-build rework request. For tool spans, the request should target the exact tool
-  contract/version; for browser/artifact spans, it should include the rejected artifact QA
-  evidence. A local LLM reviewer should first classify whether the issue is tool logic,
-  tool contract, prompt/planning, site limitation, credential/policy limitation, or
-  external blocker. Only tool-logic/contract issues should proceed to automatic rework;
-  site limitations should become documented failure memory instead of code changes.
+- Add span-context bug/rework creation from Trace Lab. PARTIAL: the selected span inspector
+  now opens a prefilled Tool Build request form with run id, span id, task summary, actor,
+  activity, status, caller, and output/error context. Remaining work: classify the issue
+  with a local LLM before build creation, target the exact tool contract/version for tool
+  spans, include rejected artifact QA evidence automatically, and route site limitations to
+  failure memory instead of tool rebuilds.
 - Next roadmap focus after the background worker: scoped semantic memory with group,
   user, and thread facts; review queue; confidence; accepted/rejected fact lifecycle.
 
@@ -439,10 +437,15 @@ Implemented:
   Timeline, Graph, Logs, and the selected span inspector.
 - Compact Trace Lab inspector evidence blocks for memory hits, tool payload summaries,
   and artifacts carried by selected span payloads.
+- Trace Lab inspector artifact evidence now renders the same preview cards as the main
+  artifact panels instead of only filename/path text.
 - Trace Lab run directory for `/trace`, so opening the section lists runs instead of
   implicitly jumping to the latest execution.
 - Explicit SVG caller/callee arrows on graph nodes, with hover highlighting for incoming
   and outgoing connected cards.
+- Graph edges use solid lines for direct parent/child calls, dashed lines for dependency
+  waits, red arrows for failed targets, and wider horizontal spacing so arrowheads remain
+  readable between columns.
 - Graph mode separates worker/reviewer spans from tool/artifact spans so agent work and
   tool execution are easier to scan.
 - Conversation Detail shows request/response artifacts inline when the linked run has

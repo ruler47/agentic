@@ -10,9 +10,7 @@ type ChatCompletionResponse = {
       content?: string;
     };
   }>;
-  error?: {
-    message?: string;
-  };
+  error?: unknown;
 };
 
 const tierOrder: ModelTier[] = ["S", "M", "L", "XL"];
@@ -39,10 +37,11 @@ export class LlmClient {
           }),
         });
 
-        const data = (await response.json()) as ChatCompletionResponse;
+        const rawBody = await response.text();
+        const data = parseChatCompletionResponse(rawBody);
 
         if (!response.ok) {
-          errors.push(`${model}: ${data.error?.message ?? `HTTP ${response.status}`}`);
+          errors.push(`${model}: ${extractResponseError(data, response.status, rawBody)}`);
           continue;
         }
 
@@ -116,6 +115,31 @@ export class LlmClient {
       escalateOnFailure: tier !== "XL",
     };
   }
+}
+
+function parseChatCompletionResponse(rawBody: string): ChatCompletionResponse {
+  if (!rawBody.trim()) return {};
+
+  try {
+    return JSON.parse(rawBody) as ChatCompletionResponse;
+  } catch {
+    return {};
+  }
+}
+
+function extractResponseError(data: ChatCompletionResponse, status: number, rawBody: string): string {
+  const fallback = rawBody.trim() ? `HTTP ${status}: ${rawBody.slice(0, 500)}` : `HTTP ${status}`;
+  const error = data.error;
+
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    if (typeof record.message === "string") return record.message;
+    if (typeof record.error === "string") return record.error;
+    if (typeof record.type === "string") return `${record.type}: ${fallback}`;
+  }
+
+  return fallback;
 }
 
 export function readLlmConfigFromEnv(): LlmConfig {

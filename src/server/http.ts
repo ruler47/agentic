@@ -997,6 +997,14 @@ async function executeRun(
     const result = await options.agent.run(task, {
       inputArtifacts,
       threadContext: context.threadContext,
+      memoryScopes: [
+        { scope: "global" },
+        { scope: "group", scopeId: run?.instanceId ?? "group-local" },
+        { scope: "group", scopeId: "group-local" },
+        { scope: "user", scopeId: run?.requesterUserId ?? "user-admin" },
+        ...(run?.threadId ? [{ scope: "thread" as const, scopeId: run.threadId }] : []),
+        { scope: "run", scopeId: id },
+      ],
       saveArtifact: options.artifactStore
         ? async (artifact) => {
             const saved = await options.artifactStore!.saveGenerated(id, artifact);

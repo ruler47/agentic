@@ -150,6 +150,37 @@ class DependencyFakeLlm {
   }
 }
 
+class WorkerFailingLlm {
+  async complete(messages: Message[]): Promise<string> {
+    const text = messages.map((message) => message.content).join("\n");
+
+    if (text.includes("Classify this single user task")) {
+      return '{"mode":"delegated","reason":"needs a worker","domains":["test"],"riskLevel":"medium"}';
+    }
+
+    if (text.includes("Create a delegation plan")) {
+      return JSON.stringify({
+        subtasks: [
+          {
+            id: "research",
+            title: "Research large context",
+            role: "researcher",
+            prompt: "Research with too much source evidence.",
+            expectedOutput: "Usable summary.",
+            reviewCriteria: ["No context overflow"],
+          },
+        ],
+      });
+    }
+
+    if (text.includes("focused worker agent")) {
+      throw new Error("n_keep exceeds context length");
+    }
+
+    throw new Error(`Unexpected fake LLM prompt: ${text.slice(0, 160)}`);
+  }
+}
+
 class CapturingFakeLlm {
   prompts: string[] = [];
 
@@ -1104,6 +1135,32 @@ test("UniversalAgent starts each review as soon as its worker finishes", async (
     assert.ok(fastReviewStarted > -1);
     assert.ok(slowWorkerCompleted > -1);
     assert.ok(fastReviewStarted < slowWorkerCompleted);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent emits a failed worker span when a worker LLM call fails", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const agent = new UniversalAgent(new WorkerFailingLlm() as unknown as LlmClient, memory);
+  const events: AgentEvent[] = [];
+
+  try {
+    await assert.rejects(
+      () =>
+        agent.run("Trigger a delegated worker failure", {
+          onEvent: (event) => {
+            events.push(event);
+          },
+        }),
+      /n_keep exceeds context length/,
+    );
+
+    const failedWorker = events.find((event) => event.type === "worker-failed");
+    assert.equal(failedWorker?.status, "failed");
+    assert.match(failedWorker?.detail ?? "", /n_keep exceeds context length/);
+    assert.equal(events.some((event) => event.type === "review-started"), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
