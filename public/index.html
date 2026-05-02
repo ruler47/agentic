@@ -7,21 +7,50 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="workspace" aria-label="Agent workspace">
-        <header class="topbar">
+    <main class="dashboard-shell">
+      <aside class="sidebar" aria-label="Agent operations">
+        <header class="brand-panel">
+          <div class="brand-mark">A</div>
           <div>
-            <h1>Agentic Console</h1>
-            <p>Universal coordinator with visible specialist-agent execution.</p>
+            <h1>Agentic</h1>
+            <p>Universal multi-agent console</p>
           </div>
-          <div class="status-pill" id="connectionStatus">Ready</div>
         </header>
 
-        <section class="system-inventory" aria-label="System inventory">
+        <section class="ops-card run-overview" aria-label="Active run">
+          <div class="card-heading">
+            <span>Live Run</span>
+            <span class="status-pill" id="connectionStatus">Ready</span>
+          </div>
+          <div class="metric-grid">
+            <div>
+              <span>Status</span>
+              <strong id="runStatus">idle</strong>
+            </div>
+            <div>
+              <span>Duration</span>
+              <strong id="runDuration">0 ms</strong>
+            </div>
+            <div class="wide">
+              <span>Run ID</span>
+              <strong id="activeRunLabel">No active run</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="ops-card recent-runs" aria-label="Recent runs">
+          <div class="section-heading">
+            <h2>Recent Runs</h2>
+            <span>Persisted executions</span>
+          </div>
+          <div id="runList" class="run-list"></div>
+        </section>
+
+        <section class="ops-card system-inventory" aria-label="System inventory">
           <details>
             <summary>
               <span>System Inventory</span>
-              <span id="inventorySummary">Loading tools and memory...</span>
+              <span id="inventorySummary">Loading...</span>
             </summary>
             <div class="inventory-grid">
               <div>
@@ -32,24 +61,30 @@
                 <h2>Memories</h2>
                 <ul id="memoryList"></ul>
               </div>
+              <div>
+                <h2>Tool Build Queue</h2>
+                <ul id="toolBuildRequestList"></ul>
+              </div>
             </div>
             <div class="model-tier-settings">
               <div class="section-heading">
                 <h2>Model Tiers</h2>
-                <button type="button" id="saveModelTiersButton">Save tiers</button>
+                <button type="button" id="saveModelTiersButton">Save</button>
               </div>
               <div id="modelTierList" class="model-tier-list"></div>
             </div>
           </details>
         </section>
+      </aside>
 
-        <section class="recent-runs" aria-label="Recent runs">
-          <div class="section-heading">
-            <h2>Recent Runs</h2>
-            <span>Latest persisted executions</span>
+      <section class="workbench" aria-label="Agent workspace">
+        <header class="hero-panel">
+          <div>
+            <span class="eyebrow">Command center</span>
+            <h2>Ask once. Watch the agent network do the work.</h2>
           </div>
-          <div id="runList" class="run-list"></div>
-        </section>
+          <button type="button" id="refreshButton" title="Refresh current run">Refresh</button>
+        </header>
 
         <form class="task-form" id="taskForm">
           <label for="taskInput">Task</label>
@@ -57,24 +92,38 @@
             id="taskInput"
             name="task"
             rows="5"
-            placeholder="Например: найди города Испании с IT-сектором, украинским комьюнити, аэропортом и близостью к морю"
+            placeholder="Например: найди авиабилеты из Стамбула в Малагу, приложи proof-скриншот и объясни лучший вариант"
             required
           ></textarea>
+          <section class="attachment-panel" aria-label="Request files">
+            <input id="fileInput" name="files" type="file" multiple />
+            <label class="file-dropzone" for="fileInput">
+              <span class="file-dropzone-title">Attach files</span>
+              <span class="file-dropzone-meta">PDF, images, JSON, CSV, code, notes</span>
+            </label>
+            <div id="attachmentList" class="attachment-list" aria-live="polite"></div>
+          </section>
           <div class="form-actions">
             <button type="submit" id="submitButton">Run agent</button>
-            <span id="activeRunLabel">No active run</span>
+            <span>Realtime trace and artifacts will appear automatically</span>
           </div>
         </form>
 
         <section class="answer-panel" aria-label="Final answer">
           <div class="panel-heading">
-            <h2>Answer</h2>
-            <div class="answer-status">
-              <span id="runStatus">idle</span>
-              <span id="runDuration">0 ms</span>
+            <div>
+              <h2>Answer</h2>
+              <p>Final result, proof files, and generated artifacts.</p>
             </div>
           </div>
           <pre id="answerOutput">Submit a task to start.</pre>
+          <section id="artifactPanel" class="artifact-panel" aria-label="Run artifacts" hidden>
+            <div class="section-heading">
+              <h2>Files</h2>
+              <span id="artifactSummary">0 artifacts</span>
+            </div>
+            <div id="artifactList" class="artifact-list"></div>
+          </section>
         </section>
       </section>
 
@@ -82,9 +131,8 @@
         <div class="panel-heading">
           <div>
             <h2>Execution Map</h2>
-            <p>Calls, parallel branches, tools, statuses, and durations.</p>
+            <p>Live calls, branches, tool use, reviews, statuses, and durations.</p>
           </div>
-          <button type="button" id="refreshButton" title="Refresh current run">↻</button>
         </div>
         <div id="eventList" class="trace-board"></div>
       </section>

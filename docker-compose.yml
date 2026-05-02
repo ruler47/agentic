@@ -10,10 +10,15 @@ services:
       LLM_TEMPERATURE: "0.2"
       SEARXNG_BASE_URL: http://searxng:8080
       FILE_TOOL_ROOT: /app/workspace
+      CHROMIUM_PATH: /usr/bin/chromium
+      TZ: Europe/Madrid
+      AGENT_TIME_ZONE: Europe/Madrid
     ports:
       - "3000:3000"
     volumes:
       - ./workspace:/app/workspace
+      - ./src/tools/generated:/app/src/tools/generated
+      - ./tests/generated:/app/tests/generated
     depends_on:
       postgres:
         condition: service_healthy

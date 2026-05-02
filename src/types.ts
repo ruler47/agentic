@@ -51,11 +51,17 @@ export type Subtask = {
   prompt: string;
   expectedOutput: string;
   reviewCriteria: string[];
+  dependsOn?: string[];
+  requiredTools?: string[];
+  requiredArtifacts?: ArtifactRequirement[];
+  toolInputs?: Record<string, unknown>;
 };
 
 export type WorkerResult = {
   subtask: Subtask;
   output: string;
+  toolEvidence?: string[];
+  artifacts?: AgentArtifact[];
   traceSpanId?: string;
   modelTier?: ModelTier;
 };
@@ -66,17 +72,56 @@ export type ReviewResult = {
   notes: string;
 };
 
+export type AgentArtifactKind = "input" | "output";
+
+export type ArtifactRequirement = {
+  kind: "screenshot" | "chart" | "document" | "data" | "image" | "source";
+  capability: string;
+  description: string;
+  required?: boolean;
+};
+
+export type AgentArtifact = {
+  id: string;
+  runId: string;
+  kind: AgentArtifactKind;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  url: string;
+  description?: string;
+  contentPreview?: string;
+  createdAt: string;
+};
+
+export type ArtifactUploadInput = {
+  filename: string;
+  mimeType?: string;
+  contentBase64: string;
+  description?: string;
+};
+
+export type ArtifactCreateInput = {
+  filename: string;
+  mimeType: string;
+  content: string | Buffer;
+  description?: string;
+};
+
 export type AgentRunResult = {
   finalAnswer: string;
   complexity: TaskComplexity;
   subtasks: Subtask[];
   workerResults: WorkerResult[];
   reviews: ReviewResult[];
+  artifacts?: AgentArtifact[];
   learnedSkill?: SkillMemoryEntry;
 };
 
 export type AgentEventType =
   | "run-started"
+  | "artifacts-received"
+  | "artifact-created"
   | "memory-search-completed"
   | "classification-completed"
   | "planning-completed"
@@ -84,6 +129,8 @@ export type AgentEventType =
   | "worker-completed"
   | "review-started"
   | "review-completed"
+  | "tool-missing"
+  | "tool-build-requested"
   | "tool-started"
   | "tool-completed"
   | "synthesis-started"

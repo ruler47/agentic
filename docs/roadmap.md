@@ -19,10 +19,11 @@ coordinator
   -> memory learning
 ```
 
-Workers now request their own review immediately after finishing, so reviews can run while
-other workers are still active. The coordinator waits for reviewed worker results before
-calling the synthesizer. A failed review triggers one bounded revision pass before
-synthesis.
+Planner subtasks can declare `dependsOn`, so independent branches run in parallel while
+dependent branches wait for reviewed upstream outputs. Workers request their own review
+immediately after finishing, so reviews can run while other workers are still active. The
+coordinator waits for reviewed worker results before calling the synthesizer. A failed
+review triggers one bounded revision pass before synthesis.
 
 This is not yet a fully autonomous recursive agent society. It is still centrally
 orchestrated, but the trace contract is ready for nested agent calls.
@@ -55,7 +56,9 @@ Remaining memory gaps:
 Status: partially implemented.
 
 The runtime has a first-class tool registry and an initial `web.search` tool powered by
-SearXNG.
+SearXNG. Built-in tool contracts are synced into a persistent `tool_modules` table when
+Postgres is configured, so future generated tools can be versioned, health-checked, and
+promoted without being only in process memory.
 
 Tool contract:
 
@@ -74,8 +77,19 @@ Initial tools:
 - `web.open`
 - `file.read` DONE
 - `file.write` DONE
-- `browser.screenshot`
+- `chart.generate` DONE
+- `browser.operate` DONE as a reusable Playwright command executor with navigation,
+  dialog dismissal, click/fill/select/check, waits, assertions, DOM extraction, link
+  extraction, screenshots, and returned storage state
+- `browser.screenshot` self-service provider DONE for first-generation Playwright module
 - `db.query`
+
+Implemented registry persistence:
+
+- `tool_modules` Postgres table.
+- Built-in tool metadata sync on server startup.
+- Tool health status persisted after `/api/tools/health`.
+- API/UI expose source, status, schemas, startup mode, and capabilities.
 
 Every tool call must emit trace events with:
 
@@ -138,13 +152,50 @@ Guardrails:
 
 Next implementation tasks:
 
-- Add a tool registry persistence table.
-- Add `tool.missing-capability` trace events.
-- Add a Tool Builder agent contract.
-- Add a Tool QA agent contract.
-- Add a Tool Registrar service with version conflict checks.
-- Implement `browser.screenshot` as the first self-service tool target.
+- Add a tool registry persistence table. DONE for metadata; remaining work is loading
+  generated executable modules from persisted registry records.
+- Add `tool-missing` trace events. DONE
+- Add a Tool Builder agent contract. DONE for persistent build request contracts and a
+  provider-based generated source writer; remaining work is LLM-authored provider
+  creation for new capability families.
+- Add a Tool QA agent contract. DONE for generated QA criteria, isolated generated-tool
+  test execution, TypeScript build verification, and promotion checks; remaining work is
+  richer visual QA and separate worker pools.
+- Add a persistent Tool Build Queue. DONE via `tool_build_requests` and
+  `/api/tool-build-requests`.
+- Add Tool Build Queue lifecycle APIs. DONE via `GET/PATCH
+  /api/tool-build-requests/:id`, builder status details, QA reports, and registered tool
+  references.
+- Add a Tool Registrar service with version conflict checks. DONE.
+- Load executable generated modules after QA/registration. DONE for compiled project-local
+  modules with contract validation and health promotion.
+- Enforce TypeScript-only generated tool modules. DONE through provider output paths,
+  targeted tests, and `npm run build` in QA.
+- Add a Tool Builder worker that consumes queued requests, writes TypeScript source,
+  creates focused tests, delegates QA, and registers only after QA passes. DONE for
+  provider-backed builds through `POST /api/tool-build-requests/:id/run`.
+- Add a reusable Tool Builder workflow. DONE as `ToolBuildWorkflow`, with pluggable
+  Builder, QA Runner, and Registrar interfaces plus tests proving failed QA blocks
+  registration and failed QA reports can be returned to the builder for a bounded retry.
+- Add a Tool QA runner that executes targeted tests plus capability-specific smoke checks
+  in an isolated container/process and writes a structured QA report back to the queue.
+  DONE for temporary workspace isolation, command timeouts, targeted tests, isolated build,
+  and promotion build verification.
+- Implement `browser.screenshot` as the first self-service tool target. DONE with a
+  Playwright provider that writes module and smoke-test files.
 - Prove the full loop with a test task that requires a missing screenshot capability.
+  DONE in automated runtime tests; remaining work is repeated manual browser/UI evidence
+  after Docker rebuilds.
+
+Remaining Phase 3 gaps:
+
+- Replace provider-authored source with a higher-level Tool Builder agent that can create
+  new providers/modules for unknown capability families.
+- Move generated-tool QA from temporary workspace isolation to a stricter worker service
+  or container pool with CPU/memory/network limits.
+- Add LLM/provider repair implementations that consume failed QA reports; the workflow
+  already supports bounded retry attempts.
+- Persist generated source bundles and QA artifacts in object storage.
 
 ## Phase 4: Recursive Universal Agents
 
@@ -236,8 +287,9 @@ Improve the execution map:
 Implemented:
 
 - Direct SVG arrows between parent and child spans.
+- Additional dependency arrows from `payload.dependencySpanIds`.
 - Collapsible trace cards with stable incremental rendering.
-- Status, actor, activity, duration, and parent-child metadata.
+- Status, actor, activity, duration, parent-child metadata, and dependency badges.
 
 Remaining:
 
@@ -247,12 +299,78 @@ Remaining:
 
 ## Phase 7: Durable Artifacts
 
+Status: partially implemented.
+
+Implemented:
+
+- User requests can include file attachments through the web UI/API.
+- Attachments are persisted as input artifacts in `workspace/artifacts`.
+- Runs can return downloadable artifact links in `result.artifacts`.
+- The runtime invokes the registered `chart.generate` TypeScript tool when a task asks
+  for a graph/chart and task context or worker output contains a parsable time series.
+- Artifact creation emits trace events.
+
+Remaining:
+
+- Promote artifact metadata to Postgres.
+- Store payloads in MinIO/S3 instead of local manifests.
+- Add artifact previews in the UI for images, PDFs, screenshots, datasets, and source
+  bundles.
+- Make reviewers artifact-aware across all file types, not only chart requests.
+- Make planning dependency-aware so a review subtask cannot run before the artifact it is
+  supposed to review exists. DONE for subtask-level DAG execution; remaining work is
+  explicit typed artifact contracts.
+
 Use MinIO/S3 for generated artifacts:
 
 - screenshots;
+- charts/images;
 - source files;
 - datasets;
 - reports;
 - exported documents.
 
 Artifacts should be linked from trace cards and final answers.
+
+## Phase 8: Artifact-Aware Autonomous Workflows
+
+Goal: the agent should understand missing artifact capabilities during a task and build or
+activate the required module.
+
+Target examples:
+
+- User asks for a market analysis with a graph:
+  - collect structured market data;
+  - generate a real chart image;
+  - review the image/artifact, not just the chart code;
+  - return text plus a downloadable/previewable file.
+- User asks for a dossier with screenshots/photos/PDF:
+  - search/open web pages;
+  - manage cookies/session state when needed;
+  - capture screenshots;
+  - inspect the screenshots;
+  - assemble a PDF/report artifact.
+
+Implementation tasks:
+
+- Add explicit artifact contracts to subtasks (`requiredArtifacts`, type, acceptance
+  criteria).
+- Add DAG dependencies between subtasks so reviewers and synthesizers wait for required
+  parent artifacts. DONE for reviewed text outputs; remaining work is typed artifact
+  dependencies.
+- Add structured data tools for market/crypto time series instead of relying on search
+  snippets.
+- Implement `browser.screenshot` with page-open, cookie/session handling, screenshot
+  capture, and visual QA.
+- Implement reusable `browser.operate` with generic navigation/click/fill/wait/extract
+  and screenshot commands. DONE for command sequences, cookie/dialog dismissal, returned
+  Playwright storage state, links/text extraction, and assertions; remaining work is
+  durable session storage owned by the caller and richer visual QA.
+- Prefer direct source/result URLs over brittle public-site homepage form automation.
+  DONE for browser evidence planning: route/result URLs from search evidence can rewrite
+  fragile fill/click command plans, collect multiple source pages, save screenshots, and
+  preserve diagnostic screenshots when a site blocks automation.
+- Add artifact-aware review prompts that fail when a requested file is missing or only
+  represented as code/prose.
+- Allow the recursive universal-agent flow to delegate missing capability creation to
+  Tool Builder, Tool QA, and Tool Registrar agents.

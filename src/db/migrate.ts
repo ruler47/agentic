@@ -78,6 +78,64 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         updated_at timestamptz not null
       );
     `);
+
+    await pool.query(`
+      create table if not exists tool_modules (
+        name text primary key,
+        version text not null,
+        description text not null,
+        capabilities text[] not null default '{}',
+        startup_mode text not null check (startup_mode in ('always-on', 'on-demand', 'ephemeral')),
+        input_schema jsonb,
+        output_schema jsonb,
+        module_path text,
+        test_path text,
+        source text not null check (source in ('builtin', 'generated')),
+        status text not null check (status in ('available', 'disabled', 'failed')),
+        last_health_ok boolean,
+        last_health_detail text,
+        updated_at timestamptz not null
+      );
+    `);
+
+    await pool.query(`
+      create index if not exists tool_modules_capabilities_idx
+      on tool_modules using gin(capabilities);
+    `);
+
+    await pool.query(`alter table tool_modules add column if not exists module_path text;`);
+    await pool.query(`alter table tool_modules add column if not exists test_path text;`);
+
+    await pool.query(`
+      create table if not exists tool_build_requests (
+        id text primary key,
+        capability text not null,
+        reason text not null,
+        source_run_id text references runs(id) on delete set null,
+        source_span_id text,
+        task_summary text,
+        desired_tool_name text,
+        required_inputs text[],
+        required_outputs text[],
+        qa_criteria text[],
+        status text not null check (status in ('requested', 'building', 'qa_failed', 'qa_passed', 'registered', 'blocked')),
+        status_detail text,
+        qa_report jsonb,
+        registered_tool_name text,
+        contract jsonb not null,
+        created_at timestamptz not null,
+        updated_at timestamptz not null
+      );
+    `);
+
+    await pool.query(`alter table tool_build_requests add column if not exists status_detail text;`);
+    await pool.query(`alter table tool_build_requests add column if not exists qa_report jsonb;`);
+    await pool.query(`alter table tool_build_requests add column if not exists registered_tool_name text;`);
+
+    await pool.query(`
+      create index if not exists tool_build_requests_capability_status_idx
+      on tool_build_requests(capability, status, created_at desc);
+    `);
   } finally {
     await pool.end();
   }
