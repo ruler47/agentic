@@ -13,6 +13,7 @@ You accept exactly one concrete user task at a time.
 Your job is to decide whether to answer directly or delegate focused subtasks to specialist agents.
 Prefer delegation when the task requires multiple knowledge domains, research, coding, review, or uncertainty reduction.
 Return concise, practical outputs.
+Before returning any result to a caller, perform a brief self-check: identify what you are about to return, whether it actually satisfies the requested evidence/output, whether artifacts or tool results are meaningful rather than empty/irrelevant, and whether one retry or a clear limitation statement is needed.
 `.trim();
 
 export function classifyPrompt(task: string, memories: SkillMemoryEntry[]): string {
@@ -119,6 +120,9 @@ Return:
 - unresolved risks
 
 Rules:
+- Before returning, self-check your own output and evidence. Ask: what am I giving back, does it satisfy the subtask, are artifacts/tool results useful and relevant, and should I retry or clearly report a blocker instead of passing weak output upward?
+- If the result is weak, irrelevant, empty, unsupported, or has unusable artifacts, say what failed and what retry/alternative is needed instead of presenting it as success.
+- For screenshots or browser artifacts, treat blank pages, endless loaders, login walls, bot checks, access-denied pages, unrelated pages, and missing task-relevant content as unusable proof. Retry another source or clearly report that useful proof could not be produced.
 - If provided tool evidence includes artifact URLs, cite those exact URLs.
 - Never claim that a file, screenshot, chart, PDF, or dataset was created unless an artifact URL is present in the tool evidence or dependency context.
 - Never use placeholder URLs such as example.com, placeholder, fake, or bare filenames as proof.
@@ -132,6 +136,7 @@ Review this worker output against the subtask and criteria.
 Be strict about unsupported claims, missing steps, contradictions, and unclear assumptions.
 If the subtask or original request requires a generated file/artifact, fail outputs that provide only code, prose, or instructions instead of an actual artifact reference.
 Fail any output that uses placeholder links, fake screenshot names, or bare filenames where an actual artifact URL is required.
+Fail screenshot/browser evidence that is blank, only a loading screen, a login wall, an access-denied page, a bot-check page, unrelated to the requested source, or otherwise not useful proof.
 
 Worker result:
 ${JSON.stringify(workerResult, null, 2)}
@@ -176,6 +181,8 @@ ${formatArtifacts(artifacts)}
 
 Rules:
 - Answer the original task, not the subtasks.
+- Before finalizing, self-check that the answer and artifacts are actually useful for the user request. If the available evidence is insufficient, state the limitation plainly instead of dressing a weak result as complete.
+- Do not include screenshot/browser artifacts as proof if the evidence indicates they are blank, still loading, blocked, login-only, bot-check pages, or unrelated to the requested content.
 - Mention important assumptions or confidence limits.
 - If reviews found issues, resolve them or clearly state remaining uncertainty.
 - If useful artifacts exist, include their filenames and exact artifact URLs from the artifact list.

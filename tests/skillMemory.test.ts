@@ -27,6 +27,42 @@ test("SkillMemory stores and finds reusable entries", async () => {
   }
 });
 
+test("SkillMemory keeps proposed scoped facts out of retrieval until accepted", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+
+  try {
+    const proposed = await memory.add({
+      title: "Family pharmacy preference",
+      tags: ["family", "medical"],
+      summary: "The group prefers Spanish pharmacy sources first.",
+      reusableProcedure: "Search Spanish sources before broad international marketplaces.",
+      scope: "group",
+      scopeId: "group-local",
+      status: "proposed",
+      confidence: 0.62,
+      evidence: ["source run said Spanish pharmacies should be preferred"],
+    });
+
+    assert.deepEqual(await memory.search("Spanish pharmacy sources"), []);
+
+    const accepted = await memory.update(proposed.id, {
+      status: "accepted",
+      confidence: 0.9,
+    });
+    const results = await memory.search("Spanish pharmacy sources");
+    const groupOnly = await memory.list({ scope: "group", scopeId: "group-local", status: "accepted" });
+
+    assert.equal(accepted.status, "accepted");
+    assert.equal(accepted.confidence, 0.9);
+    assert.equal(results[0]?.id, proposed.id);
+    assert.equal(groupOnly.length, 1);
+    assert.equal(groupOnly[0]?.scope, "group");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("SkillMemory returns empty list when file does not exist", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
   const memory = new SkillMemory(join(dir, "missing.json"));

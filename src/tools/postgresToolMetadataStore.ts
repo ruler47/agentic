@@ -1,11 +1,13 @@
 import { PgPool } from "../db/pool.js";
 import { Tool, ToolHealth, ToolSchema, ToolStartupMode } from "./tool.js";
 import {
+  GeneratedToolReplacementInput,
   GeneratedToolModuleInput,
   ToolMetadataStore,
   ToolModuleMetadata,
   ToolModuleSource,
   ToolModuleStatus,
+  validateReplacement,
 } from "./toolMetadataStore.js";
 
 type ToolModuleRow = {
@@ -133,6 +135,65 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               source = 'generated',
               status = 'disabled',
               updated_at = excluded.updated_at
+          returning name, version, description, capabilities, startup_mode, input_schema,
+                    output_schema, module_path, test_path, source, status,
+                    last_health_ok, last_health_detail, updated_at
+        `,
+        [
+          input.name,
+          input.version,
+          input.description,
+          input.capabilities,
+          input.startupMode ?? "on-demand",
+          input.inputSchema ?? null,
+          input.outputSchema ?? null,
+          input.modulePath,
+          input.testPath ?? null,
+          new Date().toISOString(),
+        ],
+      );
+      await this.pool.query("commit");
+
+      return mapRow(rows.rows[0]);
+    } catch (error) {
+      await this.pool.query("rollback");
+      throw error;
+    }
+  }
+
+  async promoteReplacement(input: GeneratedToolReplacementInput): Promise<ToolModuleMetadata> {
+    await this.pool.query("begin");
+    try {
+      const existing = await this.pool.query<ToolModuleRow>(
+        `
+          select name, version, description, capabilities, startup_mode, input_schema,
+                 output_schema, module_path, test_path, source, status,
+                 last_health_ok, last_health_detail, updated_at
+          from tool_modules
+          where name = $1
+          for update
+        `,
+        [input.name],
+      );
+      validateReplacement(input, existing.rows[0] ? mapRow(existing.rows[0]) : undefined);
+
+      const rows = await this.pool.query<ToolModuleRow>(
+        `
+          update tool_modules
+          set version = $2,
+              description = $3,
+              capabilities = $4,
+              startup_mode = $5,
+              input_schema = $6,
+              output_schema = $7,
+              module_path = $8,
+              test_path = $9,
+              source = 'generated',
+              status = 'disabled',
+              last_health_ok = null,
+              last_health_detail = null,
+              updated_at = $10
+          where name = $1
           returning name, version, description, capabilities, startup_mode, input_schema,
                     output_schema, module_path, test_path, source, status,
                     last_health_ok, last_health_detail, updated_at

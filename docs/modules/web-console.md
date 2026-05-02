@@ -3,6 +3,9 @@
 ## Purpose
 
 The web console gives the user a browser UI for submitting tasks and watching the agent run.
+Long-term, it is also the admin console for a family/company assistant deployment:
+group profile, users, Telegram identities, scoped memory, tools, credentials, model tiers,
+policies, artifacts, and outbound messages.
 
 Main files:
 
@@ -29,6 +32,11 @@ content-type: application/json
 
 {
   "task": "one concrete task",
+  "instanceId": "instance-local",
+  "requesterUserId": "user-admin",
+  "channel": "web",
+  "threadId": "thread_optional_existing",
+  "parentRunId": "run_optional_previous",
   "attachments": [
     {
       "filename": "input.txt",
@@ -38,6 +46,24 @@ content-type: application/json
   ]
 }
 ```
+
+The current API accepts the single-user shape; the instance/requester/channel fields
+are target fields for the upcoming context-aware run creation API. The local development
+path should backfill a default instance profile, admin user, and `web` channel for backwards
+compatibility.
+
+When `threadId` or `parentRunId` is provided, the server should create a continuation run
+inside that conversation thread. When neither is provided, it should create a new thread
+unless the channel adapter has already resolved one.
+
+Implemented local defaults:
+
+- `instanceId=instance-local`
+- `requesterUserId=user-admin`
+- `channel=web`
+- new `POST /api/runs` requests create a conversation thread automatically;
+- continuation requests can pass `threadId` or use
+  `POST /api/conversation-threads/:id/runs`.
 
 Get run:
 
@@ -91,6 +117,11 @@ durable catalog with name/version conflict checks. Generated modules are stored 
 imports compiled project-local modules whose exported Tool contract matches the registered
 metadata.
 
+`POST /api/tools/generated-modules/:name/promote-replacement` promotes a QA-passed
+replacement version for an existing generated tool. The request body must include
+`replacesVersion`; the catalog rejects stale promotions, builtin replacement attempts, and
+same-version overwrites so a tool rework cannot silently replace the active contract.
+
 `GET /api/tool-build-requests` returns missing capability requests with builder and QA
 contracts. The System Inventory panel shows the latest build queue items next to tools and
 memories.
@@ -104,6 +135,15 @@ builder lifecycle handoff. Builder, QA, and Registrar agents can mark a request 
 `building`, `qa_failed`, `qa_passed`, `registered`, or `blocked`, attach status detail,
 persist a structured QA report, and record the generated tool name that was registered.
 
+`POST /api/tool-build-requests/:id/rework` creates a new durable `requested` build from an
+existing card with operator feedback attached. This is the UI/API path for "the generated
+tool is close, but change these details" without losing the original QA evidence.
+
+`POST /api/tool-build-requests/:id/stop` marks a request `blocked` with a human status
+detail. `DELETE /api/tool-build-requests/:id` removes a queue card. Both operations write
+audit events. Installed tools that are marked `failed` expose a Tools-page "Rework tool"
+form that creates a fresh durable build request with the failure details prefilled.
+
 `POST /api/tool-build-requests/:id/run` executes the configured self-service build
 workflow. The current workflow writes provider-generated TypeScript source and tests,
 runs isolated generated-tool tests plus isolated build, performs promotion tests/build in
@@ -111,11 +151,72 @@ the real project after isolated QA passes, registers QA-passed metadata, and rel
 generated tools into the active registry. Failed QA reports can be returned to the builder
 for bounded retry attempts before a request becomes `qa_failed`.
 
+The server also runs a background Tool Builder worker by default. It claims the oldest
+`requested` card atomically, moves it to `building`, executes the same workflow used by
+the manual run endpoint, and reloads generated tools after registration. Operators can
+disable the worker with `TOOL_BUILD_WORKER=disabled`; the UI keeps the manual run button
+as a fallback.
+
 Model tier settings:
 
 ```http
 GET /api/settings/model-tiers
 PUT /api/settings/model-tiers
+```
+
+Audit events:
+
+```http
+GET /api/audit-events?limit=100
+```
+
+The Audit Log page consumes this endpoint. The current server records normalized audit
+events for run creation/start/completion/failure, uploaded and generated artifacts, tool
+trace events, and tool build request/registration lifecycle steps. Audit metadata is
+intended for operational evidence and must not contain raw secrets.
+
+Implemented context and conversation endpoints:
+
+```http
+GET /api/instance
+GET /api/group-profile
+GET /api/conversation-threads
+GET /api/conversation-threads/:id
+POST /api/conversation-threads/:id/runs
+DELETE /api/conversation-threads/:id
+```
+
+`DELETE /api/conversation-threads/:id` removes the user-visible thread and deletes every
+run attached through `runs.thread_id`. Run events and durable artifact metadata cascade
+from the deleted runs, so Trace Lab no longer exposes those executions. The operation
+writes `conversation_thread.deleted` to the audit log with counts for removed runs,
+messages, and artifact references.
+
+Future context/admin endpoints:
+
+```http
+PATCH /api/instance
+PATCH /api/group-profile
+GET /api/users
+POST /api/users
+GET /api/users/:id
+PATCH /api/users/:id
+GET /api/channels
+GET /api/channels/telegram/identities
+POST /api/channels/telegram/identities
+PATCH /api/channels/telegram/identities/:id
+GET /api/conversation-threads
+GET /api/conversation-threads/:id
+POST /api/conversation-threads/:id/runs
+PATCH /api/conversation-threads/:id/summary
+GET /api/memories?scope=global|group|user|thread|run&status=proposed|accepted|rejected|archived
+POST /api/memories
+PATCH /api/memories/:id
+POST /api/outbound-actions
+GET /api/outbound-actions
+PATCH /api/outbound-actions/:id
+GET /api/policies
+PUT /api/policies
 ```
 
 ## Run Record
@@ -131,19 +232,84 @@ Each run contains:
 - `result`
 - `error`
 
+Future run context fields:
+
+- `instanceId`
+- `requesterUserId`
+- `channel`
+- `threadId`
+- `parentRunId`
+- `sourceMessageId`
+- `sourceChatId`
+- `sourceThreadId`
+- `permissionScope`
+
 `result.artifacts` contains input and output artifacts with downloadable `url` values.
+
+## Conversation Threads
+
+A conversation thread is the user-visible continuity layer above runs. It lets a user ask
+for a correction, clarify a requirement, or continue from a previous answer without
+forcing the agent to infer the whole history from raw logs.
+
+Thread records should store:
+
+- `id`;
+- `status`;
+- requester and channel;
+- source chat/thread IDs when available;
+- latest run ID;
+- compact summary;
+- accepted facts;
+- rejected or failed attempts;
+- open questions;
+- artifact references;
+- created/updated timestamps.
+
+Continuation run creation should pass compact thread context to the agent:
+
+```text
+previous requests
+previous final answers
+what was accepted
+what was corrected or rejected
+important artifacts
+open questions
+```
+
+The full message log remains available for inspection, but the runtime should receive a
+bounded summary by default.
 
 The UI uses `GET /api/runs/:id/events` for live run snapshots and keeps a client-side
 clock for active run/card durations, so long-running LLM/tool calls continue ticking even
 between persisted events. If SSE is unavailable, it falls back to polling
 `GET /api/runs/:id`.
 
-On page load it calls `GET /api/runs`, renders the latest persisted runs, and opens the
-newest run automatically so the trace survives browser refreshes and container restarts.
-The left rail also exposes model tier settings so operators can assign multiple local
-models to `S`, `M`, `L`, and `XL` tiers.
+On page load it calls the instance, group profile, runs, conversation, memory, tool,
+tool-build, and model-tier endpoints, then renders a hash-routed browser workspace. The
+console is intentionally split by user intent:
 
-Trace events are rendered as a horizontal execution map with one column per call depth:
+- Dashboard is the work surface: task composer, context preview, active runs, recent
+  activity, insights, and compact system health.
+- Run Workspace is the human result view: prompt, final answer, artifacts, follow-up
+  composer, and a compact execution timeline.
+- Trace Lab is the deep inspector with live Timeline, Graph, and Logs modes, a selected
+  span inspector, a return link to the originating Run Workspace, and client-side filters
+  for actor, activity, status, tool, and model tier.
+- The Trace Lab inspector surfaces compact memory-hit, tool-evidence, and artifact blocks
+  from the selected span payload instead of requiring operators to read raw JSON first.
+- Opening Trace Lab without a run ID shows a run directory instead of silently selecting
+  the newest run. Graph nodes show explicit caller/callee labels so parent-child
+  relationships remain readable even when visual edges are dense.
+- Conversations keep continuation context visible without exposing raw traces by default.
+- Memory, Artifacts, Tools, Tool Builds, Models, Group Profile, Control, and System pages
+  are separate operational surfaces.
+
+The left sidebar is grouped as Work, Analysis, Build, Control, and System. Debug details
+stay out of Dashboard and Run Workspace unless the operator explicitly opens Trace Lab or
+Diagnostics.
+
+Trace events expose these fields to the UI:
 
 - `spanId`
 - `parentSpanId`
@@ -155,8 +321,10 @@ Trace events are rendered as a horizontal execution map with one column per call
 - `payload.dependencySpanIds`
 
 This makes it visible which agent called which worker/reviewer and how long each step took.
-When a subtask depends on reviewed upstream work, the UI draws arrows from each dependency
-span and shows a dependency badge on the waiting card.
+Trace Lab Graph mode draws solid SVG arrows from direct parent spans to child spans and
+dashed SVG arrows from dependency spans to work that waited for reviewed upstream output.
+A compact legend explains both edge types. Hovering a node highlights incoming/outgoing
+arrows, matching arrowheads, and the directly connected cards.
 The current runtime emits `memory`, `planning`, `worker`, `review`, `synthesis`, `tool`,
 `coordination`, and `llm` activities. `web.search`, `chart.generate`, generated
 artifacts, and missing tool capabilities appear as trace cards. Future adapters for file
@@ -168,16 +336,213 @@ The task form includes a multiple-file attachment control. Files are encoded in 
 browser as base64, sent with the run request, saved by the server-side artifact store, and
 passed to the agent as input artifacts.
 
+In the Docker stack, the artifact store writes metadata to Postgres and payloads to MinIO.
+The same download endpoint serves both durable objects and older local filesystem
+fallback artifacts.
+
 The Answer panel renders links for `result.artifacts`, including generated output files
 such as SVG charts.
+
+## Information Architecture
+
+The browser UI is a page-based product shell, not a single debug dashboard. Future work
+should keep separating daily work from admin/operator control.
+
+Top-level navigation:
+
+```text
+Dashboard
+Runs
+Conversations
+Memory
+Artifacts
+Tools
+Tool Builds
+Models
+Group Profile
+Users
+Channels
+Policies
+Approvals
+Scheduler
+Audit Log
+Settings
+Diagnostics
+```
+
+Dashboard:
+
+- task composer with requester/channel context and visible group profile;
+- new-task only; continuations live inside Run Workspace and Conversation Detail so a
+  thread cannot be changed accidentally; IMPLEMENTED
+- active run card and recent runs;
+- system health for app, database, Redis, MinIO, SearXNG, Telegram, and LLM;
+- pending approvals for outbound actions;
+- high-level stats for runs, artifacts, tools, memory, and channels.
+
+Run Workspace:
+
+- run header with status, duration, group profile, requester, channel, thread, and source
+  message;
+- final answer;
+- files/artifacts with previews and download links;
+- outbound actions and delivery status;
+- follow-up composer that starts a continuation run with inherited thread context; IMPLEMENTED
+- thread summary showing what the assistant believes is accepted, failed, or still open; IMPLEMENTED
+- compact live execution summary;
+- important events;
+- link to Trace Lab.
+
+Trace Lab:
+
+- graph, timeline, tree, and log modes;
+- filters by actor, activity, status, model tier, tool, user, and channel;
+- event inspector drawer for prompts, outputs, tool evidence, memory hits, and artifacts.
+- `/trace` is a run directory; `/trace/:runId` is a specific execution inspector.
+- Graph edges use solid lines for direct parent calls and dashed lines for dependency
+  waits. Edges pointing into failed spans stay red, including their arrow heads, so failed
+  branches are visible without hover.
+- The future "Create tool request / bug" inspector action should carry selected-span
+  context into a bug/rework form: run/span ids, actor/activity, tool name/capability,
+  input/output summaries, artifacts, QA evidence, reviewer notes, and operator feedback.
+  A classifier should decide whether this becomes a tool rework, prompt/planning issue,
+  credential/policy issue, external site limitation, or memory note.
+- Tool Builds shows the durable build queue by lifecycle state. `requested` means a real
+  request exists and is waiting for the background worker to claim it; operators can also
+  trigger the workflow from the card, stop/delete the card, inspect a contract preview, or
+  create a rework request with feedback when a generated module needs revision.
+- Conversation Detail renders input and output artifacts inline next to the message/run
+  that produced them, while the context panel keeps linked artifact references visible.
+- Run Workspace and Conversation Detail render sanitized Markdown for final answers and
+  messages. Bold text, Markdown links, and application-local artifact URLs are clickable;
+  image artifacts get compact previews where space allows. Text-like artifacts show a
+  short content preview when `contentPreview` is available, while binary/PDF/source
+  artifacts show typed preview tiles instead of only a path and filename.
+- PNG browser screenshots are visually and semantically QA-checked before storage.
+  Near-empty screenshots, loader/blocker browser evidence, and task-mismatched browser
+  context are emitted as failed artifact trace events instead of being presented as useful
+  proof.
+
+Group Profile:
+
+- group profile;
+- members and roles;
+- shared memory;
+- enabled tools and credentials;
+- channel mappings;
+- recent runs;
+- scheduled/outbound messages;
+- audit log.
+
+Users:
+
+- profile and contact preferences;
+- Telegram/web/API identities;
+- role and permissions;
+- personal memory;
+- allowed tools;
+- recent requests;
+- private artifacts;
+- audit log.
+
+Channels:
+
+- installed channel adapter health;
+- whitelist and mapped users for adapters that support them;
+- incoming/outgoing message history;
+- denied inbound attempts;
+- future channel adapters created through Tool Builds.
+
+Conversations:
+
+- all active and archived threads;
+- per-thread run list;
+- compact summary and open questions;
+- source Telegram/web message links;
+- continuation composer;
+- controls to split a message into a new thread or merge it into an existing thread.
+
+Memory:
+
+- global, group, user, thread, and run scopes;
+- proposed/accepted/rejected/archive lifecycle;
+- match reasons and confidence;
+- source run/evidence links;
+- review queue actions that accept/reject proposed facts and write audit events.
+
+Tools:
+
+- registry catalog;
+- capabilities;
+- schemas;
+- examples;
+- health;
+- instance/user/role enablement;
+- credential requirements.
+
+Models:
+
+- tier policies for `S`, `M`, `L`, and `XL`;
+- local OpenAI-compatible endpoints;
+- remote OpenAI API or other hosted OpenAI-compatible providers;
+- model candidates per tier;
+- API-key secret handles;
+- attempts and escalation policy.
+
+Tool Builds:
+
+- missing capability requests;
+- API-docs onboarding and channel-adapter requests;
+- builder/QA/registrar lifecycle;
+- generated source/test artifacts;
+- QA reports and retry history.
+
+Policies:
+
+- memory access;
+- tool permissions;
+- outbound messaging;
+- approval requirements;
+- Telegram whitelist rules;
+- inter-instance federation policies.
+
+## Telegram Channel UX
+
+The Telegram integration should be visible from the admin console, not hidden in logs.
+
+Admin needs:
+
+- add/remove whitelisted Telegram users;
+- map Telegram user IDs to known users;
+- view denied requests from unknown users;
+- inspect Telegram-originated runs;
+- inspect Telegram conversation threads and message-to-thread decisions;
+- override a wrong thread decision by splitting or merging threads;
+- see final answer delivery status;
+- review outbound direct messages, group broadcasts, and scheduled reminders.
+
+Run pages should show whether a run came from Telegram, which user sent it, which chat it
+came from, and whether any response or outbound action was delivered.
+
+Telegram adapter behavior:
+
+- replies to the bot's previous answer should continue that thread by default;
+- explicit commands such as `/new` should force a new thread;
+- explicit commands such as `/continue <thread>` should force an existing thread when
+  authorized;
+- ambiguous messages should be classified with compact recent thread summaries;
+- low-confidence decisions should be visible in the admin UI and may ask the user a short
+  clarification instead of executing the wrong task.
 
 ## Extension Points
 
 - Add optional WebSocket transport only if bidirectional browser actions need it; run
   viewing is currently covered by additive SSE.
 - Continue expanding `PostgresRunStore` as the default persistent run history.
-- Add authentication and per-user workspaces.
-- Promote local artifacts to MinIO/S3-backed durable storage.
+- Add authentication, instance isolation, and per-user workspaces.
+- Add conversation threads and continuation run creation.
+- Add Telegram bot adapter, channel identity management, and thread resolution.
+- Add outbound action approval and delivery tracking.
 - Add richer previews for images, PDFs, screenshots, datasets, and source bundles.
 
 ## Tests

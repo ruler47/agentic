@@ -15,6 +15,12 @@ the final answer, and stores reusable lessons in shared skill memory.
 Delegated subtasks form a dependency-aware DAG: workers with no dependencies can run in
 parallel, while workers with `dependsOn` wait for reviewed upstream outputs.
 
+The product direction is a deployable assistant platform for exactly one family,
+household, company, or team per running instance. Future work must preserve
+instance/user/channel provenance so the assistant can maintain group memory, personal
+memory, whitelisted channel identities, tools, credentials, outbound messages, and
+policies without leaking context.
+
 ## User Collaboration Notes
 
 - The user wants the project in TypeScript.
@@ -28,6 +34,19 @@ parallel, while workers with `dependsOn` wait for reviewed upstream outputs.
   separate agents, then accumulates the results centrally.
 - The user expects requests to accept files and responses to return files when the task
   calls for artifacts such as charts, screenshots, reports, datasets, or source bundles.
+- The user wants the system to eventually run for a family or enterprise, with separate
+  memory for the whole group and for each member.
+- Telegram bot integration is planned: only whitelisted Telegram users should be able to
+  submit requests, and those requests must be visible in the admin UI.
+- Telegram and web requests need conversation-thread continuity: the system must
+  distinguish a new task from a clarification, correction, or follow-up to a previous run.
+- Agents will eventually send auditable outbound messages/reminders to a group or
+  individual when policy allows.
+- Tools should be easy to onboard from API documentation and access credentials, but
+  credentials must be stored through secret handles, not prompts, memory, source, or
+  artifacts.
+- Model tier settings must support local OpenAI-compatible endpoints and remote providers
+  such as the OpenAI API, with remote API keys stored through secret handles.
 
 ## Local Model
 
@@ -49,6 +68,18 @@ Environment overrides:
 Tier variables can contain one model or a comma-separated fallback list. In the web app,
 the editable tier policy is stored in Postgres and exposed through the System Inventory
 panel.
+
+Durable artifact storage in Docker uses:
+
+- `MINIO_ENDPOINT`
+- `MINIO_ACCESS_KEY`
+- `MINIO_SECRET_KEY`
+- `MINIO_BUCKET`
+- optional `S3_REGION`
+
+When those variables and `DATABASE_URL` are present, new artifact metadata is stored in
+Postgres and payloads are stored in MinIO/S3. Local artifact files under `ARTIFACT_ROOT`
+remain a fallback.
 
 ## Commands
 
@@ -90,14 +121,34 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 
 - [README.md](README.md) - quick start and request execution summary.
 - [docs/architecture.md](docs/architecture.md) - detailed architecture and delegation model.
+- [docs/modules/instance-context.md](docs/modules/instance-context.md) - target
+  instance/user/channel memory, Telegram, outbound action, model provider, and tool
+  onboarding model.
 - [src/agents/universalAgent.ts](src/agents/universalAgent.ts) - main coordinator runtime.
 - [src/agents/modelTier.ts](src/agents/modelTier.ts) - model tier selection policy.
 - [src/agents/prompts.ts](src/agents/prompts.ts) - prompts for classification, planning,
   workers, reviewers, synthesis, and learning.
-- [src/artifacts/artifactStore.ts](src/artifacts/artifactStore.ts) - local input/output
-  artifact store and download metadata.
+- [src/conversations/inMemoryConversationThreadStore.ts](src/conversations/inMemoryConversationThreadStore.ts)
+  and [src/conversations/postgresConversationThreadStore.ts](src/conversations/postgresConversationThreadStore.ts)
+  - conversation thread stores for new-task versus continuation flow.
+- [src/audit/inMemoryAuditEventStore.ts](src/audit/inMemoryAuditEventStore.ts)
+  and [src/audit/postgresAuditEventStore.ts](src/audit/postgresAuditEventStore.ts)
+  - normalized audit log stores for run lifecycle, artifacts, tool use, and future
+  approvals/outbound actions.
+- [src/artifacts/artifactStore.ts](src/artifacts/artifactStore.ts) - artifact store
+  contracts, local fallback store, durable metadata/object-store composition, and
+  in-memory test stores.
+- [src/artifacts/postgresArtifactMetadataStore.ts](src/artifacts/postgresArtifactMetadataStore.ts)
+  - Postgres-backed artifact metadata table adapter.
+- [src/artifacts/s3ObjectStore.ts](src/artifacts/s3ObjectStore.ts) - minimal
+  S3-compatible object store used by MinIO for durable artifact payloads.
 - [src/artifacts/chartArtifact.ts](src/artifacts/chartArtifact.ts) - deterministic SVG
   chart parsing/rendering helpers.
+- [src/artifacts/visualArtifactQuality.ts](src/artifacts/visualArtifactQuality.ts) -
+  deterministic PNG screenshot QA for near-empty/loader-like visual evidence.
+- [src/artifacts/semanticArtifactQuality.ts](src/artifacts/semanticArtifactQuality.ts) -
+  browser screenshot evidence QA that combines visual checks with URL/title/text/link
+  context to reject loader/blocker or task-mismatched artifacts before storage.
 - [src/tools/chartGenerateTool.ts](src/tools/chartGenerateTool.ts) - `chart.generate`
   TypeScript tool module for data-agnostic SVG chart artifacts.
 - [src/tools/browserOperateTool.ts](src/tools/browserOperateTool.ts) - reusable
@@ -120,6 +171,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   - Postgres-backed `tool_build_requests` queue.
 - [src/tools/toolBuildWorkflow.ts](src/tools/toolBuildWorkflow.ts) - reusable Builder/QA/
   Registrar orchestration flow for missing tool capabilities.
+- [src/tools/toolBuildWorker.ts](src/tools/toolBuildWorker.ts) - background worker that
+  claims `requested` Tool Build Queue items and runs the Builder/QA/Registrar workflow.
 - [src/tools/toolBuildProviders.ts](src/tools/toolBuildProviders.ts) - provider-backed
   generated tool source writer, isolated command QA runner, and metadata registrar.
 - [src/tools/fileTools.ts](src/tools/fileTools.ts) - sandboxed workspace file tools.
@@ -127,9 +180,14 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   policy contract and in-memory implementation.
 - [src/settings/postgresModelTierSettings.ts](src/settings/postgresModelTierSettings.ts)
   - Postgres-backed model tier policy.
+- [src/instance/groupProfileStore.ts](src/instance/groupProfileStore.ts) - editable
+  single-instance group profile contract.
+- [src/instance/postgresGroupProfileStore.ts](src/instance/postgresGroupProfileStore.ts)
+  - Postgres-backed group profile context.
 - [src/server/http.ts](src/server/http.ts) - web API and static UI server.
 - [docs/modules/web-console.md](docs/modules/web-console.md) - web console API,
-  realtime SSE stream, dashboard behavior, attachments, artifacts, and trace rendering.
+  realtime SSE stream, dashboard behavior, conversation continuation, attachments,
+  artifacts, and trace rendering.
 - [src/runs/inMemoryRunStore.ts](src/runs/inMemoryRunStore.ts) - replaceable run store.
 - [src/runs/postgresRunStore.ts](src/runs/postgresRunStore.ts) - Postgres-backed run store.
 - [src/db/migrate.ts](src/db/migrate.ts) - database migrations.
@@ -146,6 +204,8 @@ Request flow:
 ```text
 User task
   -> Coordinator
+  -> Resolve instance/user/channel context (future, defaulted locally today)
+  -> Resolve conversation thread or create a new one (future)
   -> SkillMemory.search()
   -> Complexity classification
   -> Direct answer or delegated plan
@@ -166,6 +226,21 @@ Delegation is preferred when the task:
 
 Direct mode is acceptable when the task is narrow, stable, low risk, and does not require
 fresh research or codebase inspection.
+
+Future product flow:
+
+```text
+Web/Telegram/API request
+  -> verify channel identity and whitelist
+  -> classify new task versus continuation/correction/clarification
+  -> resolve or create conversation thread
+  -> resolve instance, requester, and permissions
+  -> attach compact thread summary when continuing
+  -> create one run
+  -> retrieve scoped global/group/user memory
+  -> execute agent DAG and tools
+  -> return answer or create auditable outbound action
+```
 
 ## Testing Policy
 
@@ -188,8 +263,11 @@ For documentation-only changes:
 - `tests/skillMemory.test.ts` covers file-backed skill memory.
 - `tests/toolRegistry.test.ts` covers tool registration and lookup.
 - `tests/universalAgent.test.ts` covers direct and delegated orchestration with a fake LLM.
-- `tests/artifactStore.test.ts` covers local artifact persistence and download metadata.
+- `tests/artifactStore.test.ts` covers local artifact persistence, durable
+  metadata/object payload separation, and download metadata.
+- `tests/auditEventStore.test.ts` covers normalized in-memory audit events.
 - `tests/chartArtifact.test.ts` covers SVG chart helpers and the `chart.generate` tool.
+- `tests/conversationThreadStore.test.ts` covers compact conversation-thread context.
 - `tests/browserOperateTool.test.ts` covers the generic Playwright command executor.
 - `tests/generatedToolLoader.test.ts` covers compiled generated tool loading and contract
   rejection.
@@ -198,14 +276,27 @@ For documentation-only changes:
   QA registration blocking.
 - `tests/toolBuildProviders.test.ts` covers provider-backed TypeScript generation and
   generated metadata registration.
+- `tests/webUiStatic.test.ts` covers the page-based web console information architecture.
 
 ## Maintenance Rules
 
 - Keep edits small and consistent with the existing TypeScript style.
 - Prefer Node built-ins unless a dependency clearly improves the system.
 - Do not store full transcripts in skill memory; store compressed reusable lessons.
+- Skill memory entries can be scoped to `global`, `group`, `user`, `thread`, or `run`.
+  Retrieval should use accepted memories only; proposed/rejected/archived entries are for
+  review and audit surfaces until policy says otherwise.
 - Keep worker context narrow: original task summary, one subtask, relevant memory, output
   expectations, and review criteria.
+- Keep instance/user/channel context explicit on future runs, memory records, tool
+  credentials, artifacts, and audit events.
+- Preserve `threadId`, `parentRunId`, and compact conversation summaries when adding
+  continuation support. Do not replay full transcripts into agent prompts by default.
+- Scope memory by default. Agents should not read another user's private memory unless the
+  task and policy allow it.
+- Telegram and other channel adapters should translate provider events into run requests;
+  they should not embed agent orchestration logic.
+- Outbound actions must be auditable and permission-checked before delivery.
 - Preserve trace parent links when adding orchestration steps; the UI depends on
   `parentSpanId` to draw direct arrows.
 - For DAG dependencies, also preserve `payload.dependencySpanIds` so the UI can draw
@@ -215,12 +306,30 @@ For documentation-only changes:
 - The web console uses `GET /api/runs/:id/events` as an additive SSE stream for live run
   snapshots and falls back to polling; keep `GET /api/runs` and `GET /api/runs/:id`
   backwards compatible.
+- The web console renders final answers and conversation messages as sanitized Markdown.
+  Artifact list lines such as `- file.png: /api/runs/.../artifacts/...` should remain
+  clickable download links, and image artifacts should expose a small preview where the
+  UI has room.
+- Trace Lab graph edges encode direct `parentSpanId` calls and additional
+  `payload.dependencySpanIds` dependencies. Edges that target failed spans must stay red
+  even without hover so failure paths remain visible.
+- Artifact cards should render a useful preview whenever possible: image thumbnails,
+  text/content previews, or a typed placeholder for binary files.
+- Future Trace Lab "Create tool request / bug" actions should carry selected span context
+  into Tool Builder: run/span IDs, actor, tool name/version/capability, input/output
+  summaries, artifacts, QA evidence, and the operator's comment.
+- Conversation deletion is destructive: `DELETE /api/conversation-threads/:id` deletes the
+  thread, its messages, all runs with that `threadId`, and their trace events/artifact
+  metadata through run cascades. Keep UI copy explicit about the blast radius.
 - Prefer Docker Compose for project runtime and manual verification.
 - File tools must stay inside the configured workspace root (`FILE_TOOL_ROOT`, default
   `workspace`).
-- Artifact payloads currently live under `ARTIFACT_ROOT`, default `/app/workspace/artifacts`.
-  Keep generated links in `result.artifacts` and trace artifact creation with parent
-  spans.
+- The Dashboard composer is for new tasks only. Continue-thread flows belong in Run
+  Workspace or Conversation Detail, where the selected thread context is explicit.
+- Docker artifact payloads live in MinIO/S3 with metadata in Postgres. Local filesystem
+  artifacts under `ARTIFACT_ROOT`, default `/app/workspace/artifacts`, remain as fallback
+  for older runs and non-Docker development. Keep generated links in `result.artifacts`
+  and trace artifact creation with parent spans.
 - New capabilities must be implemented as TypeScript tool modules with schemas,
   capabilities, healthchecks, tests, and registry wiring. Runtime code should request a
   capability from `ToolRegistry` rather than embedding one-off tool logic.
@@ -231,12 +340,26 @@ For documentation-only changes:
 - Tool Build Queue consumers should update durable lifecycle state through the store/API:
   `requested`, `building`, `qa_failed`, `qa_passed`, `registered`, or `blocked`, with QA
   evidence attached before registration.
+- Operators can stop a Tool Build request from any lifecycle state, which marks it
+  `blocked` with a status detail, or delete it from the queue. Rework of an installed
+  failed tool should create a new Tool Build request from the Tools page with the failure
+  details prefilled.
 - `ToolBuildWorkflow` supports bounded retries. Builders receive the previous generated
   output and failed QA report on retry attempts; registrars must only run after a passing
   QA report.
+- The background Tool Build worker claims the oldest `requested` queue item through
+  `claimNextRequested`, marks it `building`, runs the same workflow as the manual API, and
+  reloads generated tools after registration. Disable it with `TOOL_BUILD_WORKER=disabled`
+  or tune it with `TOOL_BUILD_WORKER_INTERVAL_MS` and `TOOL_BUILD_WORKER_BATCH_SIZE`.
+- Tool Build requests can be reworked through `POST /api/tool-build-requests/:id/rework`.
+  Preserve the original request and create a new requested revision with operator feedback
+  instead of overwriting prior QA evidence.
 - Generated tool metadata registration must reject builtin name collisions and version
   conflicts. Generated modules are loaded only from compiled project-local paths, after
   exported name/version/capabilities match metadata and healthcheck passes.
+- Generated tool replacements must not overwrite the active contract directly. Promote a
+  replacement with an explicit `replacesVersion`; the store rejects stale handoffs,
+  builtin replacement attempts, and same-version "upgrades".
 - The first self-service generated capability is `browser-screenshot`. The Docker runtime
   includes Chromium and project source/tests so the Builder workflow can write generated
   TypeScript, run targeted tests, rebuild `dist`, register metadata, reload the generated
@@ -248,3 +371,11 @@ For documentation-only changes:
   input and expands it into navigate/extract/screenshot commands. On command failure it
   should return any diagnostic screenshot payloads so the runtime can attach proof of
   blockers instead of losing evidence.
+- Agents must self-check browser and screenshot evidence before returning it. Blank
+  pages, endless loaders, login walls, access-denied screens, bot checks, unrelated pages,
+  or screenshots without task-relevant content are weak evidence; the agent should retry
+  a better source or report the blocker instead of presenting the artifact as proof.
+- PNG browser screenshots also pass through deterministic visual and semantic artifact QA
+  before storage. Near-empty/mostly single-color screenshots, loader/blocker browser
+  evidence, and task-mismatched browser context are rejected with a failed artifact trace
+  event instead of being attached as useful proof.

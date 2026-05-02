@@ -100,6 +100,64 @@ test("InMemoryToolMetadataStore rejects generated modules that reuse builtin nam
   );
 });
 
+test("InMemoryToolMetadataStore promotes generated replacements only after version checks", async () => {
+  const store = new InMemoryToolMetadataStore();
+  await store.registerGenerated({
+    name: "generated.browser.screenshot",
+    version: "1.0.0",
+    description: "Captures browser screenshots.",
+    capabilities: ["browser-screenshot"],
+    modulePath: "src/tools/generated/browser-screenshotTool.ts",
+  });
+
+  await assert.rejects(
+    () =>
+      store.promoteReplacement({
+        name: "generated.browser.screenshot",
+        version: "1.1.0",
+        replacesVersion: "0.9.0",
+        description: "Captures browser screenshots with better QA.",
+        capabilities: ["browser-screenshot", "artifact-generation"],
+        modulePath: "src/tools/generated/browser-screenshotTool.ts",
+      }),
+    /installed version 1.0.0 does not match expected 0.9.0/,
+  );
+
+  const replacement = await store.promoteReplacement({
+    name: "generated.browser.screenshot",
+    version: "1.1.0",
+    replacesVersion: "1.0.0",
+    description: "Captures browser screenshots with better QA.",
+    capabilities: ["browser-screenshot", "artifact-generation"],
+    modulePath: "src/tools/generated/browser-screenshotTool.ts",
+    testPath: "tests/generated/browser-screenshotTool.test.ts",
+  });
+  const [stored] = await store.list();
+
+  assert.equal(replacement.version, "1.1.0");
+  assert.equal(replacement.status, "disabled");
+  assert.equal(stored?.version, "1.1.0");
+  assert.deepEqual(stored?.capabilities, ["browser-screenshot", "artifact-generation"]);
+});
+
+test("InMemoryToolMetadataStore blocks generated replacements for builtin tools", async () => {
+  const store = new InMemoryToolMetadataStore();
+  await store.syncBuiltins([tool]);
+
+  await assert.rejects(
+    () =>
+      store.promoteReplacement({
+        name: "example.tool",
+        version: "1.2.4",
+        replacesVersion: "1.2.3",
+        description: "Generated replacement.",
+        capabilities: ["example"],
+        modulePath: "src/tools/generated/exampleTool.ts",
+      }),
+    /builtin tools cannot be replaced/,
+  );
+});
+
 test("tool build request store creates a reusable builder and QA contract", async () => {
   const store = new InMemoryToolBuildRequestStore();
   const request = await store.create({
@@ -153,6 +211,44 @@ test("tool build request store tracks builder and QA lifecycle", async () => {
   assert.equal(qaPassed.qaReport?.checks.length, 2);
   assert.equal(registered.registeredToolName, "generated.web.screenshot");
   assert.equal(stored?.status, "registered");
+});
+
+test("tool build request store preserves rework feedback", async () => {
+  const store = new InMemoryToolBuildRequestStore();
+  const original = await store.create({
+    capability: "channel.telegram.bot",
+    reason: "Create a Telegram bot adapter.",
+  });
+  const rework = await store.create({
+    capability: original.capability,
+    reason: `${original.reason}\n\nRework feedback: fix inbound thread routing.`,
+    desiredToolName: original.desiredToolName,
+    reworkOf: original.id,
+    feedback: "Fix inbound thread routing and add QA for message-to-thread decisions.",
+    qaCriteria: ["feedback is addressed"],
+  });
+  const stored = await store.get(rework.id);
+
+  assert.equal(stored?.status, "requested");
+  assert.equal(stored?.reworkOf, original.id);
+  assert.match(stored?.feedback ?? "", /thread routing/);
+  assert.deepEqual(stored?.qaCriteria, ["feedback is addressed"]);
+});
+
+test("tool build request store deletes lifecycle requests", async () => {
+  const store = new InMemoryToolBuildRequestStore();
+  const request = await store.create({
+    capability: "channel.telegram.bot",
+    reason: "Create a Telegram bot adapter.",
+  });
+
+  const deleted = await store.delete(request.id);
+  const missing = await store.get(request.id);
+  const deletedAgain = await store.delete(request.id);
+
+  assert.equal(deleted, true);
+  assert.equal(missing, undefined);
+  assert.equal(deletedAgain, false);
 });
 
 test("createToolBuildContract derives safe generic paths from arbitrary capabilities", () => {

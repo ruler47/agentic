@@ -16,6 +16,7 @@ import {
   WorkerResult,
 } from "../types.js";
 import { asksForChart } from "../artifacts/chartArtifact.js";
+import { inspectBrowserScreenshotEvidence } from "../artifacts/semanticArtifactQuality.js";
 import { isChartToolData } from "../tools/chartGenerateTool.js";
 import { isBrowserOperateData } from "../tools/browserOperateTool.js";
 import { ToolBuildRequest, ToolBuildRequestInput } from "../tools/toolBuildRequestStore.js";
@@ -47,6 +48,13 @@ type LearningResponse = {
 type RunOptions = {
   onEvent?: AgentEventSink;
   inputArtifacts?: AgentArtifact[];
+  threadContext?: {
+    summary: string;
+    acceptedFacts: string[];
+    rejectedAttempts: string[];
+    openQuestions: string[];
+    relevantArtifactIds: string[];
+  };
   saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>;
   requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>;
   now?: Date;
@@ -122,7 +130,7 @@ export class UniversalAgent {
     }
 
     const taskContext = appendRuntimeContext(
-      appendArtifactContext(task, artifacts),
+      appendThreadContext(appendArtifactContext(task, artifacts), options.threadContext),
       runStartedAt,
       options.timeZone,
     );
@@ -723,6 +731,30 @@ export class UniversalAgent {
       if (saveArtifact && isBrowserOperateData(result.data)) {
         for (const artifactInput of result.data.screenshots) {
           const artifactStartedAt = new Date();
+          const artifactQa = inspectBrowserScreenshotEvidence({
+            artifact: artifactInput,
+            task: `${subtask.title}\n${subtask.prompt}\n${subtask.expectedOutput}`,
+            browser: result.data,
+            toolContent: result.content,
+          });
+          if (!artifactQa.ok) {
+            evidence.push(`Rejected screenshot artifact ${artifactInput.filename}: ${artifactQa.reason}`);
+            await emit({
+              spanId: createSpanId("artifact-rejected"),
+              parentSpanId: spanId,
+              type: "artifact-created",
+              actor: "artifact:browser",
+              activity: "tool",
+              status: "failed",
+              title: "Browser artifact rejected by semantic QA",
+              detail: `${artifactInput.filename}\n${artifactQa.reason}`,
+              startedAt: artifactStartedAt.toISOString(),
+              completedAt: new Date().toISOString(),
+              durationMs: elapsedMs(artifactStartedAt),
+              payload: { artifact: sanitizeArtifactInput(artifactInput), artifactQa },
+            });
+            continue;
+          }
           const artifact = await saveArtifact(artifactInput);
           savedArtifacts.push(artifact);
           await emit({
@@ -1127,7 +1159,33 @@ export class UniversalAgent {
 
     const artifactStartedAt = new Date();
     const artifactSpanId = createSpanId("artifact");
-    const artifact = await saveArtifact(toArtifact(toolResult.data));
+    const artifactInput = toArtifact(toolResult.data);
+    if (capability === "browser-screenshot") {
+      const artifactQa = inspectBrowserScreenshotEvidence({
+        artifact: artifactInput,
+        task: detail,
+        browser: isBrowserOperateData(toolResult.data) ? toolResult.data : undefined,
+        toolContent: toolResult.content,
+      });
+      if (!artifactQa.ok) {
+        await emit({
+          spanId: artifactSpanId,
+          parentSpanId: spanId,
+          type: "artifact-created",
+          actor: artifactActor,
+          activity: "tool",
+          status: "failed",
+          title: `${artifactTitle} rejected by semantic QA`,
+          detail: `${artifactInput.filename}\n${artifactQa.reason}`,
+          startedAt: artifactStartedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(artifactStartedAt),
+          payload: { artifact: sanitizeArtifactInput(artifactInput), artifactQa },
+        });
+        return undefined;
+      }
+    }
+    const artifact = await saveArtifact(artifactInput);
     await emit({
       spanId: artifactSpanId,
       parentSpanId: spanId,
@@ -1439,6 +1497,37 @@ ${artifacts
     return `- ${artifact.filename} (${artifact.mimeType}) ${artifact.url}${preview}`;
   })
   .join("\n")}`;
+}
+
+function appendThreadContext(
+  task: string,
+  threadContext?: {
+    summary: string;
+    acceptedFacts: string[];
+    rejectedAttempts: string[];
+    openQuestions: string[];
+    relevantArtifactIds: string[];
+  },
+): string {
+  if (!threadContext) return task;
+
+  const lines = [
+    "Conversation thread context:",
+    `Summary: ${threadContext.summary || "No prior summary."}`,
+    listContext("Accepted facts", threadContext.acceptedFacts),
+    listContext("Rejected or failed attempts", threadContext.rejectedAttempts),
+    listContext("Open questions", threadContext.openQuestions),
+    listContext("Relevant artifact IDs", threadContext.relevantArtifactIds),
+  ].filter(Boolean);
+
+  return `${task}
+
+${lines.join("\n")}`;
+}
+
+function listContext(title: string, values: string[]): string | undefined {
+  if (values.length === 0) return undefined;
+  return `${title}:\n${values.map((value) => `- ${value}`).join("\n")}`;
 }
 
 function appendRuntimeContext(task: string, now: Date, timeZone = process.env.AGENT_TIME_ZONE ?? process.env.TZ ?? "Europe/Madrid"): string {
@@ -1836,6 +1925,15 @@ function hardGateReview(workerResult: WorkerResult): ReviewResult | undefined {
     };
   }
 
+  if (containsWeakArtifactEvidence(workerResult.output)) {
+    return {
+      subtaskId: workerResult.subtask.id,
+      verdict: "needs_revision",
+      notes:
+        "Output describes weak or unusable browser/artifact evidence, such as a blank page, loader, login wall, blocker, or unrelated proof. Retry with stronger evidence or report that useful proof cannot be produced.",
+    };
+  }
+
   if (containsPlaceholderProof(workerResult.output)) {
     return {
       subtaskId: workerResult.subtask.id,
@@ -1866,6 +1964,15 @@ function isClearlyIrrelevantArtifact(artifact: AgentArtifact): boolean {
 
 function containsPlaceholderProof(text: string): boolean {
   return /https?:\/\/(?:www\.)?example\.com|placeholder|fake-|screenshot-capture\.placeholder|dummy|todo-url/i.test(text);
+}
+
+function containsWeakArtifactEvidence(text: string): boolean {
+  const hasArtifactContext = /screenshot|скриншот|artifact|артефакт|browser|браузер|proof|доказатель/i.test(text);
+  const hasWeakEvidence =
+    /blank page|empty page|white page|black page|loading screen|loader|spinner|still loading|login wall|sign in|access denied|forbidden|blocked|bot check|robot check|verify real visitors|captcha|challenge|unrelated page|no useful content|нет полезн|пустая страниц|страниц[аы] загруз|только загруз|экран загруз|не удалось.*скриншот|защит[аы] от бот/i.test(
+      text,
+    );
+  return hasArtifactContext && hasWeakEvidence;
 }
 
 function containsUnexecutedToolCall(text: string): boolean {
@@ -1913,4 +2020,14 @@ function sanitizeToolPayload(value: unknown): unknown {
         : sanitizeToolPayload(item),
     ]),
   );
+}
+
+function sanitizeArtifactInput(input: ArtifactCreateInput) {
+  const sizeBytes = Buffer.isBuffer(input.content) ? input.content.byteLength : Buffer.byteLength(input.content);
+  return {
+    filename: input.filename,
+    mimeType: input.mimeType,
+    description: input.description,
+    sizeBytes,
+  };
 }

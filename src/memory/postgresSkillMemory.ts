@@ -1,7 +1,14 @@
 import { PgPool } from "../db/pool.js";
-import { SkillMemoryEntry } from "../types.js";
+import { MemoryScope, MemorySensitivity, MemoryStatus, SkillMemoryEntry } from "../types.js";
 import {
   createMemoryId,
+  MemoryListOptions,
+  MemoryUpdateInput,
+  normalizeEntry,
+  normalizeMemoryConfidence,
+  normalizeMemoryScope,
+  normalizeMemorySensitivity,
+  normalizeMemoryStatus,
   scoreMemoryEntry,
   SkillMemoryStore,
   tokenizeMemoryText,
@@ -13,39 +20,88 @@ type SkillMemoryRow = {
   tags: string[];
   summary: string;
   reusable_procedure: string;
+  scope: MemoryScope;
+  scope_id: string | null;
+  status: MemoryStatus;
+  confidence: number;
+  sensitivity: MemorySensitivity;
+  source_run_id: string | null;
+  source_thread_id: string | null;
+  evidence: string[] | null;
   created_at: Date;
+  updated_at: Date;
 };
 
 export class PostgresSkillMemory implements SkillMemoryStore {
   constructor(private readonly pool: PgPool) {}
 
-  async list(): Promise<SkillMemoryEntry[]> {
-    const rows = await this.pool.query<SkillMemoryRow>(`
-      select id, title, tags, summary, reusable_procedure, created_at
-      from skill_memories
-      order by created_at desc
-      limit 200
-    `);
+  async list(options: MemoryListOptions = {}): Promise<SkillMemoryEntry[]> {
+    const filters: string[] = [];
+    const values: unknown[] = [];
+
+    if (!options.includeArchived) filters.push("status <> 'archived'");
+    if (options.scope) {
+      values.push(options.scope);
+      filters.push(`scope = $${values.length}`);
+    }
+    if (options.scopeId) {
+      values.push(options.scopeId);
+      filters.push(`scope_id = $${values.length}`);
+    }
+    if (options.status) {
+      values.push(options.status);
+      filters.push(`status = $${values.length}`);
+    }
+    values.push(options.limit ?? 200);
+
+    const rows = await this.pool.query<SkillMemoryRow>(
+      `
+        select ${memoryColumns}
+        from skill_memories
+        ${filters.length ? `where ${filters.join(" and ")}` : ""}
+        order by updated_at desc, created_at desc
+        limit $${values.length}
+      `,
+      values,
+    );
 
     return rows.rows.map(mapRow);
   }
 
-  async search(query: string, limit = 5): Promise<SkillMemoryEntry[]> {
+  async search(query: string, limit = 5, options: MemoryListOptions = {}): Promise<SkillMemoryEntry[]> {
     const queryTokens = tokenizeMemoryText(query);
+    const filters = ["status = 'accepted'"];
+    const values: unknown[] = [query];
+    if (options.scope) {
+      values.push(options.scope);
+      filters.push(`scope = $${values.length}`);
+    }
+    if (options.scopeId) {
+      values.push(options.scopeId);
+      filters.push(`scope_id = $${values.length}`);
+    }
+    values.push(Math.max(limit * 4, 12));
+
     const lexical = await this.pool.query<SkillMemoryRow>(
       `
-        select id, title, tags, summary, reusable_procedure, created_at
+        select ${memoryColumns}
         from skill_memories
-        where search_document @@ plainto_tsquery('simple', $1)
-           or title ilike '%' || $1 || '%'
-           or summary ilike '%' || $1 || '%'
+        where (${filters.join(" and ")})
+          and (
+            search_document @@ plainto_tsquery('simple', $1)
+            or title ilike '%' || $1 || '%'
+            or summary ilike '%' || $1 || '%'
+          )
         order by ts_rank(search_document, plainto_tsquery('simple', $1)) desc, created_at desc
-        limit $2
+        limit $${values.length}
       `,
-      [query, Math.max(limit * 4, 12)],
+      values,
     );
 
-    const candidates = lexical.rows.length > 0 ? lexical.rows.map(mapRow) : await this.list();
+    const candidates =
+      lexical.rows.length > 0
+        ? lexical.rows.map(mapRow)
+        : await this.list({ ...options, status: "accepted", limit });
 
     return candidates
       .map((entry) => ({ entry, score: scoreMemoryEntry(entry, queryTokens) }))
@@ -56,26 +112,41 @@ export class PostgresSkillMemory implements SkillMemoryStore {
   }
 
   async add(entry: Omit<SkillMemoryEntry, "id" | "createdAt">): Promise<SkillMemoryEntry> {
-    const stored: SkillMemoryEntry = {
+    const now = new Date().toISOString();
+    const stored = normalizeEntry({
       ...entry,
       id: createMemoryId(entry.title),
-      createdAt: new Date().toISOString(),
-    };
+      createdAt: now,
+      updatedAt: now,
+    });
 
     await this.pool.query(
       `
         insert into skill_memories (
-          id, title, tags, summary, reusable_procedure, created_at, search_document
+          id, title, tags, summary, reusable_procedure, scope, scope_id, status, confidence,
+          sensitivity, source_run_id, source_thread_id, evidence, created_at, updated_at,
+          search_document
         )
-        values ($1, $2, $3, $4, $5, $6, setweight(to_tsvector('simple', $2), 'A') ||
-          setweight(to_tsvector('simple', $7), 'B') ||
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14,
+          setweight(to_tsvector('simple', $2), 'A') ||
+          setweight(to_tsvector('simple', $15), 'B') ||
           setweight(to_tsvector('simple', $4), 'B') ||
-          setweight(to_tsvector('simple', $5), 'C'))
+          setweight(to_tsvector('simple', $5), 'C') ||
+          setweight(to_tsvector('simple', $16), 'C'))
         on conflict (id) do update
         set title = excluded.title,
             tags = excluded.tags,
             summary = excluded.summary,
             reusable_procedure = excluded.reusable_procedure,
+            scope = excluded.scope,
+            scope_id = excluded.scope_id,
+            status = excluded.status,
+            confidence = excluded.confidence,
+            sensitivity = excluded.sensitivity,
+            source_run_id = excluded.source_run_id,
+            source_thread_id = excluded.source_thread_id,
+            evidence = excluded.evidence,
+            updated_at = excluded.updated_at,
             search_document = excluded.search_document
       `,
       [
@@ -84,14 +155,90 @@ export class PostgresSkillMemory implements SkillMemoryStore {
         stored.tags,
         stored.summary,
         stored.reusableProcedure,
+        stored.scope,
+        stored.scopeId ?? null,
+        stored.status,
+        stored.confidence,
+        stored.sensitivity,
+        stored.sourceRunId ?? null,
+        stored.sourceThreadId ?? null,
+        stored.evidence ?? [],
         stored.createdAt,
         stored.tags.join(" "),
+        (stored.evidence ?? []).join(" "),
       ],
     );
 
     return stored;
   }
+
+  async update(id: string, update: MemoryUpdateInput): Promise<SkillMemoryEntry> {
+    const existing = await this.pool.query<SkillMemoryRow>(
+      `select ${memoryColumns} from skill_memories where id = $1`,
+      [id],
+    );
+    if (!existing.rows[0]) throw new Error(`Memory ${id} was not found`);
+
+    const merged = normalizeEntry({
+      ...mapRow(existing.rows[0]),
+      ...update,
+      tags: update.tags ? [...update.tags] : mapRow(existing.rows[0]).tags,
+      evidence: update.evidence ? [...update.evidence] : mapRow(existing.rows[0]).evidence,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const rows = await this.pool.query<SkillMemoryRow>(
+      `
+        update skill_memories
+        set title = $2,
+            tags = $3,
+            summary = $4,
+            reusable_procedure = $5,
+            scope = $6,
+            scope_id = $7,
+            status = $8,
+            confidence = $9,
+            sensitivity = $10,
+            source_run_id = $11,
+            source_thread_id = $12,
+            evidence = $13,
+            updated_at = $14,
+            search_document = setweight(to_tsvector('simple', $2), 'A') ||
+              setweight(to_tsvector('simple', $15), 'B') ||
+              setweight(to_tsvector('simple', $4), 'B') ||
+              setweight(to_tsvector('simple', $5), 'C') ||
+              setweight(to_tsvector('simple', $16), 'C')
+        where id = $1
+        returning ${memoryColumns}
+      `,
+      [
+        id,
+        merged.title,
+        merged.tags,
+        merged.summary,
+        merged.reusableProcedure,
+        normalizeMemoryScope(merged.scope),
+        merged.scopeId ?? null,
+        normalizeMemoryStatus(merged.status),
+        normalizeMemoryConfidence(merged.confidence),
+        normalizeMemorySensitivity(merged.sensitivity),
+        merged.sourceRunId ?? null,
+        merged.sourceThreadId ?? null,
+        merged.evidence ?? [],
+        merged.updatedAt,
+        merged.tags.join(" "),
+        (merged.evidence ?? []).join(" "),
+      ],
+    );
+
+    return mapRow(rows.rows[0]);
+  }
 }
+
+const memoryColumns = `
+  id, title, tags, summary, reusable_procedure, scope, scope_id, status, confidence,
+  sensitivity, source_run_id, source_thread_id, evidence, created_at, updated_at
+`;
 
 function mapRow(row: SkillMemoryRow): SkillMemoryEntry {
   return {
@@ -100,6 +247,15 @@ function mapRow(row: SkillMemoryRow): SkillMemoryEntry {
     tags: row.tags,
     summary: row.summary,
     reusableProcedure: row.reusable_procedure,
+    scope: row.scope,
+    scopeId: row.scope_id ?? undefined,
+    status: row.status,
+    confidence: row.confidence,
+    sensitivity: row.sensitivity,
+    sourceRunId: row.source_run_id ?? undefined,
+    sourceThreadId: row.source_thread_id ?? undefined,
+    evidence: row.evidence ?? [],
     createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
   };
 }

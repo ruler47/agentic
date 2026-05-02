@@ -21,6 +21,8 @@ type ToolBuildRequestRow = {
   required_inputs: string[] | null;
   required_outputs: string[] | null;
   qa_criteria: string[] | null;
+  rework_of: string | null;
+  feedback: string | null;
   status: ToolBuildRequestStatus;
   status_detail: string | null;
   qa_report: ToolBuildQaReport | null;
@@ -43,11 +45,13 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
         insert into tool_build_requests (
           id, capability, reason, source_run_id, source_span_id, task_summary,
           desired_tool_name, required_inputs, required_outputs, qa_criteria,
+          rework_of, feedback,
           status, contract, created_at, updated_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'requested', $11, $12, $12)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'requested', $13, $14, $14)
         returning id, capability, reason, source_run_id, source_span_id, task_summary,
                   desired_tool_name, required_inputs, required_outputs, qa_criteria,
+                  rework_of, feedback,
                   status, status_detail, qa_report, registered_tool_name,
                   contract, created_at, updated_at
       `,
@@ -62,6 +66,8 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
         input.requiredInputs ?? null,
         input.requiredOutputs ?? null,
         input.qaCriteria ?? null,
+        input.reworkOf ?? null,
+        input.feedback ?? null,
         contract,
         now,
       ],
@@ -75,6 +81,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
       `
         select id, capability, reason, source_run_id, source_span_id, task_summary,
                desired_tool_name, required_inputs, required_outputs, qa_criteria,
+               rework_of, feedback,
                status, status_detail, qa_report, registered_tool_name,
                contract, created_at, updated_at
         from tool_build_requests
@@ -91,6 +98,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
       `
         select id, capability, reason, source_run_id, source_span_id, task_summary,
                desired_tool_name, required_inputs, required_outputs, qa_criteria,
+               rework_of, feedback,
                status, status_detail, qa_report, registered_tool_name,
                contract, created_at, updated_at
         from tool_build_requests
@@ -116,6 +124,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
         where id = $1
         returning id, capability, reason, source_run_id, source_span_id, task_summary,
                   desired_tool_name, required_inputs, required_outputs, qa_criteria,
+                  rework_of, feedback,
                   status, status_detail, qa_report, registered_tool_name,
                   contract, created_at, updated_at
       `,
@@ -135,6 +144,40 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
 
     return mapRow(rows.rows[0]);
   }
+
+  async claimNextRequested(statusDetail = "Claimed by Tool Builder worker."): Promise<ToolBuildRequest | undefined> {
+    const now = new Date().toISOString();
+    const rows = await this.pool.query<ToolBuildRequestRow>(
+      `
+        with next_request as (
+          select id
+          from tool_build_requests
+          where status = 'requested'
+          order by created_at asc
+          for update skip locked
+          limit 1
+        )
+        update tool_build_requests
+        set status = 'building',
+            status_detail = $1,
+            updated_at = $2
+        where id in (select id from next_request)
+        returning id, capability, reason, source_run_id, source_span_id, task_summary,
+                  desired_tool_name, required_inputs, required_outputs, qa_criteria,
+                  rework_of, feedback,
+                  status, status_detail, qa_report, registered_tool_name,
+                  contract, created_at, updated_at
+      `,
+      [statusDetail, now],
+    );
+
+    return rows.rows[0] ? mapRow(rows.rows[0]) : undefined;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    const result = await this.pool.query("delete from tool_build_requests where id = $1", [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
 }
 
 function mapRow(row: ToolBuildRequestRow | undefined): ToolBuildRequest {
@@ -153,6 +196,8 @@ function mapRow(row: ToolBuildRequestRow | undefined): ToolBuildRequest {
     requiredInputs: row.required_inputs ?? undefined,
     requiredOutputs: row.required_outputs ?? undefined,
     qaCriteria: row.qa_criteria ?? undefined,
+    reworkOf: row.rework_of ?? undefined,
+    feedback: row.feedback ?? undefined,
     status: row.status,
     statusDetail: row.status_detail ?? undefined,
     qaReport: row.qa_report ?? undefined,

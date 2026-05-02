@@ -28,13 +28,35 @@ export type ModelTierSettings = {
   updatedAt: string;
 };
 
+export type MemoryScope = "global" | "group" | "user" | "thread" | "run";
+export type MemoryStatus = "proposed" | "accepted" | "rejected" | "archived";
+export type MemorySensitivity = "normal" | "sensitive" | "private";
+
 export type SkillMemoryEntry = {
   id: string;
   title: string;
   tags: string[];
   summary: string;
   reusableProcedure: string;
+  scope?: MemoryScope;
+  scopeId?: string;
+  status?: MemoryStatus;
+  confidence?: number;
+  sensitivity?: MemorySensitivity;
+  sourceRunId?: string;
+  sourceThreadId?: string;
+  evidence?: string[];
+  match?: SkillMemoryMatch;
   createdAt: string;
+  updatedAt?: string;
+};
+
+export type SkillMemoryMatch = {
+  score: number;
+  reason: string;
+  matchedTokens: string[];
+  scope: MemoryScope;
+  scopeId?: string;
 };
 
 export type TaskComplexity = {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import {
@@ -13,7 +14,15 @@ type ArtifactManifest = {
 
 type StoredArtifact = {
   artifact: AgentArtifact;
-  path: string;
+  path?: string;
+  content?: Buffer;
+};
+
+export type ArtifactMetadataRecord = {
+  artifact: AgentArtifact;
+  objectKey: string;
+  storageProvider: string;
+  checksumSha256: string;
 };
 
 export type ArtifactStore = {
@@ -21,6 +30,19 @@ export type ArtifactStore = {
   saveGenerated(runId: string, input: ArtifactCreateInput): Promise<AgentArtifact>;
   list(runId: string): Promise<AgentArtifact[]>;
   read(runId: string, artifactId: string): Promise<StoredArtifact | undefined>;
+};
+
+export type ArtifactMetadataStore = {
+  save(record: ArtifactMetadataRecord): Promise<AgentArtifact>;
+  list(runId: string): Promise<AgentArtifact[]>;
+  get(runId: string, artifactId: string): Promise<ArtifactMetadataRecord | undefined>;
+};
+
+export type ArtifactObjectStore = {
+  readonly provider: string;
+  ensureReady?(): Promise<void>;
+  putObject(key: string, content: Buffer, metadata: { mimeType: string }): Promise<void>;
+  getObject(key: string): Promise<Buffer>;
 };
 
 export class LocalArtifactStore implements ArtifactStore {
@@ -127,6 +149,146 @@ export class LocalArtifactStore implements ArtifactStore {
   }
 }
 
+export class DurableArtifactStore implements ArtifactStore {
+  private ready?: Promise<void>;
+
+  constructor(
+    private readonly metadataStore: ArtifactMetadataStore,
+    private readonly objectStore: ArtifactObjectStore,
+  ) {}
+
+  async saveUpload(runId: string, upload: ArtifactUploadInput): Promise<AgentArtifact> {
+    const content = Buffer.from(upload.contentBase64, "base64");
+    return this.save(runId, "input", {
+      filename: upload.filename,
+      mimeType: upload.mimeType || "application/octet-stream",
+      content,
+      description: upload.description,
+    });
+  }
+
+  async saveGenerated(runId: string, input: ArtifactCreateInput): Promise<AgentArtifact> {
+    return this.save(runId, "output", input);
+  }
+
+  async list(runId: string): Promise<AgentArtifact[]> {
+    return this.metadataStore.list(runId);
+  }
+
+  async read(runId: string, artifactId: string): Promise<StoredArtifact | undefined> {
+    const record = await this.metadataStore.get(runId, artifactId);
+    if (!record) return undefined;
+
+    return {
+      artifact: record.artifact,
+      content: await this.objectStore.getObject(record.objectKey),
+    };
+  }
+
+  private async save(
+    runId: string,
+    kind: AgentArtifactKind,
+    input: ArtifactCreateInput,
+  ): Promise<AgentArtifact> {
+    await this.ensureReady();
+
+    const content = typeof input.content === "string" ? Buffer.from(input.content, "utf8") : input.content;
+    const id = createArtifactId();
+    const filename = safeFilename(input.filename);
+    const objectKey = `${safeSegment(runId)}/${kind}/${safeSegment(id)}-${filename}`;
+    const artifact: AgentArtifact = {
+      id,
+      runId,
+      kind,
+      filename,
+      mimeType: input.mimeType,
+      sizeBytes: content.byteLength,
+      url: `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(id)}`,
+      description: input.description,
+      contentPreview: kind === "input" ? previewContent(input.mimeType, content) : undefined,
+      createdAt: new Date().toISOString(),
+    };
+
+    await this.objectStore.putObject(objectKey, content, { mimeType: artifact.mimeType });
+    return this.metadataStore.save({
+      artifact,
+      objectKey,
+      storageProvider: this.objectStore.provider,
+      checksumSha256: sha256Hex(content),
+    });
+  }
+
+  private ensureReady(): Promise<void> {
+    this.ready ??= this.objectStore.ensureReady?.() ?? Promise.resolve();
+    return this.ready;
+  }
+}
+
+export class FallbackArtifactStore implements ArtifactStore {
+  constructor(
+    private readonly primary: ArtifactStore,
+    private readonly fallback: ArtifactStore,
+  ) {}
+
+  saveUpload(runId: string, upload: ArtifactUploadInput): Promise<AgentArtifact> {
+    return this.primary.saveUpload(runId, upload);
+  }
+
+  saveGenerated(runId: string, input: ArtifactCreateInput): Promise<AgentArtifact> {
+    return this.primary.saveGenerated(runId, input);
+  }
+
+  async list(runId: string): Promise<AgentArtifact[]> {
+    const [primary, fallback] = await Promise.all([this.primary.list(runId), this.fallback.list(runId)]);
+    const seen = new Set<string>();
+    return [...primary, ...fallback].filter((artifact) => {
+      const key = `${artifact.runId}:${artifact.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  async read(runId: string, artifactId: string): Promise<StoredArtifact | undefined> {
+    return (await this.primary.read(runId, artifactId)) ?? this.fallback.read(runId, artifactId);
+  }
+}
+
+export class InMemoryArtifactMetadataStore implements ArtifactMetadataStore {
+  private readonly records = new Map<string, ArtifactMetadataRecord>();
+
+  async save(record: ArtifactMetadataRecord): Promise<AgentArtifact> {
+    this.records.set(recordKey(record.artifact.runId, record.artifact.id), record);
+    return record.artifact;
+  }
+
+  async list(runId: string): Promise<AgentArtifact[]> {
+    return [...this.records.values()]
+      .filter((record) => record.artifact.runId === runId)
+      .map((record) => record.artifact)
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }
+
+  async get(runId: string, artifactId: string): Promise<ArtifactMetadataRecord | undefined> {
+    return this.records.get(recordKey(runId, artifactId));
+  }
+}
+
+export class InMemoryArtifactObjectStore implements ArtifactObjectStore {
+  readonly provider = "memory";
+  private readonly objects = new Map<string, Buffer>();
+
+  async putObject(key: string, content: Buffer): Promise<void> {
+    this.objects.set(key, Buffer.from(content));
+  }
+
+  async getObject(key: string): Promise<Buffer> {
+    const content = this.objects.get(key);
+    if (!content) throw new Error(`Artifact object not found: ${key}`);
+    return Buffer.from(content);
+  }
+}
+
 function inside(root: string, child: string): string {
   const resolved = resolve(join(root, child));
   const location = relative(root, resolved);
@@ -165,4 +327,12 @@ function isTextLike(mimeType: string): boolean {
     mimeType.endsWith("+json") ||
     mimeType.endsWith("+xml")
   );
+}
+
+function recordKey(runId: string, artifactId: string): string {
+  return `${runId}:${artifactId}`;
+}
+
+function sha256Hex(content: Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
 }

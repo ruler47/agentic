@@ -2,16 +2,23 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { readFile } from "node:fs/promises";
 import { ArtifactStore } from "../artifacts/artifactStore.js";
+import { AuditEventInput, AuditEventStore } from "../audit/types.js";
 import { UniversalAgent } from "../agents/universalAgent.js";
-import { SkillMemoryStore } from "../memory/skillMemory.js";
-import { RunStore } from "../runs/types.js";
+import {
+  ConversationThreadContext,
+  ConversationThreadRecord,
+  ConversationThreadStore,
+} from "../conversations/types.js";
+import { GroupProfileStore } from "../instance/groupProfileStore.js";
+import { MemoryListOptions, MemoryUpdateInput, SkillMemoryStore } from "../memory/skillMemory.js";
+import { RunCreateContext, RunStore } from "../runs/types.js";
 import { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
 import { ToolSchema, ToolStartupMode } from "../tools/tool.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { ToolBuildRequestStore } from "../tools/toolBuildRequestStore.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import { ToolMetadataStore, toolToMetadata } from "../tools/toolMetadataStore.js";
-import { AgentArtifact, ArtifactUploadInput } from "../types.js";
+import { AgentArtifact, AgentEvent, ArtifactUploadInput } from "../types.js";
 
 export type WebAppOptions = {
   agent: UniversalAgent;
@@ -25,6 +32,9 @@ export type WebAppOptions = {
   reloadGeneratedTools?: () => Promise<void>;
   modelTierSettings?: ModelTierSettingsStore;
   artifactStore?: ArtifactStore;
+  conversationStore?: ConversationThreadStore;
+  auditEventStore?: AuditEventStore;
+  groupProfileStore?: GroupProfileStore;
 };
 
 export function createWebApp(options: WebAppOptions) {
@@ -51,13 +61,269 @@ async function routeRequest(
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/instance") {
+    sendJson(response, 200, {
+      instance: {
+        id: "instance-local",
+        name: "Local Agentic Assistant",
+        defaultLanguage: "ru",
+        timeZone: process.env.AGENT_TIME_ZONE ?? process.env.TZ ?? "Europe/Madrid",
+        locale: "ru-RU",
+      },
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/group-profile") {
+    if (options.groupProfileStore) {
+      sendJson(response, 200, { groupProfile: await options.groupProfileStore.get() });
+      return;
+    }
+
+    sendJson(response, 200, {
+      groupProfile: {
+        id: "group-local",
+        instanceId: "instance-local",
+        name: "Local Group Profile",
+        description: "Default one-group profile for local development.",
+        preferences: {},
+      },
+    });
+    return;
+  }
+
+  if (request.method === "PATCH" && url.pathname === "/api/group-profile") {
+    if (!options.groupProfileStore) {
+      sendJson(response, 503, { error: "Group profile store is not configured" });
+      return;
+    }
+
+    try {
+      const groupProfile = await options.groupProfileStore.update(
+        parseGroupProfileUpdate(await readJsonBody<unknown>(request)),
+      );
+      await recordAudit(options, {
+        instanceId: groupProfile.instanceId,
+        actorId: "user-admin",
+        actorType: "user",
+        action: "group_profile.updated",
+        targetType: "group_profile",
+        targetId: groupProfile.id,
+        status: "success",
+        summary: `Group profile updated: ${groupProfile.name}`,
+      });
+      sendJson(response, 200, { groupProfile });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid group profile update",
+      });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/users") {
+    const recentRuns = (await options.runStore.list())
+      .filter((run) => run.requesterUserId === "user-admin")
+      .slice(0, 5)
+      .map((run) => ({
+        id: run.id,
+        task: run.task,
+        status: run.status,
+        channel: run.channel,
+        threadId: run.threadId,
+        createdAt: run.createdAt,
+        updatedAt: run.updatedAt,
+      }));
+    sendJson(response, 200, {
+      users: [
+        {
+          id: "user-admin",
+          displayName: "Local Admin",
+          role: "admin",
+          status: "active",
+          identities: [{ provider: "web", providerUserId: "user-admin", allowStatus: "allowed" }],
+          recentRequests: recentRuns,
+        },
+      ],
+    });
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/runs") {
     sendJson(response, 200, { runs: await options.runStore.list() });
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/audit-events") {
+    const limit = Number(url.searchParams.get("limit") ?? "100");
+    sendJson(response, 200, {
+      events: options.auditEventStore ? await options.auditEventStore.list(limit) : [],
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/conversation-threads") {
+    sendJson(response, 200, {
+      threads: options.conversationStore ? await options.conversationStore.list() : [],
+    });
+    return;
+  }
+
+  const conversationThreadMatch = url.pathname.match(/^\/api\/conversation-threads\/([^/]+)$/);
+  if (request.method === "GET" && conversationThreadMatch) {
+    if (!options.conversationStore) {
+      sendJson(response, 503, { error: "Conversation thread store is not configured" });
+      return;
+    }
+
+    const thread = await options.conversationStore.get(
+      decodeURIComponent(conversationThreadMatch[1] ?? ""),
+    );
+    if (!thread) {
+      sendJson(response, 404, { error: "Conversation thread not found" });
+      return;
+    }
+
+    sendJson(response, 200, { thread });
+    return;
+  }
+
+  if (request.method === "DELETE" && conversationThreadMatch) {
+    if (!options.conversationStore) {
+      sendJson(response, 503, { error: "Conversation thread store is not configured" });
+      return;
+    }
+
+    const threadId = decodeURIComponent(conversationThreadMatch[1] ?? "");
+    const thread = await options.conversationStore.get(threadId);
+    if (!thread) {
+      sendJson(response, 404, { error: "Conversation thread not found" });
+      return;
+    }
+
+    const deletedRuns = await options.runStore.deleteByThreadId(threadId);
+    const deletedThread = await options.conversationStore.delete(threadId);
+    if (!deletedThread) {
+      sendJson(response, 404, { error: "Conversation thread not found" });
+      return;
+    }
+
+    await recordAudit(options, {
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "conversation_thread.deleted",
+      targetType: "conversation_thread",
+      targetId: threadId,
+      status: "success",
+      threadId,
+      requesterUserId: thread.requesterUserId,
+      channel: thread.channel,
+      summary: `Conversation deleted: ${thread.title}`,
+      metadata: {
+        deletedRuns,
+        deletedMessages: thread.messages?.length ?? 0,
+        deletedArtifactReferences: thread.artifactIds.length,
+      },
+    });
+
+    sendJson(response, 200, {
+      deleted: true,
+      thread,
+      deletedRuns,
+      deletedMessages: thread.messages?.length ?? 0,
+      deletedArtifactReferences: thread.artifactIds.length,
+    });
+    return;
+  }
+
+  const conversationThreadRunMatch = url.pathname.match(
+    /^\/api\/conversation-threads\/([^/]+)\/runs$/,
+  );
+  if (request.method === "POST" && conversationThreadRunMatch) {
+    const body = await readJsonBody<Record<string, unknown>>(request);
+    body.threadId = decodeURIComponent(conversationThreadRunMatch[1] ?? "");
+    await createRunFromRequest(body, response, options);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/memories") {
-    sendJson(response, 200, { memories: options.skillMemory ? await options.skillMemory.list() : [] });
+    sendJson(response, 200, {
+      memories: options.skillMemory ? await options.skillMemory.list(parseMemoryListOptions(url)) : [],
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/memories") {
+    if (!options.skillMemory) {
+      sendJson(response, 503, { error: "Memory store is not configured" });
+      return;
+    }
+
+    try {
+      const memory = await options.skillMemory.add(parseMemoryCreateInput(await readJsonBody<unknown>(request)));
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "memory.created",
+        targetType: "memory",
+        targetId: memory.id,
+        status: memory.status === "proposed" ? "pending" : "success",
+        runId: memory.sourceRunId,
+        threadId: memory.sourceThreadId,
+        summary: `Memory created: ${memory.title}`,
+        metadata: {
+          scope: memory.scope,
+          scopeId: memory.scopeId,
+          confidence: memory.confidence,
+          memoryStatus: memory.status,
+        },
+      });
+      sendJson(response, 201, { memory });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid memory create request",
+      });
+    }
+    return;
+  }
+
+  const memoryMatch = url.pathname.match(/^\/api\/memories\/([^/]+)$/);
+  if (request.method === "PATCH" && memoryMatch) {
+    if (!options.skillMemory?.update) {
+      sendJson(response, 503, { error: "Memory update is not configured" });
+      return;
+    }
+
+    try {
+      const memory = await options.skillMemory.update(
+        decodeURIComponent(memoryMatch[1] ?? ""),
+        parseMemoryUpdateInput(await readJsonBody<unknown>(request)),
+      );
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "memory.updated",
+        targetType: "memory",
+        targetId: memory.id,
+        status: memory.status === "proposed" ? "pending" : "success",
+        runId: memory.sourceRunId,
+        threadId: memory.sourceThreadId,
+        summary: `Memory updated: ${memory.title}`,
+        metadata: {
+          scope: memory.scope,
+          scopeId: memory.scopeId,
+          confidence: memory.confidence,
+          memoryStatus: memory.status,
+        },
+      });
+      sendJson(response, 200, { memory });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid memory update request";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
     return;
   }
 
@@ -85,6 +351,27 @@ async function routeRequest(
     } catch (error) {
       sendJson(response, 400, {
         error: error instanceof Error ? error.message : "Invalid generated tool module",
+      });
+    }
+    return;
+  }
+
+  const replacementMatch = url.pathname.match(/^\/api\/tools\/generated-modules\/([^/]+)\/promote-replacement$/);
+  if (request.method === "POST" && replacementMatch) {
+    if (!options.toolMetadataStore) {
+      sendJson(response, 503, { error: "Tool metadata store is not configured" });
+      return;
+    }
+
+    try {
+      const input = parseGeneratedToolReplacementInput(
+        decodeURIComponent(replacementMatch[1] ?? ""),
+        await readJsonBody<unknown>(request),
+      );
+      sendJson(response, 200, { tool: await options.toolMetadataStore.promoteReplacement(input) });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid generated tool replacement",
       });
     }
     return;
@@ -121,7 +408,24 @@ async function routeRequest(
 
     try {
       const requestInput = parseToolBuildRequestInput(await readJsonBody<unknown>(request));
-      sendJson(response, 201, { request: await options.toolBuildRequestStore.create(requestInput) });
+      const buildRequest = await options.toolBuildRequestStore.create(requestInput);
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool_build.requested",
+        targetType: "tool_build_request",
+        targetId: buildRequest.id,
+        status: "pending",
+        runId: buildRequest.sourceRunId,
+        summary: `Tool build requested: ${buildRequest.capability}`,
+        metadata: {
+          capability: buildRequest.capability,
+          desiredToolName: buildRequest.desiredToolName,
+          modulePath: buildRequest.contract.modulePath,
+        },
+      });
+      sendJson(response, 201, { request: buildRequest });
     } catch (error) {
       sendJson(response, 400, {
         error: error instanceof Error ? error.message : "Invalid tool build request",
@@ -165,6 +469,138 @@ async function routeRequest(
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid tool build request update";
       sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
+  if (request.method === "DELETE" && toolBuildRequestMatch) {
+    if (!options.toolBuildRequestStore) {
+      sendJson(response, 503, { error: "Tool build request store is not configured" });
+      return;
+    }
+
+    const id = decodeURIComponent(toolBuildRequestMatch[1] ?? "");
+    const existing = await options.toolBuildRequestStore.get(id);
+    if (!existing) {
+      sendJson(response, 404, { error: "Tool build request not found" });
+      return;
+    }
+
+    const deleted = await options.toolBuildRequestStore.delete(id);
+    if (!deleted) {
+      sendJson(response, 404, { error: "Tool build request not found" });
+      return;
+    }
+
+    await recordAudit(options, {
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "tool_build.deleted",
+      targetType: "tool_build_request",
+      targetId: id,
+      status: "success",
+      runId: existing.sourceRunId,
+      summary: `Tool build deleted: ${existing.capability}`,
+      metadata: {
+        capability: existing.capability,
+        previousStatus: existing.status,
+      },
+    });
+    sendJson(response, 200, { deleted: true, request: existing });
+    return;
+  }
+
+  const toolBuildStopMatch = url.pathname.match(/^\/api\/tool-build-requests\/([^/]+)\/stop$/);
+  if (request.method === "POST" && toolBuildStopMatch) {
+    if (!options.toolBuildRequestStore) {
+      sendJson(response, 503, { error: "Tool build request store is not configured" });
+      return;
+    }
+
+    try {
+      const id = decodeURIComponent(toolBuildStopMatch[1] ?? "");
+      const stopReason = parseOptionalReason(await readJsonBody<unknown>(request));
+      const buildRequest = await options.toolBuildRequestStore.updateStatus(id, {
+        status: "blocked",
+        statusDetail: stopReason || "Stopped by operator. It can be deleted or reworked into a new request.",
+      });
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool_build.stopped",
+        targetType: "tool_build_request",
+        targetId: buildRequest.id,
+        status: "success",
+        runId: buildRequest.sourceRunId,
+        summary: `Tool build stopped: ${buildRequest.capability}`,
+        metadata: {
+          capability: buildRequest.capability,
+          reason: buildRequest.statusDetail,
+        },
+      });
+      sendJson(response, 200, { request: buildRequest });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid tool build stop request";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
+  const toolBuildReworkMatch = url.pathname.match(/^\/api\/tool-build-requests\/([^/]+)\/rework$/);
+  if (request.method === "POST" && toolBuildReworkMatch) {
+    if (!options.toolBuildRequestStore) {
+      sendJson(response, 503, { error: "Tool build request store is not configured" });
+      return;
+    }
+
+    try {
+      const originalId = decodeURIComponent(toolBuildReworkMatch[1] ?? "");
+      const original = await options.toolBuildRequestStore.get(originalId);
+      if (!original) {
+        sendJson(response, 404, { error: "Tool build request not found" });
+        return;
+      }
+
+      const feedback = parseToolBuildReworkInput(await readJsonBody<unknown>(request));
+      const reworkRequest = await options.toolBuildRequestStore.create({
+        capability: original.capability,
+        reason: `${original.reason}\n\nRework feedback for ${original.id}:\n${feedback}`,
+        sourceRunId: original.sourceRunId,
+        sourceSpanId: original.sourceSpanId,
+        taskSummary: original.taskSummary,
+        desiredToolName: original.desiredToolName,
+        requiredInputs: original.requiredInputs,
+        requiredOutputs: original.requiredOutputs,
+        qaCriteria: uniqueStrings([
+          ...(original.qaCriteria ?? []),
+          `Rework feedback must be addressed: ${feedback}`,
+        ]),
+        reworkOf: original.id,
+        feedback,
+      });
+
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool_build.rework_requested",
+        targetType: "tool_build_request",
+        targetId: reworkRequest.id,
+        status: "pending",
+        runId: reworkRequest.sourceRunId,
+        summary: `Tool build rework requested: ${reworkRequest.capability}`,
+        metadata: {
+          originalRequestId: original.id,
+          feedback,
+        },
+      });
+      sendJson(response, 201, { request: reworkRequest, original });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid tool build rework request",
+      });
     }
     return;
   }
@@ -221,37 +657,7 @@ async function routeRequest(
   }
 
   if (request.method === "POST" && url.pathname === "/api/runs") {
-    const body = await readJsonBody<{ task?: unknown; attachments?: unknown }>(request);
-    const task = typeof body.task === "string" ? body.task.trim() : "";
-
-    if (!task) {
-      sendJson(response, 400, { error: "Task is required" });
-      return;
-    }
-
-    const run = await options.runStore.create(task);
-    let inputArtifacts: AgentArtifact[] = [];
-    try {
-      inputArtifacts = options.artifactStore
-        ? await Promise.all(
-            parseAttachmentInputs(body.attachments).map((attachment) =>
-              options.artifactStore!.saveUpload(run.id, attachment),
-            ),
-          )
-        : [];
-    } catch (error) {
-      await options.runStore.fail(
-        run.id,
-        error instanceof Error ? error.message : "Failed to save attachments",
-      );
-      sendJson(response, 400, {
-        error: error instanceof Error ? error.message : "Failed to save attachments",
-      });
-      return;
-    }
-
-    void executeRun(run.id, task, options, inputArtifacts);
-    sendJson(response, 202, { run: await options.runStore.get(run.id) });
+    await createRunFromRequest(await readJsonBody<Record<string, unknown>>(request), response, options);
     return;
   }
 
@@ -296,7 +702,7 @@ async function routeRequest(
       "content-disposition": `inline; filename="${stored.artifact.filename.replace(/"/g, "")}"`,
       "cache-control": "no-store",
     });
-    response.end(await readFile(stored.path));
+    response.end(stored.content ?? (stored.path ? await readFile(stored.path) : Buffer.alloc(0)));
     return;
   }
 
@@ -306,6 +712,171 @@ async function routeRequest(
   }
 
   sendJson(response, 405, { error: "Method not allowed" });
+}
+
+async function createRunFromRequest(
+  body: Record<string, unknown>,
+  response: ServerResponse,
+  options: WebAppOptions,
+): Promise<void> {
+  const task = typeof body.task === "string" ? body.task.trim() : "";
+
+  if (!task) {
+    sendJson(response, 400, { error: "Task is required" });
+    return;
+  }
+
+  let context: RunCreateContext;
+  let thread: ConversationThreadRecord | undefined;
+  let threadContext: ConversationThreadContext | undefined;
+
+  try {
+    const resolved = await resolveRunContext(body, task, options);
+    context = resolved.context;
+    thread = resolved.thread;
+    threadContext = resolved.threadContext;
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error instanceof Error ? error.message : "Invalid run context",
+    });
+    return;
+  }
+
+  const run = await options.runStore.create(task, context);
+  await recordAudit(options, {
+    instanceId: context.instanceId,
+    actorId: context.requesterUserId,
+    actorType: "user",
+    action: "run.created",
+    targetType: "run",
+    targetId: run.id,
+    status: "pending",
+    runId: run.id,
+    threadId: context.threadId,
+    requesterUserId: context.requesterUserId,
+    channel: context.channel,
+    summary: `Run created: ${task.slice(0, 160)}`,
+  });
+  let inputArtifacts: AgentArtifact[] = [];
+  try {
+    inputArtifacts = options.artifactStore
+      ? await Promise.all(
+          parseAttachmentInputs(body.attachments).map((attachment) =>
+            options.artifactStore!.saveUpload(run.id, attachment),
+          ),
+        )
+      : [];
+    await Promise.all(
+      inputArtifacts.map((artifact) =>
+        recordAudit(options, {
+          instanceId: context.instanceId,
+          actorId: context.requesterUserId,
+          actorType: "user",
+          action: "artifact.uploaded",
+          targetType: "artifact",
+          targetId: artifact.id,
+          runId: run.id,
+          threadId: context.threadId,
+          requesterUserId: context.requesterUserId,
+          channel: context.channel,
+          summary: `Input artifact uploaded: ${artifact.filename}`,
+          metadata: {
+            filename: artifact.filename,
+            mimeType: artifact.mimeType,
+            sizeBytes: artifact.sizeBytes,
+          },
+        }),
+      ),
+    );
+  } catch (error) {
+    await options.runStore.fail(
+      run.id,
+      error instanceof Error ? error.message : "Failed to save attachments",
+    );
+    sendJson(response, 400, {
+      error: error instanceof Error ? error.message : "Failed to save attachments",
+    });
+    return;
+  }
+
+  await options.conversationStore?.appendMessage({
+    threadId: context.threadId ?? "",
+    runId: run.id,
+    parentRunId: context.parentRunId,
+    role: "user",
+    content: task,
+    sourceMessageId: context.sourceMessageId,
+  });
+
+  void executeRun(run.id, task, options, inputArtifacts, {
+    threadId: context.threadId,
+    threadContext,
+  });
+  sendJson(response, 202, { run: await options.runStore.get(run.id), thread });
+}
+
+async function resolveRunContext(
+  body: Record<string, unknown>,
+  task: string,
+  options: WebAppOptions,
+): Promise<{
+  context: RunCreateContext;
+  thread?: ConversationThreadRecord;
+  threadContext?: ConversationThreadContext;
+}> {
+  const instanceId = parseOptionalText(body.instanceId) ?? "instance-local";
+  const bodyRequesterUserId = parseOptionalText(body.requesterUserId);
+  const bodyChannel = parseOptionalText(body.channel);
+  const sourceMessageId = parseOptionalText(body.sourceMessageId);
+  const sourceChatId = parseOptionalText(body.sourceChatId);
+  const sourceThreadId = parseOptionalText(body.sourceThreadId);
+  const requestedThreadId = parseOptionalText(body.threadId);
+  let parentRunId = parseOptionalText(body.parentRunId);
+  let thread: ConversationThreadRecord | undefined;
+
+  if (options.conversationStore) {
+    if (requestedThreadId) {
+      thread = await options.conversationStore.get(requestedThreadId);
+      if (!thread) throw new Error("Conversation thread not found");
+    } else {
+      thread = await options.conversationStore.create({
+        title: task,
+        requesterUserId: bodyRequesterUserId ?? "user-admin",
+        channel: bodyChannel ?? "web",
+        sourceChatId,
+        sourceThreadId,
+      });
+    }
+    parentRunId = parentRunId ?? thread.latestRunId;
+  }
+
+  const requesterUserId = bodyRequesterUserId ?? thread?.requesterUserId ?? "user-admin";
+  const channel = bodyChannel ?? thread?.channel ?? "web";
+
+  const context = {
+    instanceId,
+    requesterUserId,
+    channel,
+    threadId: thread?.id ?? requestedThreadId,
+    parentRunId,
+    sourceMessageId,
+    sourceChatId,
+    sourceThreadId,
+  };
+
+  return {
+    context,
+    thread,
+    threadContext: thread
+      ? {
+          summary: thread.summary,
+          acceptedFacts: thread.acceptedFacts,
+          rejectedAttempts: thread.rejectedAttempts,
+          openQuestions: thread.openQuestions,
+          relevantArtifactIds: thread.artifactIds,
+        }
+      : undefined,
+  };
 }
 
 async function streamRunEvents(
@@ -403,35 +974,250 @@ async function executeRun(
   task: string,
   options: WebAppOptions,
   inputArtifacts: AgentArtifact[] = [],
+  context: { threadId?: string; threadContext?: ConversationThreadContext } = {},
 ): Promise<void> {
   await options.runStore.markRunning(id);
+  const run = await options.runStore.get(id);
+  await recordAudit(options, {
+    instanceId: run?.instanceId,
+    actorId: "coordinator",
+    actorType: "agent",
+    action: "run.started",
+    targetType: "run",
+    targetId: id,
+    status: "pending",
+    runId: id,
+    threadId: run?.threadId,
+    requesterUserId: run?.requesterUserId,
+    channel: run?.channel,
+    summary: `Run started: ${task.slice(0, 160)}`,
+  });
 
   try {
     const result = await options.agent.run(task, {
       inputArtifacts,
+      threadContext: context.threadContext,
       saveArtifact: options.artifactStore
-        ? (artifact) => options.artifactStore!.saveGenerated(id, artifact)
+        ? async (artifact) => {
+            const saved = await options.artifactStore!.saveGenerated(id, artifact);
+            await recordAudit(options, {
+              instanceId: run?.instanceId,
+              actorId: "coordinator",
+              actorType: "agent",
+              action: "artifact.generated",
+              targetType: "artifact",
+              targetId: saved.id,
+              runId: id,
+              threadId: run?.threadId,
+              requesterUserId: run?.requesterUserId,
+              channel: run?.channel,
+              summary: `Output artifact generated: ${saved.filename}`,
+              metadata: {
+                filename: saved.filename,
+                mimeType: saved.mimeType,
+                sizeBytes: saved.sizeBytes,
+              },
+            });
+            return saved;
+          }
         : undefined,
       requestToolBuild: options.toolBuildRequestStore
         ? async (request) => {
             const buildRequest = await options.toolBuildRequestStore!.create({ ...request, sourceRunId: id });
+            await recordAudit(options, {
+              instanceId: run?.instanceId,
+              actorId: "coordinator",
+              actorType: "agent",
+              action: "tool_build.requested",
+              targetType: "tool_build_request",
+              targetId: buildRequest.id,
+              status: "pending",
+              runId: id,
+              threadId: run?.threadId,
+              requesterUserId: run?.requesterUserId,
+              channel: run?.channel,
+              summary: `Tool build requested for capability: ${buildRequest.capability}`,
+              metadata: { capability: buildRequest.capability },
+            });
             if (!options.toolBuildWorkflow) return buildRequest;
 
             const result = await options.toolBuildWorkflow.runOnce(buildRequest.id);
             if (result.request.status === "registered") {
               await options.reloadGeneratedTools?.();
+              await recordAudit(options, {
+                instanceId: run?.instanceId,
+                actorId: "tool-registrar",
+                actorType: "agent",
+                action: "tool_build.registered",
+                targetType: "tool",
+                targetId: result.registeredToolName ?? result.request.registeredToolName ?? result.request.id,
+                runId: id,
+                threadId: run?.threadId,
+                requesterUserId: run?.requesterUserId,
+                channel: run?.channel,
+                summary: `Tool build registered: ${result.registeredToolName ?? result.request.registeredToolName}`,
+                metadata: { capability: result.request.capability, requestId: result.request.id },
+              });
             }
             return result.request;
           }
         : undefined,
-      onEvent: (event) => {
-        return options.runStore.appendEvent(id, event);
+      onEvent: async (event) => {
+        if (!(await options.runStore.get(id))) return;
+        await options.runStore.appendEvent(id, event);
+        await auditTraceEvent(options, id, event, run);
       },
     });
+    if (!(await options.runStore.get(id))) return;
     await options.runStore.complete(id, result);
+    await recordAudit(options, {
+      instanceId: run?.instanceId,
+      actorId: "coordinator",
+      actorType: "agent",
+      action: "run.completed",
+      targetType: "run",
+      targetId: id,
+      runId: id,
+      threadId: run?.threadId,
+      requesterUserId: run?.requesterUserId,
+      channel: run?.channel,
+      summary: `Run completed: ${task.slice(0, 160)}`,
+      metadata: {
+        artifacts: result.artifacts?.length ?? 0,
+        subtasks: result.subtasks?.length ?? 0,
+        reviews: result.reviews?.length ?? 0,
+      },
+    });
+    if (context.threadId) {
+      await options.conversationStore?.completeRun({
+        threadId: context.threadId,
+        runId: id,
+        task,
+        finalAnswer: result.finalAnswer,
+        artifacts: result.artifacts,
+      });
+    }
   } catch (error) {
-    await options.runStore.fail(id, error instanceof Error ? error.message : "Unknown run error");
+    if (!(await options.runStore.get(id))) return;
+    const message = error instanceof Error ? error.message : "Unknown run error";
+    await options.runStore.fail(id, message);
+    await recordAudit(options, {
+      instanceId: run?.instanceId,
+      actorId: "coordinator",
+      actorType: "agent",
+      action: "run.failed",
+      targetType: "run",
+      targetId: id,
+      status: "failure",
+      runId: id,
+      threadId: run?.threadId,
+      requesterUserId: run?.requesterUserId,
+      channel: run?.channel,
+      summary: `Run failed: ${message.slice(0, 160)}`,
+      metadata: { error: message },
+    });
+    if (context.threadId) {
+      await options.conversationStore?.completeRun({
+        threadId: context.threadId,
+        runId: id,
+        task,
+        failedError: message,
+      });
+    }
   }
+}
+
+async function auditTraceEvent(
+  options: WebAppOptions,
+  runId: string,
+  event: AgentEvent,
+  run?: { instanceId?: string; threadId?: string; requesterUserId?: string; channel?: string },
+): Promise<void> {
+  if (event.activity !== "tool") return;
+  if (event.status !== "completed" && event.status !== "failed") return;
+  const payload = event.payload && typeof event.payload === "object"
+    ? (event.payload as Record<string, unknown>)
+    : {};
+
+  await recordAudit(options, {
+    instanceId: run?.instanceId,
+    actorId: event.actor,
+    actorType: "tool",
+    action: event.status === "failed" ? "tool.failed" : "tool.used",
+    targetType: "tool",
+    targetId: String(payload.toolName ?? event.actor),
+    status: event.status === "failed" ? "failure" : "success",
+    runId,
+    threadId: run?.threadId,
+    requesterUserId: run?.requesterUserId,
+    channel: run?.channel,
+    summary: event.title,
+    metadata: sanitizeAuditMetadata({
+      spanId: event.spanId,
+      detail: event.detail,
+      payload,
+      durationMs: event.durationMs,
+    }),
+  });
+}
+
+async function recordAudit(options: WebAppOptions, input: AuditEventInput): Promise<void> {
+  if (!options.auditEventStore) return;
+  await options.auditEventStore.record(input);
+}
+
+function sanitizeAuditMetadata(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return sanitizeObject(value as Record<string, unknown>);
+}
+
+function sanitizeObject(value: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    const lowerKey = key.toLowerCase();
+    if (lowerKey.includes("secret") || lowerKey.includes("token") || lowerKey.includes("password")) {
+      result[key] = "[redacted]";
+      continue;
+    }
+    if (Array.isArray(item)) {
+      result[key] = item.map((entry) =>
+        entry && typeof entry === "object" ? sanitizeObject(entry as Record<string, unknown>) : entry,
+      );
+      continue;
+    }
+    if (item && typeof item === "object") {
+      result[key] = sanitizeObject(item as Record<string, unknown>);
+      continue;
+    }
+    result[key] = item;
+  }
+  return result;
+}
+
+function parseOptionalText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function parseGroupProfileUpdate(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("group profile update must be an object");
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const preferences = parseOptionalPreferences(candidate.preferences);
+  return {
+    name: parseOptionalText(candidate.name),
+    description: typeof candidate.description === "string" ? candidate.description.trim() : undefined,
+    preferences,
+  };
+}
+
+function parseOptionalPreferences(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("preferences must be an object");
+  }
+  return sanitizeObject(value as Record<string, unknown>);
 }
 
 function parseAttachmentInputs(value: unknown): ArtifactUploadInput[] {
@@ -462,6 +1248,107 @@ function parseAttachmentInputs(value: unknown): ArtifactUploadInput[] {
   });
 }
 
+function parseMemoryListOptions(url: URL): MemoryListOptions {
+  const options: MemoryListOptions = {};
+  const scope = url.searchParams.get("scope");
+  const status = url.searchParams.get("status");
+  const scopeId = url.searchParams.get("scopeId");
+  const limit = Number(url.searchParams.get("limit") ?? "");
+  if (scope) options.scope = parseMemoryScope(scope);
+  if (status) options.status = parseMemoryStatus(status);
+  if (scopeId) options.scopeId = scopeId;
+  if (url.searchParams.get("includeArchived") === "true") options.includeArchived = true;
+  if (Number.isFinite(limit) && limit > 0) options.limit = Math.min(Math.floor(limit), 500);
+  return options;
+}
+
+function parseMemoryCreateInput(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("memory create request must be an object");
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const title = parseRequiredText(candidate.title, "title");
+  const summary = parseRequiredText(candidate.summary, "summary");
+  const reusableProcedure = parseRequiredText(candidate.reusableProcedure, "reusableProcedure");
+
+  return {
+    title,
+    summary,
+    reusableProcedure,
+    tags: parseOptionalStringArray(candidate.tags, "tags") ?? [],
+    scope: candidate.scope === undefined ? "global" : parseMemoryScope(candidate.scope),
+    scopeId: parseOptionalText(candidate.scopeId),
+    status: candidate.status === undefined ? "proposed" : parseMemoryStatus(candidate.status),
+    confidence: parseOptionalConfidence(candidate.confidence),
+    sensitivity: candidate.sensitivity === undefined ? "normal" : parseMemorySensitivity(candidate.sensitivity),
+    sourceRunId: parseOptionalText(candidate.sourceRunId),
+    sourceThreadId: parseOptionalText(candidate.sourceThreadId),
+    evidence: parseOptionalStringArray(candidate.evidence, "evidence") ?? [],
+  };
+}
+
+function parseMemoryUpdateInput(value: unknown): MemoryUpdateInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("memory update request must be an object");
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const update: MemoryUpdateInput = {};
+  if (candidate.title !== undefined) update.title = parseRequiredText(candidate.title, "title");
+  if (candidate.summary !== undefined) update.summary = parseRequiredText(candidate.summary, "summary");
+  if (candidate.reusableProcedure !== undefined) {
+    update.reusableProcedure = parseRequiredText(candidate.reusableProcedure, "reusableProcedure");
+  }
+  if (candidate.tags !== undefined) update.tags = parseOptionalStringArray(candidate.tags, "tags") ?? [];
+  if (candidate.scope !== undefined) update.scope = parseMemoryScope(candidate.scope);
+  if (candidate.scopeId !== undefined) update.scopeId = parseOptionalText(candidate.scopeId);
+  if (candidate.status !== undefined) update.status = parseMemoryStatus(candidate.status);
+  if (candidate.confidence !== undefined) update.confidence = parseOptionalConfidence(candidate.confidence);
+  if (candidate.sensitivity !== undefined) update.sensitivity = parseMemorySensitivity(candidate.sensitivity);
+  if (candidate.sourceRunId !== undefined) update.sourceRunId = parseOptionalText(candidate.sourceRunId);
+  if (candidate.sourceThreadId !== undefined) update.sourceThreadId = parseOptionalText(candidate.sourceThreadId);
+  if (candidate.evidence !== undefined) update.evidence = parseOptionalStringArray(candidate.evidence, "evidence") ?? [];
+  return update;
+}
+
+function parseRequiredText(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${field} is required`);
+  }
+  return value.trim();
+}
+
+function parseMemoryScope(value: unknown): "global" | "group" | "user" | "thread" | "run" {
+  if (value === "global" || value === "group" || value === "user" || value === "thread" || value === "run") {
+    return value;
+  }
+  throw new Error("memory scope is invalid");
+}
+
+function parseMemoryStatus(value: unknown): "proposed" | "accepted" | "rejected" | "archived" {
+  if (value === "proposed" || value === "accepted" || value === "rejected" || value === "archived") {
+    return value;
+  }
+  throw new Error("memory status is invalid");
+}
+
+function parseMemorySensitivity(value: unknown): "normal" | "sensitive" | "private" {
+  if (value === "normal" || value === "sensitive" || value === "private") {
+    return value;
+  }
+  throw new Error("memory sensitivity is invalid");
+}
+
+function parseOptionalConfidence(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  const confidence = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    throw new Error("confidence must be a number from 0 to 1");
+  }
+  return confidence;
+}
+
 function parseToolBuildRequestInput(value: unknown) {
   if (!value || typeof value !== "object") {
     throw new Error("tool build request must be an object");
@@ -485,7 +1372,31 @@ function parseToolBuildRequestInput(value: unknown) {
     requiredInputs: parseOptionalStringArray(candidate.requiredInputs, "requiredInputs"),
     requiredOutputs: parseOptionalStringArray(candidate.requiredOutputs, "requiredOutputs"),
     qaCriteria: parseOptionalStringArray(candidate.qaCriteria, "qaCriteria"),
+    reworkOf: typeof candidate.reworkOf === "string" ? candidate.reworkOf : undefined,
+    feedback: typeof candidate.feedback === "string" ? candidate.feedback : undefined,
   };
+}
+
+function parseToolBuildReworkInput(value: unknown): string {
+  if (!value || typeof value !== "object") {
+    throw new Error("tool build rework request must be an object");
+  }
+
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.feedback !== "string" || candidate.feedback.trim() === "") {
+    throw new Error("feedback is required");
+  }
+  return candidate.feedback.trim();
+}
+
+function parseOptionalReason(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.reason === "string" && candidate.reason.trim() ? candidate.reason.trim() : undefined;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function parseToolBuildRequestStatusUpdate(value: unknown) {
@@ -555,6 +1466,24 @@ function parseGeneratedToolModuleInput(value: unknown) {
     outputSchema: parseOptionalToolSchema(candidate.outputSchema, "outputSchema"),
     modulePath: parseRequiredPath(candidate.modulePath, "modulePath"),
     testPath: parseOptionalPath(candidate.testPath, "testPath"),
+  };
+}
+
+function parseGeneratedToolReplacementInput(expectedName: string, value: unknown) {
+  if (!value || typeof value !== "object") {
+    throw new Error("generated tool replacement must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  const parsed = parseGeneratedToolModuleInput(value);
+  const replacesVersion = typeof candidate.replacesVersion === "string" ? candidate.replacesVersion.trim() : "";
+  if (parsed.name !== expectedName) {
+    throw new Error(`replacement path name ${expectedName} does not match body name ${parsed.name}`);
+  }
+  if (!replacesVersion) throw new Error("replacesVersion is required");
+
+  return {
+    ...parsed,
+    replacesVersion,
   };
 }
 

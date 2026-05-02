@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { ToolBuildWorkflow } from "../src/tools/toolBuildWorkflow.js";
+import { ToolBuildWorker } from "../src/tools/toolBuildWorker.js";
 
 test("ToolBuildWorkflow runs builder, QA, and registrar in order", async () => {
   const calls: string[] = [];
@@ -186,4 +187,75 @@ test("ToolBuildWorkflow marks unsupported builder errors as blocked", async () =
 
   assert.equal(result.request.status, "blocked");
   assert.match(result.request.statusDetail ?? "", /No provider found/);
+});
+
+test("ToolBuildRequestStore atomically claims requested work oldest first", async () => {
+  const store = new InMemoryToolBuildRequestStore();
+  const first = await store.create({ capability: "first-tool", reason: "first" });
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const second = await store.create({ capability: "second-tool", reason: "second" });
+
+  const claimedFirst = await store.claimNextRequested("claimed by test");
+  const claimedSecond = await store.claimNextRequested("claimed by test");
+  const noMore = await store.claimNextRequested("claimed by test");
+
+  assert.equal(claimedFirst?.id, first.id);
+  assert.equal(claimedFirst?.status, "building");
+  assert.equal(claimedFirst?.statusDetail, "claimed by test");
+  assert.equal(claimedSecond?.id, second.id);
+  assert.equal(noMore, undefined);
+});
+
+test("ToolBuildWorker claims requested builds and reloads registered tools", async () => {
+  const calls: string[] = [];
+  const store = new InMemoryToolBuildRequestStore();
+  const request = await store.create({
+    capability: "browser-screenshot",
+    reason: "Need screenshot artifacts.",
+  });
+  const workflow = new ToolBuildWorkflow(
+    store,
+    {
+      async build(claimed) {
+        calls.push(`build:${claimed.status}`);
+        return {
+          modulePath: claimed.contract.modulePath,
+          testPath: claimed.contract.testPath,
+          summary: "built by worker",
+        };
+      },
+    },
+    {
+      async run() {
+        calls.push("qa");
+        return { ok: true, summary: "QA passed.", checks: ["targeted test passed"] };
+      },
+    },
+    {
+      async register() {
+        calls.push("register");
+        return "generated.browser.screenshot";
+      },
+    },
+  );
+  const events: string[] = [];
+  let reloads = 0;
+  const worker = new ToolBuildWorker(workflow, store, {
+    reloadGeneratedTools: async () => {
+      reloads += 1;
+    },
+    onEvent(event) {
+      if (event.type !== "idle") events.push(`${event.type}:${event.status ?? ""}`);
+    },
+  });
+
+  const tick = await worker.tick();
+  const stored = await store.get(request.id);
+
+  assert.deepEqual(calls, ["build:building", "qa", "register"]);
+  assert.equal(tick.claimed.length, 1);
+  assert.equal(tick.results[0].request.status, "registered");
+  assert.equal(stored?.status, "registered");
+  assert.equal(reloads, 1);
+  assert.deepEqual(events, ["claimed:building", "completed:registered"]);
 });

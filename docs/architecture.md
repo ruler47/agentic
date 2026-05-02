@@ -6,12 +6,47 @@ The universal agent is not a giant agent that tries to keep every detail in one 
 It is a coordinator that owns the original user task, delegates narrow work to specialist
 agents, reviews their outputs, and produces one final answer.
 
+The broader product goal is a deployable assistant platform for exactly one family,
+household, company, or team per running instance. Each instance should adapt to that one
+group's needs over time while keeping shared group memory, user memory, tools,
+credentials, channels, and permissions scoped correctly.
+
 ## Core Rule
 
 One user request equals one concrete task.
 
 If the request contains many unrelated goals, the coordinator should ask the user to choose
 one task or split it into separate runs.
+
+Every request also has provenance:
+
+- instance: the family/company/team deployment;
+- group profile: the one shared group context configured for this instance;
+- requester: the human user;
+- channel: web console, Telegram, future API/chat integrations;
+- conversation thread: whether this is a new task or a follow-up/correction to a previous
+  answer;
+- permission scope: which memories, tools, and outbound actions are allowed.
+
+The current implementation is still single-user in code, but future changes should keep
+this one-instance/one-group provenance model in mind.
+
+## Product Domain Model
+
+See [Instance Context And Personalized Assistant Model](modules/instance-context.md) for the
+target one-group-per-instance product model.
+
+High-level entities:
+
+- `Instance`: isolated deployment boundary for one family/company/team.
+- `GroupProfile`: the single shared group context configured for the instance.
+- `User`: person with roles, preferences, private memory, and channel identities.
+- `ChannelIdentity`: Telegram/web/API identity mapped to a user.
+- `ConversationThread`: continuity wrapper around one initial task and follow-up runs.
+- `Memory`: scoped as global, group, user, or run.
+- `Tool`: typed TypeScript capability with scope, credentials, health, and audit policy.
+- `Run`: one concrete task with requester/channel/instance provenance.
+- `OutboundAction`: auditable action such as sending a Telegram message or group alert.
 
 ## Components
 
@@ -31,6 +66,8 @@ Responsibilities:
 - Synthesize final answer.
 - Preserve generated artifacts and cite their exact URLs.
 - Store reusable lessons in skill memory.
+- Respect instance/user/channel context and permission scope.
+- Separate personal answers from outbound group/user notifications.
 
 ### Planner
 
@@ -70,6 +107,7 @@ Worker context should be small:
 - Review criteria.
 - Dependency outputs and artifact URLs, when the worker depends on earlier work.
 - Tool evidence, if runtime tools were executed before the worker writes its result.
+- Allowed memory/tool/action scope for the requester and configured group.
 
 ### Reviewer Agent
 
@@ -84,6 +122,7 @@ Review focus:
 - Contradictions with original task.
 - Missing required artifacts or placeholder proof links.
 - Whether screenshot/chart/file artifacts actually satisfy the subtask contract.
+- Whether memory use, tool use, and outbound actions respect scope and permissions.
 
 If a review fails, the worker gets one bounded revision pass before synthesis.
 
@@ -107,6 +146,9 @@ Initial tools include:
 - `file.read` and `file.write` inside the workspace sandbox.
 - `chart.generate` for data-agnostic SVG chart artifacts.
 - `browser.operate` for reusable Playwright browser automation.
+
+Future tools should be instance/user scope-aware. A tool can be globally available while
+its credentials and usage policy are specific to this instance or to allowed user roles.
 
 ### Browser Operation
 
@@ -152,10 +194,16 @@ missing capability
 This is not yet a fully general LLM-authored tool creator for arbitrary capability
 families, but the durable lifecycle and QA/registration boundaries are in place.
 
+The target flow also supports admin-provided API documentation and credentials. The agent
+should read the docs, propose a reusable TypeScript module contract, build tests, run QA,
+register the tool, and store credentials through secret handles rather than prompt text.
+
 ### Model Tiers
 
 Each LLM step receives a selected model tier based on task risk and activity type.
 Settings are stored in Postgres when configured and can be edited from the web console.
+Tier settings must support local OpenAI-compatible endpoints and remote providers such as
+the OpenAI API. Remote API keys should be stored as secret handles.
 
 Typical routing:
 
@@ -178,10 +226,71 @@ Stores:
 It should not store whole task transcripts. It stores compressed lessons that future agents
 can scan before starting.
 
+Memory must be scoped:
+
+- `global`: reusable product/runtime lessons.
+- `group`: shared facts about this instance's family/company/team.
+- `user`: personal preferences and history.
+- `run`: temporary context for one task.
+
+Agents should retrieve the minimum useful memory for the current requester and configured
+group.
+They must not read another user's private memory unless the task and policy allow it.
+
+### Channels And Telegram
+
+The web console is the current channel. Telegram is a planned first external channel.
+
+Telegram target behavior:
+
+- accept requests only from whitelisted Telegram users;
+- map Telegram user IDs to instance users;
+- decide whether each message starts a new conversation thread or continues an existing
+  one;
+- create normal runs with `channel=telegram` metadata;
+- show Telegram-originated runs in the admin console;
+- send answers back to the requester;
+- support auditable outbound messages to a person or group when permitted.
+
+Thread resolution should prefer provider metadata such as reply-to messages or Telegram
+forum topics, then use a bounded classifier over recent compact thread summaries. The
+classifier should return `new_task`, `continuation`, `clarification`, or `correction`
+with confidence and reason. Low-confidence cases can ask the user a short clarification
+instead of executing against the wrong context.
+
+### Outbound Actions
+
+Future agents should be able to act, not only answer.
+
+Examples:
+
+- notify a family group;
+- send one person a message;
+- schedule a reminder;
+- ask another instance's agent for information.
+
+Outbound actions require explicit tool contracts, permission checks, audit records, and
+delivery status. Sensitive outbound actions should support preview/approval before send.
+
+### Inter-Instance Agents
+
+Agents from different families, companies, or teams may eventually communicate. Treat this
+as an external integration with provenance and policy, not as shared memory. Cross-instance
+requests should carry minimal context and be auditable on both sides.
+
 ## Execution Flow
 
 ```text
 User gives one task
+  |
+  v
+Resolve instance/user/channel context
+  |
+  v
+Resolve conversation thread or create a new one
+  |
+  v
+Load compact thread context when this is a continuation
   |
   v
 Coordinator searches skill memory
@@ -221,6 +330,20 @@ Worker needs current facts or proof
   -> reviewer checks evidence and artifacts
 ```
 
+Channel and outbound flow:
+
+```text
+Telegram/Web/API request
+  -> verify channel identity and whitelist
+  -> resolve new task versus continuation thread
+  -> resolve instance, requester, permissions
+  -> attach threadId/parentRunId and compact thread context
+  -> create run
+  -> agent completes task
+  -> if answer only: respond to requester
+  -> if outbound action: check policy, audit, optionally request approval, send
+```
+
 ## Delegation Heuristics
 
 Use direct mode when:
@@ -249,18 +372,55 @@ Use tool creation when:
 Do not create one-off hardcoded tools for a single data value or single website outcome.
 Prefer reusable modules with schemas and capability metadata.
 
+Use scoped memory when:
+
+- the request depends on family/company preferences;
+- a user asks for personalized output;
+- a request references another member of the group;
+- a repeated task could be improved by prior decisions.
+
+Use outbound actions when:
+
+- the user explicitly asks to notify, remind, forward, schedule, or broadcast;
+- the requester has permission for the target recipient/group;
+- the message body and recipient are clear enough to audit.
+
 ## Web Console
 
-The web console is the operator surface for runs.
+The web console is the operator and admin surface for runs, the group profile, users, tools, and
+channels.
 
 It provides:
 
 - task submission with file attachments;
+- requester/channel context and group profile visibility;
+- thread visibility and continue-after-answer flow;
 - live run status through SSE with polling fallback;
 - an execution map with parent/dependency arrows;
 - collapsible trace cards with actor, status, activity, duration, and tool evidence;
 - answer and artifact panels;
-- system inventory for tools, memory, build requests, and model tiers.
+- group profile/user/channel administration;
+- scoped memory browsing and editing;
+- system inventory for tools, memory, build requests, and model tiers;
+- outbound action history and future approval queue.
+
+Future top-level navigation:
+
+```text
+Dashboard
+Runs
+Conversations
+Group Profile
+Users
+Channels
+Memory
+Artifacts
+Tools
+Tool Builds
+Models
+Policies
+Settings
+```
 
 ## Example: Spanish Cities
 
@@ -314,3 +474,34 @@ Delegated plan:
 - Reviewer A: verify prices, dates, airlines, and screenshot relevance.
 - Worker B: synthesize the Russian answer from reviewed evidence and artifacts.
 - Reviewer B: check that the final answer cites real artifact URLs.
+
+## Example: Family Telegram Reminder
+
+Task from Telegram:
+
+> Remind everyone in the family chat tomorrow at 18:00 to bring passports.
+
+Delegated plan:
+
+- Runtime: verify Telegram user is whitelisted and has family broadcast permission.
+- Runtime: resolve whether the message is a new reminder thread or a follow-up to an
+  existing thread.
+- Worker A: interpret reminder time using family time zone and channel context.
+- Worker B: create an outbound Telegram reminder action with target group and message.
+- Reviewer A: check recipient, time, message body, and permission scope.
+- Runtime: store audit event and schedule/send through Telegram tool.
+
+## Example: API Tool Onboarding
+
+Task from admin:
+
+> Here is our CRM API documentation and access key. Create a module so agents can look up
+> customers by email and create support notes.
+
+Delegated plan:
+
+- Worker A: read docs and propose a reusable TypeScript tool contract.
+- Tool Builder: implement the CRM module with schema and secret-handle credentials.
+- Tool QA: run tests against mocked docs examples and a safe smoke call if allowed.
+- Tool Registrar: register the tool for this instance.
+- Reviewer: verify no credentials were stored in prompts, memory, or artifacts.

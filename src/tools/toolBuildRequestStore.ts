@@ -18,6 +18,8 @@ export type ToolBuildRequestInput = {
   requiredInputs?: string[];
   requiredOutputs?: string[];
   qaCriteria?: string[];
+  reworkOf?: string;
+  feedback?: string;
 };
 
 export type ToolBuildContract = {
@@ -63,7 +65,9 @@ export type ToolBuildRequestStore = {
   create(input: ToolBuildRequestInput): Promise<ToolBuildRequest>;
   get(id: string): Promise<ToolBuildRequest | undefined>;
   list(limit?: number): Promise<ToolBuildRequest[]>;
+  claimNextRequested?(statusDetail?: string): Promise<ToolBuildRequest | undefined>;
   updateStatus(id: string, update: ToolBuildRequestStatusUpdate): Promise<ToolBuildRequest>;
+  delete(id: string): Promise<boolean>;
 };
 
 export class InMemoryToolBuildRequestStore implements ToolBuildRequestStore {
@@ -112,6 +116,24 @@ export class InMemoryToolBuildRequestStore implements ToolBuildRequestStore {
     };
     this.requests.set(id, cloneRequest(updated));
     return cloneRequest(updated);
+  }
+
+  async claimNextRequested(statusDetail = "Claimed by Tool Builder worker."): Promise<ToolBuildRequest | undefined> {
+    const next = [...this.requests.values()]
+      .filter((request) => request.status === "requested")
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+    if (!next) return undefined;
+
+    return this.updateStatus(next.id, {
+      status: "building",
+      statusDetail,
+      qaReport: next.qaReport,
+      registeredToolName: next.registeredToolName,
+    });
+  }
+
+  async delete(id: string): Promise<boolean> {
+    return this.requests.delete(id);
   }
 }
 
@@ -185,6 +207,8 @@ function cloneRequest(request: ToolBuildRequest): ToolBuildRequest {
     requiredInputs: request.requiredInputs ? [...request.requiredInputs] : undefined,
     requiredOutputs: request.requiredOutputs ? [...request.requiredOutputs] : undefined,
     qaCriteria: request.qaCriteria ? [...request.qaCriteria] : undefined,
+    reworkOf: request.reworkOf,
+    feedback: request.feedback,
     qaReport: request.qaReport
       ? {
           ...request.qaReport,

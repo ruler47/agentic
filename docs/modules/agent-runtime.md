@@ -27,11 +27,23 @@ Main file:
 - Accept input artifacts and include them in agent context.
 - Request output artifacts from registered tools, currently `chart.generate` for SVG
   charts from parsed time-series data.
+- Accept compact conversation-thread context for continuation runs.
+- Receive optional conversation-thread context and include it in bounded runtime context
+  for continuation runs.
+- Future: receive full instance/user/channel context from adapters and use it to scope
+  memory, tools, artifacts, policies, and outbound actions.
 
 ## Public Contract
 
 ```ts
 const result = await agent.run(task, {
+  // Future context fields:
+  // instanceId,
+  // requesterUserId,
+  // channel,
+  // threadId,
+  // parentRunId,
+  // threadContext,
   inputArtifacts,
   saveArtifact: async (artifact) => artifactStore.saveGenerated(runId, artifact),
   requestToolBuild: async (request) => toolBuildRequestStore.create(request),
@@ -43,6 +55,51 @@ const result = await agent.run(task, {
 
 The runtime does not know about HTTP, browsers, databases, or queues. That separation is
 intentional: another project can import the runtime and provide its own interface.
+The same rule should apply to Telegram and future channels: channel adapters resolve
+identity and permissions before calling the runtime, instead of embedding provider logic
+inside agent execution.
+
+## Future Context Contract
+
+The current `run(task, options)` contract accepts thread context but is still mostly
+single-user. The target contract adds full context without making the runtime depend on
+web or Telegram infrastructure:
+
+```ts
+type AgentRunContext = {
+  instanceId: string;
+  requesterUserId: string;
+  channel: "web" | "telegram" | "api" | string;
+  threadId?: string;
+  parentRunId?: string;
+  sourceMessageId?: string;
+  sourceChatId?: string;
+  sourceThreadId?: string;
+  threadContext?: {
+    summary: string;
+    acceptedFacts: string[];
+    rejectedAttempts: string[];
+    openQuestions: string[];
+    relevantArtifactIds: string[];
+  };
+  permissionScope: {
+    memoryScopes: Array<"global" | "group" | "user" | "run">;
+    toolCapabilities: string[];
+    outboundActions: string[];
+  };
+};
+```
+
+Runtime responsibilities with context:
+
+- pass context to memory retrieval so global/group/user memories are scoped;
+- pass context to tools so instance/user credentials and policy can be enforced;
+- include context in trace events and artifacts;
+- include thread context in classifier/planner prompts as bounded summary, not raw
+  transcript;
+- emit enough output for the caller to update the thread summary after the run;
+- create outbound action requests rather than directly sending provider messages;
+- keep secret handles out of prompts, memory, artifacts, and trace details.
 
 ## Extension Points
 
@@ -54,6 +111,8 @@ intentional: another project can import the runtime and provide its own interfac
   into `ToolRegistry` at startup.
 - Add deeper retry policy and budget controls for repeated `needs_revision` verdicts.
 - Allow recursive child-agent creation instead of coordinator-owned orchestration.
+- Add a reusable thread classifier that distinguishes new tasks, continuations,
+  clarification questions, and corrections before run execution.
 
 ## Tool Registry Metadata
 
@@ -93,12 +152,12 @@ Each request stores:
 - QA criteria and builder instructions.
 
 This is intentionally a contract and queue, not arbitrary runtime code execution. The API
-now exposes `GET /api/tool-build-requests/:id` and `PATCH
-/api/tool-build-requests/:id`, so future Builder, QA, and Registrar agents can claim a
-request, publish test evidence, and mark the module registered without inventing a
-separate protocol. The next step is a Tool Builder agent that consumes this queue, writes
-the TypeScript module, asks a Tool QA agent to test it, and only then asks a registrar to
-promote it into `ToolRegistry`.
+exposes `GET /api/tool-build-requests/:id` and `PATCH
+/api/tool-build-requests/:id`, while `ToolBuildWorker` consumes the same queue in the
+background. The worker claims the oldest `requested` row through the store, marks it
+`building`, runs Builder -> QA -> Registrar, and reloads generated tools after a passing
+registration. Manual `POST /api/tool-build-requests/:id/run` remains as an operator
+fallback.
 
 `ToolBuildWorkflow` is the reusable orchestration boundary for that flow. It has pluggable
 Builder, QA Runner, and Registrar interfaces. The workflow marks a request `building`,
@@ -116,6 +175,10 @@ passes. `MetadataToolRegistrar` records the generated metadata, after which the 
 reloads generated tools into the active registry. This gives us a real end-to-end loop
 while keeping unknown capability families blocked until a provider or future LLM-authored
 builder can safely handle them.
+
+The worker is enabled by default in `src/server/main.ts`. Set
+`TOOL_BUILD_WORKER=disabled` for a fully manual queue, or tune polling/batch size with
+`TOOL_BUILD_WORKER_INTERVAL_MS` and `TOOL_BUILD_WORKER_BATCH_SIZE`.
 
 The registrar path now supports generated metadata registration into `tool_modules` with
 name/version conflict checks. Registered generated modules start as `disabled` until the
@@ -149,6 +212,8 @@ The runtime chooses a tier for each LLM call:
 Tier selection is implemented in `src/agents/modelTier.ts`. `LlmClient` maps tiers to
 environment overrides (`LLM_MODEL_TIER_S`, `LLM_MODEL_TIER_M`, `LLM_MODEL_TIER_L`,
 `LLM_MODEL_TIER_XL`) and falls back to `LLM_MODEL` when a tier-specific model is not set.
+The same OpenAI-compatible client can point at a local endpoint or a remote provider such
+as the OpenAI API by changing base URL, model names, and API-key secret/configuration.
 In the web server, tier policy is loaded from `model_tier_settings` on each request so UI
 changes affect subsequent LLM calls without rebuilding the container.
 For transport failures, HTTP errors, or empty assistant content, `LlmClient` retries each

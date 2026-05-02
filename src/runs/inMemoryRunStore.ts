@@ -1,15 +1,23 @@
 import { AgentEvent, AgentRunResult } from "../types.js";
-import { AgentRunRecord, RunStore } from "./types.js";
+import { AgentRunRecord, RunCreateContext, RunStore } from "./types.js";
 
 export class InMemoryRunStore implements RunStore {
   private readonly runs = new Map<string, AgentRunRecord>();
 
-  async create(task: string): Promise<AgentRunRecord> {
+  async create(task: string, context: RunCreateContext = {}): Promise<AgentRunRecord> {
     const now = new Date().toISOString();
     const run: AgentRunRecord = {
       id: createRunId(),
       task,
       status: "queued",
+      instanceId: context.instanceId,
+      requesterUserId: context.requesterUserId,
+      channel: context.channel,
+      threadId: context.threadId,
+      parentRunId: context.parentRunId,
+      sourceMessageId: context.sourceMessageId,
+      sourceChatId: context.sourceChatId,
+      sourceThreadId: context.sourceThreadId,
       createdAt: now,
       updatedAt: now,
       events: [],
@@ -70,6 +78,17 @@ export class InMemoryRunStore implements RunStore {
     }
 
     return recovered;
+  }
+
+  async deleteByThreadId(threadId: string): Promise<number> {
+    let deleted = 0;
+    for (const [id, run] of this.runs.entries()) {
+      if (run.threadId !== threadId) continue;
+      this.runs.delete(id);
+      deleted += 1;
+    }
+
+    return deleted;
   }
 
   private mustGet(id: string): AgentRunRecord {

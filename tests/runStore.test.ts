@@ -6,7 +6,12 @@ import { AgentRunResult } from "../src/types.js";
 test("InMemoryRunStore tracks run lifecycle", () => {
   const store = new InMemoryRunStore();
   return (async () => {
-    const run = await store.create("test task");
+    const run = await store.create("test task", {
+      instanceId: "instance-local",
+      requesterUserId: "user-admin",
+      channel: "web",
+      threadId: "thread-1",
+    });
 
     await store.markRunning(run.id);
     await store.appendEvent(run.id, {
@@ -37,6 +42,10 @@ test("InMemoryRunStore tracks run lifecycle", () => {
     const completed = await store.get(run.id);
 
     assert.equal(completed?.status, "completed");
+    assert.equal(completed?.instanceId, "instance-local");
+    assert.equal(completed?.requesterUserId, "user-admin");
+    assert.equal(completed?.channel, "web");
+    assert.equal(completed?.threadId, "thread-1");
     assert.equal(completed?.events.length, 1);
     assert.equal(completed?.result?.finalAnswer, "done");
   })();
@@ -86,4 +95,29 @@ test("InMemoryRunStore recovers interrupted queued and running runs", async () =
   assert.equal(recoveredQueued?.error, "restart");
   assert.equal(recoveredRunning?.status, "failed");
   assert.equal(untouchedCompleted?.status, "completed");
+});
+
+test("InMemoryRunStore deletes runs by conversation thread id", async () => {
+  const store = new InMemoryRunStore();
+  const first = await store.create("thread task 1", { threadId: "thread-1" });
+  const second = await store.create("thread task 2", { threadId: "thread-1" });
+  const other = await store.create("other task", { threadId: "thread-2" });
+
+  await store.appendEvent(first.id, {
+    id: "event-delete",
+    spanId: "span-delete",
+    type: "run-started",
+    actor: "coordinator",
+    activity: "coordination",
+    status: "started",
+    title: "Started",
+    timestamp: new Date().toISOString(),
+  });
+
+  const deleted = await store.deleteByThreadId("thread-1");
+
+  assert.equal(deleted, 2);
+  assert.equal(await store.get(first.id), undefined);
+  assert.equal(await store.get(second.id), undefined);
+  assert.equal((await store.get(other.id))?.id, other.id);
 });

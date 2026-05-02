@@ -1,11 +1,19 @@
 import { AgentEvent, AgentRunResult } from "../types.js";
 import { PgPool } from "../db/pool.js";
-import { AgentRunRecord, RunStore, RunStatus } from "./types.js";
+import { AgentRunRecord, RunCreateContext, RunStore, RunStatus } from "./types.js";
 
 type RunRow = {
   id: string;
   task: string;
   status: RunStatus;
+  instance_id: string | null;
+  requester_user_id: string | null;
+  channel: string | null;
+  thread_id: string | null;
+  parent_run_id: string | null;
+  source_message_id: string | null;
+  source_chat_id: string | null;
+  source_thread_id: string | null;
   created_at: Date;
   updated_at: Date;
   result: AgentRunResult | null;
@@ -32,15 +40,31 @@ type EventRow = {
 export class PostgresRunStore implements RunStore {
   constructor(private readonly pool: PgPool) {}
 
-  async create(task: string): Promise<AgentRunRecord> {
+  async create(task: string, context: RunCreateContext = {}): Promise<AgentRunRecord> {
     const now = new Date();
     const id = createRunId();
     await this.pool.query(
       `
-        insert into runs (id, task, status, created_at, updated_at)
-        values ($1, $2, 'queued', $3, $3)
+        insert into runs (
+          id, task, status, instance_id, requester_user_id, channel, thread_id,
+          parent_run_id, source_message_id, source_chat_id, source_thread_id,
+          created_at, updated_at
+        )
+        values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
       `,
-      [id, task, now],
+      [
+        id,
+        task,
+        context.instanceId ?? null,
+        context.requesterUserId ?? null,
+        context.channel ?? null,
+        context.threadId ?? null,
+        context.parentRunId ?? null,
+        context.sourceMessageId ?? null,
+        context.sourceChatId ?? null,
+        context.sourceThreadId ?? null,
+        now,
+      ],
     );
 
     const run = await this.get(id);
@@ -51,6 +75,8 @@ export class PostgresRunStore implements RunStore {
   async list(): Promise<AgentRunRecord[]> {
     const rows = await this.pool.query<RunRow>(`
       select id, task, status, created_at, updated_at, result, error
+           , instance_id, requester_user_id, channel, thread_id, parent_run_id
+           , source_message_id, source_chat_id, source_thread_id
       from runs
       order by created_at desc
       limit 100
@@ -63,6 +89,8 @@ export class PostgresRunStore implements RunStore {
     const rows = await this.pool.query<RunRow>(
       `
         select id, task, status, created_at, updated_at, result, error
+             , instance_id, requester_user_id, channel, thread_id, parent_run_id
+             , source_message_id, source_chat_id, source_thread_id
         from runs
         where id = $1
       `,
@@ -143,6 +171,18 @@ export class PostgresRunStore implements RunStore {
     return result.rowCount ?? 0;
   }
 
+  async deleteByThreadId(threadId: string): Promise<number> {
+    const result = await this.pool.query(
+      `
+        delete from runs
+        where thread_id = $1
+      `,
+      [threadId],
+    );
+
+    return result.rowCount ?? 0;
+  }
+
   private async updateStatus(id: string, status: RunStatus): Promise<void> {
     await this.pool.query("update runs set status = $1, updated_at = $2 where id = $3", [
       status,
@@ -168,6 +208,14 @@ export class PostgresRunStore implements RunStore {
       id: row.id,
       task: row.task,
       status: row.status,
+      instanceId: row.instance_id ?? undefined,
+      requesterUserId: row.requester_user_id ?? undefined,
+      channel: row.channel ?? undefined,
+      threadId: row.thread_id ?? undefined,
+      parentRunId: row.parent_run_id ?? undefined,
+      sourceMessageId: row.source_message_id ?? undefined,
+      sourceChatId: row.source_chat_id ?? undefined,
+      sourceThreadId: row.source_thread_id ?? undefined,
       createdAt: row.created_at.toISOString(),
       updatedAt: row.updated_at.toISOString(),
       events: eventRows.rows.map(mapEventRow),

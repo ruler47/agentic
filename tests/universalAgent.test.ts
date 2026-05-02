@@ -6,10 +6,11 @@ import { tmpdir } from "node:os";
 import { UniversalAgent } from "../src/agents/universalAgent.js";
 import { LlmClient } from "../src/llm/client.js";
 import { SkillMemory } from "../src/memory/skillMemory.js";
-import { AgentArtifact, ArtifactCreateInput, Message } from "../src/types.js";
+import { AgentArtifact, AgentEvent, ArtifactCreateInput, Message } from "../src/types.js";
 import { ToolBuildRequestInput } from "../src/tools/toolBuildRequestStore.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { Tool } from "../src/tools/tool.js";
+import { PNG } from "pngjs";
 
 class FakeLlm {
   private index = 0;
@@ -174,6 +175,21 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function usefulPngBuffer(): Buffer {
+  const png = new PNG({ width: 360, height: 220 });
+  for (let y = 0; y < png.height; y += 1) {
+    for (let x = 0; x < png.width; x += 1) {
+      const offset = (png.width * y + x) << 2;
+      const stripe = Math.floor(y / 18) % 2 === 0 || Math.floor(x / 48) % 2 === 0;
+      png.data[offset] = stripe ? 245 : 35;
+      png.data[offset + 1] = stripe ? 248 : 45;
+      png.data[offset + 2] = stripe ? 250 : 55;
+      png.data[offset + 3] = 255;
+    }
+  }
+  return PNG.sync.write(png);
+}
+
 test("UniversalAgent answers direct tasks without creating subtasks", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));
@@ -281,7 +297,7 @@ test("UniversalAgent can use a newly built screenshot tool in the same run", asy
           artifact: {
             filename: "page-screenshot.png",
             mimeType: "image/png",
-            contentBase64: Buffer.from("fake-png").toString("base64"),
+            contentBase64: usefulPngBuffer().toString("base64"),
             description: "fake screenshot",
           },
         },
@@ -393,7 +409,7 @@ test("UniversalAgent executes required screenshot artifacts inside delegated sub
           artifact: {
             filename: "proof.png",
             mimeType: "image/png",
-            contentBase64: Buffer.from("fake-png").toString("base64"),
+            contentBase64: usefulPngBuffer().toString("base64"),
             description: "Proof screenshot",
           },
         },
@@ -495,7 +511,7 @@ test("UniversalAgent executes declared browser operate tool inputs and saves scr
             {
               filename: "browser-proof.png",
               mimeType: "image/png",
-              content: Buffer.from("fake-png"),
+              content: usefulPngBuffer(),
               description:
                 "Browser screenshot captured from https://www.skyscanner.com/routes/agp/ista/malaga-to-istanbul.html.",
             },
@@ -616,7 +632,7 @@ test("UniversalAgent rewrites brittle browser form automation to direct source U
             {
               filename: "flight-proof.png",
               mimeType: "image/png",
-              content: Buffer.from("fake-png"),
+              content: usefulPngBuffer(),
               description: `Browser screenshot captured from ${directUrl}.`,
             },
           ],
@@ -749,7 +765,7 @@ test("UniversalAgent hard-fails irrelevant proof artifacts", async () => {
           artifact: {
             filename: "ai-index-report-2026-pdf-screenshot.png",
             mimeType: "image/png",
-            contentBase64: Buffer.from("fake-png").toString("base64"),
+            contentBase64: usefulPngBuffer().toString("base64"),
             description:
               "Browser screenshot captured from https://hai.stanford.edu/assets/files/ai_index_report_2026.pdf",
           },
@@ -885,7 +901,7 @@ test("UniversalAgent reuses dependency artifacts instead of recreating proof in 
           artifact: {
             filename: "proof.png",
             mimeType: "image/png",
-            contentBase64: Buffer.from("fake-png").toString("base64"),
+            contentBase64: usefulPngBuffer().toString("base64"),
             description: "Proof screenshot",
           },
         },
@@ -1201,6 +1217,90 @@ test("UniversalAgent revises failed worker output before synthesis", async () =>
     assert.equal(failedReview?.parentSpanId, initialWorker?.spanId);
     assert.equal(revisedWorker?.parentSpanId, initialWorker?.spanId);
     assert.equal(passedReview?.parentSpanId, revisedWorker?.spanId);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent rejects weak browser artifact evidence before synthesis", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"requires proof artifact","domains":["browser"],"riskLevel":"medium"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "proof",
+          title: "Capture proof",
+          role: "browser-operator",
+          prompt: "Capture a useful screenshot proof from https://example.com.",
+          expectedOutput: "Useful screenshot evidence or a clear blocker.",
+          reviewCriteria: ["Screenshot is useful proof"],
+          requiredTools: ["browser-screenshot"],
+          requiredArtifacts: [
+            {
+              kind: "screenshot",
+              capability: "browser-screenshot",
+              description: "Useful proof screenshot",
+              required: true,
+            },
+          ],
+        },
+      ],
+    }),
+    "Screenshot artifact /artifacts/proof.png is only a loading screen, so it is weak browser proof.",
+    "Retried another source and confirmed useful proof cannot be produced from available pages.",
+    "Final answer states the screenshot blocker plainly.",
+    '{"shouldStore":false}',
+  ]);
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "browser.screenshot.fake",
+    description: "Fake screenshot tool",
+    capabilities: ["browser-screenshot"],
+    async run() {
+      return {
+        ok: true,
+        content: "Captured a screenshot, but the page only showed a loading screen.",
+        data: {
+          artifact: {
+            filename: "proof.png",
+            mimeType: "image/png",
+            contentBase64: usefulPngBuffer().toString("base64"),
+            description: "Screenshot artifact shows only a loading screen.",
+          },
+        },
+      };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const events: AgentEvent[] = [];
+
+  try {
+    const result = await agent.run("Capture screenshot proof, but reject loading screens.", {
+      onEvent: (event) => {
+        events.push(event);
+      },
+      saveArtifact: async (artifact): Promise<AgentArtifact> => ({
+        id: "artifact-proof",
+        runId: "run-1",
+        kind: "output",
+        filename: artifact.filename,
+        mimeType: artifact.mimeType,
+        sizeBytes: Buffer.isBuffer(artifact.content) ? artifact.content.byteLength : artifact.content.length,
+        url: "/artifacts/proof.png",
+        description: artifact.description,
+        createdAt: new Date().toISOString(),
+      }),
+    });
+
+    assert.equal(result.workerResults[0]?.output, "Retried another source and confirmed useful proof cannot be produced from available pages.");
+    assert.equal(result.reviews[0]?.verdict, "needs_revision");
+    assert.match(result.reviews[0]?.notes ?? "", /Missing required real artifact/);
+    assert.equal(result.reviews[1]?.verdict, "needs_revision");
+    assert.equal(result.artifacts?.length ?? 0, 0);
+    assert.ok(events.some((event) => event.status === "failed" && /semantic QA/.test(event.title)));
+    assert.equal(fakeLlm.callCount, 6);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

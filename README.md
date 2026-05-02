@@ -4,6 +4,26 @@ TypeScript prototype of a coordinator agent that accepts one concrete user task,
 
 Project instructions and long-term collaboration notes for AI agents live in [AGENTS.md](AGENTS.md).
 
+## Product Direction
+
+The long-term target is a deployable assistant platform for a family, household, company,
+or team. The system should adapt to the group over time while keeping context scoped:
+
+- shared group/company/family memory for this instance;
+- personal memory for each member;
+- channel identities such as Telegram users;
+- conversation threads so Telegram and web can distinguish new tasks from follow-up
+  questions, clarifications, and corrections;
+- whitelisted requesters;
+- auditable outbound messages and reminders;
+- instance-scoped tools and credentials;
+- simplified API onboarding where an admin provides documentation and access, then the
+  system creates a reusable TypeScript tool module with tests and QA.
+
+The current runtime is still a single-user coordinator-led prototype, but the roadmap and
+docs now describe the one-group-per-instance user/channel model that future work should
+follow.
+
 Default local model endpoint:
 
 - Base URL: `http://127.0.0.1:1234/v1`
@@ -25,8 +45,9 @@ docker compose up --build
 Then open `http://127.0.0.1:3000`.
 
 The compose stack includes the app, Postgres, Redis, MinIO, and SearXNG-powered web search.
-It also mounts `./workspace` into the app container for local artifacts and the sandboxed
-`file.read` / `file.write` tools.
+It also mounts `./workspace` into the app container for the sandboxed `file.read` /
+`file.write` tools and for fallback access to older local artifacts. New Docker-stack
+artifacts use Postgres metadata plus MinIO object payloads.
 
 Run the browser console directly on the host:
 
@@ -54,6 +75,9 @@ docker compose up --build
 If a tier override is not set, the app falls back to `LLM_MODEL`.
 In the web console, open System Inventory to edit and persist model tier policy in
 Postgres.
+Model providers can be local OpenAI-compatible endpoints or remote providers such as the
+OpenAI API. Remote API keys should be stored through secret handles/settings rather than
+prompts or memory.
 
 ## Verify
 
@@ -86,11 +110,16 @@ node dist/cli.js "Скажи одним предложением, что так�
    - It uses worker outputs, review notes, and its own judgment.
 8. **Skill memory is updated.**
    - Reusable patterns, failures, and successful methods are stored for future agents.
+   - Memories can be scoped to global/group/user/thread/run, carry confidence/evidence,
+     and move through proposed -> accepted/rejected review before retrieval.
 
 ## Artifacts
 
-The web console accepts multiple file attachments with a task. Files are stored under the
-configured artifact root and exposed to the agent as input artifacts.
+The web console accepts multiple file attachments with a task. In the Docker stack, new
+artifact metadata is stored in Postgres and binary payloads are stored in MinIO through an
+S3-compatible object store. The server keeps a local filesystem fallback so older
+workspace artifacts and non-Docker development still download through the same
+`/api/runs/:id/artifacts/:artifactId` links.
 
 When an answer produces files, the final response can include artifact links. The first
 implemented output artifact tool is `chart.generate`: if the user asks for a graph/chart
@@ -116,7 +145,11 @@ Build requests have a durable lifecycle API: builder/QA/registrar agents can rea
 request by id, update status, attach QA evidence, and record the registered generated tool
 name.
 `POST /api/tool-build-requests/:id/run` executes the configured Builder -> QA -> Registrar
-workflow for a queued request.
+workflow for a queued request. The web server also starts a background Tool Builder worker
+by default: it claims the oldest `requested` item, marks it `building`, runs the same QA
+workflow, registers only after QA passes, and reloads generated tools. Set
+`TOOL_BUILD_WORKER=disabled` to keep the queue manual, or tune polling with
+`TOOL_BUILD_WORKER_INTERVAL_MS` and `TOOL_BUILD_WORKER_BATCH_SIZE`.
 
 Tool contracts are also persisted in Postgres when the Docker stack is running. The
 `tool_modules` catalog stores version, capabilities, schemas, source, status, and latest
@@ -146,7 +179,10 @@ model-tier routing, and a first request/response artifact path.
 
 ## Modules
 
+- [Architecture](docs/architecture.md)
 - [Agent runtime](docs/modules/agent-runtime.md)
 - [Web console](docs/modules/web-console.md)
+- [Instance context and personalized assistant model](docs/modules/instance-context.md)
 - [Target infrastructure](docs/modules/infrastructure.md)
+- [Browser operate tool](docs/modules/browser-operate.md)
 - [Roadmap](docs/roadmap.md)

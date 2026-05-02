@@ -7,15 +7,29 @@ The project is intended to run through Docker Compose:
 - `app`: Node.js web/API process.
 - `postgres`: primary run/event store using `pgvector/pgvector:pg16`.
 - `redis`: future queue and event stream.
-- `minio`: future S3-compatible durable artifact storage.
+- `minio`: S3-compatible durable artifact payload storage.
 - `searxng`: local metasearch service for `web.search`.
-- local OpenAI-compatible LLM endpoint exposed to the app as `host.docker.internal`.
+- local OpenAI-compatible LLM endpoint exposed to the app as `host.docker.internal`, or a
+  remote OpenAI-compatible provider such as the OpenAI API.
 
 Run:
 
 ```bash
 docker compose up --build
 ```
+
+### Rebuilds During Active Runs
+
+`docker compose up --build -d app` recreates the app container. Any active in-process
+LLM, browser, or tool call in that container is interrupted. Persistent stores keep the
+run, events, artifacts, memories, and audit records written before shutdown; on startup
+the app calls `recoverInterrupted` and marks `queued`/`running` runs as failed with a
+restart interruption reason. The UI can refresh/reconnect to see the failed run and
+partial trace, but execution does not resume automatically.
+
+Future production deployment should add a drain mode and queue-backed workers so the web
+process can stop accepting new runs, wait for active jobs, or resume idempotent jobs after
+replacement.
 
 ## Recommended Production Direction
 
@@ -25,7 +39,8 @@ PostgreSQL is the primary database.
 
 Why:
 
-- Reliable relational model for users, projects, runs, events, artifacts, and audit logs.
+- Reliable relational model for one assistant instance, its users, runs, events, artifacts, and
+  audit logs.
 - Mature migrations and backup story.
 - Works well with JSONB for flexible agent payloads.
 - Can add `pgvector` for semantic skill memory and retrieval.
@@ -34,6 +49,13 @@ Current tables:
 
 - `runs`
 - `run_events`
+- `instance_settings`
+- `group_profile`
+- `users`
+- `user_roles`
+- `channel_identities`
+- `conversation_threads`
+- `thread_messages`
 - `skill_memories`
 - `model_tier_settings`
 - `tool_modules`
@@ -41,17 +63,39 @@ Current tables:
 
 Current filesystem-backed stores:
 
-- `workspace/artifacts`: local request and response artifacts, with per-run manifests.
+- `workspace/artifacts`: local fallback for older artifacts and non-Docker development.
 
 On app startup, stale `queued` or `running` runs from a previous process are marked as
 `failed` with an interruption message. This keeps the UI honest after container restarts.
 
-Future tables:
+Future or partially implemented tables:
 
-- `projects`
+- `telegram_messages`
+- `outbound_actions`
+- `policies`
+- `audit_events` records normalized action history for runs, artifacts, tool usage,
+  tool builds, and future policy/outbound decisions.
+- `tool_credentials`
+- `tool_installations`
 - `agent_tasks`
-- `skill_memories`
+- scoped `skill_memories`
 - `artifacts`
+
+Important future relationships:
+
+- Runs belong to the current instance and have a requester user/source channel.
+- Runs may belong to a conversation thread through `threadId` and may point to a previous
+  run with `parentRunId` for continuations.
+- Conversation threads store compact summaries, accepted facts, rejected attempts, open
+  questions, and source channel/message references.
+- Memories have a scope: global, group, user, or run.
+- Tools can be globally registered but installed/enabled for this instance, roles, or
+  individual users.
+- Tool credentials are secret handles scoped to this instance/tool/user policy, not raw values in
+  prompt text or memory.
+- Channel identities map provider IDs, such as Telegram user IDs, to internal users.
+- Outbound actions store requester, target, body, policy decision, delivery status, and
+  provider response.
 
 ### Memory Search
 
@@ -80,8 +124,12 @@ stronger pub/sub semantics, and service-to-service messaging.
 
 ### Object Storage
 
-The current app stores request/response artifacts on the mounted workspace filesystem.
-Use S3-compatible storage for the durable production version:
+The Docker runtime stores new request/response artifact metadata in Postgres and payloads
+in MinIO through an S3-compatible object store. The app still keeps a local filesystem
+fallback so old `workspace/artifacts` manifests and simple non-Docker development remain
+readable through the same artifact download API.
+
+The durable store is used for:
 
 - code bundles;
 - screenshots;
@@ -90,9 +138,35 @@ Use S3-compatible storage for the durable production version:
 - datasets;
 - exported documents.
 
-MinIO is already part of Docker Compose for local S3-compatible artifact storage.
-The next infrastructure step is promoting the local artifact manifest/store to a
-Postgres metadata table plus MinIO object payloads.
+Relevant environment variables:
+
+- `MINIO_ENDPOINT`
+- `MINIO_ACCESS_KEY`
+- `MINIO_SECRET_KEY`
+- `MINIO_BUCKET`
+- optional `S3_REGION`
+
+When those variables and `DATABASE_URL` are present, `src/server/main.ts` wires
+`DurableArtifactStore(PostgresArtifactMetadataStore, S3ObjectStore)` with a local
+fallback. Without them, the app uses `LocalArtifactStore`.
+
+### Secrets
+
+Future API/tool onboarding requires a secret store. Credentials provided by an admin
+should be stored as secret handles and referenced by tools at runtime.
+This also includes remote model provider credentials such as OpenAI API keys.
+
+Do not store secrets in:
+
+- skill memories;
+- run prompts or LLM messages;
+- generated tool source;
+- artifacts;
+- trace event details.
+
+Local development can start with encrypted Postgres records or environment-backed secret
+handles. Production should use a dedicated secret manager such as Vault, cloud KMS/Secret
+Manager, or another deployment-appropriate backend.
 
 ### Workspace Files
 
@@ -132,6 +206,39 @@ browser screenshot tools. Docker Compose bind-mounts `./src/tools/generated` and
 `./tests/generated` into the app container so generated TypeScript modules and their tests
 survive container recreation.
 
+### Telegram
+
+Telegram is the first planned external user channel.
+
+Infrastructure needs:
+
+- bot token stored as a secret;
+- webhook endpoint or polling worker;
+- channel identity mapping from Telegram user ID to internal user;
+- whitelist enforcement before run creation;
+- inbound message persistence;
+- outbound message and reminder delivery records;
+- retry/error handling for provider failures;
+- admin-visible audit log.
+
+Telegram-originated runs should use the same run/event/artifact system as web-originated
+runs, with extra provenance fields such as chat ID and message ID.
+
+### Instance Isolation
+
+The system should treat instance isolation as a first-class design constraint. One running
+instance serves one group profile, but separate deployments must not share private data by
+default.
+
+Minimum requirements:
+
+- every persistent record that contains user/group data has an instance boundary;
+- database queries include instance filtering when multiple instances share infrastructure;
+- artifacts are stored under instance-aware prefixes;
+- tool credentials are instance/user/policy scoped;
+- audit events include instance, actor, target, action, and result;
+- cross-instance agent communication is explicit and logged.
+
 ## Module Boundaries
 
 The project should keep these boundaries:
@@ -141,6 +248,10 @@ The project should keep these boundaries:
 - Run store: interface-first, can move from in-memory to Postgres.
 - Web console: consumes API only.
 - Tool execution: isolated tools with explicit inputs and outputs.
+- Channel adapters: translate provider events into run requests and outbound action
+  deliveries without embedding agent logic.
+- Policy/permissions: evaluated before memory access, tool use, outbound messages, and
+  inter-instance communication.
 
 Do not let worker logic depend directly on Docker services. Workers should depend on
 interfaces so the runtime remains reusable.

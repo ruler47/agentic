@@ -6,6 +6,14 @@ export type AgentRunRecord = {
   id: string;
   task: string;
   status: RunStatus;
+  instanceId?: string;
+  requesterUserId?: string;
+  channel?: string;
+  threadId?: string;
+  parentRunId?: string;
+  sourceMessageId?: string;
+  sourceChatId?: string;
+  sourceThreadId?: string;
   createdAt: string;
   updatedAt: string;
   events: AgentEvent[];
@@ -17,8 +25,19 @@ export type PublicRunRecord = Omit<AgentRunRecord, "result"> & {
   result?: AgentRunResult;
 };
 
+export type RunCreateContext = {
+  instanceId?: string;
+  requesterUserId?: string;
+  channel?: string;
+  threadId?: string;
+  parentRunId?: string;
+  sourceMessageId?: string;
+  sourceChatId?: string;
+  sourceThreadId?: string;
+};
+
 export type RunStore = {
-  create(task: string): Promise<AgentRunRecord>;
+  create(task: string, context?: RunCreateContext): Promise<AgentRunRecord>;
   list(): Promise<AgentRunRecord[]>;
   get(id: string): Promise<AgentRunRecord | undefined>;
   markRunning(id: string): Promise<void>;
@@ -26,4 +45,5 @@ export type RunStore = {
   complete(id: string, result: AgentRunResult): Promise<void>;
   fail(id: string, error: string): Promise<void>;
   recoverInterrupted(error: string): Promise<number>;
+  deleteByThreadId(threadId: string): Promise<number>;
 };

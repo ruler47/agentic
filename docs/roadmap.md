@@ -28,28 +28,127 @@ review triggers one bounded revision pass before synthesis.
 This is not yet a fully autonomous recursive agent society. It is still centrally
 orchestrated, but the trace contract is ready for nested agent calls.
 
+## Product Direction: Group Assistant Platform
+
+The project is evolving from a single local agent console into a deployable assistant
+platform for one family, household, company, team, or other bounded group per running
+instance.
+
+Target capabilities:
+
+- one shared group profile per instance;
+- separate context for the group and individual users;
+- scoped memories for the group and each member;
+- Telegram bot intake with a whitelist of allowed users;
+- admin visibility into Telegram-originated requests and conversations;
+- conversation threads that distinguish new tasks from follow-up questions,
+  clarifications, and corrections;
+- outbound messages, reminders, and broadcasts to a person or group;
+- agents that can communicate with agents from other instances/companies/families through
+  explicit permissions;
+- simplified capability onboarding through Tool Builds: an admin provides API/channel
+  docs, desired behavior, and credential secret handles, and the system builds a reusable
+  TypeScript module with tests and QA;
+- instance-scoped tool credentials and user/role policies.
+
+See [Instance Context And Personalized Assistant Model](modules/instance-context.md).
+
+## Phase 0: Instance Foundation
+
+Status: partially implemented.
+
+Goal: introduce the data model that lets every future feature know "which assistant
+instance is running, who is asking, through which channel, with which permissions."
+
+Target entities:
+
+- `instance_settings`
+- `group_profile`
+- `users`
+- `user_roles`
+- `channel_identities`
+- `conversation_threads`
+- `thread_messages`
+- `run_context`
+- `memory_scopes`
+- `policies`
+- `audit_events` DONE for the base table/store/API and run/artifact/tool/tool-build
+  events; future outbound/policy/memory events will reuse the same contract.
+
+Implementation tasks:
+
+- Add migrations for instance settings, group profile, users, roles, and channel identities. DONE
+- Add a default local instance profile and admin user so the current single-user experience keeps
+  working. DONE
+- Attach `instanceId`, `requesterUserId`, and `channel` metadata to every run. DONE
+- Add `threadId`, `parentRunId`, source message/thread IDs, and compact thread summaries. DONE
+- Show group profile/requester/channel in run headers and trace metadata. PARTIAL:
+  run headers include requester/channel/thread; group profile is editable through the UI/API.
+- Add a thread-resolution service that classifies inbound messages as new task,
+  continuation, clarification, or correction.
+- Add tests proving run creation requires a resolvable requester context.
+- Add tests proving continuations inherit compact thread context without replaying full
+  transcripts. DONE for web continuation.
+- Add audit events for run creation, tool use, artifact creation, memory writes, and
+  future outbound actions. PARTIAL: run created/started/completed/failed, input/output
+  artifacts, tool trace events, and tool build requests/registrations are implemented.
+  Memory writes, approvals, outbound actions, Telegram delivery, and policy decisions
+  remain.
+
+UI tasks:
+
+- Add top-level navigation for Dashboard, Runs, Conversations, Memory, Artifacts, Tools,
+  Tool Builds, Models, Group Profile, Users, Channels, Policies, Approvals, Scheduler,
+  Audit Log, Settings, and Diagnostics. DONE for the product shell; several backend
+  surfaces still use structured placeholders.
+- Add requester/channel context visibility in the web console. PARTIAL
+- Add a new-task composer on Dashboard and keep continuation composer only inside a run
+  or conversation thread. DONE
+- Add a Conversations page with thread summaries, run history, and split/merge controls. PARTIAL
+- Add destructive conversation deletion with associated runs and traces. DONE: the
+  Conversations UI and API can delete a thread, all runs attached through `threadId`, and
+  run event/artifact metadata cascades from those runs; the audit log records the action.
+- Add Group Profile and Users pages with read-only cards first, then editing. PARTIAL:
+  Group Profile has editable API/UI persistence; Users currently reads the default local
+  admin identity and will become editable with identity policies.
+
 ## Phase 1: Reliable Memory
 
 Status: partially implemented.
 
-The runtime now uses Postgres-backed memory when `DATABASE_URL` is present. Search uses
-Postgres full-text search plus lexical rescoring. The next step is semantic retrieval with
-`pgvector`.
+The runtime now uses Postgres-backed memory when `DATABASE_URL` is present. Memory entries
+carry scope (`global`, `group`, `user`, `thread`, `run`), status (`proposed`, `accepted`,
+`rejected`, `archived`), confidence, sensitivity, source run/thread IDs, and evidence.
+Agent retrieval only uses accepted memory; proposed facts stay in a review queue until an
+operator accepts them. Search still uses Postgres full-text search plus lexical rescoring.
+The next retrieval step is semantic similarity with `pgvector`.
 
 Tasks:
 
 - Store skill memories in Postgres. DONE
+- Store source run IDs and evidence. DONE for the base fields/API.
+- Add memory scopes: global, group, user, thread, run. DONE for storage/API/UI metadata;
+  runtime permission-aware retrieval remains.
+- Add memory write review so personal facts are classified before storage. PARTIAL:
+  `proposed`/`accepted`/`rejected` lifecycle, UI review queue, API updates, and audit
+  events exist; automatic classifier-driven proposals remain.
 - Add embeddings with `pgvector`.
-- Store source run IDs and evidence.
 - Search by semantic similarity plus tags.
 - Show memory hits in UI with confidence and why they matched.
 - Add tests proving repeated similar tasks retrieve prior memories.
+- Add permissions so agents cannot read another user's private memory unless policy and
+  task context allow it.
+- Add UI for browsing and editing group/user memory separately.
 
 Remaining memory gaps:
 
 - Search is token-based, not semantic.
 - The agent only stores a memory when the LLM returns `shouldStore: true`.
 - Stored lessons are generic, so specific repeated requests may not match well.
+- Runtime memory retrieval does not yet enforce user/private-memory policy beyond only
+  retrieving accepted memories.
+- Memory proposals are not yet automatically classified into group/user/thread scope by an
+  LLM reviewer.
 
 ## Phase 2: Tool Registry
 
@@ -164,8 +263,9 @@ Next implementation tasks:
 - Add a persistent Tool Build Queue. DONE via `tool_build_requests` and
   `/api/tool-build-requests`.
 - Add Tool Build Queue lifecycle APIs. DONE via `GET/PATCH
-  /api/tool-build-requests/:id`, builder status details, QA reports, and registered tool
-  references.
+  /api/tool-build-requests/:id`, `POST /api/tool-build-requests/:id/stop`,
+  `DELETE /api/tool-build-requests/:id`, builder status details, QA reports, and
+  registered tool references.
 - Add a Tool Registrar service with version conflict checks. DONE.
 - Load executable generated modules after QA/registration. DONE for compiled project-local
   modules with contract validation and health promotion.
@@ -173,7 +273,9 @@ Next implementation tasks:
   targeted tests, and `npm run build` in QA.
 - Add a Tool Builder worker that consumes queued requests, writes TypeScript source,
   creates focused tests, delegates QA, and registers only after QA passes. DONE for
-  provider-backed builds through `POST /api/tool-build-requests/:id/run`.
+  provider-backed builds through both manual `POST /api/tool-build-requests/:id/run` and
+  the background `ToolBuildWorker`, which atomically claims the oldest `requested` card and
+  reloads generated tools after registration.
 - Add a reusable Tool Builder workflow. DONE as `ToolBuildWorkflow`, with pluggable
   Builder, QA Runner, and Registrar interfaces plus tests proving failed QA blocks
   registration and failed QA reports can be returned to the builder for a bounded retry.
@@ -191,11 +293,40 @@ Remaining Phase 3 gaps:
 
 - Replace provider-authored source with a higher-level Tool Builder agent that can create
   new providers/modules for unknown capability families.
+- Fold API-docs onboarding into Tool Builds: admin uploads/pastes documentation, desired
+  use cases, and a credential secret handle; the builder creates a scoped TypeScript tool
+  contract, tests, QA report, and registry metadata. PARTIAL: the UI/API can create
+  capability requests; autonomous docs parsing and credential secret-store wiring remain.
+- Treat channel adapters as tools, not special one-off screens: Telegram, WhatsApp, Slack,
+  email, and custom inbound/outbound adapters should be built through Tool Builds,
+  registered in the tool registry, and then monitored on the Channels runtime page.
+- Store credentials as secret handles, never in prompts, memory, artifacts, or source.
+- Add instance/user tool policy so a tool can be installed globally but enabled only for
+  this instance, specific roles, or specific users.
 - Move generated-tool QA from temporary workspace isolation to a stricter worker service
   or container pool with CPU/memory/network limits.
 - Add LLM/provider repair implementations that consume failed QA reports; the workflow
   already supports bounded retry attempts.
 - Persist generated source bundles and QA artifacts in object storage.
+- Add first-class replacement/version promotion for installed failed tools after a
+  tool-level rework request is built and QA-approved. PARTIAL: the metadata store and web
+  API now support explicit generated-tool replacement promotion with `replacesVersion`,
+  stale-version rejection, same-version rejection, and builtin replacement protection.
+  Remaining work is to wire Tool Builder/Registrar automatically from a rework request to
+  this promotion endpoint after QA passes.
+- Add span-context bug/rework creation from Trace Lab. The "Create tool request / bug"
+  action should open a form prefilled from the selected span: run id, span id, parent span,
+  actor, activity, model tier, tool name/capability, input summary, output summary,
+  artifact URLs, QA/reviewer notes, error/status, and nearby dependency context. The
+  operator adds a comment, and the system creates either a generic bug report or a
+  tool-build rework request. For tool spans, the request should target the exact tool
+  contract/version; for browser/artifact spans, it should include the rejected artifact QA
+  evidence. A local LLM reviewer should first classify whether the issue is tool logic,
+  tool contract, prompt/planning, site limitation, credential/policy limitation, or
+  external blocker. Only tool-logic/contract issues should proceed to automatic rework;
+  site limitations should become documented failure memory instead of code changes.
+- Next roadmap focus after the background worker: scoped semantic memory with group,
+  user, and thread facts; review queue; confidence; accepted/rejected fact lifecycle.
 
 ## Phase 4: Recursive Universal Agents
 
@@ -217,6 +348,7 @@ Each agent should know:
 
 - its local task;
 - its caller;
+- instance, requester, and channel provenance;
 - allowed budget;
 - available tools;
 - relevant memories;
@@ -228,6 +360,15 @@ Each agent should not need to know:
 - unrelated sibling context;
 - final UI structure.
 
+Additional target behavior:
+
+- child agents can request new child agents without central planner knowing the whole
+  future graph;
+- each child receives only scoped memory and tool permissions;
+- agents can ask another instance/company/family agent for information through a federated
+  request tool;
+- inter-instance answers must include provenance and audit records.
+
 ## Phase 5: Model Tier Selection
 
 Status: partially implemented.
@@ -235,7 +376,8 @@ Status: partially implemented.
 Agents choose model tier by risk and complexity. The current implementation selects a
 tier for each LLM call, sends it through `LlmClient`, and shows the tier in trace cards.
 Tier model lists are configurable and persisted in Postgres so the user can run several
-local LLMs and assign multiple candidates to each tier.
+local OpenAI-compatible LLMs, remote OpenAI API models, or other OpenAI-compatible hosted
+providers and assign multiple candidates to each tier.
 
 Example tiers:
 
@@ -254,6 +396,7 @@ Implemented:
   learning.
 - Environment model overrides per tier.
 - Multiple comma-separated model candidates per tier.
+- Local and remote OpenAI-compatible providers are supported by the LLM client contract.
 - Postgres-backed model tier settings.
 - API/UI for viewing and updating model tier policy.
 - `LlmClient` reads current tier settings for each request.
@@ -270,6 +413,7 @@ Remaining:
 - Per-agent budget accounting.
 - LLM-driven tier choice with hard runtime caps.
 - Metrics comparing worker tier vs reviewer tier quality.
+- Store per-tier provider/base URL/API key secret handles in the settings UI.
 
 ## Phase 6: Better UI Observability
 
@@ -290,12 +434,106 @@ Implemented:
 - Additional dependency arrows from `payload.dependencySpanIds`.
 - Collapsible trace cards with stable incremental rendering.
 - Status, actor, activity, duration, parent-child metadata, and dependency badges.
+- Live Trace Lab refresh from the run SSE stream, plus a return path back to Run Workspace.
+- Client-side Trace Lab filters for actor, activity, status, tool, and model tier across
+  Timeline, Graph, Logs, and the selected span inspector.
+- Compact Trace Lab inspector evidence blocks for memory hits, tool payload summaries,
+  and artifacts carried by selected span payloads.
+- Trace Lab run directory for `/trace`, so opening the section lists runs instead of
+  implicitly jumping to the latest execution.
+- Explicit SVG caller/callee arrows on graph nodes, with hover highlighting for incoming
+  and outgoing connected cards.
+- Graph mode separates worker/reviewer spans from tool/artifact spans so agent work and
+  tool execution are easier to scan.
+- Conversation Detail shows request/response artifacts inline when the linked run has
+  input or output files.
+- Tool Build cards expose lifecycle previews, stop/delete actions, and revision requests.
+  Failed installed tools expose a tool-level rework form on the Tools page that creates a
+  durable `requested` rebuild card with the failure details prefilled.
+- Final answers and conversation messages render sanitized Markdown, including bold text,
+  clickable links, and clickable application-local artifact URLs.
 
 Remaining:
 
 - Timeline mode by wall-clock time.
-- Filters and run comparison.
-- Rich artifact and memory-hit panels.
+- User/channel filters and run comparison.
+- Rich artifact previews for PDFs/datasets/source bundles and source/memory-hit drilldowns.
+
+## Phase 6A: Product UX Redesign
+
+Status: partially implemented.
+
+Goal: split the current all-in-one console into a daily-use assistant workspace and an
+admin/operator control surface.
+
+Top-level navigation:
+
+```text
+Dashboard
+Runs
+Conversations
+Group Profile
+Users
+Channels
+Memory
+Artifacts
+Tools
+Tool Builds
+Models
+Policies
+Settings
+```
+
+Dashboard:
+
+- new-task composer with requester/source context and visible group profile;
+- continuation is available only inside Run Workspace and Conversation Detail so the
+  selected thread context is unambiguous;
+- compact conversation panel with thread summary and recent threads; DONE
+- file attachments;
+- active run card;
+- recent runs;
+- system health;
+- quick stats for success/failure, artifacts, tools, memory, and channel messages.
+
+Run Workspace:
+
+- run header: status, duration, group profile, requester, channel, thread, source message;
+- answer panel;
+- artifacts panel;
+- outbound action panel;
+- follow-up composer for corrections, clarifications, and next-step requests;
+- compact thread context panel showing accepted facts, failed attempts, and open questions;
+- live execution summary;
+- compact important events;
+- link to Trace Lab.
+
+Trace Lab:
+
+- graph, timeline, tree, and log modes;
+- filters by actor, activity, status, tool, and model tier are implemented; user and
+  channel filters remain;
+- event inspector drawer;
+- memory/tool/artifact evidence panels.
+
+Admin pages:
+
+- Group Profile: profile, members, shared memory, enabled tools, channels, recent runs,
+  audit. PARTIAL: editable profile context is implemented; member/tool/channel summaries
+  remain.
+- Users: identities, memberships, personal memory, notification preferences, allowed
+  tools, recent requests.
+- Channels: installed channel adapter health, chat mappings, incoming/outgoing message
+  history. New adapters are requested and built through Tool Builds.
+- Conversations: thread summaries, linked runs, Telegram/web source messages, split/merge
+  controls, continuation composer, and destructive delete with associated runs/traces.
+- Memory: global/group/user/run scopes with match reasons and edit controls.
+- Tools: registry, credentials, capabilities, health, examples.
+- Tool Builds: capability requests for APIs, browser/file capabilities, and channel
+  adapters; builder/QA lifecycle; generated source/test bundles. Current UI explains
+  requested/building/QA/registered states, shows real queue counts, and lets operators
+  trigger the builder workflow for a queued request.
+- Policies: permissions for memory access, tool use, outbound messages, and federation.
 
 ## Phase 7: Durable Artifacts
 
@@ -304,18 +542,20 @@ Status: partially implemented.
 Implemented:
 
 - User requests can include file attachments through the web UI/API.
-- Attachments are persisted as input artifacts in `workspace/artifacts`.
+- Attachments are persisted as input artifacts.
 - Runs can return downloadable artifact links in `result.artifacts`.
+- The UI renders image artifact thumbnails in artifact cards and compact conversation
+  chips, and turns artifact-link lines in Markdown answers into download links.
 - The runtime invokes the registered `chart.generate` TypeScript tool when a task asks
   for a graph/chart and task context or worker output contains a parsable time series.
 - Artifact creation emits trace events.
+- New Docker-stack artifacts store metadata in Postgres and payloads in MinIO/S3 through
+  `DurableArtifactStore`; local filesystem manifests remain as a fallback for older runs
+  and non-Docker development.
 
 Remaining:
 
-- Promote artifact metadata to Postgres.
-- Store payloads in MinIO/S3 instead of local manifests.
-- Add artifact previews in the UI for images, PDFs, screenshots, datasets, and source
-  bundles.
+- Add artifact previews in the UI for PDFs, datasets, and source bundles.
 - Make reviewers artifact-aware across all file types, not only chart requests.
 - Make planning dependency-aware so a review subtask cannot run before the artifact it is
   supposed to review exists. DONE for subtask-level DAG execution; remaining work is
@@ -371,6 +611,92 @@ Implementation tasks:
   fragile fill/click command plans, collect multiple source pages, save screenshots, and
   preserve diagnostic screenshots when a site blocks automation.
 - Add artifact-aware review prompts that fail when a requested file is missing or only
-  represented as code/prose.
+  represented as code/prose. PARTIAL: worker/coordinator/synthesis prompts now require a
+  self-check before returning weak, irrelevant, empty, or unsupported outputs; typed
+  artifact inspection across every file type remains.
+- Add weak browser/screenshot evidence gates. PARTIAL: workers, reviewers, and synthesis
+  prompts now reject blank/loading/login/blocked/unrelated screenshots, and deterministic
+  review gates force a revision when a worker describes such weak evidence. Deterministic
+  PNG visual QA now rejects near-empty/loader-like screenshots before storage. Browser
+  screenshot semantic QA now also checks URL/title/extracted text/link context for
+  loader/blocker signals and task-specific signal mismatch before artifact storage.
+  Remaining work is true OCR/vision inspection of image-only artifacts, screenshots that
+  lack DOM text, and richer proof-specific scoring.
 - Allow the recursive universal-agent flow to delegate missing capability creation to
   Tool Builder, Tool QA, and Tool Registrar agents.
+
+## Phase 9: Telegram Channel
+
+Status: planned.
+
+Goal: let whitelisted Telegram users submit tasks and receive answers, while admins can
+observe and manage the channel from the web console.
+
+Implementation tasks:
+
+- Add Telegram bot configuration and webhook/polling adapter.
+- Add `channel_identities` mapping Telegram user IDs to users.
+- Add whitelist management in the admin UI.
+- Reject unknown Telegram users by default.
+- Create runs with `channel=telegram`, `sourceChatId`, `sourceMessageId`, and requester.
+- Resolve each Telegram message to a conversation thread or create a new thread.
+- Support `/new`, `/continue`, reply-to, and low-confidence clarification behavior.
+- Store compact thread summaries and update them after each run.
+- Send final answers back to the requester.
+- Store inbound/outbound Telegram messages in an auditable table.
+- Add tests for allowed user, denied user, run context mapping, continuation detection,
+  and forced new-thread commands.
+
+UI tasks:
+
+- Channels page with Telegram status, whitelist, mapped users, chats, and message history.
+- Run Workspace source panel showing the originating Telegram message.
+- Admin-visible conversation log for Telegram-originated runs.
+- Conversation thread inspector with message-to-thread decision confidence and override
+  controls.
+
+## Phase 10: Outbound Actions And Notifications
+
+Status: planned.
+
+Goal: agents can notify a group or person when authorized.
+
+Implementation tasks:
+
+- Define outbound action contracts: direct message, group broadcast, scheduled reminder.
+- Add `outbound_actions` table with requester, target, body, policy, status, provider
+  response, and audit metadata.
+- Add Telegram outbound tool with dry-run mode first.
+- Add permission checks for who can message whom.
+- Add optional approval queue for sensitive or broad broadcasts.
+- Add delivery status and retry handling.
+- Add tests for approval required, permission denied, successful send, and failed send.
+
+UI tasks:
+
+- Outbound Actions panel in Run Workspace.
+- Approval queue in Dashboard/Policies.
+- Group/User pages showing recent received/sent agent messages.
+
+## Phase 11: Federated Instance Agents
+
+Status: planned.
+
+Goal: agents from separate instances, families, or companies can communicate without
+sharing private memory by default.
+
+Implementation tasks:
+
+- Define instance-agent identity and trust policy.
+- Add a federated request tool with provenance, purpose, requested data, and response
+  contract.
+- Add allow/deny policies by remote instance/tool/capability.
+- Log cross-instance requests and responses on both sides.
+- Add redaction/minimization before sending context outside the group.
+- Add reviewer checks for cross-instance data leakage.
+
+UI tasks:
+
+- Policies page for federation allowlists and scopes.
+- Trace cards for outgoing and incoming inter-agent requests.
+- Audit page filtered by external group/company/family interactions.

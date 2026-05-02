@@ -52,6 +52,20 @@ export class ToolBuildWorkflow {
       throw new Error(`Tool build request ${id} was not found`);
     }
 
+    return this.runRequest(request);
+  }
+
+  async runClaimed(request: ToolBuildRequest): Promise<ToolBuildWorkflowResult> {
+    if (request.status !== "building") {
+      throw new Error(`Tool build request ${request.id} must be claimed before runClaimed`);
+    }
+
+    return this.runRequest(request);
+  }
+
+  private async runRequest(request: ToolBuildRequest): Promise<ToolBuildWorkflowResult> {
+    const id = request.id;
+
     try {
       const maxAttempts = Math.max(1, Math.min(this.options.maxAttempts ?? 2, 5));
       let previousOutput: ToolBuildOutput | undefined;

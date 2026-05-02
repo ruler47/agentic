@@ -9,6 +9,10 @@ services:
       LLM_MODEL: google/gemma-4-26b-a4b
       LLM_TEMPERATURE: "0.2"
       SEARXNG_BASE_URL: http://searxng:8080
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: agentic
+      MINIO_SECRET_KEY: agentic-password
+      MINIO_BUCKET: agentic-artifacts
       FILE_TOOL_ROOT: /app/workspace
       CHROMIUM_PATH: /usr/bin/chromium
       TZ: Europe/Madrid

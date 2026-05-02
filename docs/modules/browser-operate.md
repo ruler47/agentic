@@ -116,5 +116,7 @@ of a blocker such as CAPTCHA, login wall, unavailable content, or a broken selec
 - `dismissDialogs` uses generic selectors/texts. Site-specific login, CAPTCHA, payment,
   or MFA flows still need a caller-provided command sequence or a specialized higher-level
   module.
-- Visual QA is outside the tool; reviewers or a future visual QA tool must validate
-  whether a screenshot proves the intended fact.
+- Artifact QA is outside the portable browser tool. The agent runtime currently runs
+  deterministic visual and semantic checks before storing browser screenshots, using the
+  screenshot pixels plus browser URL/title/text/link context to reject loader/blocker or
+  task-mismatched evidence.

@@ -15,6 +15,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json package-lock.json tsconfig.json tsconfig.test.json ./
 COPY src ./src
 COPY tests ./tests
+COPY public ./public
 RUN npm run verify
 
 FROM base AS runtime

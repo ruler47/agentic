@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AddressInfo } from "node:net";
 import { createWebApp } from "../src/server/http.js";
+import { InMemoryConversationThreadStore } from "../src/conversations/inMemoryConversationThreadStore.js";
 import { InMemoryRunStore } from "../src/runs/inMemoryRunStore.js";
 import { InMemoryModelTierSettingsStore } from "../src/settings/modelTierSettings.js";
 import { AgentArtifact, AgentEventSink, AgentRunResult, ArtifactCreateInput } from "../src/types.js";
@@ -13,6 +14,9 @@ import { LocalArtifactStore } from "../src/artifacts/artifactStore.js";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import { ToolBuildWorkflow } from "../src/tools/toolBuildWorkflow.js";
+import { InMemoryAuditEventStore } from "../src/audit/inMemoryAuditEventStore.js";
+import { InMemoryGroupProfileStore } from "../src/instance/groupProfileStore.js";
+import { SkillMemory } from "../src/memory/skillMemory.js";
 
 class FakeAgent {
   async run(task: string, options?: {
@@ -64,6 +68,69 @@ class FakeAgent {
       workerResults: [],
       reviews: [],
       artifacts: [...(options?.inputArtifacts ?? []), ...(outputArtifact ? [outputArtifact] : [])],
+    };
+  }
+}
+
+class ThreadAwareFakeAgent {
+  seenThreadSummaries: string[] = [];
+
+  async run(task: string, options?: {
+    onEvent?: AgentEventSink;
+    threadContext?: { summary: string };
+  }): Promise<AgentRunResult> {
+    this.seenThreadSummaries.push(options?.threadContext?.summary ?? "");
+    await options?.onEvent?.({
+      id: `event-${task}`,
+      spanId: `span-${task}`,
+      type: "run-started",
+      actor: "coordinator",
+      activity: "coordination",
+      status: "started",
+      title: "Thread-aware run started",
+      detail: task,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      finalAnswer: `answer for ${task}`,
+      complexity: { mode: "direct", reason: "fake", domains: ["test"], riskLevel: "low" },
+      subtasks: [],
+      workerResults: [],
+      reviews: [],
+    };
+  }
+}
+
+class DelayedFakeAgent {
+  private releaseRun!: () => void;
+  readonly ready = new Promise<void>((resolve) => {
+    this.releaseRun = resolve;
+  });
+
+  release() {
+    this.releaseRun();
+  }
+
+  async run(task: string, options?: { onEvent?: AgentEventSink }): Promise<AgentRunResult> {
+    await this.ready;
+    await options?.onEvent?.({
+      id: `event-delayed-${Date.now()}`,
+      spanId: "delayed-span",
+      type: "worker-completed",
+      actor: "worker:test",
+      activity: "llm",
+      status: "completed",
+      title: "Delayed worker completed",
+      detail: task,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      finalAnswer: `late answer for ${task}`,
+      complexity: { mode: "direct", reason: "fake", domains: ["test"], riskLevel: "low" },
+      subtasks: [],
+      workerResults: [],
+      reviews: [],
     };
   }
 }
@@ -138,12 +205,14 @@ test("web server accepts input files and serves output artifacts", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   const artifactDir = await mkdtemp(join(tmpdir(), "agentic-artifacts-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const auditEventStore = new InMemoryAuditEventStore();
 
   const server = createWebApp({
     agent: new FakeAgent() as unknown as UniversalAgent,
     runStore: new InMemoryRunStore(),
     publicDir,
     artifactStore: new LocalArtifactStore(artifactDir),
+    auditEventStore,
   });
 
   try {
@@ -168,16 +237,169 @@ test("web server accepts input files and serves output artifacts", async () => {
     const input = artifacts.find((artifact: AgentArtifact) => artifact.kind === "input");
     const output = artifacts.find((artifact: AgentArtifact) => artifact.kind === "output");
     const outputResponse = await fetch(`${baseUrl}${output.url}`);
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+    const actions = audit.events.map((event: { action: string }) => event.action);
 
     assert.equal(createResponse.status, 202);
     assert.equal(input.filename, "input.txt");
     assert.equal(output.filename, "answer.txt");
     assert.equal(outputResponse.headers.get("content-type"), "text/plain");
     assert.equal(await outputResponse.text(), "artifact for hello files");
+    assert.ok(actions.includes("run.created"));
+    assert.ok(actions.includes("run.started"));
+    assert.ok(actions.includes("artifact.uploaded"));
+    assert.ok(actions.includes("artifact.generated"));
+    assert.ok(actions.includes("run.completed"));
+    assert.equal(audit.events[0].runId, created.run.id);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
     await rm(artifactDir, { recursive: true, force: true });
+  }
+});
+
+test("web server creates conversation threads and continues with compact context", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const conversationStore = new InMemoryConversationThreadStore();
+  const agent = new ThreadAwareFakeAgent();
+
+  const server = createWebApp({
+    agent: agent as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    conversationStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const firstResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "first task" }),
+    });
+    const first = await firstResponse.json();
+    await waitForRun(baseUrl, first.run.id);
+
+    const threads = await (await fetch(`${baseUrl}/api/conversation-threads`)).json();
+    const threadId = threads.threads[0].id;
+    const secondResponse = await fetch(`${baseUrl}/api/conversation-threads/${threadId}/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "continue with correction" }),
+    });
+    const second = await secondResponse.json();
+    const completedSecond = await waitForRun(baseUrl, second.run.id);
+    const threadDetail = await (await fetch(`${baseUrl}/api/conversation-threads/${threadId}`)).json();
+
+    assert.equal(firstResponse.status, 202);
+    assert.equal(secondResponse.status, 202);
+    assert.equal(first.run.threadId, threadId);
+    assert.equal(completedSecond.run.threadId, threadId);
+    assert.equal(completedSecond.run.parentRunId, first.run.id);
+    assert.match(agent.seenThreadSummaries[1], /first task/);
+    assert.equal(threadDetail.thread.messages.length, 4);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server deletes a conversation thread with related runs and trace events", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const conversationStore = new InMemoryConversationThreadStore();
+  const runStore = new InMemoryRunStore();
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    conversationStore,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "temporary thread task" }),
+    });
+    const created = await createResponse.json();
+    const completed = await waitForRun(baseUrl, created.run.id);
+    const threadId = completed.run.threadId;
+
+    const deleteResponse = await fetch(
+      `${baseUrl}/api/conversation-threads/${encodeURIComponent(threadId)}`,
+      { method: "DELETE" },
+    );
+    const deleted = await deleteResponse.json();
+    const runAfterDelete = await fetch(`${baseUrl}/api/runs/${encodeURIComponent(created.run.id)}`);
+    const threadAfterDelete = await fetch(
+      `${baseUrl}/api/conversation-threads/${encodeURIComponent(threadId)}`,
+    );
+    const threads = await (await fetch(`${baseUrl}/api/conversation-threads`)).json();
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+
+    assert.equal(deleteResponse.status, 200);
+    assert.equal(deleted.deleted, true);
+    assert.equal(deleted.deletedRuns, 1);
+    assert.equal(runAfterDelete.status, 404);
+    assert.equal(threadAfterDelete.status, 404);
+    assert.equal(threads.threads.length, 0);
+    assert.equal(
+      audit.events.some(
+        (event: { action: string; threadId?: string }) =>
+          event.action === "conversation_thread.deleted" && event.threadId === threadId,
+      ),
+      true,
+    );
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server tolerates deleting a thread while its run is still executing", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const agent = new DelayedFakeAgent();
+
+  const server = createWebApp({
+    agent: agent as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    conversationStore: new InMemoryConversationThreadStore(),
+    auditEventStore: new InMemoryAuditEventStore(),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "delete while running" }),
+    });
+    const created = await createResponse.json();
+    const threadId = created.run.threadId;
+    const runId = created.run.id;
+
+    const deleteResponse = await fetch(
+      `${baseUrl}/api/conversation-threads/${encodeURIComponent(threadId)}`,
+      { method: "DELETE" },
+    );
+    agent.release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const runAfterRelease = await fetch(`${baseUrl}/api/runs/${encodeURIComponent(runId)}`);
+
+    assert.equal(createResponse.status, 202);
+    assert.equal(deleteResponse.status, 200);
+    assert.equal(runAfterRelease.status, 404);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
   }
 });
 
@@ -282,10 +504,71 @@ test("web server exposes memory and tool registries", async () => {
   }
 });
 
+test("web server supports scoped memory review lifecycle", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  const memoryDir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const skillMemory = new SkillMemory(join(memoryDir, "skills.json"));
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    skillMemory,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createResponse = await fetch(`${baseUrl}/api/memories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Telegram family routing",
+        tags: ["telegram", "family"],
+        summary: "Telegram messages from whitelisted users should stay in their thread.",
+        reusableProcedure: "Resolve user identity, then append to the matching conversation thread.",
+        scope: "group",
+        scopeId: "group-local",
+        status: "proposed",
+        confidence: 0.7,
+        evidence: ["operator described Telegram continuation behavior"],
+      }),
+    });
+    const created = await createResponse.json();
+    const proposed = await (await fetch(`${baseUrl}/api/memories?status=proposed`)).json();
+    const acceptResponse = await fetch(`${baseUrl}/api/memories/${encodeURIComponent(created.memory.id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "accepted", confidence: 0.95 }),
+    });
+    const accepted = await acceptResponse.json();
+    const groupAccepted = await (await fetch(`${baseUrl}/api/memories?scope=group&scopeId=group-local&status=accepted`)).json();
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+
+    assert.equal(createResponse.status, 201);
+    assert.equal(created.memory.status, "proposed");
+    assert.equal(created.memory.scope, "group");
+    assert.equal(proposed.memories.length, 1);
+    assert.equal(acceptResponse.status, 200);
+    assert.equal(accepted.memory.status, "accepted");
+    assert.equal(accepted.memory.confidence, 0.95);
+    assert.equal(groupAccepted.memories[0].id, created.memory.id);
+    assert.equal(audit.events.some((event: { action: string }) => event.action === "memory.created"), true);
+    assert.equal(audit.events.some((event: { action: string }) => event.action === "memory.updated"), true);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("web server exposes tool build requests", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
   const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const auditEventStore = new InMemoryAuditEventStore();
   await toolBuildRequestStore.create({
     capability: "browser-screenshot",
     reason: "Need screenshot artifacts.",
@@ -297,6 +580,7 @@ test("web server exposes tool build requests", async () => {
     runStore: new InMemoryRunStore(),
     publicDir,
     toolBuildRequestStore,
+    auditEventStore,
     toolBuildWorkflow: new ToolBuildWorkflow(
       toolBuildRequestStore,
       {
@@ -361,12 +645,38 @@ test("web server exposes tool build requests", async () => {
       `${baseUrl}/api/tool-build-requests/${encodeURIComponent(created.request.id)}`,
     );
     const detail = await detailResponse.json();
+    const reworkResponse = await fetch(
+      `${baseUrl}/api/tool-build-requests/${encodeURIComponent(created.request.id)}/rework`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          feedback: "Regenerate with stricter artifact validation and one extra smoke test.",
+        }),
+      },
+    );
+    const rework = await reworkResponse.json();
+    const stopResponse = await fetch(
+      `${baseUrl}/api/tool-build-requests/${encodeURIComponent(rework.request.id)}/stop`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "Operator stopped duplicate revision." }),
+      },
+    );
+    const stopped = await stopResponse.json();
     const runWorkflowResponse = await fetch(
       `${baseUrl}/api/tool-build-requests/${encodeURIComponent(created.request.id)}/run`,
       { method: "POST" },
     );
     const workflow = await runWorkflowResponse.json();
     const body = await response.json();
+    const deleteResponse = await fetch(`${baseUrl}/api/tool-build-requests/${encodeURIComponent(rework.request.id)}`, {
+      method: "DELETE",
+    });
+    const deleted = await deleteResponse.json();
+    const afterDelete = await (await fetch(`${baseUrl}/api/tool-build-requests`)).json();
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
 
     assert.equal(createdResponse.status, 201);
     assert.equal(created.request.contract.toolName, "generated.pdf.report");
@@ -374,6 +684,13 @@ test("web server exposes tool build requests", async () => {
     assert.equal(updated.request.status, "qa_passed");
     assert.equal(updated.request.qaReport.checks.length, 2);
     assert.equal(detail.request.registeredToolName, "generated.pdf.report");
+    assert.equal(reworkResponse.status, 201);
+    assert.equal(rework.request.status, "requested");
+    assert.equal(rework.request.reworkOf, created.request.id);
+    assert.match(rework.request.feedback, /stricter artifact validation/);
+    assert.equal(stopResponse.status, 200);
+    assert.equal(stopped.request.status, "blocked");
+    assert.match(stopped.request.statusDetail, /duplicate revision/);
     assert.equal(runWorkflowResponse.status, 200);
     assert.equal(workflow.request.status, "registered");
     assert.equal(response.status, 200);
@@ -382,6 +699,16 @@ test("web server exposes tool build requests", async () => {
       body.requests.map((request: { capability: string }) => request.capability).sort(),
       ["browser-screenshot", "pdf-report"],
     );
+    assert.equal(deleteResponse.status, 200);
+    assert.equal(deleted.deleted, true);
+    assert.equal(afterDelete.requests.some((request: { id: string }) => request.id === rework.request.id), false);
+    assert.equal(audit.events.some((event: { action: string }) => event.action === "tool_build.requested"), true);
+    assert.equal(
+      audit.events.some((event: { action: string }) => event.action === "tool_build.rework_requested"),
+      true,
+    );
+    assert.equal(audit.events.some((event: { action: string }) => event.action === "tool_build.stopped"), true);
+    assert.equal(audit.events.some((event: { action: string }) => event.action === "tool_build.deleted"), true);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
@@ -439,6 +766,68 @@ test("web server registers generated tool metadata with conflict checks", async 
   }
 });
 
+test("web server promotes generated tool replacements through explicit version handoff", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolMetadataStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    await fetch(`${baseUrl}/api/tools/generated-modules`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "generated.browser.screenshot",
+        version: "1.0.0",
+        description: "Captures browser screenshots.",
+        capabilities: ["browser-screenshot"],
+        modulePath: "src/tools/generated/browser-screenshotTool.ts",
+      }),
+    });
+    const staleResponse = await fetch(`${baseUrl}/api/tools/generated-modules/generated.browser.screenshot/promote-replacement`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "generated.browser.screenshot",
+        version: "1.1.0",
+        replacesVersion: "0.9.0",
+        description: "Captures browser screenshots with semantic QA.",
+        capabilities: ["browser-screenshot", "artifact-generation"],
+        modulePath: "src/tools/generated/browser-screenshotTool.ts",
+      }),
+    });
+    const promoteResponse = await fetch(`${baseUrl}/api/tools/generated-modules/generated.browser.screenshot/promote-replacement`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "generated.browser.screenshot",
+        version: "1.1.0",
+        replacesVersion: "1.0.0",
+        description: "Captures browser screenshots with semantic QA.",
+        capabilities: ["browser-screenshot", "artifact-generation"],
+        modulePath: "src/tools/generated/browser-screenshotTool.ts",
+        testPath: "tests/generated/browser-screenshotTool.test.ts",
+      }),
+    });
+    const promoteBody = await promoteResponse.json();
+
+    assert.equal(staleResponse.status, 400);
+    assert.equal(promoteResponse.status, 200);
+    assert.equal(promoteBody.tool.version, "1.1.0");
+    assert.equal(promoteBody.tool.status, "disabled");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server exposes and updates model tier settings", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
@@ -482,6 +871,75 @@ test("web server exposes and updates model tier settings", async () => {
     assert.equal(updateResponse.status, 200);
     assert.deepEqual(updated.tiers[0].models, ["small-a", "small-b"]);
     assert.equal(updated.tiers[0].maxAttempts, 3);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server exposes and updates the single-instance group profile", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    groupProfileStore: new InMemoryGroupProfileStore(),
+    auditEventStore: new InMemoryAuditEventStore(),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const initial = await (await fetch(`${baseUrl}/api/group-profile`)).json();
+    const updateResponse = await fetch(`${baseUrl}/api/group-profile`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Family Ops",
+        description: "Russian-speaking family in Spain.",
+        preferences: { notes: "Prefer concise answers and cite medical sources." },
+      }),
+    });
+    const updated = await updateResponse.json();
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+
+    assert.equal(initial.groupProfile.id, "group-local");
+    assert.equal(updateResponse.status, 200);
+    assert.equal(updated.groupProfile.name, "Family Ops");
+    assert.equal(updated.groupProfile.preferences.notes, "Prefer concise answers and cite medical sources.");
+    assert.equal(audit.events[0].action, "group_profile.updated");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server exposes compact user activity without embedding run traces", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  await runStore.create("compact user activity", {
+    instanceId: "instance-local",
+    requesterUserId: "user-admin",
+    channel: "web",
+    threadId: "thread-test",
+  });
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const body = await (await fetch(`${baseUrl}/api/users`)).json();
+
+    assert.equal(body.users[0].id, "user-admin");
+    assert.equal(body.users[0].recentRequests[0].task, "compact user activity");
+    assert.equal(body.users[0].recentRequests[0].events, undefined);
+    assert.equal(body.users[0].recentRequests[0].result, undefined);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
