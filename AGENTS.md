@@ -159,6 +159,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   and portability notes for `browser.operate`.
 - [src/llm/client.ts](src/llm/client.ts) - OpenAI-compatible LLM client.
 - [src/memory/skillMemory.ts](src/memory/skillMemory.ts) - shared file-based skill memory.
+- [src/memory/textEmbedding.ts](src/memory/textEmbedding.ts) - deterministic local
+  embedding provider and pgvector payload formatter for memory retrieval plumbing.
 - [src/tools/registry.ts](src/tools/registry.ts) - tool registry skeleton.
 - [src/tools/tool.ts](src/tools/tool.ts) - versioned tool module contract.
 - [src/tools/toolMetadataStore.ts](src/tools/toolMetadataStore.ts) - persistent tool
@@ -311,6 +313,9 @@ For documentation-only changes:
   being sent to local OpenAI-compatible models with limited context.
 - Runtime memory retrieval should pass visible scopes for the active group, requester,
   thread, and run so unrelated scoped memory does not enter the prompt.
+- Postgres memory search writes `memory_embedding` vectors when pgvector is available.
+  The current provider is deterministic text-feature hashing so the contract is portable;
+  replace it through the embedding module rather than inlining provider calls.
 - Add links here when introducing new core docs, modules, commands, or workflows.
 - UI changes must be checked through the HTTP server, not only by reading static files.
 - The web console uses `GET /api/runs/:id/events` as an additive SSE stream for live run

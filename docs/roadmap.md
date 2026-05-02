@@ -122,8 +122,12 @@ carry scope (`global`, `group`, `user`, `thread`, `run`), status (`proposed`, `a
 Agent retrieval only uses accepted memory; proposed facts stay in a review queue until an
 operator accepts them. Runtime calls now pass visible scopes for the active group,
 requester user, thread, and run, so scoped entries outside that context are not injected
-into agent prompts. Search still uses Postgres full-text search plus lexical rescoring.
-The next retrieval step is semantic similarity with `pgvector`.
+into agent prompts. Search now uses Postgres full-text search, lexical rescoring, and a
+pgvector-compatible embedding column when the database supports the `vector` extension.
+The current embedding provider is deterministic and local so the retrieval contract,
+migrations, indexes, and fallback behavior are in place without depending on a paid or
+remote embedding service. The next retrieval step is swapping that provider for a true
+semantic embedding model and adding richer tags/policy filters.
 
 Tasks:
 
@@ -137,8 +141,12 @@ Tasks:
   as global/group/user/thread/run with confidence, sensitivity, evidence, and status;
   non-global or sensitive/private learned memories are forced into `proposed` review
   state before they can be retrieved.
-- Add embeddings with `pgvector`.
-- Search by semantic similarity plus tags.
+- Add embeddings with `pgvector`. PARTIAL: `skill_memories.memory_embedding vector(128)`
+  and an HNSW cosine index are created when pgvector is available; the runtime writes a
+  deterministic local text embedding for each memory.
+- Search by semantic similarity plus tags. PARTIAL: Postgres search now merges lexical
+  and vector candidates before visibility/status filtering; true semantic quality awaits
+  a real embedding provider.
 - Show memory hits in UI with confidence and why they matched. PARTIAL: search results now
   carry match reason/matched tokens for prompt context; richer UI drilldown remains.
 - Add tests proving repeated similar tasks retrieve prior memories.
@@ -148,7 +156,8 @@ Tasks:
 
 Remaining memory gaps:
 
-- Search is token-based, not semantic.
+- Search has vector retrieval plumbing, but the fallback embedding is deterministic
+  text-feature hashing, not a true semantic embedding model.
 - The agent only stores a memory when the LLM returns `shouldStore: true`.
 - Stored lessons are generic, so specific repeated requests may not match well.
 - Runtime memory retrieval enforces accepted-only and visible-scope filtering, but does

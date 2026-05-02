@@ -15,6 +15,7 @@ import {
   SkillMemoryStore,
   tokenizeMemoryText,
 } from "./skillMemory.js";
+import { createDeterministicTextEmbedding, formatPgVector, memoryEmbeddingText } from "./textEmbedding.js";
 
 type SkillMemoryRow = {
   id: string;
@@ -100,14 +101,16 @@ export class PostgresSkillMemory implements SkillMemoryStore {
       values,
     );
 
-    const candidates =
-      lexical.rows.length > 0
-        ? lexical.rows.map(mapRow)
-        : await this.list({ ...options, status: "accepted", limit });
+    const semantic = await this.semanticSearch(query, Math.max(limit * 4, 12), options);
+    const candidates = mergeMemoryCandidates([
+      ...lexical.rows.map(mapRow),
+      ...semantic,
+      ...(lexical.rows.length === 0 && semantic.length === 0 ? await this.list({ ...options, status: "accepted", limit }) : []),
+    ]);
 
     return applyMemoryVisibility(candidates, options)
       .map((entry) => ({ entry, match: matchMemoryEntry(entry, queryTokens) }))
-      .filter(({ match }, index) => match.score > 0 || lexical.rows.length > 0 || index < limit)
+      .filter(({ match }, index) => match.score > 0 || lexical.rows.length > 0 || semantic.length > 0 || index < limit)
       .sort((a, b) => b.match.score - a.match.score)
       .slice(0, limit)
       .map(({ entry, match }) => attachMemoryMatch(entry, match));
@@ -127,14 +130,15 @@ export class PostgresSkillMemory implements SkillMemoryStore {
         insert into skill_memories (
           id, title, tags, summary, reusable_procedure, scope, scope_id, status, confidence,
           sensitivity, source_run_id, source_thread_id, evidence, created_at, updated_at,
-          search_document
+          search_document, memory_embedding
         )
         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14,
           setweight(to_tsvector('simple', $2), 'A') ||
           setweight(to_tsvector('simple', $15), 'B') ||
           setweight(to_tsvector('simple', $4), 'B') ||
           setweight(to_tsvector('simple', $5), 'C') ||
-          setweight(to_tsvector('simple', $16), 'C'))
+          setweight(to_tsvector('simple', $16), 'C'),
+          $17::vector)
         on conflict (id) do update
         set title = excluded.title,
             tags = excluded.tags,
@@ -149,7 +153,8 @@ export class PostgresSkillMemory implements SkillMemoryStore {
             source_thread_id = excluded.source_thread_id,
             evidence = excluded.evidence,
             updated_at = excluded.updated_at,
-            search_document = excluded.search_document
+            search_document = excluded.search_document,
+            memory_embedding = excluded.memory_embedding
       `,
       [
         stored.id,
@@ -168,6 +173,7 @@ export class PostgresSkillMemory implements SkillMemoryStore {
         stored.createdAt,
         stored.tags.join(" "),
         (stored.evidence ?? []).join(" "),
+        formatPgVector(createDeterministicTextEmbedding(memoryEmbeddingText(stored))),
       ],
     );
 
@@ -209,7 +215,8 @@ export class PostgresSkillMemory implements SkillMemoryStore {
               setweight(to_tsvector('simple', $15), 'B') ||
               setweight(to_tsvector('simple', $4), 'B') ||
               setweight(to_tsvector('simple', $5), 'C') ||
-              setweight(to_tsvector('simple', $16), 'C')
+              setweight(to_tsvector('simple', $16), 'C'),
+            memory_embedding = $17::vector
         where id = $1
         returning ${memoryColumns}
       `,
@@ -230,11 +237,53 @@ export class PostgresSkillMemory implements SkillMemoryStore {
         merged.updatedAt,
         merged.tags.join(" "),
         (merged.evidence ?? []).join(" "),
+        formatPgVector(createDeterministicTextEmbedding(memoryEmbeddingText(merged))),
       ],
     );
 
     return mapRow(rows.rows[0]);
   }
+
+  private async semanticSearch(query: string, limit: number, options: MemoryListOptions): Promise<SkillMemoryEntry[]> {
+    const filters = ["status = 'accepted'", "memory_embedding is not null"];
+    const values: unknown[] = [formatPgVector(createDeterministicTextEmbedding(query))];
+    if (options.scope) {
+      values.push(options.scope);
+      filters.push(`scope = $${values.length}`);
+    }
+    if (options.scopeId) {
+      values.push(options.scopeId);
+      filters.push(`scope_id = $${values.length}`);
+    }
+    values.push(limit);
+
+    try {
+      const rows = await this.pool.query<SkillMemoryRow>(
+        `
+          select ${memoryColumns}
+          from skill_memories
+          where ${filters.join(" and ")}
+          order by memory_embedding <=> $1::vector asc, updated_at desc
+          limit $${values.length}
+        `,
+        values,
+      );
+      return rows.rows.map(mapRow);
+    } catch {
+      return [];
+    }
+  }
+}
+
+function mergeMemoryCandidates(candidates: SkillMemoryEntry[]): SkillMemoryEntry[] {
+  const seen = new Set<string>();
+  const merged: SkillMemoryEntry[] = [];
+  for (const candidate of candidates) {
+    if (seen.has(candidate.id)) continue;
+    seen.add(candidate.id);
+    merged.push(candidate);
+  }
+  return merged;
 }
 
 const memoryColumns = `

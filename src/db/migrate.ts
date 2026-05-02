@@ -4,6 +4,10 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
   const pool = createPool(connectionString);
 
   try {
+    await pool.query(`create extension if not exists vector;`).catch((error) => {
+      console.warn(`pgvector extension is unavailable; semantic memory search will stay lexical: ${error.message}`);
+    });
+
     await pool.query(`
       create table if not exists instance_settings (
         id text primary key,
@@ -294,6 +298,9 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table skill_memories add column if not exists source_thread_id text;`);
     await pool.query(`alter table skill_memories add column if not exists evidence text[] not null default '{}';`);
     await pool.query(`alter table skill_memories add column if not exists updated_at timestamptz not null default now();`);
+    await pool.query(`alter table skill_memories add column if not exists memory_embedding vector(128);`).catch((error) => {
+      console.warn(`skill_memories.memory_embedding was not created; semantic memory search will stay lexical: ${error.message}`);
+    });
 
     await pool.query(`
       create index if not exists skill_memories_search_document_idx
@@ -309,6 +316,13 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       create index if not exists skill_memories_scope_status_idx
       on skill_memories(scope, scope_id, status, updated_at desc);
     `);
+
+    await pool.query(`
+      create index if not exists skill_memories_embedding_idx
+      on skill_memories using hnsw (memory_embedding vector_cosine_ops);
+    `).catch((error) => {
+      console.warn(`skill_memories_embedding_idx was not created; semantic memory search will stay lexical: ${error.message}`);
+    });
 
     await pool.query(`
       create table if not exists model_tier_settings (
