@@ -1041,6 +1041,49 @@ test("UniversalAgent delegates, reviews, synthesizes, and stores a learned skill
   }
 });
 
+test("UniversalAgent classifies learned memories into scoped reviewable facts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"direct","reason":"profile note can be answered directly","domains":["memory"],"riskLevel":"low"}',
+    "Final answer with a personal preference.",
+    JSON.stringify({
+      shouldStore: true,
+      title: "User prefers concise Spanish pharmacy answers",
+      tags: ["preference", "pharmacy"],
+      summary: "The requester prefers concise answers when asking about Spanish pharmacy logistics.",
+      reusableProcedure: "For this user, keep Spanish pharmacy answers brief and practical.",
+      scope: "user",
+      status: "accepted",
+      confidence: 0.86,
+      sensitivity: "sensitive",
+      evidence: ["The run answer used a concise pharmacy format."],
+    }),
+  ]);
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+
+  try {
+    const result = await agent.run("Запомни, что я хочу короткие ответы про аптеки", {
+      runId: "run-memory-1",
+      requesterUserId: "user-dima",
+      instanceId: "group-family",
+      threadId: "thread-memory-1",
+    });
+    const stored = await memory.list({ includeArchived: true });
+
+    assert.equal(result.learnedSkill?.scope, "user");
+    assert.equal(result.learnedSkill?.scopeId, "user-dima");
+    assert.equal(result.learnedSkill?.status, "proposed");
+    assert.equal(result.learnedSkill?.sensitivity, "sensitive");
+    assert.equal(result.learnedSkill?.sourceRunId, "run-memory-1");
+    assert.equal(result.learnedSkill?.sourceThreadId, "thread-memory-1");
+    assert.equal(stored[0]?.evidence?.some((item) => item.includes("Task:")), true);
+    assert.equal(fakeLlm.callCount, 3);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent emits observable lifecycle events", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));

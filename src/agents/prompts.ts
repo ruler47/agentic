@@ -211,8 +211,22 @@ Return only JSON:
   "title": "short reusable skill title",
   "tags": ["tag"],
   "summary": "what was learned",
-  "reusableProcedure": "how a future agent can reuse this"
+  "reusableProcedure": "how a future agent can reuse this",
+  "scope": "global | group | user | thread | run",
+  "status": "accepted | proposed",
+  "confidence": 0.0,
+  "sensitivity": "normal | sensitive | private",
+  "evidence": ["short source reason from this run"]
 }
+
+Scope rules:
+- Use "global" only for reusable operational patterns that are safe for every future run.
+- Use "group" for preferences, stable facts, constraints, or lessons that apply to this assistant instance/group.
+- Use "user" for personal preferences, identity facts, health, finance, private plans, or individual constraints.
+- Use "thread" for facts useful only when continuing this conversation.
+- Use "run" for diagnostics that should not be reused broadly.
+- Use "proposed" for group/user/thread/run facts or anything sensitive/private; operators can accept it later.
+- Use "accepted" only for non-sensitive global operational lessons.
 `.trim();
 }
 

@@ -286,6 +286,9 @@ For documentation-only changes:
 - Skill memory entries can be scoped to `global`, `group`, `user`, `thread`, or `run`.
   Retrieval should use accepted memories only; proposed/rejected/archived entries are for
   review and audit surfaces until policy says otherwise.
+- Learned memories should carry scope, confidence, sensitivity, source run/thread IDs,
+  and short evidence. Non-global or sensitive/private learned memories must enter the
+  `proposed` review state before runtime retrieval can use them.
 - Keep worker context narrow: original task summary, one subtask, relevant memory, output
   expectations, and review criteria.
 - Keep instance/user/channel context explicit on future runs, memory records, tool

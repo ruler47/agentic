@@ -997,6 +997,10 @@ async function executeRun(
     const result = await options.agent.run(task, {
       inputArtifacts,
       threadContext: context.threadContext,
+      runId: id,
+      instanceId: run?.instanceId ?? "group-local",
+      requesterUserId: run?.requesterUserId ?? "user-admin",
+      threadId: run?.threadId,
       memoryScopes: [
         { scope: "global" },
         { scope: "group", scopeId: run?.instanceId ?? "group-local" },

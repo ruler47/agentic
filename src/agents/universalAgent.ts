@@ -1,5 +1,12 @@
 import { LlmClient } from "../llm/client.js";
-import { MemoryScopeFilter, SkillMemoryStore } from "../memory/skillMemory.js";
+import {
+  MemoryScopeFilter,
+  normalizeMemoryConfidence,
+  normalizeMemoryScope,
+  normalizeMemorySensitivity,
+  normalizeMemoryStatus,
+  SkillMemoryStore,
+} from "../memory/skillMemory.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { shouldUseWebSearch } from "../tools/webSearchTool.js";
 import {
@@ -43,11 +50,20 @@ type LearningResponse = {
   tags?: string[];
   summary?: string;
   reusableProcedure?: string;
+  scope?: unknown;
+  status?: unknown;
+  confidence?: unknown;
+  sensitivity?: unknown;
+  evidence?: unknown;
 };
 
 type RunOptions = {
   onEvent?: AgentEventSink;
   inputArtifacts?: AgentArtifact[];
+  runId?: string;
+  instanceId?: string;
+  requesterUserId?: string;
+  threadId?: string;
   threadContext?: {
     summary: string;
     acceptedFacts: string[];
@@ -240,7 +256,7 @@ export class UniversalAgent {
 
       const learningStartedAt = new Date();
       const learningTier = selectModelTier("learning", complexity);
-      const learnedSkill = await this.learn(taskContext, finalAnswer, [], learningTier);
+      const learnedSkill = await this.learn(taskContext, finalAnswer, [], learningTier, options);
       await emit({
         spanId: createSpanId("learning"),
         parentSpanId: runSpanId,
@@ -374,7 +390,7 @@ export class UniversalAgent {
 
     const learningStartedAt = new Date();
     const learningTier = selectModelTier("learning", complexity);
-    const learnedSkill = await this.learn(taskContext, finalAnswer, workerResults, learningTier);
+    const learnedSkill = await this.learn(taskContext, finalAnswer, workerResults, learningTier, options);
     await emit({
       spanId: createSpanId("learning"),
       parentSpanId: runSpanId,
@@ -1388,6 +1404,7 @@ export class UniversalAgent {
     finalAnswer: string,
     workerResults: WorkerResult[],
     modelTier: ReturnType<typeof selectModelTier>,
+    options: RunOptions,
   ): Promise<SkillMemoryEntry | undefined> {
     const output = await this.llm.complete([
       { role: "system", content: "You extract compact reusable operational knowledge." },
@@ -1406,13 +1423,51 @@ export class UniversalAgent {
       return undefined;
     }
 
+    const memoryScope = normalizeMemoryScope(learning.scope);
+    const sensitivity = normalizeMemorySensitivity(learning.sensitivity);
+    const requestedStatus = normalizeMemoryStatus(learning.status);
+    const status = memoryScope === "global" && sensitivity === "normal" ? requestedStatus : "proposed";
+
     return this.skillMemory.add({
       title: learning.title,
       tags: learning.tags ?? [],
       summary: learning.summary,
       reusableProcedure: learning.reusableProcedure,
+      scope: memoryScope,
+      scopeId: resolveMemoryScopeId(memoryScope, options),
+      status,
+      confidence: normalizeMemoryConfidence(learning.confidence),
+      sensitivity,
+      sourceRunId: options.runId,
+      sourceThreadId: options.threadId,
+      evidence: normalizeLearningEvidence(learning.evidence, task, finalAnswer, workerResults),
     });
   }
+}
+
+function resolveMemoryScopeId(scope: SkillMemoryEntry["scope"], options: RunOptions): string | undefined {
+  if (scope === "group") return options.instanceId ?? "group-local";
+  if (scope === "user") return options.requesterUserId ?? "user-admin";
+  if (scope === "thread") return options.threadId;
+  if (scope === "run") return options.runId;
+  return undefined;
+}
+
+function normalizeLearningEvidence(
+  evidence: unknown,
+  task: string,
+  finalAnswer: string,
+  workerResults: WorkerResult[],
+): string[] {
+  const explicit = Array.isArray(evidence)
+    ? evidence.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  const generated = [
+    `Task: ${limitText(task, 600)}`,
+    `Final answer: ${limitText(finalAnswer, 600)}`,
+    ...workerResults.slice(0, 3).map((result) => `Worker ${result.subtask.id}: ${limitText(result.output, 500)}`),
+  ];
+  return [...explicit, ...generated].map((item) => limitText(item, promptBudget.memoryEvidenceChars)).slice(0, 8);
 }
 
 function createExecutionPlan(rawSubtasks: Subtask[]): ExecutionPlan {

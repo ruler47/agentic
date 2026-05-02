@@ -133,7 +133,10 @@ Tasks:
   and runtime visible-scope retrieval.
 - Add memory write review so personal facts are classified before storage. PARTIAL:
   `proposed`/`accepted`/`rejected` lifecycle, UI review queue, API updates, and audit
-  events exist; automatic classifier-driven proposals remain.
+  events exist. The run learning step now asks the model to classify each reusable memory
+  as global/group/user/thread/run with confidence, sensitivity, evidence, and status;
+  non-global or sensitive/private learned memories are forced into `proposed` review
+  state before they can be retrieved.
 - Add embeddings with `pgvector`.
 - Search by semantic similarity plus tags.
 - Show memory hits in UI with confidence and why they matched. PARTIAL: search results now
@@ -150,8 +153,9 @@ Remaining memory gaps:
 - Stored lessons are generic, so specific repeated requests may not match well.
 - Runtime memory retrieval enforces accepted-only and visible-scope filtering, but does
   not yet evaluate full role/policy rules for sensitive/private memories.
-- Memory proposals are not yet automatically classified into group/user/thread scope by an
-  LLM reviewer.
+- Memory proposals from completed runs are classified into group/user/thread/run scope by
+  the learning model, but they are not yet re-reviewed by a separate memory-specialist
+  agent before entering the review queue.
 
 ## Phase 2: Tool Registry
 
