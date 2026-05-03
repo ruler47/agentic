@@ -10,6 +10,7 @@ export type ToolBuildRequestStatus =
 
 export type ToolBuildRequestInput = {
   capability: string;
+  displayName?: string;
   reason: string;
   sourceRunId?: string;
   sourceSpanId?: string;
@@ -25,6 +26,7 @@ export type ToolBuildRequestInput = {
 
 export type ToolBuildContract = {
   toolName: string;
+  displayName?: string;
   modulePath: string;
   testPath: string;
   capability: string;
@@ -154,6 +156,7 @@ export function createToolBuildContract(input: ToolBuildRequestInput): ToolBuild
 
   return {
     toolName,
+    displayName: input.displayName?.trim() || undefined,
     modulePath: `src/tools/generated/${slug}Tool.ts`,
     testPath: `tests/generated/${slug}Tool.test.ts`,
     capability: input.capability,
@@ -211,6 +214,7 @@ function slugify(value: string): string {
 function cloneRequest(request: ToolBuildRequest): ToolBuildRequest {
   return {
     ...request,
+    displayName: request.displayName,
     requiredInputs: request.requiredInputs ? [...request.requiredInputs] : undefined,
     requiredOutputs: request.requiredOutputs ? [...request.requiredOutputs] : undefined,
     qaCriteria: request.qaCriteria ? [...request.qaCriteria] : undefined,

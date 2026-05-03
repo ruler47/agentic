@@ -5,6 +5,7 @@ export type ToolModuleStatus = "available" | "disabled" | "failed";
 
 export type ToolModuleMetadata = {
   name: string;
+  displayName?: string;
   version: string;
   description: string;
   capabilities: string[];
@@ -32,6 +33,7 @@ export type ToolModuleMetadata = {
 
 export type GeneratedToolModuleInput = {
   name: string;
+  displayName?: string;
   version: string;
   description: string;
   capabilities: string[];
@@ -59,6 +61,7 @@ export type ToolMetadataStore = {
   recordUsage(name: string, outcome: "success" | "failure", at?: Date): Promise<void>;
   registerGenerated(input: GeneratedToolModuleInput): Promise<ToolModuleMetadata>;
   promoteReplacement(input: GeneratedToolReplacementInput): Promise<ToolModuleMetadata>;
+  deleteGenerated(name: string): Promise<boolean>;
 };
 
 export class InMemoryToolMetadataStore implements ToolMetadataStore {
@@ -83,6 +86,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       const existing = this.modules.get(tool.name);
       this.modules.set(tool.name, {
         name: tool.name,
+        displayName: tool.displayName ?? existing?.displayName,
         version: tool.version ?? "0.0.0",
         description: tool.description,
         capabilities: [...tool.capabilities],
@@ -151,6 +155,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
 
     const stored: ToolModuleMetadata = {
       name: input.name,
+      displayName: input.displayName ?? existing?.displayName,
       version: input.version,
       description: input.description,
       capabilities: [...input.capabilities],
@@ -189,6 +194,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
 
     const stored: ToolModuleMetadata = {
       name: input.name,
+      displayName: input.displayName ?? existing.displayName,
       version: input.version,
       description: input.description,
       capabilities: [...input.capabilities],
@@ -215,11 +221,21 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
 
     return cloneModule(stored);
   }
+
+  async deleteGenerated(name: string): Promise<boolean> {
+    const existing = this.modules.get(name);
+    if (!existing) return false;
+    if (existing.source === "builtin") {
+      throw new Error(`Cannot delete builtin tool ${name}.`);
+    }
+    return this.modules.delete(name);
+  }
 }
 
 export function toolToMetadata(tool: Tool, updatedAt = new Date().toISOString()): ToolModuleMetadata {
   return {
     name: tool.name,
+    displayName: tool.displayName,
     version: tool.version ?? "0.0.0",
     description: tool.description,
     capabilities: [...tool.capabilities],

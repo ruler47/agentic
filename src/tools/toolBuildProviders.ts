@@ -26,6 +26,7 @@ type ToolBuildProviderOutput = {
   modulePath: string;
   testPath: string;
   summary: string;
+  displayName?: string;
   capabilities?: string[];
   inputSchema?: ToolSchema;
   outputSchema?: ToolSchema;
@@ -62,6 +63,7 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
       modulePath: output.modulePath,
       testPath: output.testPath,
       summary: output.summary,
+      displayName: output.displayName,
       capabilities: output.capabilities,
       inputSchema: output.inputSchema,
       outputSchema: output.outputSchema,
@@ -147,6 +149,7 @@ export class MetadataToolRegistrar implements ToolRegistrar {
     const toolName = request.contract.toolName;
     await this.metadataStore.registerGenerated({
       name: toolName,
+      displayName: output.displayName ?? request.displayName ?? request.contract.displayName,
       version: "1.0.0",
       description: request.contract.description,
       capabilities: output.capabilities ?? [request.capability],
@@ -185,6 +188,7 @@ export class BrowserScreenshotToolBuildProvider implements ToolBuildProvider {
       modulePath,
       testPath,
       summary: `Generated Playwright-based browser screenshot tool ${toolName}.`,
+      displayName: request.displayName ?? request.contract.displayName,
       capabilities: [request.capability, "browser-screenshot", "artifact-generation"],
       files: [
         { path: modulePath, content: browserScreenshotToolSource(toolName, capability) },
@@ -218,6 +222,7 @@ export class GenericApiToolBuildProvider implements ToolBuildProvider {
       modulePath,
       testPath,
       summary: `Generated reusable HTTP JSON API adapter ${toolName}.`,
+      displayName: request.displayName ?? request.contract.displayName,
       capabilities: [capability, "api-http-json", "http-api-call"],
       inputSchema: genericApiInputSchema(),
       outputSchema: genericApiOutputSchema(),

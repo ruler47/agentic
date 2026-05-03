@@ -503,10 +503,16 @@ Remaining Phase 3 gaps:
   contract, tests, QA report, and registry metadata. PARTIAL: the UI/API can create
   capability requests, attach structured `credentialHandles` to the Tool Build contract,
   register secret handles that point to env vars or external secret-manager refs without
-  exposing raw values, and provider-build generic HTTPS JSON API adapters such as
-  `api.aml.score`. Remaining work is autonomous docs parsing into endpoint presets,
-  richer provider-specific schemas, and policy-aware runtime credential resolution for all
-  generated tools.
+  exposing raw values, create secret handles from `handle=ENV_VAR` helper lines, generate
+  internal system names automatically, persist human `displayName`, and provider-build
+  generic HTTPS JSON API adapters such as `api.aml.score`. Remaining work is autonomous
+  docs parsing into endpoint presets, richer provider-specific schemas, and policy-aware
+  runtime credential resolution for all generated tools.
+- Make generated tools manageable from the registry. DONE for human display names,
+  generated-system-name handoff, persistent `display_name` columns, Tools-page delete
+  buttons, `DELETE /api/tools/generated-modules/:name`, and built-in protection.
+  Remaining work is richer version history/changelog, operator tickets linked directly to
+  generated tool versions, and visual diffs between replacement versions.
 - Treat channel adapters as tools, not special one-off screens: Telegram, WhatsApp, Slack,
   email, and custom inbound/outbound adapters should be built through Tool Builds,
   registered in the tool registry, and then monitored on the Channels runtime page.

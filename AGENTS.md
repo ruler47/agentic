@@ -514,6 +514,15 @@ For documentation-only changes:
 - Tool Build requests can include `credentialHandles`. Keep these as structured metadata
   and builder instructions; do not require generated tools to scrape handles from the
   free-form reason text.
+- Tool Build requests also accept a human `displayName`. The server generates the stable
+  system `desiredToolName` automatically when the UI leaves it blank, checking existing
+  registry/build names where possible. The UI should ask for a display name, capability,
+  description/docs/instructions, and credential-key helper lines rather than forcing users
+  to invent internal module names.
+- Generated tool modules can be deleted from the Tools page or
+  `DELETE /api/tools/generated-modules/:name`; built-in tools are protected. Deleting a
+  generated tool removes registry metadata and unregisters the active runtime copy when
+  loaded.
 - `GenericApiToolBuildProvider` can build reusable HTTPS JSON API adapters for capability
   names like `api.aml.score`. The capability should be a stable machine id; docs URLs,
   endpoint examples, expected behavior, QA criteria, and credential handles belong in the

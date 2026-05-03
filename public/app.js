@@ -219,6 +219,9 @@ document.addEventListener("click", (event) => {
     state.selectedToolName = toolName;
     render();
   }
+  if (actionName === "delete-tool" && toolName) {
+    void deleteTool(toolName);
+  }
   if (actionName === "run-tool-health") {
     void runToolHealthchecks();
   }
@@ -2047,17 +2050,21 @@ function renderToolsPage() {
 }
 
 function renderToolCard(tool) {
+  const label = tool.displayName || tool.name;
+  const isGenerated = tool.source === "generated";
   return `
     <article class="tool-card ${state.selectedToolName === tool.name ? "selected" : ""}" data-action="select-tool" data-tool-name="${tool.name}" tabindex="0">
       <div class="card-topline">
         <span>${tool.source ?? "builtin"}</span>
         <span>${tool.status ?? "available"}</span>
       </div>
-      <h3>${escapeHtml(tool.name)} <small>v${escapeHtml(tool.version)}</small></h3>
+      <h3>${escapeHtml(label)} <small>v${escapeHtml(tool.version)}</small></h3>
+      <small class="status-note">System name: ${escapeHtml(tool.name)}</small>
       <p>${escapeHtml(tool.description)}</p>
       <div class="tag-row">${(tool.capabilities ?? []).slice(0, 5).map((capability) => `<span>${escapeHtml(capability)}</span>`).join("")}</div>
       <div class="card-actions">
         <button type="button" class="ghost-button" data-action="select-tool" data-tool-name="${tool.name}">Inspect</button>
+        ${isGenerated ? `<button type="button" class="ghost-button danger-button" data-action="delete-tool" data-tool-name="${tool.name}">Delete</button>` : ""}
       </div>
     </article>
   `;
@@ -2065,16 +2072,18 @@ function renderToolCard(tool) {
 
 function renderToolDetail(tool) {
   const failureProblem = toolFailureProblem(tool);
+  const label = tool.displayName || tool.name;
   return `
     <div class="inspector-stack">
       <span class="eyebrow">Tool detail</span>
-      <h2>${escapeHtml(tool.name)}</h2>
+      <h2>${escapeHtml(label)}</h2>
       <div class="inspector-meta">
         <span>${escapeHtml(tool.source ?? "builtin")}</span>
         <span>${escapeHtml(tool.status ?? "available")}</span>
         <span>v${escapeHtml(tool.version ?? "n/a")}</span>
         ${tool.lastHealthOk === undefined ? "" : `<span>${tool.lastHealthOk ? "healthy" : "unhealthy"}</span>`}
       </div>
+      ${contextBlock("System name", tool.name)}
       ${contextBlock("Purpose", tool.description || "No description.")}
       ${contextBlock("Capabilities", (tool.capabilities ?? []).join("\n") || "No capabilities.")}
       ${contextBlock("Startup mode", tool.startupMode ?? "default")}
@@ -2086,6 +2095,7 @@ function renderToolDetail(tool) {
       ${contextBlock("Examples", formatToolExamples(tool))}
       ${contextBlock("Schema", formatToolSchemas(tool))}
       ${tool.status === "failed" ? renderToolReworkForm(tool, failureProblem) : ""}
+      ${tool.source === "generated" ? `<button type="button" class="ghost-button danger-button" data-action="delete-tool" data-tool-name="${tool.name}">Delete generated tool</button>` : ""}
     </div>
   `;
 }
@@ -2216,13 +2226,18 @@ function renderToolBuildsPage() {
         </div>
         <form data-action="create-tool-build-request" class="settings-form">
           <label>
+            <span>Display name</span>
+            <input name="displayName" placeholder="AML Score" required />
+            <small>Human name shown in Tools, traces, and operator screens. The builder generates the internal system name automatically.</small>
+          </label>
+          <label>
             <span>Capability</span>
             <input name="capability" placeholder="api.aml.score" required />
             <small>Good: <code>api.aml.score</code>. Avoid prose like “API AML Score”; the builder routes by this stable capability id.</small>
           </label>
           <label>
-            <span>Docs, secret handles, and expected behavior</span>
-            <textarea name="reason" placeholder="Example: Create a reusable HTTP JSON API tool for AML score lookups. Docs: https://provider.example/docs. Expected use: given network + wallet address, call the provider endpoint and return score/risk/reasons/raw response. Secret handle: secret.aml.gl.api. Do not paste raw tokens." required></textarea>
+            <span>Description, docs, and expected behavior</span>
+            <textarea name="reason" placeholder="Example: Create a reusable HTTP JSON API tool for AML score lookups. Docs: https://provider.example/docs. Expected use: given network + wallet address, call the provider endpoint and return score/risk/reasons/raw response. Do not paste raw tokens." required></textarea>
           </label>
           <div class="secret-handle-strip">
             <span>Available secret handles</span>
@@ -2232,15 +2247,16 @@ function renderToolBuildsPage() {
           </div>
           <div class="composer-grid compact-grid">
             <label>
-              <span>Desired tool name</span>
-              <input name="desiredToolName" placeholder="generated.api.amlScore" />
+              <span>Credential keys</span>
+              <textarea name="credentialKeys" rows="3" placeholder="secret.aml.gl.api=AML_GL_API_KEY&#10;secret.crm.api=external:vault/crm/api-key"></textarea>
+              <small>Format: <code>handle=ENV_VAR</code> or <code>handle=external:secret/ref</code>. Raw key values are intentionally not accepted.</small>
             </label>
             <label>
               <span>QA criteria</span>
               <input name="qaCriteria" placeholder="smoke call passes, schemas validated, no secret leakage" />
             </label>
             <label>
-              <span>Credential handles</span>
+              <span>Existing credential handles</span>
               <input name="credentialHandles" placeholder="secret.telegram.bot, secret.crm.api" />
             </label>
           </div>
@@ -2277,7 +2293,8 @@ function renderBuildCard(request) {
         <span>${escapeHtml(formatStatusLabel(request.status))}</span>
         <span>${formatRelative(request.updatedAt ?? request.createdAt)}</span>
       </div>
-      <strong>${escapeHtml(request.capability)}</strong>
+      <strong>${escapeHtml(request.displayName || request.capability)}</strong>
+      <small class="status-note">Capability: ${escapeHtml(request.capability)}</small>
       <small class="status-note">${escapeHtml(toolBuildCardComment(request))}</small>
       <p>${escapeHtml(request.reason)}</p>
       <small>${escapeHtml(request.contract?.toolName ?? "tool contract pending")}</small>
@@ -3281,26 +3298,78 @@ function normalizeOptionalInput(value) {
   return text || undefined;
 }
 
+function parseCredentialSpecInput(value, capability) {
+  return String(value ?? "")
+    .split(/\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const separator = line.indexOf("=");
+      if (separator === -1) {
+        throw new Error(`Credential key "${line}" must use handle=ENV_VAR or handle=external:ref`);
+      }
+      const handle = line.slice(0, separator).trim();
+      const rawRef = line.slice(separator + 1).trim();
+      if (!handle || !rawRef) {
+        throw new Error(`Credential key "${line}" must include both handle and secret reference.`);
+      }
+      const externalPrefix = "external:";
+      const provider = rawRef.startsWith(externalPrefix) ? "external" : "env";
+      const secretRef = provider === "external" ? rawRef.slice(externalPrefix.length).trim() : rawRef;
+      if (!secretRef) {
+        throw new Error(`Credential key "${line}" has an empty secret reference.`);
+      }
+      return {
+        handle,
+        label: handle,
+        provider,
+        secretRef,
+        scopes: uniqueList(["instance-local", capability ? `tool:${capability}` : undefined]),
+      };
+    });
+}
+
+function uniqueList(values) {
+  return [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
+}
+
 async function createToolBuildRequest(form) {
   const formData = new FormData(form);
   const qaCriteria = String(formData.get("qaCriteria") ?? "")
     .split(/\n|,/)
     .map((item) => item.trim())
     .filter(Boolean);
+  const capability = String(formData.get("capability") ?? "").trim();
   setComposerBusy(form, true);
   try {
+    const credentialSpecs = parseCredentialSpecInput(formData.get("credentialKeys"), capability);
+    for (const credential of credentialSpecs) {
+      const data = await fetchJson("/api/secret-handles", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(credential),
+      });
+      state.secretHandles = [
+        data.secretHandle,
+        ...state.secretHandles.filter((item) => item.handle !== data.secretHandle.handle),
+      ];
+    }
+    const credentialHandles = uniqueList([
+      ...parseListInput(formData.get("credentialHandles")),
+      ...credentialSpecs.map((credential) => credential.handle),
+    ]);
     const data = await fetchJson("/api/tool-build-requests", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        capability: String(formData.get("capability") ?? ""),
+        capability,
+        displayName: String(formData.get("displayName") ?? ""),
         reason: String(formData.get("reason") ?? ""),
-        desiredToolName: String(formData.get("desiredToolName") ?? ""),
         sourceRunId: String(formData.get("sourceRunId") ?? "") || undefined,
         sourceSpanId: String(formData.get("sourceSpanId") ?? "") || undefined,
         taskSummary: String(formData.get("taskSummary") ?? "") || undefined,
         qaCriteria,
-        credentialHandles: parseListInput(formData.get("credentialHandles")),
+        credentialHandles,
       }),
     });
     state.buildRequests = [data.request, ...state.buildRequests.filter((item) => item.id !== data.request.id)];
@@ -3321,6 +3390,25 @@ async function createToolBuildRequest(form) {
     render();
   } finally {
     setComposerBusy(form, false);
+  }
+}
+
+async function deleteTool(toolName) {
+  if (!window.confirm(`Delete generated tool ${toolName}? Built-in tools cannot be deleted.`)) return;
+  try {
+    await fetchJson(`/api/tools/generated-modules/${encodeURIComponent(toolName)}`, { method: "DELETE" });
+    state.tools = state.tools.filter((tool) => tool.name !== toolName);
+    if (state.selectedToolName === toolName) {
+      state.selectedToolName = state.tools[0]?.name;
+    }
+    state.notice = {
+      title: "Tool deleted",
+      body: `${toolName} was removed from the generated tool registry.`,
+    };
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
   }
 }
 

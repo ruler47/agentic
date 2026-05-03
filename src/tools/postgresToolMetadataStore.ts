@@ -12,6 +12,7 @@ import {
 
 type ToolModuleRow = {
   name: string;
+  display_name: string | null;
   version: string;
   description: string;
   capabilities: string[];
@@ -42,7 +43,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
 
   async list(): Promise<ToolModuleMetadata[]> {
     const rows = await this.pool.query<ToolModuleRow>(`
-      select name, version, description, capabilities, startup_mode, input_schema,
+      select name, display_name, version, description, capabilities, startup_mode, input_schema,
              output_schema, module_path, test_path, source, status,
              last_health_ok, last_health_detail, required_configuration_keys,
              required_secret_handles, settings_schema, storage_contract, docs_markdown,
@@ -62,13 +63,14 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
       await this.pool.query(
         `
           insert into tool_modules (
-            name, version, description, capabilities, startup_mode, input_schema,
+            name, display_name, version, description, capabilities, startup_mode, input_schema,
             output_schema, required_configuration_keys, required_secret_handles,
             settings_schema, storage_contract, docs_markdown, examples, source, status, updated_at
           )
-          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'builtin', 'available', $14)
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'builtin', 'available', $15)
           on conflict (name) do update
-          set version = excluded.version,
+          set display_name = coalesce(excluded.display_name, tool_modules.display_name),
+              version = excluded.version,
               description = excluded.description,
               capabilities = excluded.capabilities,
               startup_mode = excluded.startup_mode,
@@ -85,6 +87,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         `,
         [
           tool.name,
+          tool.displayName ?? null,
           tool.version ?? "0.0.0",
           tool.description,
           tool.capabilities,
@@ -96,7 +99,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           tool.settingsSchema ?? null,
           tool.storage ?? null,
           tool.docsMarkdown ?? null,
-          tool.examples ?? [],
+          JSON.stringify(tool.examples ?? []),
           updatedAt,
         ],
       );
@@ -139,7 +142,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     try {
       const existing = await this.pool.query<ToolModuleRow>(
         `
-          select name, version, description, capabilities, startup_mode, input_schema,
+          select name, display_name, version, description, capabilities, startup_mode, input_schema,
                  output_schema, module_path, test_path, source, status,
                  last_health_ok, last_health_detail, required_configuration_keys,
                  required_secret_handles, settings_schema, storage_contract, docs_markdown,
@@ -164,14 +167,15 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
       const rows = await this.pool.query<ToolModuleRow>(
         `
           insert into tool_modules (
-            name, version, description, capabilities, startup_mode, input_schema,
+            name, display_name, version, description, capabilities, startup_mode, input_schema,
             output_schema, module_path, test_path, required_configuration_keys,
             required_secret_handles, settings_schema, storage_contract, docs_markdown,
             examples, source, status, updated_at
           )
-          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'generated', 'disabled', $16)
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'generated', 'disabled', $17)
           on conflict (name) do update
-          set description = excluded.description,
+          set display_name = coalesce(excluded.display_name, tool_modules.display_name),
+              description = excluded.description,
               capabilities = excluded.capabilities,
               startup_mode = excluded.startup_mode,
               input_schema = excluded.input_schema,
@@ -187,7 +191,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               source = 'generated',
               status = 'disabled',
               updated_at = excluded.updated_at
-          returning name, version, description, capabilities, startup_mode, input_schema,
+          returning name, display_name, version, description, capabilities, startup_mode, input_schema,
                     output_schema, module_path, test_path, source, status,
                     last_health_ok, last_health_detail, required_configuration_keys,
                     required_secret_handles, settings_schema, storage_contract, docs_markdown,
@@ -196,6 +200,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         `,
         [
           input.name,
+          input.displayName ?? null,
           input.version,
           input.description,
           input.capabilities,
@@ -209,7 +214,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           input.settingsSchema ?? null,
           input.storage ?? null,
           input.docsMarkdown ?? null,
-          input.examples ?? [],
+          JSON.stringify(input.examples ?? []),
           new Date().toISOString(),
         ],
       );
@@ -227,7 +232,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     try {
       const existing = await this.pool.query<ToolModuleRow>(
         `
-          select name, version, description, capabilities, startup_mode, input_schema,
+          select name, display_name, version, description, capabilities, startup_mode, input_schema,
                  output_schema, module_path, test_path, source, status,
                  last_health_ok, last_health_detail, required_configuration_keys,
                  required_secret_handles, settings_schema, storage_contract, docs_markdown,
@@ -244,27 +249,28 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
       const rows = await this.pool.query<ToolModuleRow>(
         `
           update tool_modules
-          set version = $2,
-              description = $3,
-              capabilities = $4,
-              startup_mode = $5,
-              input_schema = $6,
-              output_schema = $7,
-              module_path = $8,
-              test_path = $9,
-              required_configuration_keys = $10,
-              required_secret_handles = $11,
-              settings_schema = $12,
-              storage_contract = $13,
-              docs_markdown = $14,
-              examples = $15,
+          set display_name = $2,
+              version = $3,
+              description = $4,
+              capabilities = $5,
+              startup_mode = $6,
+              input_schema = $7,
+              output_schema = $8,
+              module_path = $9,
+              test_path = $10,
+              required_configuration_keys = $11,
+              required_secret_handles = $12,
+              settings_schema = $13,
+              storage_contract = $14,
+              docs_markdown = $15,
+              examples = $16,
               source = 'generated',
               status = 'disabled',
               last_health_ok = null,
               last_health_detail = null,
-              updated_at = $16
+              updated_at = $17
           where name = $1
-          returning name, version, description, capabilities, startup_mode, input_schema,
+          returning name, display_name, version, description, capabilities, startup_mode, input_schema,
                     output_schema, module_path, test_path, source, status,
                     last_health_ok, last_health_detail, required_configuration_keys,
                     required_secret_handles, settings_schema, storage_contract, docs_markdown,
@@ -273,6 +279,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         `,
         [
           input.name,
+          input.displayName ?? existing.rows[0]?.display_name ?? null,
           input.version,
           input.description,
           input.capabilities,
@@ -286,7 +293,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           input.settingsSchema ?? null,
           input.storage ?? null,
           input.docsMarkdown ?? null,
-          input.examples ?? [],
+          JSON.stringify(input.examples ?? []),
           new Date().toISOString(),
         ],
       );
@@ -298,11 +305,47 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
       throw error;
     }
   }
+
+  async deleteGenerated(name: string): Promise<boolean> {
+    await this.pool.query("begin");
+    try {
+      const existing = await this.pool.query<ToolModuleRow>(
+        `
+          select name, display_name, version, description, capabilities, startup_mode, input_schema,
+                 output_schema, module_path, test_path, source, status,
+                 last_health_ok, last_health_detail, required_configuration_keys,
+                 required_secret_handles, settings_schema, storage_contract, docs_markdown,
+                 examples, success_count, failure_count, last_success_at, last_failure_at,
+                 updated_at
+          from tool_modules
+          where name = $1
+          for update
+        `,
+        [name],
+      );
+      const current = existing.rows[0];
+      if (!current) {
+        await this.pool.query("commit");
+        return false;
+      }
+      if (current.source === "builtin") {
+        throw new Error(`Cannot delete builtin tool ${name}.`);
+      }
+
+      await this.pool.query("delete from tool_modules where name = $1", [name]);
+      await this.pool.query("commit");
+      return true;
+    } catch (error) {
+      await this.pool.query("rollback");
+      throw error;
+    }
+  }
 }
 
 function mapRow(row: ToolModuleRow): ToolModuleMetadata {
   return {
     name: row.name,
+    displayName: row.display_name ?? undefined,
     version: row.version,
     description: row.description,
     capabilities: row.capabilities,
@@ -320,7 +363,7 @@ function mapRow(row: ToolModuleRow): ToolModuleMetadata {
     settingsSchema: row.settings_schema ?? undefined,
     storage: row.storage_contract ?? undefined,
     docsMarkdown: row.docs_markdown ?? undefined,
-    examples: row.examples ?? [],
+    examples: Array.isArray(row.examples) ? row.examples : [],
     successCount: row.success_count ?? 0,
     failureCount: row.failure_count ?? 0,
     lastSuccessAt: row.last_success_at?.toISOString(),

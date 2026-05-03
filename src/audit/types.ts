@@ -8,6 +8,7 @@ export type AuditAction =
   | "artifact.generated"
   | "tool.used"
   | "tool.failed"
+  | "tool.deleted"
   | "tool_build.requested"
   | "tool_build.rework_requested"
   | "tool_build.stopped"

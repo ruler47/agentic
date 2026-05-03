@@ -67,6 +67,7 @@ export type ToolExample = {
 
 export type Tool = {
   name: string;
+  displayName?: string;
   version?: string;
   description: string;
   capabilities: string[];

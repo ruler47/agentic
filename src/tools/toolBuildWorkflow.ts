@@ -9,6 +9,7 @@ export type ToolBuildOutput = {
   modulePath: string;
   testPath: string;
   summary: string;
+  displayName?: string;
   capabilities?: string[];
   inputSchema?: ToolSchema;
   outputSchema?: ToolSchema;

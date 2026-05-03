@@ -13,6 +13,7 @@ import {
 type ToolBuildRequestRow = {
   id: string;
   capability: string;
+  display_name: string | null;
   reason: string;
   source_run_id: string | null;
   source_span_id: string | null;
@@ -44,13 +45,13 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
     const rows = await this.pool.query<ToolBuildRequestRow>(
       `
         insert into tool_build_requests (
-          id, capability, reason, source_run_id, source_span_id, task_summary,
+          id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
           desired_tool_name, required_inputs, required_outputs, qa_criteria,
           credential_handles, rework_of, feedback,
           status, contract, created_at, updated_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'requested', $14, $15, $15)
-        returning id, capability, reason, source_run_id, source_span_id, task_summary,
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'requested', $15, $16, $16)
+        returning id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
                   desired_tool_name, required_inputs, required_outputs, qa_criteria,
                   credential_handles, rework_of, feedback,
                   status, status_detail, qa_report, registered_tool_name,
@@ -59,6 +60,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
       [
         id,
         input.capability,
+        input.displayName ?? null,
         input.reason,
         input.sourceRunId ?? null,
         input.sourceSpanId ?? null,
@@ -81,7 +83,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
   async get(id: string): Promise<ToolBuildRequest | undefined> {
     const rows = await this.pool.query<ToolBuildRequestRow>(
       `
-        select id, capability, reason, source_run_id, source_span_id, task_summary,
+        select id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
                desired_tool_name, required_inputs, required_outputs, qa_criteria,
                credential_handles, rework_of, feedback,
                status, status_detail, qa_report, registered_tool_name,
@@ -98,7 +100,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
   async list(limit = 100): Promise<ToolBuildRequest[]> {
     const rows = await this.pool.query<ToolBuildRequestRow>(
       `
-        select id, capability, reason, source_run_id, source_span_id, task_summary,
+        select id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
                desired_tool_name, required_inputs, required_outputs, qa_criteria,
                credential_handles, rework_of, feedback,
                status, status_detail, qa_report, registered_tool_name,
@@ -124,7 +126,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
             registered_tool_name = $5,
             updated_at = $6
         where id = $1
-        returning id, capability, reason, source_run_id, source_span_id, task_summary,
+        returning id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
                   desired_tool_name, required_inputs, required_outputs, qa_criteria,
                   credential_handles, rework_of, feedback,
                   status, status_detail, qa_report, registered_tool_name,
@@ -164,7 +166,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
             status_detail = $1,
             updated_at = $2
         where id in (select id from next_request)
-        returning id, capability, reason, source_run_id, source_span_id, task_summary,
+        returning id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
                   desired_tool_name, required_inputs, required_outputs, qa_criteria,
                   credential_handles, rework_of, feedback,
                   status, status_detail, qa_report, registered_tool_name,
@@ -190,6 +192,7 @@ function mapRow(row: ToolBuildRequestRow | undefined): ToolBuildRequest {
   return {
     id: row.id,
     capability: row.capability,
+    displayName: row.display_name ?? undefined,
     reason: row.reason,
     sourceRunId: row.source_run_id ?? undefined,
     sourceSpanId: row.source_span_id ?? undefined,

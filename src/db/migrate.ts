@@ -372,6 +372,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`
       create table if not exists tool_modules (
         name text primary key,
+        display_name text,
         version text not null,
         description text not null,
         capabilities text[] not null default '{}',
@@ -404,6 +405,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     `);
 
     await pool.query(`alter table tool_modules add column if not exists module_path text;`);
+    await pool.query(`alter table tool_modules add column if not exists display_name text;`);
     await pool.query(`alter table tool_modules add column if not exists test_path text;`);
     await pool.query(`alter table tool_modules add column if not exists required_configuration_keys text[] not null default '{}';`);
     await pool.query(`alter table tool_modules add column if not exists required_secret_handles text[] not null default '{}';`);
@@ -443,6 +445,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       create table if not exists tool_build_requests (
         id text primary key,
         capability text not null,
+        display_name text,
         reason text not null,
         source_run_id text references runs(id) on delete set null,
         source_span_id text,
@@ -465,6 +468,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     `);
 
     await pool.query(`alter table tool_build_requests add column if not exists status_detail text;`);
+    await pool.query(`alter table tool_build_requests add column if not exists display_name text;`);
     await pool.query(`alter table tool_build_requests add column if not exists qa_report jsonb;`);
     await pool.query(`alter table tool_build_requests add column if not exists registered_tool_name text;`);
     await pool.query(`alter table tool_build_requests add column if not exists rework_of text;`);

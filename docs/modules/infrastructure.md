@@ -202,15 +202,18 @@ input/output schemas, startup mode, capabilities, and healthchecks exposed throu
 `GET /api/tools/health`.
 
 Built-in tool contracts are also synced into the Postgres `tool_modules` table on app
-startup. This table is the durable catalog for future generated tools: it stores version,
-capabilities, schemas, source, status, configuration/secret requirements, storage
-contracts, docs/examples, usage counters, and the latest health result.
+startup. This table is the durable catalog for future generated tools: it stores stable
+system name, optional human display name, version, capabilities, schemas, source, status,
+configuration/secret requirements, storage contracts, docs/examples, usage counters, and
+the latest health result. Generated tools can be deleted from the catalog; built-in tools
+are protected.
 
 Missing tool capabilities can be persisted into `tool_build_requests`. These records are
-the durable handoff from runtime failure detection to the future Tool Builder/Tool QA/Tool
-Registrar flow. The queue stores lifecycle state, status detail, structured QA reports,
-and the registered generated tool name so separate workers can coordinate through the
-database without sharing full conversational context.
+the durable handoff from runtime failure detection to the Tool Builder/Tool QA/Tool
+Registrar flow. The queue stores lifecycle state, human display name, generated system
+name, status detail, structured QA reports, credential handles, and the registered
+generated tool name so separate workers can coordinate through the database without
+sharing full conversational context.
 
 Generated executable tools are loaded from compiled project-local modules after metadata
 registration. Runtime promotion requires matching name/version/capabilities and a passing

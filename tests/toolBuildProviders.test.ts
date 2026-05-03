@@ -58,6 +58,7 @@ test("GeneratedToolFileBuilder creates reusable API adapter modules for API capa
   const requestStore = new InMemoryToolBuildRequestStore();
   const request = await requestStore.create({
     capability: "api.aml.score",
+    displayName: "AML Score",
     reason: "Create a reusable HTTP JSON API client for AML score lookups. Docs URL: https://aml.example/docs.",
     desiredToolName: "generated.api.amlScore",
     credentialHandles: ["secret.aml.gl.api"],
@@ -72,6 +73,7 @@ test("GeneratedToolFileBuilder creates reusable API adapter modules for API capa
     const testSource = await readFile(join(projectRoot, output.testPath), "utf8");
 
     assert.equal(output.modulePath, "src/tools/generated/api-aml-scoreTool.ts");
+    assert.equal(output.displayName, "AML Score");
     assert.deepEqual(output.capabilities, ["api.aml.score", "api-http-json", "http-api-call"]);
     assert.deepEqual(output.inputSchema?.required, ["url"]);
     assert.deepEqual(output.requiredSecretHandles, ["secret.aml.gl.api"]);
@@ -113,6 +115,7 @@ test("MetadataToolRegistrar preserves provider-specific capabilities and secret 
   const metadataStore = new InMemoryToolMetadataStore();
   const request = await requestStore.create({
     capability: "api.aml.score",
+    displayName: "AML Score",
     reason: "Create an API adapter.",
     desiredToolName: "generated.api.amlScore",
     credentialHandles: ["secret.aml.gl.api"],
@@ -135,6 +138,7 @@ test("MetadataToolRegistrar preserves provider-specific capabilities and secret 
   const [metadata] = await metadataStore.list();
 
   assert.equal(registeredToolName, "generated.api.amlScore");
+  assert.equal(metadata?.displayName, "AML Score");
   assert.deepEqual(metadata?.capabilities, ["api.aml.score", "api-http-json", "http-api-call"]);
   assert.deepEqual(metadata?.inputSchema?.required, ["url"]);
   assert.deepEqual(metadata?.requiredSecretHandles, ["secret.aml.gl.api"]);

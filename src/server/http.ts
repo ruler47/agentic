@@ -55,7 +55,7 @@ export type WebAppOptions = {
   runStore: RunStore;
   publicDir: string;
   skillMemory?: SkillMemoryStore;
-  toolRegistry?: Pick<ToolRegistry, "list">;
+  toolRegistry?: Pick<ToolRegistry, "list"> & Partial<Pick<ToolRegistry, "unregister">>;
   toolMetadataStore?: ToolMetadataStore;
   toolMigrationStore?: ToolMigrationStore;
   toolBuildRequestStore?: ToolBuildRequestStore;
@@ -621,6 +621,40 @@ async function routeRequest(
     return;
   }
 
+  const generatedToolDeleteMatch = url.pathname.match(/^\/api\/tools\/generated-modules\/([^/]+)$/);
+  if (request.method === "DELETE" && generatedToolDeleteMatch) {
+    if (!options.toolMetadataStore) {
+      sendJson(response, 503, { error: "Tool metadata store is not configured" });
+      return;
+    }
+
+    const name = decodeURIComponent(generatedToolDeleteMatch[1] ?? "");
+    try {
+      const deleted = await options.toolMetadataStore.deleteGenerated(name);
+      if (!deleted) {
+        sendJson(response, 404, { error: "Generated tool was not found" });
+        return;
+      }
+      options.toolRegistry?.unregister?.(name);
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool.deleted",
+        targetType: "tool",
+        targetId: name,
+        status: "success",
+        summary: `Generated tool deleted: ${name}`,
+      });
+      sendJson(response, 200, { deleted: true, name });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid generated tool delete request",
+      });
+    }
+    return;
+  }
+
   const replacementMatch = url.pathname.match(/^\/api\/tools\/generated-modules\/([^/]+)\/promote-replacement$/);
   if (request.method === "POST" && replacementMatch) {
     if (!options.toolMetadataStore) {
@@ -716,7 +750,10 @@ async function routeRequest(
     }
 
     try {
-      const requestInput = parseToolBuildRequestInput(await readJsonBody<unknown>(request));
+      const requestInput = await assignGeneratedToolName(
+        parseToolBuildRequestInput(await readJsonBody<unknown>(request)),
+        options,
+      );
       const buildRequest = await options.toolBuildRequestStore.create(requestInput);
       await recordAudit(options, {
         instanceId: "instance-local",
@@ -730,6 +767,7 @@ async function routeRequest(
         summary: `Tool build requested: ${buildRequest.capability}`,
         metadata: {
           capability: buildRequest.capability,
+          displayName: buildRequest.displayName,
           desiredToolName: buildRequest.desiredToolName,
           credentialHandles: buildRequest.credentialHandles,
           modulePath: buildRequest.contract.modulePath,
@@ -876,6 +914,7 @@ async function routeRequest(
       const feedback = parseToolBuildReworkInput(await readJsonBody<unknown>(request));
       const reworkRequest = await options.toolBuildRequestStore.create({
         capability: original.capability,
+        displayName: original.displayName,
         reason: `${original.reason}\n\nRework feedback for ${original.id}:\n${feedback}`,
         sourceRunId: original.sourceRunId,
         sourceSpanId: original.sourceSpanId,
@@ -2295,6 +2334,7 @@ function parseToolBuildRequestInput(value: unknown) {
 
   return {
     capability: candidate.capability.trim(),
+    displayName: parseOptionalText(candidate.displayName),
     reason: candidate.reason.trim(),
     sourceRunId: typeof candidate.sourceRunId === "string" ? candidate.sourceRunId : undefined,
     sourceSpanId: typeof candidate.sourceSpanId === "string" ? candidate.sourceSpanId : undefined,
@@ -2307,6 +2347,41 @@ function parseToolBuildRequestInput(value: unknown) {
     reworkOf: typeof candidate.reworkOf === "string" ? candidate.reworkOf : undefined,
     feedback: typeof candidate.feedback === "string" ? candidate.feedback : undefined,
   };
+}
+
+async function assignGeneratedToolName(
+  input: ReturnType<typeof parseToolBuildRequestInput>,
+  options: WebAppOptions,
+): Promise<ReturnType<typeof parseToolBuildRequestInput>> {
+  if (input.desiredToolName?.trim()) return input;
+
+  const baseName = generatedToolNameFromCapability(input.capability);
+  const usedNames = new Set<string>();
+  for (const tool of (await options.toolMetadataStore?.list()) ?? []) {
+    usedNames.add(tool.name);
+  }
+  for (const request of (await options.toolBuildRequestStore?.list(500)) ?? []) {
+    if (request.contract?.toolName) usedNames.add(request.contract.toolName);
+    if (request.desiredToolName) usedNames.add(request.desiredToolName);
+  }
+
+  let candidate = baseName;
+  for (let index = 2; usedNames.has(candidate); index += 1) {
+    candidate = `${baseName}.${index}`;
+  }
+  return {
+    ...input,
+    desiredToolName: candidate,
+  };
+}
+
+function generatedToolNameFromCapability(capability: string): string {
+  const slug = capability
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64) || "tool";
+  return `generated.${slug.replace(/-/g, ".")}`;
 }
 
 function parseToolMigrationCreateInput(value: unknown): ToolMigrationCreateInput {
@@ -2436,6 +2511,7 @@ function parseGeneratedToolModuleInput(value: unknown) {
 
   return {
     name,
+    displayName: parseOptionalText(candidate.displayName),
     version,
     description,
     capabilities: parseRequiredStringArray(candidate.capabilities, "capabilities"),

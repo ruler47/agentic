@@ -26,6 +26,9 @@ test("ToolRegistry registers, lists, and retrieves tools", async () => {
     ok: true,
     content: "hello",
   });
+  assert.equal(registry.unregister("echo"), true);
+  assert.equal(registry.get("echo"), undefined);
+  assert.equal(registry.unregister("echo"), false);
 });
 
 test("ToolRegistry executes tools with scoped runtime context", async () => {

@@ -988,6 +988,7 @@ test("web server exposes tool build requests", async () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         capability: "pdf-report",
+        displayName: "PDF Report",
         reason: "Need PDF report artifacts.",
         requiredInputs: ["markdown"],
         requiredOutputs: ["artifact"],
@@ -1052,6 +1053,8 @@ test("web server exposes tool build requests", async () => {
     const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
 
     assert.equal(createdResponse.status, 201);
+    assert.equal(created.request.displayName, "PDF Report");
+    assert.equal(created.request.contract.displayName, "PDF Report");
     assert.equal(created.request.contract.toolName, "generated.pdf.report");
     assert.deepEqual(created.request.credentialHandles, ["secret.pdf.vendor"]);
     assert.ok(
@@ -1065,6 +1068,7 @@ test("web server exposes tool build requests", async () => {
     assert.equal(rework.request.status, "requested");
     assert.equal(rework.request.reworkOf, created.request.id);
     assert.deepEqual(rework.request.credentialHandles, ["secret.pdf.vendor"]);
+    assert.equal(rework.request.displayName, "PDF Report");
     assert.match(rework.request.feedback, /stricter artifact validation/);
     assert.equal(stopResponse.status, 200);
     assert.equal(stopped.request.status, "blocked");
@@ -1112,6 +1116,7 @@ test("web server registers generated tool metadata with conflict checks", async 
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         name: "generated.browser.screenshot",
+        displayName: "Browser Screenshot",
         version: "1.0.0",
         description: "Captures browser screenshots.",
         capabilities: ["browser-screenshot", "artifact-generation"],
@@ -1133,11 +1138,19 @@ test("web server registers generated tool metadata with conflict checks", async 
       }),
     });
     const tools = await (await fetch(`${baseUrl}/api/tools`)).json();
+    const deleteResponse = await fetch(
+      `${baseUrl}/api/tools/generated-modules/${encodeURIComponent("generated.browser.screenshot")}`,
+      { method: "DELETE" },
+    );
+    const afterDelete = await (await fetch(`${baseUrl}/api/tools`)).json();
 
     assert.equal(createResponse.status, 201);
     assert.equal(createBody.tool.status, "disabled");
+    assert.equal(createBody.tool.displayName, "Browser Screenshot");
     assert.equal(conflictResponse.status, 400);
     assert.equal(tools.tools[0].source, "generated");
+    assert.equal(deleteResponse.status, 200);
+    assert.equal(afterDelete.tools.length, 0);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

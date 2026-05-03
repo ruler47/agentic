@@ -228,8 +228,9 @@ The worker is enabled by default in `src/server/main.ts`. Set
 `TOOL_BUILD_WORKER_INTERVAL_MS` and `TOOL_BUILD_WORKER_BATCH_SIZE`.
 
 The registrar path now supports generated metadata registration into `tool_modules` with
-name/version conflict checks. Registered generated modules start as `disabled` until the
-runtime can load their executable TypeScript module and pass health checks.
+human `displayName`, stable system-name/version conflict checks, and generated-tool
+deletion. Registered generated modules start as `disabled` until the runtime can load
+their executable TypeScript module and pass health checks.
 
 Generated module loading is deliberately constrained:
 

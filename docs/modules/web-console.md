@@ -133,6 +133,7 @@ List tools:
 ```http
 GET /api/tools
 POST /api/tools/generated-modules
+DELETE /api/tools/generated-modules/:name
 GET /api/tools/health
 GET /api/tool-migrations
 POST /api/tool-migrations
@@ -147,16 +148,22 @@ GET /api/secret-handles/:handle
 DELETE /api/secret-handles/:handle
 ```
 
-`GET /api/tools` returns persistent registry metadata when configured: name, version,
-description, capabilities, startup mode, schemas, source, status, health summary,
-required configuration keys, required secret handles, settings schema, storage contract,
-agent-readable docs/examples, success/failure counters, and updated timestamp.
+`GET /api/tools` returns persistent registry metadata when configured: system name,
+optional human `displayName`, version, description, capabilities, startup mode, schemas,
+source, status, health summary, required configuration keys, required secret handles,
+settings schema, storage contract, agent-readable docs/examples, success/failure
+counters, and updated timestamp. The UI shows `displayName` as the primary label and
+keeps the stable system name visible as metadata.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as
 `disabled` until executable loading and final health checks promote them. The loader only
 imports compiled project-local modules whose exported Tool contract matches the registered
 metadata.
+
+`DELETE /api/tools/generated-modules/:name` removes a generated tool from the durable
+catalog and unregisters it from the active runtime when loaded. Built-in tools are
+protected and cannot be deleted through this endpoint.
 
 `POST /api/tools/generated-modules/:name/promote-replacement` promotes a QA-passed
 replacement version for an existing generated tool. The request body must include
@@ -167,13 +174,25 @@ same-version overwrites so a tool rework cannot silently replace the active cont
 contracts. The System Inventory panel shows the latest build queue items next to tools and
 memories.
 
-`POST /api/tool-build-requests` accepts a missing capability payload (`capability`,
-`reason`, optional source run/span IDs, task summary, inputs/outputs/QA criteria, and
-`credentialHandles`) and creates the same durable contract the runtime uses after
-`tool-missing`. Trace Lab's span inspector uses this endpoint for contextual "Create tool
+`POST /api/tool-build-requests` accepts a missing capability payload (`capability`, human
+`displayName`, `reason`, optional source run/span IDs, task summary, inputs/outputs/QA
+criteria, and `credentialHandles`) and creates the same durable contract the runtime uses
+after `tool-missing`. If `desiredToolName` is omitted, the server generates a stable
+system name from the capability (`generated.api.aml.score`) and avoids already-used names
+where possible. Trace Lab's span inspector uses this endpoint for contextual "Create tool
 request / bug" forms, preserving the selected run/span context in the build request.
 Credential handles are carried as structured metadata into the builder instructions so
 generated tools can request credentials by handle without parsing raw free-form text.
+
+The Tool Builds UI intentionally keeps the form simple:
+
+- **Display name**: the human label shown throughout the registry and trace surfaces.
+- **Capability**: a stable machine id such as `api.aml.score`.
+- **Description/docs**: the actual task, API docs, endpoint examples, expected behavior,
+  and acceptance notes.
+- **Credential keys**: helper lines like `secret.aml.gl.api=AML_GL_API_KEY` or
+  `secret.crm.api=external:vault/crm/api-key`. The UI creates secret-handle metadata and
+  passes only handles into the build request; raw key values are not accepted.
 
 `GET /api/tool-build-requests/:id` and `PATCH /api/tool-build-requests/:id` provide the
 builder lifecycle handoff. Builder, QA, and Registrar agents can mark a request as

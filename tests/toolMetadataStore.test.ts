@@ -6,6 +6,7 @@ import { Tool } from "../src/tools/tool.js";
 
 const tool: Tool = {
   name: "example.tool",
+  displayName: "Example Tool",
   version: "1.2.3",
   description: "Example reusable tool",
   capabilities: ["example", "artifact-generation"],
@@ -44,6 +45,7 @@ test("InMemoryToolMetadataStore syncs builtin tool contracts", async () => {
 
   assert.equal(modules.length, 1);
   assert.equal(modules[0]?.name, "example.tool");
+  assert.equal(modules[0]?.displayName, "Example Tool");
   assert.equal(modules[0]?.version, "1.2.3");
   assert.equal(modules[0]?.source, "builtin");
   assert.equal(modules[0]?.status, "available");
@@ -91,6 +93,7 @@ test("InMemoryToolMetadataStore registers generated modules with conflict checks
   const store = new InMemoryToolMetadataStore();
   const generated = await store.registerGenerated({
     name: "generated.browser.screenshot",
+    displayName: "Browser Screenshot",
     version: "1.0.0",
     description: "Captures browser screenshots.",
     capabilities: ["browser-screenshot", "artifact-generation"],
@@ -115,6 +118,7 @@ test("InMemoryToolMetadataStore registers generated modules with conflict checks
   });
 
   assert.equal(generated.source, "generated");
+  assert.equal(generated.displayName, "Browser Screenshot");
   assert.equal(generated.status, "disabled");
   assert.deepEqual(generated.requiredSecretHandles, ["secret.browser.proxy"]);
   assert.equal(generated.storage?.tables?.[0], "sessions");
@@ -129,6 +133,23 @@ test("InMemoryToolMetadataStore registers generated modules with conflict checks
       }),
     /existing version 1.0.0 differs from 2.0.0/,
   );
+});
+
+test("InMemoryToolMetadataStore deletes generated modules but protects builtins", async () => {
+  const store = new InMemoryToolMetadataStore();
+  await store.syncBuiltins([tool]);
+  await store.registerGenerated({
+    name: "generated.api.test",
+    displayName: "API Test",
+    version: "1.0.0",
+    description: "Generated API test tool.",
+    capabilities: ["api.test"],
+    modulePath: "src/tools/generated/api-testTool.ts",
+  });
+
+  assert.equal(await store.deleteGenerated("generated.api.test"), true);
+  assert.equal(await store.deleteGenerated("generated.api.test"), false);
+  await assert.rejects(() => store.deleteGenerated("example.tool"), /Cannot delete builtin tool/);
 });
 
 test("InMemoryToolMetadataStore rejects generated modules that reuse builtin names", async () => {
@@ -210,6 +231,7 @@ test("tool build request store creates a reusable builder and QA contract", asyn
   const store = new InMemoryToolBuildRequestStore();
   const request = await store.create({
     capability: "browser-screenshot",
+    displayName: "Browser Screenshot",
     reason: "The task needs a browser screenshot artifact.",
     sourceRunId: "run-1",
     sourceSpanId: "span-1",
@@ -220,6 +242,8 @@ test("tool build request store creates a reusable builder and QA contract", asyn
   const [stored] = await store.list();
 
   assert.equal(request.status, "requested");
+  assert.equal(request.displayName, "Browser Screenshot");
+  assert.equal(request.contract.displayName, "Browser Screenshot");
   assert.equal(request.contract.toolName, "generated.browser.screenshot");
   assert.equal(request.contract.modulePath, "src/tools/generated/browser-screenshotTool.ts");
   assert.equal(request.contract.testPath, "tests/generated/browser-screenshotTool.test.ts");
