@@ -15,7 +15,12 @@ import {
   SkillMemoryStore,
   tokenizeMemoryText,
 } from "./skillMemory.js";
-import { createDeterministicTextEmbedding, formatPgVector, memoryEmbeddingText } from "./textEmbedding.js";
+import {
+  DeterministicTextEmbeddingProvider,
+  formatPgVector,
+  memoryEmbeddingText,
+  TextEmbeddingProvider,
+} from "./textEmbedding.js";
 
 type SkillMemoryRow = {
   id: string;
@@ -36,7 +41,10 @@ type SkillMemoryRow = {
 };
 
 export class PostgresSkillMemory implements SkillMemoryStore {
-  constructor(private readonly pool: PgPool) {}
+  constructor(
+    private readonly pool: PgPool,
+    private readonly embeddingProvider: TextEmbeddingProvider = new DeterministicTextEmbeddingProvider(),
+  ) {}
 
   async list(options: MemoryListOptions = {}): Promise<SkillMemoryEntry[]> {
     const filters: string[] = [];
@@ -173,7 +181,7 @@ export class PostgresSkillMemory implements SkillMemoryStore {
         stored.createdAt,
         stored.tags.join(" "),
         (stored.evidence ?? []).join(" "),
-        formatPgVector(createDeterministicTextEmbedding(memoryEmbeddingText(stored))),
+        formatPgVector(await this.embeddingProvider.embed(memoryEmbeddingText(stored))),
       ],
     );
 
@@ -237,7 +245,7 @@ export class PostgresSkillMemory implements SkillMemoryStore {
         merged.updatedAt,
         merged.tags.join(" "),
         (merged.evidence ?? []).join(" "),
-        formatPgVector(createDeterministicTextEmbedding(memoryEmbeddingText(merged))),
+        formatPgVector(await this.embeddingProvider.embed(memoryEmbeddingText(merged))),
       ],
     );
 
@@ -246,7 +254,7 @@ export class PostgresSkillMemory implements SkillMemoryStore {
 
   private async semanticSearch(query: string, limit: number, options: MemoryListOptions): Promise<SkillMemoryEntry[]> {
     const filters = ["status = 'accepted'", "memory_embedding is not null"];
-    const values: unknown[] = [formatPgVector(createDeterministicTextEmbedding(query))];
+    const values: unknown[] = [formatPgVector(await this.embeddingProvider.embed(query))];
     if (options.scope) {
       values.push(options.scope);
       filters.push(`scope = $${values.length}`);

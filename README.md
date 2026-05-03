@@ -79,6 +79,19 @@ Model providers can be local OpenAI-compatible endpoints or remote providers suc
 OpenAI API. Remote API keys should be stored through secret handles/settings rather than
 prompts or memory.
 
+Optional memory embedding provider:
+
+```bash
+EMBEDDING_MODEL=text-embedding-3-small \
+EMBEDDING_BASE_URL=https://api.openai.com/v1 \
+EMBEDDING_API_KEY=secret-handle-or-runtime-secret \
+docker compose up --build
+```
+
+Without `EMBEDDING_MODEL`, memory retrieval uses the portable deterministic local
+embedding provider. Remote embedding vectors are projected into the current 128-dimensional
+pgvector column and fall back locally if the endpoint fails.
+
 ## Verify
 
 ```bash

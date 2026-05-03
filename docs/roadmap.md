@@ -131,10 +131,11 @@ operator accepts them. Runtime calls now pass visible scopes for the active grou
 requester user, thread, and run, so scoped entries outside that context are not injected
 into agent prompts. Search now uses Postgres full-text search, lexical rescoring, and a
 pgvector-compatible embedding column when the database supports the `vector` extension.
-The current embedding provider is deterministic and local so the retrieval contract,
-migrations, indexes, and fallback behavior are in place without depending on a paid or
-remote embedding service. The next retrieval step is swapping that provider for a true
-semantic embedding model and adding richer tags/policy filters.
+The embedding layer is provider-based: the default deterministic local provider keeps the
+system portable, while `EMBEDDING_MODEL` enables an OpenAI-compatible `/embeddings`
+provider with local fallback and projection into the current 128-dimensional pgvector
+column. The next retrieval step is evaluating real embedding quality on production-like
+queries and adding richer tags/policy filters.
 
 Tasks:
 
@@ -148,12 +149,12 @@ Tasks:
   as global/group/user/thread/run with confidence, sensitivity, evidence, and status;
   non-global or sensitive/private learned memories are forced into `proposed` review
   state before they can be retrieved.
-- Add embeddings with `pgvector`. PARTIAL: `skill_memories.memory_embedding vector(128)`
-  and an HNSW cosine index are created when pgvector is available; the runtime writes a
-  deterministic local text embedding for each memory.
+- Add embeddings with `pgvector`. DONE for the current schema: `skill_memories.memory_embedding
+  vector(128)` and an HNSW cosine index are created when pgvector is available; memory
+  writes use a configurable embedding provider with deterministic fallback.
 - Search by semantic similarity plus tags. PARTIAL: Postgres search now merges lexical
-  and vector candidates before visibility/status filtering; true semantic quality awaits
-  a real embedding provider.
+  and vector candidates before visibility/status filtering; real semantic quality depends
+  on configuring `EMBEDDING_MODEL` and measuring retrieval against representative runs.
 - Show memory hits in UI with confidence and why they matched. PARTIAL: search results now
   carry match reason/matched tokens for prompt context; richer UI drilldown remains.
 - Add tests proving repeated similar tasks retrieve prior memories. DONE: the universal
@@ -178,8 +179,8 @@ Tasks:
 
 Remaining memory gaps:
 
-- Search has vector retrieval plumbing, but the fallback embedding is deterministic
-  text-feature hashing, not a true semantic embedding model.
+- Real semantic retrieval still needs a configured embedding model, quality evaluation,
+  and a re-embedding/backfill job for existing memories when provider settings change.
 - The agent only stores a memory when the LLM returns `shouldStore: true`.
 - Stored lessons are generic, so specific repeated requests may not match well.
 - Runtime memory retrieval enforces accepted-only and exact visible-scope filtering, but

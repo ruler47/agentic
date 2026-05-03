@@ -12,6 +12,7 @@ import { InMemoryUserStore } from "../instance/userStore.js";
 import { PostgresUserStore } from "../instance/postgresUserStore.js";
 import { SkillMemory } from "../memory/skillMemory.js";
 import { PostgresSkillMemory } from "../memory/postgresSkillMemory.js";
+import { createTextEmbeddingProviderFromEnv } from "../memory/textEmbedding.js";
 import { InMemoryRunStore } from "../runs/inMemoryRunStore.js";
 import { PostgresRunStore } from "../runs/postgresRunStore.js";
 import { InMemoryModelTierSettingsStore } from "../settings/modelTierSettings.js";
@@ -42,7 +43,9 @@ import {
 const port = Number(process.env.PORT ?? "3000");
 const publicDir = resolve("public");
 const pool = process.env.DATABASE_URL ? createPool() : undefined;
-const skillMemory = pool ? new PostgresSkillMemory(pool) : new SkillMemory();
+const textEmbeddingProvider = createTextEmbeddingProviderFromEnv();
+const skillMemory = pool ? new PostgresSkillMemory(pool, textEmbeddingProvider) : new SkillMemory();
+console.log(`Memory embedding provider: ${textEmbeddingProvider.name} (${textEmbeddingProvider.dimensions}d).`);
 const tools = new ToolRegistry();
 tools.register(new WebSearchTool());
 tools.register(new FileReadTool());
