@@ -34,8 +34,8 @@ test("generated.api.gl.aml calls a JSON API endpoint with query and declared sec
       path: url.pathname,
       totalFunds: 62,
       sources: [
-        { name: "low-risk-source", funds: { score: 30, share: 25 } },
-        { name: "highest-risk-source", funds: { score: 60, share: 75 } }
+        { funds: { name: "low-risk-source", score: 30 }, share: 0.25 },
+        { funds: { name: "highest-risk-source", score: 60 }, share: 0.75 }
       ],
       auth: request.headers.authorization ?? request.headers["x-api-key"] ?? null
     }));

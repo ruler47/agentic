@@ -263,14 +263,19 @@ function extractSources(value: unknown): Array<{ name: string; share?: number; s
   const byName = new Map<string, { name: string; share?: number; score?: unknown }>();
   for (const item of value.sources) {
     if (!isRecord(item)) continue;
-    const name = typeof item.name === "string" && item.name.trim()
-      ? item.name.trim()
-      : typeof item.type === "string" && item.type.trim()
-        ? item.type.trim()
-        : undefined;
-    if (!name) continue;
     const funds = isRecord(item.funds) ? item.funds : {};
-    const share = numericValue(funds.share ?? item.share);
+    const rawName = typeof item.name === "string"
+      ? item.name
+      : typeof funds.name === "string"
+        ? funds.name
+        : typeof item.type === "string"
+          ? item.type
+          : typeof item.listType === "string"
+            ? item.listType
+            : undefined;
+    if (!rawName?.trim()) continue;
+    const name = rawName.trim();
+    const share = normalizeShare(item.share ?? funds.share);
     const score = funds.score ?? item.score;
     const existing = byName.get(name);
     if (!existing) {
@@ -292,6 +297,12 @@ function numericValue(value: unknown): number | undefined {
     return Number.isFinite(parsed) ? parsed : undefined;
   }
   return undefined;
+}
+
+function normalizeShare(value: unknown): number | undefined {
+  const parsed = numericValue(value);
+  if (parsed === undefined) return undefined;
+  return parsed > 0 && parsed <= 1 ? parsed * 100 : parsed;
 }
 
 function collectNestedScores(value: unknown, scores: unknown[]): void {

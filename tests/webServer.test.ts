@@ -1138,7 +1138,42 @@ test("web server infers tool build capability from human request fields", async 
     assert.equal(body.request.contract.toolName, "generated.api.wallet.risk.lookup");
     assert.equal(body.request.credentialNotes, "api key 12312");
     assert.deepEqual(body.request.credentialHandles, ["secret.api.wallet-risk-lookup"]);
-    assert.equal(await secretHandleStore.resolve?.("secret.api.wallet-risk-lookup"), "api key 12312");
+    assert.equal(await secretHandleStore.resolve?.("secret.api.wallet-risk-lookup"), "12312");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server stores only extracted credential material from tool build notes", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const secretHandleStore = new InMemorySecretHandleStore();
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolBuildRequestStore,
+    secretHandleStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/api/tool-build-requests`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        displayName: "GL AML",
+        reason: "Create a reusable HTTP API tool for Global Ledger AML score.",
+        credentialNotes: "Use this as x-api-key: ZS60A6F-BBDMF51-HJ6P1EK-G7PEM0C. Do not leak it into source or memory.",
+      }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 201);
+    assert.deepEqual(body.request.credentialHandles, ["secret.api.gl-aml"]);
+    assert.equal(await secretHandleStore.resolve?.("secret.api.gl-aml"), "ZS60A6F-BBDMF51-HJ6P1EK-G7PEM0C");
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

@@ -198,8 +198,9 @@ The Tool Builds UI intentionally keeps the form simple:
 - **Description/docs**: the actual task, API docs, endpoint examples, expected behavior,
   and acceptance notes.
 - **Credentials**: optional operator notes such as an API key, bot token, or secret
-  reference. The builder must infer durable settings/secret handles and must not expose
-  the raw material in generated outputs.
+  reference. The request API extracts the actual key-like value into a scoped secret
+  handle when possible, keeps the operator prose as request context, and the builder must
+  not expose raw material in generated outputs.
 - **QA criteria**: prefilled universal requirements for TypeScript, tests, manual smoke,
   schemas, and credential non-leakage. Operators can append case-specific checks.
 

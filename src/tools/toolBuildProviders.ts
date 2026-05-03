@@ -752,11 +752,19 @@ function extractSources(value: unknown): Array<{ name: string; share?: number; s
   for (const item of value.sources) {
     if (!isRecord(item)) continue;
     const funds = isRecord(item.funds) ? item.funds : {};
-    const rawName = typeof item.name === "string" ? item.name : typeof item.type === "string" ? item.type : undefined;
+    const rawName = typeof item.name === "string"
+      ? item.name
+      : typeof funds.name === "string"
+        ? funds.name
+        : typeof item.type === "string"
+          ? item.type
+          : typeof item.listType === "string"
+            ? item.listType
+            : undefined;
     if (!rawName?.trim()) continue;
     const name = rawName.trim();
     const existing = byName.get(name);
-    const share = numericValue(funds.share ?? item.share);
+    const share = normalizeShare(item.share ?? funds.share);
     const score = funds.score ?? item.score;
     const bestShare = share === undefined
       ? existing?.share
@@ -773,6 +781,12 @@ function extractSources(value: unknown): Array<{ name: string; share?: number; s
 function numericValue(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function normalizeShare(value: unknown): number | undefined {
+  const parsed = numericValue(value);
+  if (parsed === undefined) return undefined;
+  return parsed > 0 && parsed <= 1 ? parsed * 100 : parsed;
 }
 `;
 }
@@ -809,8 +823,8 @@ function genericApiToolTestSource(
       path: url.pathname,
       totalFunds: 62,
       sources: [
-        { name: "low-risk-source", funds: { score: 30, share: 25 } },
-        { name: "highest-risk-source", funds: { score: 60, share: 75 } }
+        { funds: { name: "low-risk-source", score: 30 }, share: 0.25 },
+        { funds: { name: "highest-risk-source", score: 60 }, share: 0.75 }
       ],
       auth: request.headers.authorization ?? request.headers["x-api-key"] ?? null
     }`

@@ -2429,14 +2429,58 @@ async function ensureInlineCredentialSecret(
   if (!input.credentialNotes?.trim() || input.credentialHandles?.length || !options.secretHandleStore) return undefined;
 
   const handle = secretHandleFromCapability(input.capability);
+  const secretRef = extractInlineCredentialSecret(input.credentialNotes);
+  if (!secretRef) return undefined;
+
   await options.secretHandleStore.create({
     handle,
     label: `${input.displayName ?? input.capability} credentials`,
     provider: "inline",
-    secretRef: input.credentialNotes.trim(),
+    secretRef,
     scopes: ["instance-local", `tool:${input.capability}`],
   });
   return handle;
+}
+
+function extractInlineCredentialSecret(notes: string | undefined): string | undefined {
+  const value = notes?.trim();
+  if (!value) return undefined;
+
+  const labelledPatterns = [
+    /\b(?:x-api-key|api[_\s-]*key|apikey|access[_\s-]*key|token|bearer|secret|ключ)\b\s*[:=]?\s*["'`]?([A-Za-z0-9][A-Za-z0-9._~+/=-]{3,})["'`]?/i,
+    /\b(?:key)\b\s*[:=]\s*["'`]?([A-Za-z0-9][A-Za-z0-9._~+/=-]{3,})["'`]?/i,
+  ];
+
+  for (const pattern of labelledPatterns) {
+    const match = value.match(pattern);
+    const candidate = sanitizeCredentialCandidate(match?.[1]);
+    if (candidate && looksLikeCredential(candidate)) return candidate;
+  }
+
+  const standalone = value.match(/\b[A-Z0-9]{4,}(?:-[A-Z0-9]{4,}){2,}\b/);
+  const standaloneCandidate = sanitizeCredentialCandidate(standalone?.[0]);
+  if (standaloneCandidate && looksLikeCredential(standaloneCandidate)) return standaloneCandidate;
+
+  const compact = value.match(/\b[A-Za-z0-9._~+/=]{16,}\b/);
+  const compactCandidate = sanitizeCredentialCandidate(compact?.[0]);
+  if (compactCandidate && looksLikeCredential(compactCandidate)) return compactCandidate;
+
+  return undefined;
+}
+
+function sanitizeCredentialCandidate(value: string | undefined): string | undefined {
+  return value
+    ?.trim()
+    .replace(/^[`'"(<[{]+|[`'")>\]},.;:]+$/g, "");
+}
+
+function looksLikeCredential(value: string): boolean {
+  if (value.length < 5) return false;
+  if (/^(should|used|use|with|as|bearer|token|secret|key|ключ)$/i.test(value)) return false;
+  if (/^\d{5,}$/.test(value)) return true;
+  if (/[A-Z]/.test(value) && /\d/.test(value)) return true;
+  if (/[-._~+/=]/.test(value) && /\d/.test(value)) return true;
+  return value.length >= 24 && /[A-Za-z]/.test(value) && /\d/.test(value);
 }
 
 function secretHandleFromCapability(capability: string): string {
