@@ -27,3 +27,65 @@ test("ToolRegistry registers, lists, and retrieves tools", async () => {
     content: "hello",
   });
 });
+
+test("ToolRegistry executes tools with scoped runtime context", async () => {
+  const registry = new ToolRegistry();
+  const seenContexts: unknown[] = [];
+  const usageEvents: unknown[] = [];
+  registry.setUsageReporter((event) => {
+    usageEvents.push(event);
+  });
+  const tool = {
+    name: "context.echo",
+    description: "Returns context metadata.",
+    capabilities: ["echo"],
+    async run(input: Record<string, unknown>, context?: any) {
+      seenContexts.push(context);
+      return {
+        ok: true,
+        content: `${input.message}:${context?.runId}:${context?.toolName}`,
+      };
+    },
+  };
+
+  registry.register(tool);
+  const result = await registry.execute(tool, { message: "hello" }, {
+    runId: "run-test",
+    spanId: "span-test",
+    requesterUserId: "user-admin",
+  });
+
+  assert.deepEqual(result, {
+    ok: true,
+    content: "hello:run-test:context.echo",
+  });
+  assert.equal((seenContexts[0] as any).toolName, "context.echo");
+  assert.equal((seenContexts[0] as any).spanId, "span-test");
+  assert.equal((seenContexts[0] as any).now instanceof Date, true);
+  assert.equal((usageEvents[0] as any).toolName, "context.echo");
+  assert.equal((usageEvents[0] as any).outcome, "success");
+  assert.equal((usageEvents[0] as any).at instanceof Date, true);
+});
+
+test("ToolRegistry records failed tool usage without hiding the result", async () => {
+  const registry = new ToolRegistry();
+  const usageEvents: unknown[] = [];
+  registry.setUsageReporter((event) => {
+    usageEvents.push(event);
+  });
+  const tool = {
+    name: "context.fail",
+    description: "Returns a failed tool result.",
+    capabilities: ["test"],
+    async run() {
+      return { ok: false, content: "blocked by provider" };
+    },
+  };
+
+  registry.register(tool);
+  const result = await registry.execute(tool, {});
+
+  assert.deepEqual(result, { ok: false, content: "blocked by provider" });
+  assert.equal((usageEvents[0] as any).toolName, "context.fail");
+  assert.equal((usageEvents[0] as any).outcome, "failure");
+});

@@ -55,6 +55,7 @@ const state = {
   memories: [],
   memoryReviews: [],
   tools: [],
+  toolMigrations: [],
   buildRequests: [],
   secretHandles: [],
   tiers: [],
@@ -119,6 +120,15 @@ document.addEventListener("submit", (event) => {
   if (form.dataset.action === "create-secret-handle") {
     void createSecretHandle(form);
   }
+  if (form.dataset.action === "create-user") {
+    void createUser(form);
+  }
+  if (form.dataset.action === "update-user") {
+    void updateUser(form);
+  }
+  if (form.dataset.action === "create-channel-identity") {
+    void createChannelIdentity(form);
+  }
 });
 
 document.addEventListener("click", (event) => {
@@ -139,6 +149,9 @@ document.addEventListener("click", (event) => {
     buildId,
     secretHandle,
     memoryFilter,
+    userId,
+    identityId,
+    allowStatus,
   } = action.dataset;
   if (actionName === "navigate" && route) {
     navigate(route);
@@ -216,6 +229,15 @@ document.addEventListener("click", (event) => {
   if (actionName === "delete-secret-handle" && secretHandle) {
     void deleteSecretHandle(secretHandle);
   }
+  if (actionName === "delete-user" && userId) {
+    void deleteUser(userId);
+  }
+  if (actionName === "toggle-channel-identity" && identityId && allowStatus) {
+    void updateChannelIdentity(identityId, { allowStatus });
+  }
+  if (actionName === "delete-channel-identity" && identityId) {
+    void deleteChannelIdentity(identityId);
+  }
 });
 
 document.addEventListener("pointerover", (event) => {
@@ -273,6 +295,7 @@ async function refreshData() {
       memories,
       memoryReviews,
       tools,
+      toolMigrations,
       buildRequests,
       secretHandles,
       tiers,
@@ -287,6 +310,7 @@ async function refreshData() {
       fetchJson("/api/memories").then((data) => data.memories ?? []),
       fetchJson("/api/memories/review-queue").then((data) => data.reviews ?? []),
       fetchJson("/api/tools").then((data) => data.tools ?? []),
+      fetchJson("/api/tool-migrations").then((data) => data.migrations ?? []),
       fetchJson("/api/tool-build-requests").then((data) => data.requests ?? []),
       fetchJson("/api/secret-handles").then((data) => data.secretHandles ?? []),
       fetchJson("/api/settings/model-tiers").then((data) => data.tiers ?? []),
@@ -303,6 +327,7 @@ async function refreshData() {
       memories,
       memoryReviews,
       tools,
+      toolMigrations,
       buildRequests,
       secretHandles,
       tiers,
@@ -1966,10 +1991,81 @@ function renderToolDetail(tool) {
       ${contextBlock("Capabilities", (tool.capabilities ?? []).join("\n") || "No capabilities.")}
       ${contextBlock("Startup mode", tool.startupMode ?? "default")}
       ${contextBlock("Health", formatToolHealth(tool))}
+      ${contextBlock("Settings", formatToolSettings(tool))}
+      ${contextBlock("Storage", formatToolStorage(tool))}
+      ${contextBlock("Migrations", formatToolMigrations(tool))}
+      ${contextBlock("Telemetry", formatToolTelemetry(tool))}
+      ${contextBlock("Examples", formatToolExamples(tool))}
       ${contextBlock("Schema", formatToolSchemas(tool))}
       ${tool.status === "failed" ? renderToolReworkForm(tool, failureProblem) : ""}
     </div>
   `;
+}
+
+function formatToolSettings(tool) {
+  const config = tool.requiredConfigurationKeys ?? [];
+  const secrets = tool.requiredSecretHandles ?? [];
+  return [
+    config.length ? `Configuration keys:\n${config.map((item) => `- ${item}`).join("\n")}` : "No required configuration keys.",
+    secrets.length ? `Secret handles:\n${secrets.map((item) => `- ${item}`).join("\n")}` : "No required secret handles.",
+  ].join("\n\n");
+}
+
+function formatToolStorage(tool) {
+  const storage = tool.storage;
+  if (!storage) return "No tool-owned storage declared.";
+  return [
+    storage.schema ? `Schema: ${storage.schema}` : undefined,
+    storage.tables?.length ? `Tables: ${storage.tables.join(", ")}` : undefined,
+    storage.migrations?.length ? `Migrations: ${storage.migrations.join(", ")}` : undefined,
+    storage.permissions?.length ? `DB permissions: ${storage.permissions.join(", ")}` : undefined,
+    storage.retention ? `Retention: ${storage.retention}` : undefined,
+    storage.destructiveCapabilities?.length
+      ? `Destructive capabilities: ${storage.destructiveCapabilities.join(", ")}`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n") || "Storage contract is empty.";
+}
+
+function formatToolMigrations(tool) {
+  const migrations = (state.toolMigrations ?? [])
+    .filter((migration) => migration.toolName === tool.name)
+    .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
+  if (!migrations.length) {
+    const declared = tool.storage?.migrations ?? [];
+    return declared.length
+      ? `Declared, not applied yet:\n${declared.map((migration) => `- ${migration}`).join("\n")}`
+      : "No migration records.";
+  }
+  return migrations
+    .slice(0, 5)
+    .map((migration) => {
+      const status = migration.status ?? "pending";
+      const applied = migration.appliedAt ? ` · applied ${formatRelative(migration.appliedAt)}` : "";
+      return `${migration.migrationId} · ${migration.toolVersion} · ${status}${applied}`;
+    })
+    .join("\n");
+}
+
+function formatToolTelemetry(tool) {
+  return [
+    `Successes: ${tool.successCount ?? 0}`,
+    `Failures: ${tool.failureCount ?? 0}`,
+    tool.lastSuccessAt ? `Last success: ${formatRelative(tool.lastSuccessAt)}` : undefined,
+    tool.lastFailureAt ? `Last failure: ${formatRelative(tool.lastFailureAt)}` : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatToolExamples(tool) {
+  const examples = tool.examples ?? [];
+  if (!examples.length) return tool.docsMarkdown || "No agent-readable docs or examples yet.";
+  return examples
+    .slice(0, 3)
+    .map((example) => `${example.title}\ninput: ${JSON.stringify(example.input)}`)
+    .join("\n\n");
 }
 
 function renderToolReworkForm(tool, failureProblem) {
@@ -2268,6 +2364,29 @@ function renderGroupProfilePage() {
 function renderUsersPage() {
   return `
     <section class="page-stack">
+      <form data-action="create-user" class="surface-panel settings-form">
+        <div class="section-heading">
+          <div>
+            <h2>Users & Channel Identities</h2>
+            <p>Manage the one-instance member list and whitelist external channel identities.</p>
+          </div>
+          <button type="submit" class="primary-button">Create User</button>
+        </div>
+        <div class="form-grid three">
+          <label>
+            <span>Display name</span>
+            <input name="displayName" placeholder="Dimitrii" required />
+          </label>
+          <label>
+            <span>Primary role</span>
+            <input name="role" placeholder="member" value="member" />
+          </label>
+          <label>
+            <span>Roles</span>
+            <input name="roles" placeholder="member, admin, viewer" value="member" />
+          </label>
+        </div>
+      </form>
       ${renderFilterBar("Search users...", ["Role", "Status", "Identity"])}
       <div class="card-grid">
         ${state.users.length
@@ -2284,9 +2403,65 @@ function renderUserCard(user) {
       <div class="card-topline"><span>${escapeHtml(user.role)}</span><span>${escapeHtml(user.status)}</span></div>
       <h3>${escapeHtml(user.displayName)}</h3>
       <p>${escapeHtml(user.id)}</p>
-      <div class="tag-row">${(user.identities ?? []).map((identity) => `<span>${escapeHtml(identity.provider)}:${escapeHtml(identity.allowStatus)}</span>`).join("")}</div>
+      <form data-action="update-user" class="inline-edit-form">
+        <input type="hidden" name="userId" value="${escapeHtml(user.id)}" />
+        <label>
+          <span>Name</span>
+          <input name="displayName" value="${escapeHtml(user.displayName)}" />
+        </label>
+        <label>
+          <span>Roles</span>
+          <input name="roles" value="${escapeHtml((user.roles ?? [user.role]).join(", "))}" />
+        </label>
+        <div class="action-row">
+          <button type="submit" class="ghost-button">Save user</button>
+          ${user.id === "user-admin" ? "" : `<button type="button" class="danger-button" data-action="delete-user" data-user-id="${escapeHtml(user.id)}">Delete</button>`}
+        </div>
+      </form>
+      <div class="identity-list">
+        ${(user.identities ?? []).map(renderChannelIdentityRow).join("") || "<small>No channel identities yet.</small>"}
+      </div>
+      <form data-action="create-channel-identity" class="inline-edit-form">
+        <input type="hidden" name="userId" value="${escapeHtml(user.id)}" />
+        <div class="form-grid two">
+          <label>
+            <span>Provider</span>
+            <input name="provider" placeholder="telegram" />
+          </label>
+          <label>
+            <span>Provider user id</span>
+            <input name="providerUserId" placeholder="123456789" />
+          </label>
+        </div>
+        <label>
+          <span>Allow status</span>
+          <select name="allowStatus">
+            <option value="allowed">allowed</option>
+            <option value="blocked">blocked</option>
+          </select>
+        </label>
+        <button type="submit" class="ghost-button">Add identity</button>
+      </form>
       <small>${user.recentRequests?.length ?? 0} recent requests</small>
     </article>
+  `;
+}
+
+function renderChannelIdentityRow(identity) {
+  const nextStatus = identity.allowStatus === "allowed" ? "blocked" : "allowed";
+  return `
+    <div class="identity-row">
+      <div>
+        <strong>${escapeHtml(identity.provider)}:${escapeHtml(identity.providerUserId)}</strong>
+        <small>${escapeHtml(identity.id)} · ${escapeHtml(identity.allowStatus)}</small>
+      </div>
+      <div class="action-row compact">
+        <button type="button" class="ghost-button" data-action="toggle-channel-identity" data-identity-id="${escapeHtml(identity.id)}" data-allow-status="${nextStatus}">
+          ${nextStatus === "allowed" ? "Allow" : "Block"}
+        </button>
+        <button type="button" class="danger-button" data-action="delete-channel-identity" data-identity-id="${escapeHtml(identity.id)}">Delete</button>
+      </div>
+    </div>
   `;
 }
 
@@ -2663,6 +2838,118 @@ async function saveGroupProfile(form) {
     render();
   } finally {
     setComposerBusy(form, false);
+  }
+}
+
+async function createUser(form) {
+  const formData = new FormData(form);
+  setComposerBusy(form, true);
+  try {
+    await fetchJson("/api/users", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        displayName: String(formData.get("displayName") ?? ""),
+        role: String(formData.get("role") ?? "member"),
+        roles: parseListInput(formData.get("roles")),
+      }),
+    });
+    form.reset();
+    await refreshData();
+    navigate("users");
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  } finally {
+    setComposerBusy(form, false);
+  }
+}
+
+async function updateUser(form) {
+  const formData = new FormData(form);
+  const userId = String(formData.get("userId") ?? "");
+  if (!userId) return;
+  setComposerBusy(form, true);
+  try {
+    await fetchJson(`/api/users/${encodeURIComponent(userId)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        displayName: String(formData.get("displayName") ?? ""),
+        roles: parseListInput(formData.get("roles")),
+      }),
+    });
+    await refreshData();
+    navigate("users");
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  } finally {
+    setComposerBusy(form, false);
+  }
+}
+
+async function deleteUser(userId) {
+  if (!confirm(`Delete user ${userId}? Channel identities will be removed too.`)) return;
+  try {
+    await fetchJson(`/api/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+    await refreshData();
+    navigate("users");
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function createChannelIdentity(form) {
+  const formData = new FormData(form);
+  const userId = String(formData.get("userId") ?? "");
+  if (!userId) return;
+  setComposerBusy(form, true);
+  try {
+    await fetchJson(`/api/users/${encodeURIComponent(userId)}/channel-identities`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: String(formData.get("provider") ?? ""),
+        providerUserId: String(formData.get("providerUserId") ?? ""),
+        allowStatus: String(formData.get("allowStatus") ?? "allowed"),
+      }),
+    });
+    form.reset();
+    await refreshData();
+    navigate("users");
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  } finally {
+    setComposerBusy(form, false);
+  }
+}
+
+async function updateChannelIdentity(identityId, update) {
+  try {
+    await fetchJson(`/api/channel-identities/${encodeURIComponent(identityId)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(update),
+    });
+    await refreshData();
+    navigate("users");
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function deleteChannelIdentity(identityId) {
+  try {
+    await fetchJson(`/api/channel-identities/${encodeURIComponent(identityId)}`, { method: "DELETE" });
+    await refreshData();
+    navigate("users");
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
   }
 }
 

@@ -620,12 +620,14 @@ test("UniversalAgent executes declared browser operate tool inputs and saves scr
   ]);
   const registry = new ToolRegistry();
   const toolInputs: unknown[] = [];
+  const toolContexts: unknown[] = [];
   registry.register({
     name: "browser.operate",
     description: "Fake browser operate tool",
     capabilities: ["browser-operate", "browser-screenshot", "artifact-generation"],
-    async run(input) {
+    async run(input, context) {
       toolInputs.push(input);
+      toolContexts.push(context);
       return {
         ok: true,
         content: "Executed browser commands.",
@@ -652,6 +654,9 @@ test("UniversalAgent executes declared browser operate tool inputs and saves scr
 
   try {
     const result = await agent.run("Use browser operation for proof.", {
+      runId: "run-context-test",
+      requesterUserId: "user-admin",
+      threadId: "thread-context-test",
       saveArtifact: async (artifact): Promise<AgentArtifact> => {
         const saved = {
           id: "artifact-browser-proof",
@@ -670,6 +675,10 @@ test("UniversalAgent executes declared browser operate tool inputs and saves scr
     });
 
     assert.equal(toolInputs.length, 1);
+    assert.equal((toolContexts[0] as any).runId, "run-context-test");
+    assert.equal((toolContexts[0] as any).requesterUserId, "user-admin");
+    assert.equal((toolContexts[0] as any).threadId, "thread-context-test");
+    assert.equal((toolContexts[0] as any).toolName, "browser.operate");
     assert.equal(savedArtifacts.length, 1);
     assert.equal(result.workerResults[0]?.artifacts?.[0]?.url, "/artifacts/browser-proof.png");
     assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /Example Domain/);
@@ -1174,6 +1183,37 @@ test("UniversalAgent classifies learned memories into scoped reviewable facts", 
     assert.equal(result.learnedSkill?.sourceThreadId, "thread-memory-1");
     assert.equal(stored[0]?.evidence?.some((item) => item.includes("Task:")), true);
     assert.equal(fakeLlm.callCount, 3);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent keeps low-confidence learned memories in review even when global", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"direct","reason":"small answer","domains":["memory"],"riskLevel":"low"}',
+    "Final answer with a weak reusable lesson.",
+    JSON.stringify({
+      shouldStore: true,
+      title: "Weak source lesson",
+      tags: ["review"],
+      summary: "A weakly supported lesson should not become accepted automatically.",
+      reusableProcedure: "Only accept this lesson after evidence review.",
+      scope: "global",
+      status: "accepted",
+      confidence: 0.3,
+      sensitivity: "normal",
+    }),
+  ]);
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+
+  try {
+    const result = await agent.run("Remember this maybe", { runId: "run-low-confidence-memory" });
+
+    assert.equal(result.learnedSkill?.scope, "global");
+    assert.equal(result.learnedSkill?.status, "proposed");
+    assert.equal(result.learnedSkill?.confidence, 0.3);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

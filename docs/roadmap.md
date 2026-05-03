@@ -124,14 +124,14 @@ hardcoded Bitcoin or market-analysis path:
 
 This is a product/architecture estimate, not a ticket counter.
 
-- Overall target platform: about 45-50% complete. The core run orchestration, traces,
+- Overall target platform: about 50-55% complete. The core run orchestration, traces,
   artifacts, memory lifecycle, tool registry, and model tier plumbing exist; autonomous
   recursive agents, broad generated tool families, mature channel adapters, and policy
   enforcement still remain.
-- Current coordinator prototype: about 70% complete. It can delegate, review, synthesize,
+- Current coordinator prototype: about 72% complete. It can delegate, review, synthesize,
   call tools, create artifacts, and persist runs, but it is still centrally planned rather
   than a fully recursive society of agents.
-- Operator UI: about 55% complete. The shell, Dashboard, Runs, Conversations, Trace Lab,
+- Operator UI: about 58% complete. The shell, Dashboard, Runs, Conversations, Trace Lab,
   Memory, Artifacts, Tools, Tool Builds, Models, Group Profile, Settings, and Diagnostics
   have useful surfaces; several pages still need deeper interactions and tighter
   analytics.
@@ -202,8 +202,9 @@ UI tasks:
   Conversations UI and API can delete a thread, all runs attached through `threadId`, and
   run event/artifact metadata cascades from those runs; the audit log records the action.
 - Add Group Profile and Users pages with read-only cards first, then editing. PARTIAL:
-  Group Profile has editable API/UI persistence; Users currently reads the default local
-  admin identity and will become editable with identity policies.
+  Group Profile has editable API/UI persistence. Users now have API/UI CRUD for members
+  and channel identities, including allow/block identity status and audit events. Role
+  policy editing, per-user tool permissions, and notification preferences remain.
 
 ## Phase 1: Reliable Memory
 
@@ -285,8 +286,10 @@ Remaining memory gaps:
   connected to editable role/policy records or persistent policy decisions.
 - Memory proposals from completed runs are classified into group/user/thread/run scope by
   the learning model, audited as `memory.created`, and checked by deterministic
-  pre-review guardrails, but they are not yet re-reviewed by a separate LLM
-  memory-specialist agent before entering the review queue.
+  memory-specialist guardrails before storage. Low-confidence or policy-risky learned
+  memories stay `proposed` even if the model requested `accepted`. A separate LLM
+  memory-specialist reviewer remains a future upgrade for semantic duplication,
+  privacy-risk explanation, and evidence grading.
 - Memory policy simulation currently uses the selected run context and deterministic
   rules. It is not yet connected to editable role/policy records or audit decisions.
 
@@ -312,13 +315,17 @@ Tool contract:
 - capabilities; DONE
 - startup mode; DONE
 - healthcheck; DONE
-- required configuration keys and secret handles;
-- operator-editable settings, provider URLs, limits, and feature flags;
+- required configuration keys and secret handles; DONE for registry/API/UI metadata.
+- operator-editable settings, provider URLs, limits, and feature flags; PARTIAL:
+  settings schemas are persisted and shown, but concrete editable per-tool setting values
+  are still pending.
 - declared storage contract: schema namespace, table ownership, migrations, retention,
-  backup/export notes, and required database permissions;
+  backup/export notes, and required database permissions; DONE for registry/API/UI
+  metadata.
 - destructive data capabilities, if any, with dry-run/preview, approval policy, and audit
   requirements;
-- usage counters: successful runs, failed runs, last success, last failure;
+- usage counters: successful runs, failed runs, last success, last failure; DONE for
+  registry-executed tool calls.
 - QA evidence and reviewer decisions per version;
 - issue/rework tickets linked to runs/spans/artifacts;
 - trace event mapping.
@@ -348,11 +355,15 @@ Remaining registry persistence:
 
 - Persist per-version changelogs and replacement links as first-class UI/API fields.
 - Persist tool settings and required env/secret metadata in DB so operators can see which
-  parameters and credentials each tool needs.
+  parameters and credentials each tool needs. PARTIAL: contract metadata is persisted and
+  displayed; editable runtime setting values remain.
 - Persist tool-owned storage contracts and migration metadata so operators can see which
   tool version owns which tables, indexes, retention rules, and database permissions.
+  PARTIAL: storage contracts and `tool_migrations` records are persisted/displayed;
+  isolated migration execution and transactional promotion remain.
 - Track success/failure counters and recent failure classes per tool version from trace
-  and audit events.
+  and audit events. PARTIAL: success/failure counters and last timestamps are recorded
+  for `ToolRegistry.execute`; failure-class rollups remain.
 - Add a tool issue/rework inbox: from any tool, version, run span, or artifact QA failure,
   create a context-rich request for an agent to analyze and produce a new version.
 - Add agent-readable tool docs/examples so agents know how to call a tool without reading
@@ -520,11 +531,13 @@ Remaining Phase 3 gaps:
 - Add tool-level settings UI for required env variables, secret handles, provider URLs,
   rate limits, and feature flags declared by each tool contract.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
-  secret resolver, artifact store, audit writer, logger, and cancellation signal. This
-  replaces any pattern where tools import app stores or create their own database pools.
+  secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
+  registry calls now inject provenance, secret resolver, audit writer, logger, caller,
+  span ids, and cancellation-compatible context shape. Scoped DB client and artifact-store
+  injection remain.
 - Add a `tool_migrations` or `tool_schema_migrations` table that records tool name,
   version, migration id, checksum, applied time, applied-by actor, QA report, and
-  rollback/repair notes.
+  rollback/repair notes. DONE for the metadata table/store/API/audit/UI visibility.
 - Extend Tool Builder contracts so a request can ask for persistent storage or a database
   maintenance capability. The builder must generate versioned migrations, tests,
   documentation, and operator-visible permission metadata.

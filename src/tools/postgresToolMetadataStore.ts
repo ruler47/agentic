@@ -24,6 +24,16 @@ type ToolModuleRow = {
   status: ToolModuleStatus;
   last_health_ok: boolean | null;
   last_health_detail: string | null;
+  required_configuration_keys: string[];
+  required_secret_handles: string[];
+  settings_schema: ToolSchema | null;
+  storage_contract: ToolModuleMetadata["storage"] | null;
+  docs_markdown: string | null;
+  examples: ToolModuleMetadata["examples"];
+  success_count: number;
+  failure_count: number;
+  last_success_at: Date | null;
+  last_failure_at: Date | null;
   updated_at: Date;
 };
 
@@ -34,7 +44,10 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     const rows = await this.pool.query<ToolModuleRow>(`
       select name, version, description, capabilities, startup_mode, input_schema,
              output_schema, module_path, test_path, source, status,
-             last_health_ok, last_health_detail, updated_at
+             last_health_ok, last_health_detail, required_configuration_keys,
+             required_secret_handles, settings_schema, storage_contract, docs_markdown,
+             examples, success_count, failure_count, last_success_at, last_failure_at,
+             updated_at
       from tool_modules
       order by name
     `);
@@ -50,9 +63,10 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         `
           insert into tool_modules (
             name, version, description, capabilities, startup_mode, input_schema,
-            output_schema, source, status, updated_at
+            output_schema, required_configuration_keys, required_secret_handles,
+            settings_schema, storage_contract, docs_markdown, examples, source, status, updated_at
           )
-          values ($1, $2, $3, $4, $5, $6, $7, 'builtin', 'available', $8)
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'builtin', 'available', $14)
           on conflict (name) do update
           set version = excluded.version,
               description = excluded.description,
@@ -60,6 +74,12 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               startup_mode = excluded.startup_mode,
               input_schema = excluded.input_schema,
               output_schema = excluded.output_schema,
+              required_configuration_keys = excluded.required_configuration_keys,
+              required_secret_handles = excluded.required_secret_handles,
+              settings_schema = excluded.settings_schema,
+              storage_contract = excluded.storage_contract,
+              docs_markdown = excluded.docs_markdown,
+              examples = excluded.examples,
               source = 'builtin',
               updated_at = excluded.updated_at
         `,
@@ -71,6 +91,12 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           tool.startupMode ?? "on-demand",
           tool.inputSchema ?? null,
           tool.outputSchema ?? null,
+          tool.requiredConfigurationKeys ?? [],
+          tool.requiredSecretHandles ?? [],
+          tool.settingsSchema ?? null,
+          tool.storage ?? null,
+          tool.docsMarkdown ?? null,
+          tool.examples ?? [],
           updatedAt,
         ],
       );
@@ -93,6 +119,21 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     );
   }
 
+  async recordUsage(name: string, outcome: "success" | "failure", at = new Date()): Promise<void> {
+    await this.pool.query(
+      `
+        update tool_modules
+        set success_count = success_count + $2,
+            failure_count = failure_count + $3,
+            last_success_at = case when $2 = 1 then $4 else last_success_at end,
+            last_failure_at = case when $3 = 1 then $4 else last_failure_at end,
+            updated_at = $4
+        where name = $1
+      `,
+      [name, outcome === "success" ? 1 : 0, outcome === "failure" ? 1 : 0, at.toISOString()],
+    );
+  }
+
   async registerGenerated(input: GeneratedToolModuleInput): Promise<ToolModuleMetadata> {
     await this.pool.query("begin");
     try {
@@ -100,7 +141,10 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         `
           select name, version, description, capabilities, startup_mode, input_schema,
                  output_schema, module_path, test_path, source, status,
-                 last_health_ok, last_health_detail, updated_at
+                 last_health_ok, last_health_detail, required_configuration_keys,
+                 required_secret_handles, settings_schema, storage_contract, docs_markdown,
+                 examples, success_count, failure_count, last_success_at, last_failure_at,
+                 updated_at
           from tool_modules
           where name = $1
           for update
@@ -121,9 +165,11 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         `
           insert into tool_modules (
             name, version, description, capabilities, startup_mode, input_schema,
-            output_schema, module_path, test_path, source, status, updated_at
+            output_schema, module_path, test_path, required_configuration_keys,
+            required_secret_handles, settings_schema, storage_contract, docs_markdown,
+            examples, source, status, updated_at
           )
-          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'generated', 'disabled', $10)
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'generated', 'disabled', $16)
           on conflict (name) do update
           set description = excluded.description,
               capabilities = excluded.capabilities,
@@ -132,12 +178,21 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               output_schema = excluded.output_schema,
               module_path = excluded.module_path,
               test_path = excluded.test_path,
+              required_configuration_keys = excluded.required_configuration_keys,
+              required_secret_handles = excluded.required_secret_handles,
+              settings_schema = excluded.settings_schema,
+              storage_contract = excluded.storage_contract,
+              docs_markdown = excluded.docs_markdown,
+              examples = excluded.examples,
               source = 'generated',
               status = 'disabled',
               updated_at = excluded.updated_at
           returning name, version, description, capabilities, startup_mode, input_schema,
                     output_schema, module_path, test_path, source, status,
-                    last_health_ok, last_health_detail, updated_at
+                    last_health_ok, last_health_detail, required_configuration_keys,
+                    required_secret_handles, settings_schema, storage_contract, docs_markdown,
+                    examples, success_count, failure_count, last_success_at, last_failure_at,
+                    updated_at
         `,
         [
           input.name,
@@ -149,6 +204,12 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           input.outputSchema ?? null,
           input.modulePath,
           input.testPath ?? null,
+          input.requiredConfigurationKeys ?? [],
+          input.requiredSecretHandles ?? [],
+          input.settingsSchema ?? null,
+          input.storage ?? null,
+          input.docsMarkdown ?? null,
+          input.examples ?? [],
           new Date().toISOString(),
         ],
       );
@@ -168,7 +229,10 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         `
           select name, version, description, capabilities, startup_mode, input_schema,
                  output_schema, module_path, test_path, source, status,
-                 last_health_ok, last_health_detail, updated_at
+                 last_health_ok, last_health_detail, required_configuration_keys,
+                 required_secret_handles, settings_schema, storage_contract, docs_markdown,
+                 examples, success_count, failure_count, last_success_at, last_failure_at,
+                 updated_at
           from tool_modules
           where name = $1
           for update
@@ -188,15 +252,24 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               output_schema = $7,
               module_path = $8,
               test_path = $9,
+              required_configuration_keys = $10,
+              required_secret_handles = $11,
+              settings_schema = $12,
+              storage_contract = $13,
+              docs_markdown = $14,
+              examples = $15,
               source = 'generated',
               status = 'disabled',
               last_health_ok = null,
               last_health_detail = null,
-              updated_at = $10
+              updated_at = $16
           where name = $1
           returning name, version, description, capabilities, startup_mode, input_schema,
                     output_schema, module_path, test_path, source, status,
-                    last_health_ok, last_health_detail, updated_at
+                    last_health_ok, last_health_detail, required_configuration_keys,
+                    required_secret_handles, settings_schema, storage_contract, docs_markdown,
+                    examples, success_count, failure_count, last_success_at, last_failure_at,
+                    updated_at
         `,
         [
           input.name,
@@ -208,6 +281,12 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           input.outputSchema ?? null,
           input.modulePath,
           input.testPath ?? null,
+          input.requiredConfigurationKeys ?? [],
+          input.requiredSecretHandles ?? [],
+          input.settingsSchema ?? null,
+          input.storage ?? null,
+          input.docsMarkdown ?? null,
+          input.examples ?? [],
           new Date().toISOString(),
         ],
       );
@@ -236,6 +315,16 @@ function mapRow(row: ToolModuleRow): ToolModuleMetadata {
     status: row.status,
     lastHealthOk: row.last_health_ok ?? undefined,
     lastHealthDetail: row.last_health_detail ?? undefined,
+    requiredConfigurationKeys: row.required_configuration_keys ?? [],
+    requiredSecretHandles: row.required_secret_handles ?? [],
+    settingsSchema: row.settings_schema ?? undefined,
+    storage: row.storage_contract ?? undefined,
+    docsMarkdown: row.docs_markdown ?? undefined,
+    examples: row.examples ?? [],
+    successCount: row.success_count ?? 0,
+    failureCount: row.failure_count ?? 0,
+    lastSuccessAt: row.last_success_at?.toISOString(),
+    lastFailureAt: row.last_failure_at?.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
 }

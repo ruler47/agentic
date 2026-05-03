@@ -1,11 +1,15 @@
 import { PgPool } from "../db/pool.js";
 import {
+  ChannelIdentityCreateInput,
   ChannelIdentityRecord,
   ChannelIdentityStatus,
+  ChannelIdentityUpdateInput,
   normalizeProvider,
   ResolveUserInput,
+  UserCreateInput,
   UserRecord,
   UserStore,
+  UserUpdateInput,
 } from "./userStore.js";
 
 type UserRow = {
@@ -85,6 +89,172 @@ export class PostgresUserStore implements UserStore {
     return this.get(input.fallbackUserId ?? this.defaultUserId);
   }
 
+  async create(input: UserCreateInput): Promise<UserRecord> {
+    const displayName = input.displayName.trim();
+    if (!displayName) throw new Error("displayName is required");
+    const id = input.id?.trim() || createUserId(displayName);
+    const roles = normalizeRoles(input.roles ?? [input.role ?? "member"]);
+    const role = input.role?.trim() || roles[0] || "member";
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `
+          insert into users (id, display_name, role, created_at, updated_at)
+          values ($1, $2, $3, now(), now())
+        `,
+        [id, displayName, role],
+      );
+      for (const nextRole of roles) {
+        await client.query(
+          `
+            insert into user_roles (user_id, role, created_at)
+            values ($1, $2, now())
+            on conflict (user_id, role) do nothing
+          `,
+          [id, nextRole],
+        );
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    const user = await this.get(id);
+    if (!user) throw new Error(`User was not found after create: ${id}`);
+    return user;
+  }
+
+  async update(id: string, input: UserUpdateInput): Promise<UserRecord> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`User was not found: ${id}`);
+    const roles = input.roles ? normalizeRoles(input.roles) : existing.roles;
+    const role = input.role?.trim() || roles[0] || existing.role;
+    const displayName = input.displayName?.trim() || existing.displayName;
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `
+          update users
+          set display_name = $2,
+              role = $3,
+              updated_at = now()
+          where id = $1
+        `,
+        [id, displayName, role],
+      );
+      await client.query(`delete from user_roles where user_id = $1`, [id]);
+      for (const nextRole of roles) {
+        await client.query(
+          `
+            insert into user_roles (user_id, role, created_at)
+            values ($1, $2, now())
+          `,
+          [id, nextRole],
+        );
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    const updated = await this.get(id);
+    if (!updated) throw new Error(`User was not found after update: ${id}`);
+    return updated;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    if (id === this.defaultUserId) throw new Error("Default user cannot be deleted");
+    const result = await this.pool.query(`delete from users where id = $1`, [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async createIdentity(input: ChannelIdentityCreateInput): Promise<ChannelIdentityRecord> {
+    const user = await this.get(input.userId);
+    if (!user) throw new Error(`User was not found: ${input.userId}`);
+    const provider = normalizeProvider(input.provider);
+    const providerUserId = input.providerUserId.trim();
+    if (!provider || !providerUserId) throw new Error("provider and providerUserId are required");
+    const id = input.id?.trim() || `${provider}:${providerUserId}`;
+    const inserted = await this.pool.query<IdentityRow>(
+      `
+        insert into channel_identities (
+          id,
+          provider,
+          provider_user_id,
+          user_id,
+          allow_status,
+          display_metadata,
+          last_seen_at,
+          created_at,
+          updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, now(), now())
+        returning id, provider, provider_user_id, user_id, allow_status, display_metadata, last_seen_at, created_at, updated_at
+      `,
+      [
+        id,
+        provider,
+        providerUserId,
+        input.userId,
+        input.allowStatus ?? "allowed",
+        input.displayMetadata ?? {},
+        input.lastSeenAt ?? null,
+      ],
+    );
+    return mapIdentityRow(inserted.rows[0]!);
+  }
+
+  async updateIdentity(id: string, input: ChannelIdentityUpdateInput): Promise<ChannelIdentityRecord> {
+    const existing = await this.pool.query<IdentityRow>(
+      `
+        select id,
+               provider,
+               provider_user_id,
+               user_id,
+               allow_status,
+               display_metadata,
+               last_seen_at,
+               created_at,
+               updated_at
+        from channel_identities
+        where id = $1
+        limit 1
+      `,
+      [id],
+    );
+    const current = existing.rows[0];
+    if (!current) throw new Error(`Channel identity was not found: ${id}`);
+    const updated = await this.pool.query<IdentityRow>(
+      `
+        update channel_identities
+        set allow_status = $2,
+            display_metadata = $3,
+            last_seen_at = $4,
+            updated_at = now()
+        where id = $1
+        returning id, provider, provider_user_id, user_id, allow_status, display_metadata, last_seen_at, created_at, updated_at
+      `,
+      [
+        id,
+        input.allowStatus ?? current.allow_status,
+        input.displayMetadata ?? current.display_metadata ?? {},
+        input.lastSeenAt === null ? null : input.lastSeenAt ?? current.last_seen_at,
+      ],
+    );
+    return mapIdentityRow(updated.rows[0]!);
+  }
+
+  async deleteIdentity(id: string): Promise<boolean> {
+    const result = await this.pool.query(`delete from channel_identities where id = $1`, [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
   private async hydrateUsers(rows: UserRow[], userIds: string[]): Promise<UserRecord[]> {
     if (rows.length === 0) return [];
 
@@ -117,6 +287,20 @@ export class PostgresUserStore implements UserStore {
 
     return rows.map((row) => mapUserRow(row, roles.rows, identities.rows));
   }
+}
+
+function normalizeRoles(roles: string[]): string[] {
+  const normalized = roles.map((role) => role.trim()).filter(Boolean);
+  return [...new Set(normalized.length ? normalized : ["member"])];
+}
+
+function createUserId(displayName: string): string {
+  const slug = displayName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+  return `user-${slug || "member"}-${Date.now().toString(36)}`;
 }
 
 function mapUserRow(row: UserRow, roles: RoleRow[], identities: IdentityRow[]): UserRecord {

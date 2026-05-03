@@ -13,6 +13,7 @@ import { UniversalAgent } from "../src/agents/universalAgent.js";
 import { LocalArtifactStore } from "../src/artifacts/artifactStore.js";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
+import { InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
 import { ToolBuildWorkflow } from "../src/tools/toolBuildWorkflow.js";
 import { InMemoryAuditEventStore } from "../src/audit/inMemoryAuditEventStore.js";
 import { InMemoryGroupProfileStore } from "../src/instance/groupProfileStore.js";
@@ -1142,6 +1143,51 @@ test("web server registers generated tool metadata with conflict checks", async 
   }
 });
 
+test("web server records tool migration metadata with audit events", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const toolMigrationStore = new InMemoryToolMigrationStore();
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolMigrationStore,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createResponse = await fetch(`${baseUrl}/api/tool-migrations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        toolName: "generated.api.client",
+        toolVersion: "1.2.0",
+        migrationId: "001_create_cache",
+        checksum: "sha256:test",
+        status: "applied",
+        appliedAt: "2026-05-03T10:00:00.000Z",
+        appliedByActor: "tool-registrar",
+        qaReport: { ok: true, checks: ["idempotent"] },
+      }),
+    });
+    const created = await createResponse.json();
+    const listed = await (await fetch(`${baseUrl}/api/tool-migrations?toolName=generated.api.client`)).json();
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+
+    assert.equal(createResponse.status, 201);
+    assert.equal(created.migration.status, "applied");
+    assert.equal(listed.migrations.length, 1);
+    assert.equal(listed.migrations[0].migrationId, "001_create_cache");
+    assert.equal(audit.events.some((event: { action: string }) => event.action === "tool_migration.recorded"), true);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server manages secret handles without accepting raw secret values", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
@@ -1382,6 +1428,66 @@ test("web server exposes compact user activity without embedding run traces", as
     assert.equal(body.users[0].recentRequests[0].task, "compact user activity");
     assert.equal(body.users[0].recentRequests[0].events, undefined);
     assert.equal(body.users[0].recentRequests[0].result, undefined);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server manages users and channel identities with audit events", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    userStore: new InMemoryUserStore(),
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createdResponse = await fetch(`${baseUrl}/api/users`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "user-family",
+        displayName: "Family Member",
+        roles: ["member", "viewer"],
+      }),
+    });
+    const created = await createdResponse.json();
+    const identityResponse = await fetch(`${baseUrl}/api/users/user-family/channel-identities`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "telegram",
+        providerUserId: "tg-family",
+      }),
+    });
+    const identity = await identityResponse.json();
+    const blockedResponse = await fetch(
+      `${baseUrl}/api/channel-identities/${encodeURIComponent(identity.identity.id)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ allowStatus: "blocked" }),
+      },
+    );
+    const users = await (await fetch(`${baseUrl}/api/users`)).json();
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+
+    assert.equal(createdResponse.status, 201);
+    assert.equal(created.user.id, "user-family");
+    assert.equal(identityResponse.status, 201);
+    assert.equal(blockedResponse.status, 200);
+    assert.equal(users.users.find((user: any) => user.id === "user-family").identities[0].allowStatus, "blocked");
+    assert.deepEqual(
+      audit.events.slice(0, 3).map((event: any) => event.action).sort(),
+      ["channel_identity.created", "channel_identity.updated", "user.created"].sort(),
+    );
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

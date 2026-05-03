@@ -14,7 +14,12 @@ import {
   ThreadResolutionResult,
 } from "../conversations/threadResolution.js";
 import { GroupProfileStore } from "../instance/groupProfileStore.js";
-import { InMemoryUserStore, UserRecord, UserStore } from "../instance/userStore.js";
+import {
+  ChannelIdentityStatus,
+  InMemoryUserStore,
+  UserRecord,
+  UserStore,
+} from "../instance/userStore.js";
 import { MemoryListOptions, MemoryUpdateInput, SkillMemoryStore } from "../memory/skillMemory.js";
 import {
   evaluateMemoryRetrieval,
@@ -33,6 +38,11 @@ import { ToolRegistry } from "../tools/registry.js";
 import { ToolBuildRequestStore } from "../tools/toolBuildRequestStore.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import { ToolMetadataStore, toolToMetadata } from "../tools/toolMetadataStore.js";
+import {
+  ToolMigrationCreateInput,
+  ToolMigrationStore,
+  validateToolMigrationStatus,
+} from "../tools/toolMigrationStore.js";
 import { AgentArtifact, AgentEvent, AgentRunResult, ArtifactUploadInput } from "../types.js";
 
 export type WebAppOptions = {
@@ -42,6 +52,7 @@ export type WebAppOptions = {
   skillMemory?: SkillMemoryStore;
   toolRegistry?: Pick<ToolRegistry, "list">;
   toolMetadataStore?: ToolMetadataStore;
+  toolMigrationStore?: ToolMigrationStore;
   toolBuildRequestStore?: ToolBuildRequestStore;
   toolBuildWorkflow?: ToolBuildWorkflow;
   reloadGeneratedTools?: () => Promise<void>;
@@ -161,6 +172,168 @@ async function routeRequest(
           })),
       })),
     });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/users") {
+    try {
+      const user = await getUserStore(options).create(parseUserCreateInput(await readJsonBody<unknown>(request)));
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "user.created",
+        targetType: "user",
+        targetId: user.id,
+        status: "success",
+        summary: `User created: ${user.displayName}`,
+        metadata: { role: user.role, roles: user.roles },
+      });
+      sendJson(response, 201, { user });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid user create request",
+      });
+    }
+    return;
+  }
+
+  const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
+  if (request.method === "PATCH" && userMatch) {
+    const userId = decodeURIComponent(userMatch[1] ?? "");
+    try {
+      const user = await getUserStore(options).update(
+        userId,
+        parseUserUpdateInput(await readJsonBody<unknown>(request)),
+      );
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "user.updated",
+        targetType: "user",
+        targetId: user.id,
+        status: "success",
+        summary: `User updated: ${user.displayName}`,
+        metadata: { role: user.role, roles: user.roles },
+      });
+      sendJson(response, 200, { user });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid user update request";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
+  if (request.method === "DELETE" && userMatch) {
+    const userId = decodeURIComponent(userMatch[1] ?? "");
+    try {
+      const deleted = await getUserStore(options).delete(userId);
+      if (!deleted) {
+        sendJson(response, 404, { error: "User not found" });
+        return;
+      }
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "user.deleted",
+        targetType: "user",
+        targetId: userId,
+        status: "success",
+        summary: `User deleted: ${userId}`,
+      });
+      sendJson(response, 200, { deleted: true, userId });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Could not delete user",
+      });
+    }
+    return;
+  }
+
+  const userIdentityMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/channel-identities$/);
+  if (request.method === "POST" && userIdentityMatch) {
+    const userId = decodeURIComponent(userIdentityMatch[1] ?? "");
+    try {
+      const identity = await getUserStore(options).createIdentity(
+        parseChannelIdentityCreateInput(await readJsonBody<unknown>(request), userId),
+      );
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "channel_identity.created",
+        targetType: "channel_identity",
+        targetId: identity.id,
+        status: identity.allowStatus === "allowed" ? "success" : "pending",
+        requesterUserId: identity.userId,
+        channel: identity.provider,
+        summary: `Channel identity created: ${identity.provider}/${identity.providerUserId}`,
+        metadata: {
+          userId: identity.userId,
+          allowStatus: identity.allowStatus,
+        },
+      });
+      sendJson(response, 201, { identity });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid channel identity create request",
+      });
+    }
+    return;
+  }
+
+  const identityMatch = url.pathname.match(/^\/api\/channel-identities\/([^/]+)$/);
+  if (request.method === "PATCH" && identityMatch) {
+    const identityId = decodeURIComponent(identityMatch[1] ?? "");
+    try {
+      const identity = await getUserStore(options).updateIdentity(
+        identityId,
+        parseChannelIdentityUpdateInput(await readJsonBody<unknown>(request)),
+      );
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "channel_identity.updated",
+        targetType: "channel_identity",
+        targetId: identity.id,
+        status: identity.allowStatus === "allowed" ? "success" : "pending",
+        requesterUserId: identity.userId,
+        channel: identity.provider,
+        summary: `Channel identity updated: ${identity.provider}/${identity.providerUserId}`,
+        metadata: {
+          userId: identity.userId,
+          allowStatus: identity.allowStatus,
+        },
+      });
+      sendJson(response, 200, { identity });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid channel identity update request";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
+  if (request.method === "DELETE" && identityMatch) {
+    const identityId = decodeURIComponent(identityMatch[1] ?? "");
+    const deleted = await getUserStore(options).deleteIdentity(identityId);
+    if (!deleted) {
+      sendJson(response, 404, { error: "Channel identity not found" });
+      return;
+    }
+    await recordAudit(options, {
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "channel_identity.deleted",
+      targetType: "channel_identity",
+      targetId: identityId,
+      status: "success",
+      summary: `Channel identity deleted: ${identityId}`,
+    });
+    sendJson(response, 200, { deleted: true, identityId });
     return;
   }
 
@@ -476,6 +649,50 @@ async function routeRequest(
     );
 
     sendJson(response, 200, { tools: health });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/tool-migrations") {
+    const status = url.searchParams.get("status");
+    sendJson(response, 200, {
+      migrations: options.toolMigrationStore
+        ? await options.toolMigrationStore.list({
+            toolName: url.searchParams.get("toolName") ?? undefined,
+            status: status ? validateToolMigrationStatus(status) : undefined,
+          })
+        : [],
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/tool-migrations") {
+    if (!options.toolMigrationStore) {
+      sendJson(response, 503, { error: "Tool migration store is not configured" });
+      return;
+    }
+
+    try {
+      const migration = await options.toolMigrationStore.create(parseToolMigrationCreateInput(await readJsonBody<unknown>(request)));
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "tool-registrar",
+        actorType: "agent",
+        action: "tool_migration.recorded",
+        targetType: "tool_migration",
+        targetId: migration.id,
+        status: migration.status === "failed" ? "failure" : migration.status === "pending" ? "pending" : "success",
+        summary: `Tool migration ${migration.migrationId} recorded for ${migration.toolName}@${migration.toolVersion}`,
+        metadata: {
+          toolName: migration.toolName,
+          toolVersion: migration.toolVersion,
+          migrationId: migration.migrationId,
+          status: migration.status,
+        },
+      });
+      sendJson(response, 201, { migration });
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : "Invalid tool migration" });
+    }
     return;
   }
 
@@ -1454,6 +1671,39 @@ async function executeRun(
             return result.request;
           }
         : undefined,
+      toolExecutionContext: {
+        resolveSecret: options.secretHandleStore?.resolve
+          ? (handle) => options.secretHandleStore!.resolve!(handle)
+          : undefined,
+        audit: async (event) => {
+          await recordAudit(options, {
+            instanceId: run?.instanceId,
+            actorId: "tool-runtime",
+            actorType: "tool",
+            action: event.action as AuditEventInput["action"],
+            targetType: event.targetType,
+            targetId: event.targetId,
+            status: event.status,
+            runId: id,
+            threadId: run?.threadId,
+            requesterUserId: run?.requesterUserId,
+            channel: run?.channel,
+            summary: event.summary,
+            metadata: event.metadata,
+          });
+        },
+        logger: {
+          info(message, metadata) {
+            console.info(`[tool:${id}] ${message}`, metadata ?? "");
+          },
+          warn(message, metadata) {
+            console.warn(`[tool:${id}] ${message}`, metadata ?? "");
+          },
+          error(message, metadata) {
+            console.error(`[tool:${id}] ${message}`, metadata ?? "");
+          },
+        },
+      },
       onEvent: async (event) => {
         const current = await options.runStore.get(id);
         if (!current || current.status === "cancelled") return;
@@ -1617,6 +1867,10 @@ function sanitizeAuditMetadata(value: unknown): Record<string, unknown> | undefi
   return sanitizeObject(value as Record<string, unknown>);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function sanitizeObject(value: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
@@ -1664,6 +1918,66 @@ function parseOptionalPreferences(value: unknown): Record<string, unknown> | und
     throw new Error("preferences must be an object");
   }
   return sanitizeObject(value as Record<string, unknown>);
+}
+
+function parseUserCreateInput(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("user create request must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  return {
+    id: parseOptionalText(candidate.id),
+    displayName: parseRequiredText(candidate.displayName, "displayName"),
+    role: parseOptionalText(candidate.role),
+    roles: parseOptionalStringArray(candidate.roles, "roles"),
+  };
+}
+
+function parseUserUpdateInput(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("user update request must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  return {
+    displayName: parseOptionalText(candidate.displayName),
+    role: parseOptionalText(candidate.role),
+    roles: parseOptionalStringArray(candidate.roles, "roles"),
+  };
+}
+
+function parseChannelIdentityCreateInput(value: unknown, userId: string) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("channel identity create request must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  return {
+    id: parseOptionalText(candidate.id),
+    userId,
+    provider: parseRequiredText(candidate.provider, "provider"),
+    providerUserId: parseRequiredText(candidate.providerUserId, "providerUserId"),
+    allowStatus: parseOptionalChannelIdentityStatus(candidate.allowStatus),
+    displayMetadata: candidate.displayMetadata === undefined ? undefined : parseOptionalPreferences(candidate.displayMetadata),
+    lastSeenAt: parseOptionalText(candidate.lastSeenAt),
+  };
+}
+
+function parseChannelIdentityUpdateInput(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("channel identity update request must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  return {
+    allowStatus: parseOptionalChannelIdentityStatus(candidate.allowStatus),
+    displayMetadata: candidate.displayMetadata === undefined ? undefined : parseOptionalPreferences(candidate.displayMetadata),
+    lastSeenAt:
+      candidate.lastSeenAt === null ? null : parseOptionalText(candidate.lastSeenAt),
+  };
+}
+
+function parseOptionalChannelIdentityStatus(value: unknown): ChannelIdentityStatus | undefined {
+  if (value === undefined) return undefined;
+  if (value === "allowed" || value === "blocked") return value;
+  throw new Error("allowStatus must be allowed or blocked");
 }
 
 function parseAttachmentInputs(value: unknown): ArtifactUploadInput[] {
@@ -1882,6 +2196,25 @@ function parseToolBuildRequestInput(value: unknown) {
   };
 }
 
+function parseToolMigrationCreateInput(value: unknown): ToolMigrationCreateInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("tool migration request must be an object");
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return {
+    toolName: parseRequiredText(candidate.toolName, "toolName"),
+    toolVersion: parseRequiredText(candidate.toolVersion, "toolVersion"),
+    migrationId: parseRequiredText(candidate.migrationId, "migrationId"),
+    checksum: parseRequiredText(candidate.checksum, "checksum"),
+    status: candidate.status === undefined ? undefined : validateToolMigrationStatus(String(candidate.status)),
+    appliedAt: parseOptionalDate(candidate.appliedAt, "appliedAt"),
+    appliedByActor: parseOptionalText(candidate.appliedByActor),
+    qaReport: isRecord(candidate.qaReport) ? sanitizeObject(candidate.qaReport) : undefined,
+    rollbackNotes: parseOptionalText(candidate.rollbackNotes),
+  };
+}
+
 function parseToolBuildReworkInput(value: unknown): string {
   if (!value || typeof value !== "object") {
     throw new Error("tool build rework request must be an object");
@@ -1892,6 +2225,18 @@ function parseToolBuildReworkInput(value: unknown): string {
     throw new Error("feedback is required");
   }
   return candidate.feedback.trim();
+}
+
+function parseOptionalDate(value: unknown, name: string): Date | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${name} must be an ISO date string`);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`${name} must be an ISO date string`);
+  }
+  return parsed;
 }
 
 function parseSecretHandleInput(value: unknown): SecretHandleInput {
@@ -1986,7 +2331,48 @@ function parseGeneratedToolModuleInput(value: unknown) {
     outputSchema: parseOptionalToolSchema(candidate.outputSchema, "outputSchema"),
     modulePath: parseRequiredPath(candidate.modulePath, "modulePath"),
     testPath: parseOptionalPath(candidate.testPath, "testPath"),
+    requiredConfigurationKeys: parseOptionalStringArray(candidate.requiredConfigurationKeys, "requiredConfigurationKeys"),
+    requiredSecretHandles: parseOptionalStringArray(candidate.requiredSecretHandles, "requiredSecretHandles"),
+    settingsSchema: parseOptionalToolSchema(candidate.settingsSchema, "settingsSchema"),
+    storage: parseOptionalStorageContract(candidate.storage),
+    docsMarkdown: parseOptionalText(candidate.docsMarkdown),
+    examples: parseOptionalToolExamples(candidate.examples),
   };
+}
+
+function parseOptionalStorageContract(value: unknown) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("storage must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  return {
+    schema: parseOptionalText(candidate.schema),
+    tables: parseOptionalStringArray(candidate.tables, "storage.tables"),
+    migrations: parseOptionalStringArray(candidate.migrations, "storage.migrations"),
+    retention: parseOptionalText(candidate.retention),
+    permissions: parseOptionalStringArray(candidate.permissions, "storage.permissions"),
+    destructiveCapabilities: parseOptionalStringArray(
+      candidate.destructiveCapabilities,
+      "storage.destructiveCapabilities",
+    ),
+  };
+}
+
+function parseOptionalToolExamples(value: unknown) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error("examples must be an array");
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`examples[${index}] must be an object`);
+    }
+    const candidate = item as Record<string, unknown>;
+    return {
+      title: parseRequiredText(candidate.title, `examples[${index}].title`),
+      input: sanitizeObject(isRecord(candidate.input) ? candidate.input : {}),
+      output: candidate.output,
+    };
+  });
 }
 
 function parseGeneratedToolReplacementInput(expectedName: string, value: unknown) {

@@ -19,6 +19,52 @@ export type ToolHealth = {
   detail: string;
 };
 
+export type ToolExecutionContext = {
+  instanceId?: string;
+  requesterUserId?: string;
+  threadId?: string;
+  runId?: string;
+  spanId?: string;
+  parentSpanId?: string;
+  toolName: string;
+  capability?: string;
+  caller?: string;
+  now: Date;
+  signal?: AbortSignal;
+  resolveSecret?: (handle: string) => Promise<string | undefined>;
+  audit?: (event: {
+    action: string;
+    targetType: string;
+    targetId: string;
+    status?: "success" | "failure" | "pending";
+    summary: string;
+    metadata?: Record<string, unknown>;
+  }) => Promise<void>;
+  logger?: {
+    info(message: string, metadata?: Record<string, unknown>): void;
+    warn(message: string, metadata?: Record<string, unknown>): void;
+    error(message: string, metadata?: Record<string, unknown>): void;
+  };
+  db?: {
+    query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[]; rowCount?: number | null }>;
+  };
+};
+
+export type ToolStorageContract = {
+  schema?: string;
+  tables?: string[];
+  migrations?: string[];
+  retention?: string;
+  permissions?: string[];
+  destructiveCapabilities?: string[];
+};
+
+export type ToolExample = {
+  title: string;
+  input: ToolInput;
+  output?: unknown;
+};
+
 export type Tool = {
   name: string;
   version?: string;
@@ -27,6 +73,12 @@ export type Tool = {
   inputSchema?: ToolSchema;
   outputSchema?: ToolSchema;
   startupMode?: ToolStartupMode;
+  requiredConfigurationKeys?: string[];
+  requiredSecretHandles?: string[];
+  settingsSchema?: ToolSchema;
+  storage?: ToolStorageContract;
+  docsMarkdown?: string;
+  examples?: ToolExample[];
   healthcheck?(): Promise<ToolHealth>;
-  run(input: ToolInput): Promise<ToolResult>;
+  run(input: ToolInput, context?: ToolExecutionContext): Promise<ToolResult>;
 };

@@ -1,4 +1,4 @@
-import { Tool, ToolHealth, ToolSchema, ToolStartupMode } from "./tool.js";
+import { Tool, ToolExample, ToolHealth, ToolSchema, ToolStartupMode, ToolStorageContract } from "./tool.js";
 
 export type ToolModuleSource = "builtin" | "generated";
 export type ToolModuleStatus = "available" | "disabled" | "failed";
@@ -17,6 +17,16 @@ export type ToolModuleMetadata = {
   status: ToolModuleStatus;
   lastHealthOk?: boolean;
   lastHealthDetail?: string;
+  requiredConfigurationKeys: string[];
+  requiredSecretHandles: string[];
+  settingsSchema?: ToolSchema;
+  storage?: ToolStorageContract;
+  docsMarkdown?: string;
+  examples: ToolExample[];
+  successCount: number;
+  failureCount: number;
+  lastSuccessAt?: string;
+  lastFailureAt?: string;
   updatedAt: string;
 };
 
@@ -30,6 +40,12 @@ export type GeneratedToolModuleInput = {
   outputSchema?: ToolSchema;
   modulePath: string;
   testPath?: string;
+  requiredConfigurationKeys?: string[];
+  requiredSecretHandles?: string[];
+  settingsSchema?: ToolSchema;
+  storage?: ToolStorageContract;
+  docsMarkdown?: string;
+  examples?: ToolExample[];
 };
 
 export type GeneratedToolReplacementInput = GeneratedToolModuleInput & {
@@ -40,6 +56,7 @@ export type ToolMetadataStore = {
   list(): Promise<ToolModuleMetadata[]>;
   syncBuiltins(tools: Tool[]): Promise<ToolModuleMetadata[]>;
   updateHealth(name: string, health: ToolHealth): Promise<void>;
+  recordUsage(name: string, outcome: "success" | "failure", at?: Date): Promise<void>;
   registerGenerated(input: GeneratedToolModuleInput): Promise<ToolModuleMetadata>;
   promoteReplacement(input: GeneratedToolReplacementInput): Promise<ToolModuleMetadata>;
 };
@@ -72,6 +89,16 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
         startupMode: tool.startupMode ?? "on-demand",
         inputSchema: tool.inputSchema,
         outputSchema: tool.outputSchema,
+        requiredConfigurationKeys: tool.requiredConfigurationKeys ?? existing?.requiredConfigurationKeys ?? [],
+        requiredSecretHandles: tool.requiredSecretHandles ?? existing?.requiredSecretHandles ?? [],
+        settingsSchema: tool.settingsSchema ?? existing?.settingsSchema,
+        storage: tool.storage ?? existing?.storage,
+        docsMarkdown: tool.docsMarkdown ?? existing?.docsMarkdown,
+        examples: tool.examples ?? existing?.examples ?? [],
+        successCount: existing?.successCount ?? 0,
+        failureCount: existing?.failureCount ?? 0,
+        lastSuccessAt: existing?.lastSuccessAt,
+        lastFailureAt: existing?.lastFailureAt,
         source: "builtin",
         status: existing?.status ?? "available",
         lastHealthOk: existing?.lastHealthOk,
@@ -96,6 +123,21 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
     });
   }
 
+  async recordUsage(name: string, outcome: "success" | "failure", at = new Date()): Promise<void> {
+    const existing = this.modules.get(name);
+    if (!existing) return;
+
+    const timestamp = at.toISOString();
+    this.modules.set(name, {
+      ...existing,
+      successCount: existing.successCount + (outcome === "success" ? 1 : 0),
+      failureCount: existing.failureCount + (outcome === "failure" ? 1 : 0),
+      lastSuccessAt: outcome === "success" ? timestamp : existing.lastSuccessAt,
+      lastFailureAt: outcome === "failure" ? timestamp : existing.lastFailureAt,
+      updatedAt: timestamp,
+    });
+  }
+
   async registerGenerated(input: GeneratedToolModuleInput): Promise<ToolModuleMetadata> {
     const existing = this.modules.get(input.name);
     if (existing?.source === "builtin") {
@@ -117,6 +159,16 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       outputSchema: input.outputSchema,
       modulePath: input.modulePath,
       testPath: input.testPath,
+      requiredConfigurationKeys: input.requiredConfigurationKeys ?? existing?.requiredConfigurationKeys ?? [],
+      requiredSecretHandles: input.requiredSecretHandles ?? existing?.requiredSecretHandles ?? [],
+      settingsSchema: input.settingsSchema ?? existing?.settingsSchema,
+      storage: input.storage ?? existing?.storage,
+      docsMarkdown: input.docsMarkdown ?? existing?.docsMarkdown,
+      examples: input.examples ?? existing?.examples ?? [],
+      successCount: existing?.successCount ?? 0,
+      failureCount: existing?.failureCount ?? 0,
+      lastSuccessAt: existing?.lastSuccessAt,
+      lastFailureAt: existing?.lastFailureAt,
       source: "generated",
       status: "disabled",
       lastHealthOk: existing?.lastHealthOk,
@@ -131,6 +183,9 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
   async promoteReplacement(input: GeneratedToolReplacementInput): Promise<ToolModuleMetadata> {
     const existing = this.modules.get(input.name);
     validateReplacement(input, existing);
+    if (!existing) {
+      throw new Error(`Cannot promote replacement for ${input.name}: no installed generated tool exists.`);
+    }
 
     const stored: ToolModuleMetadata = {
       name: input.name,
@@ -142,6 +197,16 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       outputSchema: input.outputSchema,
       modulePath: input.modulePath,
       testPath: input.testPath,
+      requiredConfigurationKeys: input.requiredConfigurationKeys ?? [],
+      requiredSecretHandles: input.requiredSecretHandles ?? [],
+      settingsSchema: input.settingsSchema,
+      storage: input.storage,
+      docsMarkdown: input.docsMarkdown,
+      examples: input.examples ?? [],
+      successCount: existing.successCount,
+      failureCount: existing.failureCount,
+      lastSuccessAt: existing.lastSuccessAt,
+      lastFailureAt: existing.lastFailureAt,
       source: "generated",
       status: "disabled",
       updatedAt: new Date().toISOString(),
@@ -161,6 +226,14 @@ export function toolToMetadata(tool: Tool, updatedAt = new Date().toISOString())
     startupMode: tool.startupMode ?? "on-demand",
     inputSchema: tool.inputSchema,
     outputSchema: tool.outputSchema,
+    requiredConfigurationKeys: tool.requiredConfigurationKeys ?? [],
+    requiredSecretHandles: tool.requiredSecretHandles ?? [],
+    settingsSchema: tool.settingsSchema,
+    storage: tool.storage,
+    docsMarkdown: tool.docsMarkdown,
+    examples: tool.examples ?? [],
+    successCount: 0,
+    failureCount: 0,
     source: "builtin",
     status: "available",
     updatedAt,
@@ -173,7 +246,18 @@ function cloneModule(module: ToolModuleMetadata): ToolModuleMetadata {
     capabilities: [...module.capabilities],
     inputSchema: module.inputSchema ? { ...module.inputSchema } : undefined,
     outputSchema: module.outputSchema ? { ...module.outputSchema } : undefined,
+    requiredConfigurationKeys: [...(module.requiredConfigurationKeys ?? [])],
+    requiredSecretHandles: [...(module.requiredSecretHandles ?? [])],
+    settingsSchema: module.settingsSchema ? { ...module.settingsSchema } : undefined,
+    storage: module.storage ? cloneJson(module.storage) : undefined,
+    examples: (module.examples ?? []).map((example) => cloneJson(example)),
+    successCount: module.successCount ?? 0,
+    failureCount: module.failureCount ?? 0,
   };
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 export function validateReplacement(input: GeneratedToolReplacementInput, existing: ToolModuleMetadata | undefined): void {

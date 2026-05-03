@@ -134,6 +134,8 @@ List tools:
 GET /api/tools
 POST /api/tools/generated-modules
 GET /api/tools/health
+GET /api/tool-migrations
+POST /api/tool-migrations
 GET /api/tool-build-requests
 POST /api/tool-build-requests
 GET /api/tool-build-requests/:id
@@ -146,8 +148,9 @@ DELETE /api/secret-handles/:handle
 ```
 
 `GET /api/tools` returns persistent registry metadata when configured: name, version,
-description, capabilities, startup mode, schemas, source, status, health summary, and
-updated timestamp.
+description, capabilities, startup mode, schemas, source, status, health summary,
+required configuration keys, required secret handles, settings schema, storage contract,
+agent-readable docs/examples, success/failure counters, and updated timestamp.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as
@@ -200,6 +203,13 @@ and `secretRef` such as `TELEGRAM_BOT_TOKEN` or a vault path. Raw values (`token
 `password`, `apiKey`, `value`) are rejected by the API. `DELETE
 /api/secret-handles/:handle` removes a handle and writes an audit event; no endpoint
 returns the underlying secret value.
+
+`GET /api/tool-migrations` lists tool-owned migration records. Optional query filters are
+`toolName` and `status` (`pending`, `applied`, `failed`, `rolled_back`). `POST
+/api/tool-migrations` records a versioned migration with tool name/version, migration id,
+checksum, status, applied actor/time, QA report, and rollback notes. This endpoint is the
+durable operator/registrar handoff; generated tools should not run hidden ad hoc SQL from
+inside `run(input)`.
 
 The server also runs a background Tool Builder worker by default. It claims the oldest
 `requested` card atomically, moves it to `building`, executes the same workflow used by

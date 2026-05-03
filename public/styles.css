@@ -1913,6 +1913,60 @@ textarea {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
+.form-grid.three {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.inline-edit-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.inline-edit-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.inline-edit-form label > span {
+  color: var(--secondary);
+  font-size: 12px;
+  font-weight: 780;
+}
+
+.identity-list {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.identity-row {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 10px;
+}
+
+.identity-row strong,
+.identity-row small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.action-row.compact {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+
+.action-row.compact button {
+  padding: 7px 9px;
+}
+
 .compact-heading {
   gap: 12px;
 }

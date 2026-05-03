@@ -206,6 +206,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   metadata store contract and in-memory implementation.
 - [src/tools/postgresToolMetadataStore.ts](src/tools/postgresToolMetadataStore.ts) -
   Postgres-backed `tool_modules` catalog.
+- [src/tools/toolMigrationStore.ts](src/tools/toolMigrationStore.ts) - tool-owned
+  migration metadata contract and in-memory implementation.
+- [src/tools/postgresToolMigrationStore.ts](src/tools/postgresToolMigrationStore.ts) -
+  Postgres-backed `tool_migrations` catalog for versioned tool storage changes.
 - [src/tools/toolBuildRequestStore.ts](src/tools/toolBuildRequestStore.ts) - Tool Builder
   request/contract/lifecycle/QA criteria model.
 - [src/tools/postgresToolBuildRequestStore.ts](src/tools/postgresToolBuildRequestStore.ts)
@@ -229,6 +233,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   single-instance group profile contract.
 - [src/instance/postgresGroupProfileStore.ts](src/instance/postgresGroupProfileStore.ts)
   - Postgres-backed group profile context.
+- [src/instance/userStore.ts](src/instance/userStore.ts) - user and channel identity
+  contract, local admin defaults, requester resolution, and CRUD operations.
+- [src/instance/postgresUserStore.ts](src/instance/postgresUserStore.ts) -
+  Postgres-backed users and channel identities.
 - [src/server/http.ts](src/server/http.ts) - web API and static UI server.
 - [docs/modules/web-console.md](docs/modules/web-console.md) - web console API,
   realtime SSE stream, dashboard behavior, conversation continuation, attachments,
@@ -320,6 +328,7 @@ For documentation-only changes:
 - `tests/generatedToolLoader.test.ts` covers compiled generated tool loading and contract
   rejection.
 - `tests/toolMetadataStore.test.ts` covers tool metadata and Tool Build Queue lifecycle.
+- `tests/toolMigrationStore.test.ts` covers tool-owned migration metadata lifecycle.
 - `tests/toolBuildWorkflow.test.ts` covers Builder/QA/Registrar orchestration and failed
   QA registration blocking.
 - `tests/toolBuildProviders.test.ts` covers provider-backed TypeScript generation and
@@ -337,7 +346,9 @@ For documentation-only changes:
   review and audit surfaces until policy says otherwise.
 - Learned memories should carry scope, confidence, sensitivity, source run/thread IDs,
   and short evidence. Non-global or sensitive/private learned memories must enter the
-  `proposed` review state before runtime retrieval can use them.
+  `proposed` review state before runtime retrieval can use them. A deterministic
+  memory-specialist gate also keeps low-confidence or policy-risky learned memories in
+  review even if the learning model requested `accepted`.
 - Keep worker context narrow: original task summary, one subtask, relevant memory, output
   expectations, and review criteria.
 - Keep instance/user/channel context explicit on future runs, memory records, tool

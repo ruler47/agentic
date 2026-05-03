@@ -360,6 +360,16 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         status text not null check (status in ('available', 'disabled', 'failed')),
         last_health_ok boolean,
         last_health_detail text,
+        required_configuration_keys text[] not null default '{}',
+        required_secret_handles text[] not null default '{}',
+        settings_schema jsonb,
+        storage_contract jsonb,
+        docs_markdown text,
+        examples jsonb not null default '[]',
+        success_count integer not null default 0 check (success_count >= 0),
+        failure_count integer not null default 0 check (failure_count >= 0),
+        last_success_at timestamptz,
+        last_failure_at timestamptz,
         updated_at timestamptz not null
       );
     `);
@@ -371,6 +381,39 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
 
     await pool.query(`alter table tool_modules add column if not exists module_path text;`);
     await pool.query(`alter table tool_modules add column if not exists test_path text;`);
+    await pool.query(`alter table tool_modules add column if not exists required_configuration_keys text[] not null default '{}';`);
+    await pool.query(`alter table tool_modules add column if not exists required_secret_handles text[] not null default '{}';`);
+    await pool.query(`alter table tool_modules add column if not exists settings_schema jsonb;`);
+    await pool.query(`alter table tool_modules add column if not exists storage_contract jsonb;`);
+    await pool.query(`alter table tool_modules add column if not exists docs_markdown text;`);
+    await pool.query(`alter table tool_modules add column if not exists examples jsonb not null default '[]';`);
+    await pool.query(`alter table tool_modules add column if not exists success_count integer not null default 0;`);
+    await pool.query(`alter table tool_modules add column if not exists failure_count integer not null default 0;`);
+    await pool.query(`alter table tool_modules add column if not exists last_success_at timestamptz;`);
+    await pool.query(`alter table tool_modules add column if not exists last_failure_at timestamptz;`);
+
+    await pool.query(`
+      create table if not exists tool_migrations (
+        id text primary key,
+        tool_name text not null,
+        tool_version text not null,
+        migration_id text not null,
+        checksum text not null,
+        status text not null check (status in ('pending', 'applied', 'failed', 'rolled_back')),
+        applied_at timestamptz,
+        applied_by_actor text,
+        qa_report jsonb,
+        rollback_notes text,
+        created_at timestamptz not null,
+        updated_at timestamptz not null,
+        unique (tool_name, tool_version, migration_id)
+      );
+    `);
+
+    await pool.query(`
+      create index if not exists tool_migrations_tool_status_idx
+      on tool_migrations(tool_name, status, updated_at desc);
+    `);
 
     await pool.query(`
       create table if not exists tool_build_requests (

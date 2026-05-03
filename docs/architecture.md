@@ -181,10 +181,11 @@ passes the relevant run/span/artifact context to a Tool Builder agent.
 
 ### Tool-Owned Storage And Migrations
 
-Tools do not currently have a first-class runtime database context. The application has
-Postgres-backed stores and central migrations, and tool metadata/build requests are
-persisted, but generated tools should not create ad hoc database pools or run arbitrary
-SQL from `DATABASE_URL`.
+Tools now have the start of a first-class runtime/storage contract. The application has
+Postgres-backed stores, central migrations, persistent tool metadata/build requests, a
+`ToolExecutionContext` injected into registry calls, and a `tool_migrations` catalog for
+versioned migration evidence. Generated tools still must not create ad hoc database pools
+or run arbitrary SQL from `DATABASE_URL`.
 
 The target contract is:
 
@@ -196,9 +197,11 @@ The target contract is:
 - Tool QA runs those migrations in an isolated database, proves they are idempotent, and
   tests rollback/repair behavior where practical;
 - the Tool Registrar applies migrations only after QA/review passes and records the
-  applied migration version in a durable migration table;
-- tool runtime receives a constrained `ToolExecutionContext` with scoped database client,
-  secret resolver, artifact store, audit writer, logger, and cancellation signal;
+  applied migration version in `tool_migrations`; DONE for the metadata/API/audit
+  contract, pending for isolated execution and transactional promotion;
+- tool runtime receives a constrained `ToolExecutionContext` with secret resolver, audit
+  writer, logger, provenance, and cancellation signal; scoped database client and
+  artifact-store injection are the next contract extensions;
 - destructive database operations are explicit capabilities, such as `data.delete`,
   `records.purge`, or `tool-data.compact`, with preview/dry-run output, policy checks,
   approval when risk is high, and audit records;

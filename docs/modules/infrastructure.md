@@ -66,6 +66,8 @@ Current tables:
 - `model_tier_settings`
 - `tool_modules`
 - `tool_build_requests`
+- `tool_migrations`
+- `secret_handles`
 
 Current filesystem-backed stores:
 
@@ -201,7 +203,8 @@ input/output schemas, startup mode, capabilities, and healthchecks exposed throu
 
 Built-in tool contracts are also synced into the Postgres `tool_modules` table on app
 startup. This table is the durable catalog for future generated tools: it stores version,
-capabilities, schemas, source, status, and the latest health result.
+capabilities, schemas, source, status, configuration/secret requirements, storage
+contracts, docs/examples, usage counters, and the latest health result.
 
 Missing tool capabilities can be persisted into `tool_build_requests`. These records are
 the durable handoff from runtime failure detection to the future Tool Builder/Tool QA/Tool
@@ -212,6 +215,12 @@ database without sharing full conversational context.
 Generated executable tools are loaded from compiled project-local modules after metadata
 registration. Runtime promotion requires matching name/version/capabilities and a passing
 healthcheck.
+
+Tool-owned storage changes are tracked in `tool_migrations`. A migration record stores
+tool name/version, migration id, checksum, status, applied actor/time, QA report, and
+rollback notes. This is intentionally metadata-first: generated tools should declare and
+promote migrations through Tool Builder/Registrar flow instead of opening their own DB
+connections or hiding SQL inside tool runtime calls.
 
 The app image includes Chromium, TypeScript source, tests, and `tsconfig` files in the
 runtime layer so self-service generated tools can be written, tested, built, registered,

@@ -33,6 +33,8 @@ import { InMemoryToolMetadataStore } from "../tools/toolMetadataStore.js";
 import { PostgresToolMetadataStore } from "../tools/postgresToolMetadataStore.js";
 import { InMemoryToolBuildRequestStore } from "../tools/toolBuildRequestStore.js";
 import { PostgresToolBuildRequestStore } from "../tools/postgresToolBuildRequestStore.js";
+import { InMemoryToolMigrationStore } from "../tools/toolMigrationStore.js";
+import { PostgresToolMigrationStore } from "../tools/postgresToolMigrationStore.js";
 import { loadGeneratedTools } from "../tools/generatedToolLoader.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import { ToolBuildWorker } from "../tools/toolBuildWorker.js";
@@ -60,9 +62,15 @@ const toolMetadataStore = pool
   ? new PostgresToolMetadataStore(pool)
   : new InMemoryToolMetadataStore();
 await toolMetadataStore.syncBuiltins(tools.list());
+tools.setUsageReporter((event) =>
+  toolMetadataStore.recordUsage(event.toolName, event.outcome, event.at),
+);
 const toolBuildRequestStore = pool
   ? new PostgresToolBuildRequestStore(pool)
   : new InMemoryToolBuildRequestStore();
+const toolMigrationStore = pool
+  ? new PostgresToolMigrationStore(pool)
+  : new InMemoryToolMigrationStore();
 const generatedToolResults = await loadGeneratedTools(tools, toolMetadataStore);
 const loadedGeneratedTools = generatedToolResults.filter((result) => result.loaded);
 if (loadedGeneratedTools.length > 0) {
@@ -134,6 +142,7 @@ const server = createWebApp({
   skillMemory,
   toolRegistry: tools,
   toolMetadataStore,
+  toolMigrationStore,
   toolBuildRequestStore,
   toolBuildWorkflow,
   reloadGeneratedTools,

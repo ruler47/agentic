@@ -52,3 +52,37 @@ test("in-memory user store resolves allowed channel identities only", async () =
   assert.equal(await store.resolve({ channel: "telegram", sourceUserId: "tg-blocked" }), undefined);
   assert.equal(await store.resolve({ channel: "telegram", sourceUserId: "tg-missing" }), undefined);
 });
+
+test("in-memory user store manages users and channel identities", async () => {
+  const store = new InMemoryUserStore();
+
+  const user = await store.create({
+    id: "user-family",
+    displayName: "Family Member",
+    roles: ["member", "viewer"],
+  });
+  const identity = await store.createIdentity({
+    provider: "Telegram",
+    providerUserId: "tg-family",
+    userId: user.id,
+  });
+
+  assert.equal(user.role, "member");
+  assert.equal(identity.provider, "telegram");
+  assert.equal((await store.resolve({ channel: "telegram", sourceUserId: "tg-family" }))?.id, user.id);
+
+  await store.updateIdentity(identity.id, { allowStatus: "blocked" });
+  assert.equal(await store.resolve({ channel: "telegram", sourceUserId: "tg-family" }), undefined);
+
+  const updated = await store.update(user.id, {
+    displayName: "Family Lead",
+    roles: ["admin", "member"],
+  });
+  assert.equal(updated.displayName, "Family Lead");
+  assert.deepEqual(updated.roles, ["admin", "member"]);
+
+  assert.equal(await store.deleteIdentity(identity.id), true);
+  assert.equal((await store.get(user.id))?.identities.length, 0);
+  assert.equal(await store.delete(user.id), true);
+  assert.equal(await store.get(user.id), undefined);
+});

@@ -8,6 +8,7 @@ import {
   SkillMemoryStore,
 } from "../memory/skillMemory.js";
 import { evaluateMemoryPolicy, MemoryPolicyDecision } from "../memory/memoryPolicy.js";
+import { reviewMemoryProposal } from "../memory/memoryProposalReview.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { shouldUseWebSearch } from "../tools/webSearchTool.js";
 import {
@@ -38,7 +39,7 @@ import { isChartToolData } from "../tools/chartGenerateTool.js";
 import { isBrowserOperateData } from "../tools/browserOperateTool.js";
 import { isMarketTimeseriesData } from "../tools/marketTimeseriesTool.js";
 import { ToolBuildRequest, ToolBuildRequestInput } from "../tools/toolBuildRequestStore.js";
-import { Tool } from "../tools/tool.js";
+import { Tool, ToolExecutionContext, ToolInput, ToolResult } from "../tools/tool.js";
 import { extractJson } from "../utils/json.js";
 import {
   classifyPrompt,
@@ -87,9 +88,12 @@ type RunOptions = {
   allowPrivateMemory?: boolean;
   saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>;
   requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>;
+  toolExecutionContext?: Partial<Omit<ToolExecutionContext, "toolName" | "now">>;
   now?: Date;
   timeZone?: string;
 };
+
+type BaseToolExecutionContext = Partial<Omit<ToolExecutionContext, "toolName" | "now">>;
 
 type AgentEventEmitter = (event: AgentEventDraft) => Promise<void>;
 
@@ -142,6 +146,7 @@ export class UniversalAgent {
     const classificationSpanId = createSpanId("classification");
     const runStartedAt = options.now ?? new Date();
     const artifacts: AgentArtifact[] = [...(options.inputArtifacts ?? [])];
+    const toolExecutionContext = buildToolExecutionContext(options);
 
     await emit({
       spanId: runSpanId,
@@ -349,6 +354,7 @@ export class UniversalAgent {
       planningSpanId,
       options.saveArtifact,
       options.requestToolBuild,
+      toolExecutionContext,
     );
     const workerResults = reviewedWorkerResults.map((result) => result.workerResult);
     const reviews = reviewedWorkerResults.flatMap((result) => result.reviews);
@@ -360,6 +366,7 @@ export class UniversalAgent {
       runSpanId,
       options.saveArtifact,
       options.requestToolBuild,
+      toolExecutionContext,
     );
     if (generatedArtifact) {
       artifacts.push(generatedArtifact);
@@ -488,6 +495,7 @@ export class UniversalAgent {
     planningSpanId: string,
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
+    toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<ReviewedWorkerResult[]> {
     const completedResults = new Map<string, ReviewedWorkerResult>();
     const orderedResults: ReviewedWorkerResult[] = [];
@@ -517,6 +525,7 @@ export class UniversalAgent {
             dependencyArtifacts,
             saveArtifact,
             requestToolBuild,
+            toolExecutionContext,
           );
         }),
       );
@@ -543,6 +552,7 @@ export class UniversalAgent {
     revisionInstructions?: string,
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
+    toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<WorkerResult> {
     const isRevision = Boolean(revisionInstructions);
     const modelTier = selectModelTier("worker", complexity, subtask);
@@ -573,6 +583,7 @@ export class UniversalAgent {
         dependencyArtifacts,
         saveArtifact,
         requestToolBuild,
+        toolExecutionContext,
       );
 
       output = await this.llm.complete([
@@ -646,6 +657,7 @@ export class UniversalAgent {
     dependencyArtifacts: AgentArtifact[] = [],
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
+    toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<CollectedToolEvidence> {
     const evidence: string[] = [];
     const artifacts: AgentArtifact[] = [];
@@ -653,7 +665,7 @@ export class UniversalAgent {
     const toolNeedText = `${originalTask}\n${subtask.title}\n${subtask.role}\n${subtask.prompt}\n${subtask.expectedOutput}\n${subtask.reviewCriteria.join("\n")}`;
 
     if (webSearch && shouldCollectWebSearch(subtask, toolNeedText, dependencyContext)) {
-      evidence.push(await this.runWebSearch(webSearch, subtask, emit, parentSpanId));
+      evidence.push(await this.runWebSearch(webSearch, subtask, emit, parentSpanId, toolExecutionContext));
     }
 
     const marketTool = this.tools.findByCapability("market-timeseries")[0];
@@ -664,6 +676,7 @@ export class UniversalAgent {
         emit,
         parentSpanId,
         saveArtifact,
+        toolExecutionContext,
       );
       evidence.push(...marketEvidence.evidence);
       artifacts.push(...marketEvidence.artifacts);
@@ -675,6 +688,7 @@ export class UniversalAgent {
       emit,
       parentSpanId,
       saveArtifact,
+      toolExecutionContext,
     );
     evidence.push(...declaredToolEvidence.evidence);
     artifacts.push(...declaredToolEvidence.artifacts);
@@ -709,6 +723,7 @@ export class UniversalAgent {
         dependencyContext,
         saveArtifact,
         requestToolBuild,
+        toolExecutionContext,
       );
 
       if (artifact) {
@@ -737,6 +752,7 @@ export class UniversalAgent {
     subtask: Subtask,
     emit: AgentEventEmitter,
     parentSpanId: string,
+    toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<string> {
     const spanId = createSpanId(`tool-${webSearch.name}`);
     const startedAt = new Date();
@@ -756,7 +772,16 @@ export class UniversalAgent {
       payload: { tool: webSearch.name, query },
     });
 
-    const results = await Promise.all(queries.map((candidate) => webSearch.run({ query: candidate, limit: 5 })));
+    const results = await Promise.all(
+      queries.map((candidate) =>
+        this.executeTool(webSearch, { query: candidate, limit: 5 }, toolExecutionContext, {
+          spanId,
+          parentSpanId,
+          capability: "web-search",
+          caller: `worker:${subtask.role}`,
+        }),
+      ),
+    );
     const result = mergeToolResults(results);
     await emit({
       spanId,
@@ -784,6 +809,7 @@ export class UniversalAgent {
     emit: AgentEventEmitter,
     parentSpanId: string,
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
+    toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<CollectedToolEvidence> {
     const evidence: string[] = [];
     const artifacts: AgentArtifact[] = [];
@@ -805,7 +831,12 @@ export class UniversalAgent {
         payload: { tool: marketTool.name, input: request },
       });
 
-      const result = await marketTool.run(request);
+      const result = await this.executeTool(marketTool, request, toolExecutionContext, {
+        spanId,
+        parentSpanId,
+        capability: "market-timeseries",
+        caller: "worker",
+      });
       await emit({
         spanId,
         parentSpanId,
@@ -870,6 +901,7 @@ export class UniversalAgent {
     emit: AgentEventEmitter,
     parentSpanId: string,
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
+    toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<CollectedToolEvidence> {
     const entries = Object.entries(subtask.toolInputs ?? {}).filter(([toolName]) => toolName !== "web.search");
     const evidence: string[] = [];
@@ -898,7 +930,17 @@ export class UniversalAgent {
         payload: { tool: tool.name, input: sanitizeToolPayload(runnableInput) },
       });
 
-      const result = await tool.run(isRecord(runnableInput) ? runnableInput : {});
+      const result = await this.executeTool(
+        tool,
+        isRecord(runnableInput) ? runnableInput : {},
+        toolExecutionContext,
+        {
+          spanId,
+          parentSpanId,
+          capability: toolName,
+          caller: `worker:${subtask.role}`,
+        },
+      );
       await emit({
         spanId,
         parentSpanId,
@@ -988,6 +1030,7 @@ export class UniversalAgent {
     dependencyContext?: string,
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
+    toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<AgentArtifact | undefined> {
     if (!saveArtifact) return undefined;
 
@@ -998,6 +1041,7 @@ export class UniversalAgent {
         parentSpanId,
         saveArtifact,
         requestToolBuild,
+        toolExecutionContext,
       );
     }
 
@@ -1030,6 +1074,7 @@ export class UniversalAgent {
         (data) => data.artifact,
         "artifact:chart",
         "Chart artifact generated",
+        toolExecutionContext,
       );
     }
 
@@ -1061,6 +1106,7 @@ export class UniversalAgent {
     dependencyArtifacts: AgentArtifact[] = [],
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
+    toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<ReviewedWorkerResult> {
     const workerResult = await this.runWorker(
       originalTask,
@@ -1075,6 +1121,7 @@ export class UniversalAgent {
       undefined,
       saveArtifact,
       requestToolBuild,
+      toolExecutionContext,
     );
     const review = await this.review(complexity, workerResult, emit, workerResult.traceSpanId ?? parentSpanId);
 
@@ -1095,6 +1142,7 @@ export class UniversalAgent {
       review.notes,
       saveArtifact,
       requestToolBuild,
+      toolExecutionContext,
     );
     const revisedReview = await this.review(
       complexity,
@@ -1118,6 +1166,7 @@ export class UniversalAgent {
     parentSpanId: string,
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
+    toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<AgentArtifact | undefined> {
     if (!saveArtifact) return undefined;
 
@@ -1125,7 +1174,7 @@ export class UniversalAgent {
       if (workerResults.some((result) => result.artifacts?.some((artifact) => artifact.mimeType === "image/png"))) {
         return undefined;
       }
-      return this.createScreenshotArtifact(task, emit, parentSpanId, saveArtifact, requestToolBuild);
+      return this.createScreenshotArtifact(task, emit, parentSpanId, saveArtifact, requestToolBuild, toolExecutionContext);
     }
 
     if (!asksForChart(task)) return undefined;
@@ -1153,7 +1202,15 @@ export class UniversalAgent {
       );
       const generatedChartTool = this.tools.findByCapability("chart-generation")[0];
       if (!generatedChartTool) return undefined;
-      return this.createRequestedArtifact(task, workerResults, emit, parentSpanId, saveArtifact);
+      return this.createRequestedArtifact(
+        task,
+        workerResults,
+        emit,
+        parentSpanId,
+        saveArtifact,
+        requestToolBuild,
+        toolExecutionContext,
+      );
     }
 
     return this.runArtifactTool(
@@ -1168,6 +1225,7 @@ export class UniversalAgent {
       (data) => data.artifact,
       "artifact:chart",
       "Chart artifact generated",
+      toolExecutionContext,
     );
   }
 
@@ -1177,6 +1235,7 @@ export class UniversalAgent {
     parentSpanId: string,
     saveArtifact: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
+    toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<AgentArtifact | undefined> {
     const url = selectBestUrlForArtifact(context);
     if (!url) {
@@ -1241,6 +1300,7 @@ export class UniversalAgent {
         },
         "artifact:screenshot",
         "Screenshot artifact generated",
+        toolExecutionContext,
       );
     }
 
@@ -1261,6 +1321,7 @@ export class UniversalAgent {
       }),
       "artifact:screenshot",
       "Screenshot artifact generated",
+      toolExecutionContext,
     );
   }
 
@@ -1288,6 +1349,24 @@ export class UniversalAgent {
     return tool;
   }
 
+  private async executeTool(
+    tool: Tool,
+    input: ToolInput,
+    baseContext: BaseToolExecutionContext | undefined,
+    spanContext: {
+      spanId: string;
+      parentSpanId?: string;
+      capability?: string;
+      caller?: string;
+    },
+  ): Promise<ToolResult> {
+    return this.tools.execute(tool, input, {
+      ...(baseContext ?? {}),
+      ...spanContext,
+      now: new Date(),
+    });
+  }
+
   private async runArtifactTool<TData>(
     tool: Tool,
     input: Record<string, unknown>,
@@ -1300,6 +1379,7 @@ export class UniversalAgent {
     toArtifact: (data: TData) => ArtifactCreateInput,
     artifactActor: string,
     artifactTitle: string,
+    toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<AgentArtifact | undefined> {
     const spanId = createSpanId(`tool-${tool.name}`);
     const startedAt = new Date();
@@ -1316,7 +1396,12 @@ export class UniversalAgent {
       payload: { tool: tool.name, capability },
     });
 
-    const toolResult = await tool.run(input);
+    const toolResult = await this.executeTool(tool, input, toolExecutionContext, {
+      spanId,
+      parentSpanId,
+      capability,
+      caller: "artifact",
+    });
     if (!toolResult.ok || !isData(toolResult.data)) {
       await emit({
         spanId,
@@ -1567,7 +1652,26 @@ export class UniversalAgent {
     const memoryScope = normalizeMemoryScope(learning.scope);
     const sensitivity = normalizeMemorySensitivity(learning.sensitivity);
     const requestedStatus = normalizeMemoryStatus(learning.status);
-    const status = memoryScope === "global" && sensitivity === "normal" ? requestedStatus : "proposed";
+    const evidence = normalizeLearningEvidence(learning.evidence, task, finalAnswer, workerResults);
+    const scopeId = resolveMemoryScopeId(memoryScope, options);
+    const preliminaryStatus = memoryScope === "global" && sensitivity === "normal" ? requestedStatus : "proposed";
+    const proposalReview = reviewMemoryProposal({
+      id: "memory-specialist-candidate",
+      title: learning.title,
+      tags: learning.tags ?? [],
+      summary: learning.summary,
+      reusableProcedure: learning.reusableProcedure,
+      scope: memoryScope,
+      scopeId,
+      status: preliminaryStatus,
+      confidence: normalizeMemoryConfidence(learning.confidence),
+      sensitivity,
+      sourceRunId: options.runId,
+      sourceThreadId: options.threadId,
+      evidence,
+      createdAt: new Date().toISOString(),
+    });
+    const status = proposalReview.status === "ready" ? preliminaryStatus : "proposed";
 
     return this.skillMemory.add({
       title: learning.title,
@@ -1575,13 +1679,13 @@ export class UniversalAgent {
       summary: learning.summary,
       reusableProcedure: learning.reusableProcedure,
       scope: memoryScope,
-      scopeId: resolveMemoryScopeId(memoryScope, options),
+      scopeId,
       status,
       confidence: normalizeMemoryConfidence(learning.confidence),
       sensitivity,
       sourceRunId: options.runId,
       sourceThreadId: options.threadId,
-      evidence: normalizeLearningEvidence(learning.evidence, task, finalAnswer, workerResults),
+      evidence,
     });
   }
 }
@@ -2450,6 +2554,16 @@ function containsUnexecutedToolCall(text: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function buildToolExecutionContext(options: RunOptions): BaseToolExecutionContext {
+  return {
+    ...(options.toolExecutionContext ?? {}),
+    instanceId: options.toolExecutionContext?.instanceId ?? options.instanceId,
+    requesterUserId: options.toolExecutionContext?.requesterUserId ?? options.requesterUserId,
+    threadId: options.toolExecutionContext?.threadId ?? options.threadId,
+    runId: options.toolExecutionContext?.runId ?? options.runId,
+  };
 }
 
 type ScreenshotToolData = {

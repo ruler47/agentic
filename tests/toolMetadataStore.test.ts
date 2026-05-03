@@ -19,6 +19,20 @@ const tool: Tool = {
     type: "object",
     properties: { ok: { type: "boolean" } },
   },
+  requiredConfigurationKeys: ["EXAMPLE_BASE_URL"],
+  requiredSecretHandles: ["secret.example.api"],
+  settingsSchema: {
+    type: "object",
+    properties: { baseUrl: { type: "string" } },
+  },
+  storage: {
+    schema: "tool_example",
+    tables: ["example_cache"],
+    migrations: ["001_create_example_cache"],
+    permissions: ["select", "insert", "delete"],
+  },
+  docsMarkdown: "Use this tool for example operations.",
+  examples: [{ title: "Echo", input: { value: "hello" }, output: { ok: true } }],
   async run() {
     return { ok: true, content: "ok" };
   },
@@ -35,6 +49,12 @@ test("InMemoryToolMetadataStore syncs builtin tool contracts", async () => {
   assert.equal(modules[0]?.status, "available");
   assert.deepEqual(modules[0]?.capabilities, ["example", "artifact-generation"]);
   assert.equal(modules[0]?.inputSchema?.required?.[0], "value");
+  assert.deepEqual(modules[0]?.requiredConfigurationKeys, ["EXAMPLE_BASE_URL"]);
+  assert.deepEqual(modules[0]?.requiredSecretHandles, ["secret.example.api"]);
+  assert.equal(modules[0]?.storage?.schema, "tool_example");
+  assert.equal(modules[0]?.examples[0]?.title, "Echo");
+  assert.equal(modules[0]?.successCount, 0);
+  assert.equal(modules[0]?.failureCount, 0);
 });
 
 test("InMemoryToolMetadataStore keeps health status for synced modules", async () => {
@@ -49,6 +69,24 @@ test("InMemoryToolMetadataStore keeps health status for synced modules", async (
   assert.equal(module?.lastHealthDetail, "Dependency unavailable");
 });
 
+test("InMemoryToolMetadataStore records per-tool usage counters", async () => {
+  const store = new InMemoryToolMetadataStore();
+  await store.syncBuiltins([tool]);
+  const successAt = new Date("2026-05-03T10:00:00.000Z");
+  const failureAt = new Date("2026-05-03T10:05:00.000Z");
+
+  await store.recordUsage("example.tool", "success", successAt);
+  await store.recordUsage("example.tool", "failure", failureAt);
+  await store.recordUsage("missing.tool", "failure", failureAt);
+
+  const [module] = await store.list();
+
+  assert.equal(module?.successCount, 1);
+  assert.equal(module?.failureCount, 1);
+  assert.equal(module?.lastSuccessAt, successAt.toISOString());
+  assert.equal(module?.lastFailureAt, failureAt.toISOString());
+});
+
 test("InMemoryToolMetadataStore registers generated modules with conflict checks", async () => {
   const store = new InMemoryToolMetadataStore();
   const generated = await store.registerGenerated({
@@ -59,6 +97,14 @@ test("InMemoryToolMetadataStore registers generated modules with conflict checks
     startupMode: "on-demand",
     modulePath: "src/tools/generated/browser-screenshotTool.ts",
     testPath: "tests/generated/browser-screenshotTool.test.ts",
+    requiredSecretHandles: ["secret.browser.proxy"],
+    storage: {
+      schema: "tool_browser",
+      tables: ["sessions"],
+      migrations: ["001_create_sessions"],
+      permissions: ["select", "insert", "delete"],
+    },
+    docsMarkdown: "Capture browser screenshots from arbitrary URLs.",
   });
   await store.registerGenerated({
     name: "generated.browser.screenshot",
@@ -70,6 +116,8 @@ test("InMemoryToolMetadataStore registers generated modules with conflict checks
 
   assert.equal(generated.source, "generated");
   assert.equal(generated.status, "disabled");
+  assert.deepEqual(generated.requiredSecretHandles, ["secret.browser.proxy"]);
+  assert.equal(generated.storage?.tables?.[0], "sessions");
   await assert.rejects(
     () =>
       store.registerGenerated({
