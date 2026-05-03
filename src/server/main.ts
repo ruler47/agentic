@@ -8,6 +8,8 @@ import { createPool } from "../db/pool.js";
 import { LlmClient, readLlmConfigFromEnv } from "../llm/client.js";
 import { InMemoryGroupProfileStore } from "../instance/groupProfileStore.js";
 import { PostgresGroupProfileStore } from "../instance/postgresGroupProfileStore.js";
+import { InMemoryUserStore } from "../instance/userStore.js";
+import { PostgresUserStore } from "../instance/postgresUserStore.js";
 import { SkillMemory } from "../memory/skillMemory.js";
 import { PostgresSkillMemory } from "../memory/postgresSkillMemory.js";
 import { InMemoryRunStore } from "../runs/inMemoryRunStore.js";
@@ -101,6 +103,7 @@ const modelTierSettings = pool
   : new InMemoryModelTierSettingsStore();
 const auditEventStore = pool ? new PostgresAuditEventStore(pool) : new InMemoryAuditEventStore();
 const groupProfileStore = pool ? new PostgresGroupProfileStore(pool) : new InMemoryGroupProfileStore();
+const userStore = pool ? new PostgresUserStore(pool) : new InMemoryUserStore();
 const localArtifactStore = new LocalArtifactStore();
 const s3Config = s3ConfigFromEnv();
 const artifactStore =
@@ -130,6 +133,7 @@ const server = createWebApp({
   artifactStore,
   auditEventStore,
   groupProfileStore,
+  userStore,
 });
 
 const recoveredRuns = await runStore.recoverInterrupted(

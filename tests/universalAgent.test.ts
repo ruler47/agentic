@@ -1084,6 +1084,60 @@ test("UniversalAgent classifies learned memories into scoped reviewable facts", 
   }
 });
 
+test("UniversalAgent retrieves accepted scoped memories for similar repeated tasks", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  await memory.add({
+    title: "Spanish pharmacy source preference",
+    tags: ["pharmacy", "spain", "aemps"],
+    summary: "The family prefers Spanish pharmacy and AEMPS sources for medication logistics.",
+    reusableProcedure: "For Spanish pharmacy questions, prefer AEMPS and Spanish pharmacy evidence first.",
+    scope: "group",
+    scopeId: "group-family",
+    status: "accepted",
+    confidence: 0.92,
+  });
+  await memory.add({
+    title: "Other group pharmacy preference",
+    tags: ["pharmacy", "company"],
+    summary: "A different group prefers internal procurement sources.",
+    reusableProcedure: "Use private procurement portals.",
+    scope: "group",
+    scopeId: "group-company",
+    status: "accepted",
+    confidence: 0.9,
+  });
+  const fakeLlm = new CapturingFakeLlm();
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+  const events: AgentEvent[] = [];
+
+  try {
+    await agent.run("Подбери Spanish pharmacy sources for a medicine answer", {
+      instanceId: "group-family",
+      requesterUserId: "user-dima",
+      memoryScopes: [
+        { scope: "global" },
+        { scope: "group", scopeId: "group-family" },
+        { scope: "user", scopeId: "user-dima" },
+      ],
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    const memoryEvent = events.find((event) => event.type === "memory-search-completed");
+    const retrieved = memoryEvent?.payload as Array<{ title: string }> | undefined;
+
+    assert.equal(memoryEvent?.detail, "1 relevant memories found");
+    assert.equal(retrieved?.[0]?.title, "Spanish pharmacy source preference");
+    assert.match(fakeLlm.prompts[0] ?? "", /Spanish pharmacy source preference/);
+    assert.match(fakeLlm.prompts[1] ?? "", /AEMPS and Spanish pharmacy evidence first/);
+    assert.doesNotMatch(fakeLlm.prompts.join("\n"), /Other group pharmacy preference/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent emits observable lifecycle events", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));

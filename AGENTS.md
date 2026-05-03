@@ -128,6 +128,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/agents/modelTier.ts](src/agents/modelTier.ts) - model tier selection policy.
 - [src/agents/prompts.ts](src/agents/prompts.ts) - prompts for classification, planning,
   workers, reviewers, synthesis, and learning.
+- [src/instance/userStore.ts](src/instance/userStore.ts) - user and channel identity
+  resolution contract with local in-memory defaults.
+- [src/instance/postgresUserStore.ts](src/instance/postgresUserStore.ts) - Postgres-backed
+  user, role, and channel identity resolver.
 - [src/conversations/inMemoryConversationThreadStore.ts](src/conversations/inMemoryConversationThreadStore.ts)
   and [src/conversations/postgresConversationThreadStore.ts](src/conversations/postgresConversationThreadStore.ts)
   - conversation thread stores for new-task versus continuation flow.
@@ -267,7 +271,8 @@ For documentation-only changes:
 - `tests/json.test.ts` covers JSON extraction from model output.
 - `tests/skillMemory.test.ts` covers file-backed skill memory.
 - `tests/toolRegistry.test.ts` covers tool registration and lookup.
-- `tests/universalAgent.test.ts` covers direct and delegated orchestration with a fake LLM.
+- `tests/universalAgent.test.ts` covers direct and delegated orchestration with a fake
+  LLM, including accepted scoped memory retrieval for repeated similar tasks.
 - `tests/artifactStore.test.ts` covers local artifact persistence, durable
   metadata/object payload separation, and download metadata.
 - `tests/auditEventStore.test.ts` covers normalized in-memory audit events.
@@ -281,6 +286,7 @@ For documentation-only changes:
   QA registration blocking.
 - `tests/toolBuildProviders.test.ts` covers provider-backed TypeScript generation and
   generated metadata registration.
+- `tests/userStore.test.ts` covers local user and allowed channel identity resolution.
 - `tests/webUiStatic.test.ts` covers the page-based web console information architecture.
 
 ## Maintenance Rules
@@ -320,6 +326,9 @@ For documentation-only changes:
   The current provider is deterministic text-feature hashing so the contract is portable;
   replace it through the embedding module rather than inlining provider calls.
 - Add links here when introducing new core docs, modules, commands, or workflows.
+- Run creation must resolve a real requester before creating a thread or run. Explicit
+  `requesterUserId` values must exist; channel-originated requests with `sourceUserId`
+  must map to an allowed `channel_identities` row.
 - UI changes must be checked through the HTTP server, not only by reading static files.
 - The web console uses `GET /api/runs/:id/events` as an additive SSE stream for live run
   snapshots and falls back to polling; keep `GET /api/runs` and `GET /api/runs/:id`

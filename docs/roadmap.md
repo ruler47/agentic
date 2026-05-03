@@ -89,7 +89,10 @@ Implementation tasks:
   routing: explicit `threadId` always wins, `/new` and independent tasks create a new
   thread, and same-source chat/thread follow-ups, clarifications, and corrections reuse
   the latest matching active thread.
-- Add tests proving run creation requires a resolvable requester context.
+- Add tests proving run creation requires a resolvable requester context. DONE:
+  `UserStore` now resolves explicit users and allowed channel identities before any run or
+  thread is created; unknown requesters return 400 and unmapped/blocked channel users
+  return 403.
 - Add tests proving continuations inherit compact thread context without replaying full
   transcripts. DONE for explicit web continuation and channel-originated follow-up
   resolution without a supplied `threadId`.
@@ -153,7 +156,10 @@ Tasks:
   a real embedding provider.
 - Show memory hits in UI with confidence and why they matched. PARTIAL: search results now
   carry match reason/matched tokens for prompt context; richer UI drilldown remains.
-- Add tests proving repeated similar tasks retrieve prior memories.
+- Add tests proving repeated similar tasks retrieve prior memories. DONE: the universal
+  agent test suite now seeds accepted group memory, runs a similar task with visible
+  scopes, and asserts the retrieved memory reaches classification/direct-answer prompts
+  while out-of-scope memory is excluded.
 - Add permissions so agents cannot read another user's private memory unless policy and
   task context allow it.
 - Add UI for browsing and editing group/user memory separately.
@@ -655,10 +661,15 @@ observe and manage the channel from the web console.
 Implementation tasks:
 
 - Add Telegram bot configuration and webhook/polling adapter.
-- Add `channel_identities` mapping Telegram user IDs to users.
+- Add `channel_identities` mapping Telegram user IDs to users. PARTIAL: the durable table
+  and server-side resolver exist; the Telegram adapter/admin whitelist UI still needs to
+  write and maintain those rows.
 - Add whitelist management in the admin UI.
-- Reject unknown Telegram users by default.
+- Reject unknown Telegram users by default. PARTIAL: generic channel identity resolution
+  rejects unmapped `sourceUserId`; the Telegram adapter still needs to pass that field.
 - Create runs with `channel=telegram`, `sourceChatId`, `sourceMessageId`, and requester.
+  PARTIAL: HTTP run creation accepts channel/source metadata and resolves requester from
+  allowed identities.
 - Resolve each Telegram message to a conversation thread or create a new thread.
 - Support `/new`, `/continue`, reply-to, and low-confidence clarification behavior.
 - Store compact thread summaries and update them after each run.

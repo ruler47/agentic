@@ -35,6 +35,10 @@ content-type: application/json
   "instanceId": "instance-local",
   "requesterUserId": "user-admin",
   "channel": "web",
+  "sourceUserId": "telegram_user_id_or_other_channel_identity",
+  "sourceChatId": "channel_chat_or_room_id",
+  "sourceThreadId": "channel_thread_id",
+  "sourceMessageId": "channel_message_id",
   "threadId": "thread_optional_existing",
   "parentRunId": "run_optional_previous",
   "attachments": [
@@ -51,11 +55,22 @@ The API accepts the single-user shape and context-aware metadata. The local deve
 path backfills a default instance profile, admin user, and `web` channel for backwards
 compatibility.
 
+Requester resolution happens before the server creates a conversation thread or run:
+
+- explicit `requesterUserId` must exist in the configured user store, otherwise the API
+  returns `400`;
+- channel-originated requests can omit `requesterUserId` and pass `channel` plus
+  `sourceUserId`; the pair must map to an allowed `channel_identities` row, otherwise the
+  API returns `403`;
+- requests without explicit requester or source user fall back to the local
+  `user-admin` development identity.
+
 When `threadId` or `parentRunId` is provided, the server should create a continuation run
 inside that conversation thread. When neither is provided, the server runs deterministic
-thread resolution over `requesterUserId`, `channel`, `sourceChatId`, `sourceThreadId`, and
-message text. Same-source follow-ups, corrections, and clarifications reuse the latest
-matching active thread; explicit `/new` and independent requests create a new thread.
+thread resolution over the resolved `requesterUserId`, `channel`, `sourceChatId`,
+`sourceThreadId`, and message text. Same-source follow-ups, corrections, and
+clarifications reuse the latest matching active thread; explicit `/new` and independent
+requests create a new thread.
 The JSON response includes `threadResolution` with `decision`, `reason`, and resolved
 `threadId` when available, and the run-created audit event stores the same compact reason.
 

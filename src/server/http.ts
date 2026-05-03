@@ -14,6 +14,7 @@ import {
   ThreadResolutionResult,
 } from "../conversations/threadResolution.js";
 import { GroupProfileStore } from "../instance/groupProfileStore.js";
+import { InMemoryUserStore, UserRecord, UserStore } from "../instance/userStore.js";
 import { MemoryListOptions, MemoryUpdateInput, SkillMemoryStore } from "../memory/skillMemory.js";
 import { RunCreateContext, RunStore } from "../runs/types.js";
 import { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
@@ -39,7 +40,10 @@ export type WebAppOptions = {
   conversationStore?: ConversationThreadStore;
   auditEventStore?: AuditEventStore;
   groupProfileStore?: GroupProfileStore;
+  userStore?: UserStore;
 };
+
+const defaultUserStore = new InMemoryUserStore();
 
 export function createWebApp(options: WebAppOptions) {
   return createServer(async (request, response) => {
@@ -126,29 +130,25 @@ async function routeRequest(
   }
 
   if (request.method === "GET" && url.pathname === "/api/users") {
-    const recentRuns = (await options.runStore.list())
-      .filter((run) => run.requesterUserId === "user-admin")
-      .slice(0, 5)
-      .map((run) => ({
-        id: run.id,
-        task: run.task,
-        status: run.status,
-        channel: run.channel,
-        threadId: run.threadId,
-        createdAt: run.createdAt,
-        updatedAt: run.updatedAt,
-      }));
+    const runs = await options.runStore.list();
+    const users = await getUserStore(options).list();
     sendJson(response, 200, {
-      users: [
-        {
-          id: "user-admin",
-          displayName: "Local Admin",
-          role: "admin",
-          status: "active",
-          identities: [{ provider: "web", providerUserId: "user-admin", allowStatus: "allowed" }],
-          recentRequests: recentRuns,
-        },
-      ],
+      users: users.map((user) => ({
+        ...user,
+        status: "active",
+        recentRequests: runs
+          .filter((run) => run.requesterUserId === user.id)
+          .slice(0, 5)
+          .map((run) => ({
+            id: run.id,
+            task: run.task,
+            status: run.status,
+            channel: run.channel,
+            threadId: run.threadId,
+            createdAt: run.createdAt,
+            updatedAt: run.updatedAt,
+          })),
+      })),
     });
     return;
   }
@@ -742,7 +742,7 @@ async function createRunFromRequest(
     threadContext = resolved.threadContext;
     threadResolution = resolved.threadResolution;
   } catch (error) {
-    sendJson(response, 400, {
+    sendJson(response, error instanceof RunContextError ? error.statusCode : 400, {
       error: error instanceof Error ? error.message : "Invalid run context",
     });
     return;
@@ -853,6 +853,7 @@ async function resolveRunContext(
   const instanceId = parseOptionalText(body.instanceId) ?? "instance-local";
   const bodyRequesterUserId = parseOptionalText(body.requesterUserId);
   const bodyChannel = parseOptionalText(body.channel);
+  const sourceUserId = parseOptionalText(body.sourceUserId);
   const sourceMessageId = parseOptionalText(body.sourceMessageId);
   const sourceChatId = parseOptionalText(body.sourceChatId);
   const sourceThreadId = parseOptionalText(body.sourceThreadId);
@@ -860,22 +861,54 @@ async function resolveRunContext(
   let parentRunId = parseOptionalText(body.parentRunId);
   let thread: ConversationThreadRecord | undefined;
   let threadResolution: ThreadResolutionResult | undefined;
+  let requesterUser: UserRecord | undefined;
 
   if (options.conversationStore) {
-    const requesterUserId = bodyRequesterUserId ?? "user-admin";
-    const channel = bodyChannel ?? "web";
     if (requestedThreadId) {
       thread = await options.conversationStore.get(requestedThreadId);
       if (!thread) throw new Error("Conversation thread not found");
+      const channel = bodyChannel ?? thread.channel;
+      requesterUser = await resolveRequesterUser(options, {
+        requesterUserId: bodyRequesterUserId,
+        channel,
+        sourceUserId,
+        fallbackUserId: thread.requesterUserId,
+      });
+      if (!requesterUser) {
+        throw createRequesterResolutionError({
+          requesterUserId: bodyRequesterUserId,
+          channel,
+          sourceUserId,
+        });
+      }
+      if (requesterUser.id !== thread.requesterUserId) {
+        throw new RunContextError(
+          403,
+          "Requester user cannot continue a conversation thread owned by another user",
+        );
+      }
       threadResolution = {
         decision: "explicit_thread",
         thread,
         reason: "The request explicitly selected an existing conversation thread.",
       };
     } else {
+      const channel = bodyChannel ?? "web";
+      requesterUser = await resolveRequesterUser(options, {
+        requesterUserId: bodyRequesterUserId,
+        channel,
+        sourceUserId,
+      });
+      if (!requesterUser) {
+        throw createRequesterResolutionError({
+          requesterUserId: bodyRequesterUserId,
+          channel,
+          sourceUserId,
+        });
+      }
       threadResolution = resolveConversationThread({
         task,
-        requesterUserId,
+        requesterUserId: requesterUser.id,
         channel,
         sourceChatId,
         sourceThreadId,
@@ -885,7 +918,7 @@ async function resolveRunContext(
         threadResolution.thread ??
         (await options.conversationStore.create({
           title: task,
-          requesterUserId,
+          requesterUserId: requesterUser.id,
           channel,
           sourceChatId,
           sourceThreadId,
@@ -894,7 +927,23 @@ async function resolveRunContext(
     parentRunId = parentRunId ?? thread.latestRunId;
   }
 
-  const requesterUserId = bodyRequesterUserId ?? thread?.requesterUserId ?? "user-admin";
+  requesterUser =
+    requesterUser ??
+    (await resolveRequesterUser(options, {
+      requesterUserId: bodyRequesterUserId,
+      channel: bodyChannel ?? thread?.channel ?? "web",
+      sourceUserId,
+      fallbackUserId: thread?.requesterUserId,
+    }));
+  if (!requesterUser) {
+    throw createRequesterResolutionError({
+      requesterUserId: bodyRequesterUserId,
+      channel: bodyChannel ?? thread?.channel ?? "web",
+      sourceUserId,
+    });
+  }
+
+  const requesterUserId = requesterUser.id;
   const channel = bodyChannel ?? thread?.channel ?? "web";
 
   const context = {
@@ -922,6 +971,55 @@ async function resolveRunContext(
         }
       : undefined,
   };
+}
+
+async function resolveRequesterUser(
+  options: WebAppOptions,
+  input: {
+    requesterUserId?: string;
+    channel?: string;
+    sourceUserId?: string;
+    fallbackUserId?: string;
+  },
+): Promise<UserRecord | undefined> {
+  return getUserStore(options).resolve({
+    requesterUserId: input.requesterUserId,
+    channel: input.channel,
+    sourceUserId: input.sourceUserId,
+    fallbackUserId: input.fallbackUserId,
+  });
+}
+
+function getUserStore(options: WebAppOptions): UserStore {
+  return options.userStore ?? defaultUserStore;
+}
+
+class RunContextError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function createRequesterResolutionError(input: {
+  requesterUserId?: string;
+  channel?: string;
+  sourceUserId?: string;
+}): RunContextError {
+  if (input.requesterUserId) {
+    return new RunContextError(400, `Requester user not found: ${input.requesterUserId}`);
+  }
+
+  if (input.sourceUserId) {
+    return new RunContextError(
+      403,
+      `Channel identity is not allowed or not mapped: ${input.channel ?? "unknown"}/${input.sourceUserId}`,
+    );
+  }
+
+  return new RunContextError(400, "Requester user could not be resolved");
 }
 
 async function streamRunEvents(

@@ -72,6 +72,11 @@ Channel identity records should map:
 - last seen timestamp;
 - optional display metadata.
 
+Current implementation note: `UserStore` resolves run requesters before run creation.
+Explicit `requesterUserId` values must exist. Channel-originated requests can provide
+`channel` and `sourceUserId`; the pair must map to an allowed `channel_identities` row or
+the HTTP API rejects the run before any thread, audit event, or LLM execution is started.
+
 ### Conversation Thread
 
 A conversation thread groups one initial task and later follow-up messages from the same
@@ -352,15 +357,17 @@ Telegram/source message links
 The current single-user app can evolve safely by adding these layers in order:
 
 1. Add database tables for instance settings, users, memberships/roles, and channel
-   identities.
-2. Add a default local instance profile and admin user migration.
-3. Attach `instanceId`, `requesterUserId`, and `channel` metadata to runs.
+   identities. DONE
+2. Add a default local instance profile and admin user migration. DONE
+3. Attach `instanceId`, `requesterUserId`, and `channel` metadata to runs. DONE
 4. Add conversation threads with `threadId`, `parentRunId`, compact summaries, and
-   continuation classification.
-5. Scope memory records by global/group/user/run.
-6. Add admin UI pages for Group Profile, Users, Channels, Conversations, and Memory scopes.
-7. Add Telegram webhook/bot adapter with whitelist and thread-resolution enforcement.
-8. Add outbound message tool contracts with audit-only dry runs first.
-9. Add instance-scoped tool credentials and API onboarding flow.
-10. Add model provider settings for local OpenAI-compatible endpoints and remote OpenAI
+   continuation classification. DONE
+5. Resolve users and allowed channel identities before creating runs. DONE for the HTTP
+   runtime; Telegram adapter and whitelist UI still need to feed the same contract.
+6. Scope memory records by global/group/user/run.
+7. Add admin UI pages for Group Profile, Users, Channels, Conversations, and Memory scopes.
+8. Add Telegram webhook/bot adapter with whitelist and thread-resolution enforcement.
+9. Add outbound message tool contracts with audit-only dry runs first.
+10. Add instance-scoped tool credentials and API onboarding flow.
+11. Add model provider settings for local OpenAI-compatible endpoints and remote OpenAI
    API usage through secret handles.

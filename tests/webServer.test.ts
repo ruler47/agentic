@@ -16,6 +16,7 @@ import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import { ToolBuildWorkflow } from "../src/tools/toolBuildWorkflow.js";
 import { InMemoryAuditEventStore } from "../src/audit/inMemoryAuditEventStore.js";
 import { InMemoryGroupProfileStore } from "../src/instance/groupProfileStore.js";
+import { InMemoryUserStore } from "../src/instance/userStore.js";
 import { SkillMemory } from "../src/memory/skillMemory.js";
 
 class FakeAgent {
@@ -369,6 +370,124 @@ test("web server resolves channel follow-ups into existing conversation threads"
     assert.equal(newTask.threadResolution.decision, "new_task");
     assert.notEqual(newTask.run.threadId, first.run.threadId);
     assert.equal(threads.threads.length, 2);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server rejects runs for unknown requester users", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    userStore: new InMemoryUserStore(),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        task: "this should not run",
+        requesterUserId: "user-ghost",
+      }),
+    });
+    const body = await response.json();
+    const runs = await runStore.list();
+
+    assert.equal(response.status, 400);
+    assert.equal(body.error, "Requester user not found: user-ghost");
+    assert.equal(runs.length, 0);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server resolves allowed channel identities before creating runs", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const conversationStore = new InMemoryConversationThreadStore();
+  const userStore = new InMemoryUserStore({
+    defaultUserId: "user-admin",
+    users: [
+      { id: "user-admin", displayName: "Admin", role: "admin" },
+      { id: "user-dima", displayName: "Dima", role: "member" },
+    ],
+    identities: [
+      { provider: "web", providerUserId: "user-admin", userId: "user-admin" },
+      { provider: "telegram", providerUserId: "tg-42", userId: "user-dima" },
+    ],
+  });
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    conversationStore,
+    userStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        task: "telegram mapped task",
+        channel: "telegram",
+        sourceUserId: "tg-42",
+        sourceChatId: "chat-42",
+      }),
+    });
+    const body = await response.json();
+    const completed = await waitForRun(baseUrl, body.run.id);
+
+    assert.equal(response.status, 202);
+    assert.equal(body.run.requesterUserId, "user-dima");
+    assert.equal(completed.run.requesterUserId, "user-dima");
+    assert.equal(body.thread.requesterUserId, "user-dima");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server rejects unmapped channel identities", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    userStore: new InMemoryUserStore(),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        task: "blocked telegram task",
+        channel: "telegram",
+        sourceUserId: "tg-unknown",
+      }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 403);
+    assert.equal(body.error, "Channel identity is not allowed or not mapped: telegram/tg-unknown");
+    assert.equal((await runStore.list()).length, 0);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
@@ -1000,6 +1119,7 @@ test("web server exposes compact user activity without embedding run traces", as
     agent: new FakeAgent() as unknown as UniversalAgent,
     runStore,
     publicDir,
+    userStore: new InMemoryUserStore(),
   });
 
   try {
