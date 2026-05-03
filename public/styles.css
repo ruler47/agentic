@@ -433,6 +433,7 @@ pre {
 
 .command-button,
 .ghost-button,
+.danger-button,
 .primary-button,
 .approval-badge,
 .filter-bar button,
@@ -453,6 +454,7 @@ pre {
 
 .command-button:hover,
 .ghost-button:hover,
+.danger-button:hover,
 .filter-bar button:hover,
 .trace-tabs button:hover {
   border-color: rgba(53, 230, 193, 0.36);
@@ -738,6 +740,12 @@ textarea {
   border-color: rgba(251, 113, 133, 0.24);
   background: rgba(251, 113, 133, 0.1);
   color: var(--red);
+}
+
+.status-badge.cancelled {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--secondary);
 }
 
 .status-badge.queued,

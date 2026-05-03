@@ -102,6 +102,20 @@ The SSE stream emits `run` events whose payload is `{ "run": ... }`. The endpoin
 additive: existing JSON polling endpoints remain supported, and the browser UI falls back
 to polling if `EventSource` is unavailable or interrupted.
 
+Cancel an active run:
+
+```http
+POST /api/runs/:id/cancel
+content-type: application/json
+
+{ "reason": "Operator stopped the run." }
+```
+
+Cancellation is a best-effort terminal state. It marks `queued` or `running` runs as
+`cancelled`, writes `run.cancelled` to the audit log, closes live streams, and prevents
+late LLM/tool results from replacing the terminal status. It does not yet kill an
+already in-flight model request at the transport level.
+
 Download artifact:
 
 ```http
@@ -281,7 +295,7 @@ Each run contains:
 
 - `id`
 - `task`
-- `status`
+- `status` (`queued`, `running`, `completed`, `failed`, or `cancelled`)
 - `createdAt`
 - `updatedAt`
 - `events`
@@ -339,7 +353,9 @@ bounded summary by default.
 The UI uses `GET /api/runs/:id/events` for live run snapshots and keeps a client-side
 clock for active run/card durations, so long-running LLM/tool calls continue ticking even
 between persisted events. If SSE is unavailable, it falls back to polling
-`GET /api/runs/:id`.
+`GET /api/runs/:id`. Run Workspace exposes a cancel action for `queued`/`running` runs;
+cancelled runs render as terminal and show the recorded cancellation reason instead of a
+placeholder final answer.
 
 On page load it calls the instance, group profile, runs, conversation, memory, tool,
 tool-build, and model-tier endpoints, then renders a hash-routed browser workspace. The

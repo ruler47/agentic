@@ -49,6 +49,11 @@ It also mounts `./workspace` into the app container for the sandboxed `file.read
 `file.write` tools and for fallback access to older local artifacts. New Docker-stack
 artifacts use Postgres metadata plus MinIO object payloads.
 
+If a run needs to be stopped while the app is still online, use the Run Workspace
+`Cancel Run` action or `POST /api/runs/:id/cancel`. Rebuilding the app container while a
+run is active interrupts in-process work; on the next boot the app recovers unfinished
+runs as failed instead of resuming them.
+
 Run the browser console directly on the host:
 
 ```bash

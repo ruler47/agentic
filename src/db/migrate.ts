@@ -168,6 +168,11 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table runs add column if not exists source_message_id text;`);
     await pool.query(`alter table runs add column if not exists source_chat_id text;`);
     await pool.query(`alter table runs add column if not exists source_thread_id text;`);
+    await pool.query(`
+      alter table runs drop constraint if exists runs_status_check;
+      alter table runs add constraint runs_status_check
+        check (status in ('queued', 'running', 'completed', 'failed', 'cancelled'));
+    `);
 
     await pool.query(`
       create index if not exists runs_thread_id_created_at_idx

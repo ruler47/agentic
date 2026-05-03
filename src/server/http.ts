@@ -725,6 +725,43 @@ async function routeRequest(
     return;
   }
 
+  const runCancelMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/cancel$/);
+  if (request.method === "POST" && runCancelMatch) {
+    const id = decodeURIComponent(runCancelMatch[1] ?? "");
+    const run = await options.runStore.get(id);
+    if (!run) {
+      sendJson(response, 404, { error: "Run not found" });
+      return;
+    }
+    if (isTerminalRunStatus(run.status)) {
+      sendJson(response, 409, { error: `Run is already ${run.status}`, run });
+      return;
+    }
+
+    const reason =
+      parseOptionalReason(await readJsonBody<unknown>(request)) ??
+      "Cancelled by operator. In-flight LLM/tool calls may finish, but their result will not replace this terminal state.";
+    await options.runStore.cancel(id, reason);
+    const cancelled = await options.runStore.get(id);
+    await recordAudit(options, {
+      instanceId: run.instanceId,
+      actorId: "user-admin",
+      actorType: "user",
+      action: "run.cancelled",
+      targetType: "run",
+      targetId: id,
+      status: "success",
+      runId: id,
+      threadId: run.threadId,
+      requesterUserId: run.requesterUserId,
+      channel: run.channel,
+      summary: `Run cancelled: ${run.task.slice(0, 160)}`,
+      metadata: { reason },
+    });
+    sendJson(response, 200, { run: cancelled ?? run });
+    return;
+  }
+
   const runMatch = url.pathname.match(/^\/api\/runs\/([^/]+)$/);
   if (request.method === "GET" && runMatch) {
     const run = await options.runStore.get(runMatch[1] ?? "");
@@ -1123,7 +1160,7 @@ async function streamRunEvents(
     lastSignature = signature;
     response.write(`event: run\ndata: ${JSON.stringify({ run })}\n\n`);
 
-    if (run.status === "completed" || run.status === "failed") {
+    if (isTerminalRunStatus(run.status)) {
       close();
       response.end();
     }
@@ -1164,6 +1201,10 @@ function runStreamSignature(run: {
     run.result ? "result" : "",
     run.error ?? "",
   ].join(":");
+}
+
+function isTerminalRunStatus(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
 }
 
 async function executeRun(
@@ -1272,12 +1313,14 @@ async function executeRun(
           }
         : undefined,
       onEvent: async (event) => {
-        if (!(await options.runStore.get(id))) return;
+        const current = await options.runStore.get(id);
+        if (!current || current.status === "cancelled") return;
         await options.runStore.appendEvent(id, event);
         await auditTraceEvent(options, id, event, run);
       },
     });
-    if (!(await options.runStore.get(id))) return;
+    const current = await options.runStore.get(id);
+    if (!current || current.status === "cancelled") return;
     await options.runStore.complete(id, result);
     await recordAudit(options, {
       instanceId: run?.instanceId,
@@ -1307,7 +1350,8 @@ async function executeRun(
       });
     }
   } catch (error) {
-    if (!(await options.runStore.get(id))) return;
+    const current = await options.runStore.get(id);
+    if (!current || current.status === "cancelled") return;
     const message = error instanceof Error ? error.message : "Unknown run error";
     await options.runStore.fail(id, message);
     await recordAudit(options, {

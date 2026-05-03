@@ -202,6 +202,56 @@ test("web server streams run snapshots as server-sent events", async () => {
   }
 });
 
+test("web server cancels an active run and ignores late completion", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>test</title>");
+  const agent = new DelayedFakeAgent();
+  const runStore = new InMemoryRunStore();
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: agent as unknown as UniversalAgent,
+    runStore,
+    auditEventStore,
+    publicDir,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "long task" }),
+    });
+    assert.equal(createResponse.status, 202);
+    const created = (await createResponse.json()) as { run: { id: string } };
+
+    const cancelResponse = await fetch(`${baseUrl}/api/runs/${created.run.id}/cancel`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "manual stop" }),
+    });
+    assert.equal(cancelResponse.status, 200);
+    const cancelled = (await cancelResponse.json()) as { run: { status: string; error?: string } };
+    assert.equal(cancelled.run.status, "cancelled");
+    assert.equal(cancelled.run.error, "manual stop");
+
+    agent.release();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const latest = await (await fetch(`${baseUrl}/api/runs/${created.run.id}`)).json();
+    assert.equal(latest.run.status, "cancelled");
+    assert.equal(latest.run.result, undefined);
+    assert.equal(latest.run.events.length, 0);
+
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+    assert.equal(audit.events.some((event: { action: string }) => event.action === "run.cancelled"), true);
+  } finally {
+    agent.release();
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server accepts input files and serves output artifacts", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   const artifactDir = await mkdtemp(join(tmpdir(), "agentic-artifacts-"));
@@ -1211,7 +1261,7 @@ async function waitForRun(baseUrl: string, id: string) {
     const response = await fetch(`${baseUrl}/api/runs/${id}`);
     const data = (await response.json()) as { run: { status: string; [key: string]: any } };
 
-    if (data.run.status === "completed" || data.run.status === "failed") {
+    if (data.run.status === "completed" || data.run.status === "failed" || data.run.status === "cancelled") {
       return data;
     }
 

@@ -3,6 +3,7 @@ export type AuditAction =
   | "run.started"
   | "run.completed"
   | "run.failed"
+  | "run.cancelled"
   | "artifact.uploaded"
   | "artifact.generated"
   | "tool.used"

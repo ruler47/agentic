@@ -102,10 +102,13 @@ export class PostgresRunStore implements RunStore {
   }
 
   async markRunning(id: string): Promise<void> {
-    await this.updateStatus(id, "running");
+    await this.updateStatus(id, "running", { skipCancelled: true });
   }
 
   async appendEvent(id: string, event: AgentEvent): Promise<void> {
+    const run = await this.get(id);
+    if (run?.status === "cancelled") return;
+
     await this.pool.query(
       `
         insert into run_events (
@@ -141,7 +144,7 @@ export class PostgresRunStore implements RunStore {
       `
         update runs
         set status = 'completed', result = $1, updated_at = $2, error = null
-        where id = $3
+        where id = $3 and status <> 'cancelled'
       `,
       [JSON.stringify(result), new Date(), id],
     );
@@ -152,9 +155,20 @@ export class PostgresRunStore implements RunStore {
       `
         update runs
         set status = 'failed', error = $1, updated_at = $2
-        where id = $3
+        where id = $3 and status <> 'cancelled'
       `,
       [error, new Date(), id],
+    );
+  }
+
+  async cancel(id: string, reason: string): Promise<void> {
+    await this.pool.query(
+      `
+        update runs
+        set status = 'cancelled', error = $1, updated_at = $2
+        where id = $3 and status in ('queued', 'running')
+      `,
+      [reason, new Date(), id],
     );
   }
 
@@ -183,12 +197,20 @@ export class PostgresRunStore implements RunStore {
     return result.rowCount ?? 0;
   }
 
-  private async updateStatus(id: string, status: RunStatus): Promise<void> {
-    await this.pool.query("update runs set status = $1, updated_at = $2 where id = $3", [
-      status,
-      new Date(),
-      id,
-    ]);
+  private async updateStatus(
+    id: string,
+    status: RunStatus,
+    options: { skipCancelled?: boolean } = {},
+  ): Promise<void> {
+    await this.pool.query(
+      `
+        update runs
+        set status = $1, updated_at = $2
+        where id = $3
+        ${options.skipCancelled ? "and status <> 'cancelled'" : ""}
+      `,
+      [status, new Date(), id],
+    );
   }
 
   private async hydrateRun(row: RunRow): Promise<AgentRunRecord> {

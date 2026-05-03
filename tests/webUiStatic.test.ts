@@ -40,6 +40,9 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /data-action="create-tool-build-request"/);
   assert.match(app, /data-live-run-duration/);
   assert.match(app, /function updateLiveTimers/);
+  assert.match(app, /function cancelRun/);
+  assert.match(app, /data-action="cancel-run"/);
+  assert.match(app, /\/api\/runs\/\$\{encodeURIComponent\(runId\)\}\/cancel/);
   assert.match(app, /connectRunStream\(activeRun\(\)\?\.id\)/);
   assert.match(app, /class="ghost-button trace-back-button"/);
   assert.match(app, /data-action="select-run" data-run-id="\$\{run\.id\}"/);
@@ -130,6 +133,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".graph-arrow-head-highlighted",
     ".graph-arrow-head-failed",
     ".graph-edge.failed-target",
+    ".status-badge.cancelled",
+    ".danger-button",
     ".artifact-preview",
     ".artifact-copy",
     ".artifact-quality",

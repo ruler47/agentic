@@ -338,6 +338,8 @@ For documentation-only changes:
 - Outbound actions must be auditable and permission-checked before delivery.
 - Preserve trace parent links when adding orchestration steps; the UI depends on
   `parentSpanId` to draw direct arrows.
+- Active runs can be stopped through `POST /api/runs/:id/cancel`; `cancelled` is terminal
+  and late LLM/tool events or results must not overwrite it.
 - For DAG dependencies, also preserve `payload.dependencySpanIds` so the UI can draw
   additional upstream arrows.
 - Worker/reviewer LLM failures should emit explicit failed spans before throwing, so a

@@ -98,9 +98,12 @@ Implementation tasks:
   resolution without a supplied `threadId`.
 - Add audit events for run creation, tool use, artifact creation, memory writes, and
   future outbound actions. PARTIAL: run created/started/completed/failed, input/output
-  artifacts, tool trace events, and tool build requests/registrations are implemented.
-  Memory writes, approvals, outbound actions, Telegram delivery, and policy decisions
-  remain.
+  artifacts, tool trace events, run cancellation, and tool build requests/registrations
+  are implemented. Memory writes, approvals, outbound actions, Telegram delivery, and
+  policy decisions remain.
+- Add operator cancellation for active runs. DONE: `queued`/`running` runs can be marked
+  `cancelled` through API/UI, SSE streams close on that terminal status, and late model or
+  tool results are ignored instead of overwriting the cancellation.
 
 UI tasks:
 

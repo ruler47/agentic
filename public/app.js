@@ -144,6 +144,9 @@ document.addEventListener("click", (event) => {
   if (actionName === "select-run" && runId) {
     navigate(`run/${runId}`);
   }
+  if (actionName === "cancel-run" && runId) {
+    void cancelRun(runId);
+  }
   if (actionName === "open-trace" && runId) {
     navigate(`trace/${runId}`);
   }
@@ -645,7 +648,7 @@ function renderRecentActivity(runs) {
 function renderActivityItem(run) {
   return `
     <button type="button" class="activity-item" data-action="select-run" data-run-id="${run.id}">
-      <span class="activity-icon">${run.status === "completed" ? "✓" : run.status === "failed" ? "!" : "•"}</span>
+      <span class="activity-icon">${run.status === "completed" ? "✓" : run.status === "failed" ? "!" : run.status === "cancelled" ? "×" : "•"}</span>
       <span class="activity-copy">
         <strong>${escapeHtml(run.task)}</strong>
         <small>${run.channel ?? "web"} · ${run.requesterUserId ?? "user-admin"} · ${formatRelative(run.updatedAt)}</small>
@@ -766,12 +769,13 @@ function renderRunWorkspace(run) {
       <div class="run-result-layout">
         <section class="result-column">
           ${resultCard("Task Prompt", run.task)}
-          ${resultCard("Final Answer", run.status === "failed" ? run.error ?? "Run failed." : run.result?.finalAnswer ?? "Agent is working...")}
+          ${resultCard("Final Answer", runStatusMessage(run))}
           ${renderArtifactStrip(artifacts)}
           ${thread ? renderComposer({ compact: true, mode: "continue", selectedThread: thread }) : ""}
           <div class="action-row">
             <button type="button" class="primary-button" data-action="continue-thread" data-thread-id="${run.threadId ?? ""}">Continue Thread</button>
             <button type="button" class="ghost-button" data-action="continue-thread" data-thread-id="${run.threadId ?? ""}">Correct Answer</button>
+            ${["queued", "running"].includes(run.status) ? `<button type="button" class="danger-button" data-action="cancel-run" data-run-id="${run.id}">Cancel Run</button>` : ""}
             <button type="button" class="ghost-button" data-action="open-trace" data-run-id="${run.id}">Open Trace Lab</button>
           </div>
         </section>
@@ -810,6 +814,12 @@ function resultCard(title, content) {
       <div class="markdown-body">${renderMarkdown(content)}</div>
     </article>
   `;
+}
+
+function runStatusMessage(run) {
+  if (run.status === "failed") return run.error ?? "Run failed.";
+  if (run.status === "cancelled") return run.error ?? "Run cancelled.";
+  return run.result?.finalAnswer ?? "Agent is working...";
 }
 
 function renderArtifactStrip(artifacts, expanded = false) {
@@ -2368,6 +2378,33 @@ async function submitRun(form) {
   }
 }
 
+async function cancelRun(runId) {
+  try {
+    const data = await fetchJson(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "Cancelled from the web console." }),
+    });
+    const index = state.runs.findIndex((run) => run.id === runId);
+    if (index >= 0) state.runs[index] = data.run;
+    state.notice = {
+      type: "success",
+      title: "Run cancelled",
+      body: "The run is now terminal; late tool or model results will be ignored.",
+    };
+    state.stream?.close();
+    state.stream = undefined;
+    await refreshData();
+  } catch (error) {
+    state.notice = {
+      type: "error",
+      title: "Could not cancel run",
+      body: error instanceof Error ? error.message : String(error),
+    };
+    render();
+  }
+}
+
 async function saveModelTiers(form) {
   const formData = new FormData(form);
   const tiers = ["S", "M", "L", "XL"].map((tier) => ({
@@ -3096,7 +3133,7 @@ function orderTraceNodes(nodes, prioritizeActive) {
 }
 
 function runProgress(run) {
-  if (run.status === "completed" || run.status === "failed") return 100;
+  if (["completed", "failed", "cancelled"].includes(run.status)) return 100;
   const eventCount = run.events?.length ?? 0;
   return Math.min(88, Math.max(12, eventCount * 12));
 }

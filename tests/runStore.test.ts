@@ -97,6 +97,37 @@ test("InMemoryRunStore recovers interrupted queued and running runs", async () =
   assert.equal(untouchedCompleted?.status, "completed");
 });
 
+test("InMemoryRunStore cancellation is terminal", async () => {
+  const store = new InMemoryRunStore();
+  const run = await store.create("cancel me");
+
+  await store.markRunning(run.id);
+  await store.cancel(run.id, "operator cancelled");
+  await store.appendEvent(run.id, {
+    id: "event-after-cancel",
+    spanId: "span-after-cancel",
+    type: "worker-completed",
+    actor: "worker:test",
+    activity: "worker",
+    status: "completed",
+    title: "Late worker",
+    timestamp: new Date().toISOString(),
+  });
+  await store.complete(run.id, {
+    finalAnswer: "late answer",
+    complexity: { mode: "direct", reason: "test", domains: ["test"], riskLevel: "low" },
+    subtasks: [],
+    workerResults: [],
+    reviews: [],
+  });
+
+  const cancelled = await store.get(run.id);
+  assert.equal(cancelled?.status, "cancelled");
+  assert.equal(cancelled?.error, "operator cancelled");
+  assert.equal(cancelled?.events.length, 0);
+  assert.equal(cancelled?.result, undefined);
+});
+
 test("InMemoryRunStore deletes runs by conversation thread id", async () => {
   const store = new InMemoryRunStore();
   const first = await store.create("thread task 1", { threadId: "thread-1" });

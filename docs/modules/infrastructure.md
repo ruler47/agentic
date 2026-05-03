@@ -27,6 +27,12 @@ the app calls `recoverInterrupted` and marks `queued`/`running` runs as failed w
 restart interruption reason. The UI can refresh/reconnect to see the failed run and
 partial trace, but execution does not resume automatically.
 
+When the app is still online, prefer the Run Workspace cancel action or
+`POST /api/runs/:id/cancel`. That records an explicit `cancelled` terminal state and
+audit event before any late LLM/tool result can overwrite the run. A container rebuild is
+harder: it interrupts the process and the next boot can only recover the run as failed
+from durable state.
+
 Future production deployment should add a drain mode and queue-backed workers so the web
 process can stop accepting new runs, wait for active jobs, or resume idempotent jobs after
 replacement.
