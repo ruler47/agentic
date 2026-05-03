@@ -33,6 +33,11 @@ import {
   SecretHandleStore,
 } from "../secrets/secretHandleStore.js";
 import { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
+import {
+  ModelProviderInput,
+  ModelProviderStore,
+  ModelProviderUpdateInput,
+} from "../settings/modelProviderStore.js";
 import { ToolSchema, ToolStartupMode } from "../tools/tool.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { ToolBuildRequestStore } from "../tools/toolBuildRequestStore.js";
@@ -57,6 +62,7 @@ export type WebAppOptions = {
   toolBuildWorkflow?: ToolBuildWorkflow;
   reloadGeneratedTools?: () => Promise<void>;
   modelTierSettings?: ModelTierSettingsStore;
+  modelProviderStore?: ModelProviderStore;
   secretHandleStore?: SecretHandleStore;
   artifactStore?: ArtifactStore;
   conversationStore?: ConversationThreadStore;
@@ -1025,6 +1031,7 @@ async function routeRequest(
   }
 
   if (request.method === "GET" && url.pathname === "/api/models/catalog") {
+    const providers = options.modelProviderStore ? await options.modelProviderStore.list() : [];
     sendJson(response, 200, {
       chat: {
         baseUrl: process.env.LLM_BASE_URL ?? "http://127.0.0.1:1234/v1",
@@ -1042,7 +1049,113 @@ async function routeRequest(
           process.env.EMBEDDING_BASE_URL ?? process.env.LLM_BASE_URL ?? "http://127.0.0.1:1234/v1",
         ),
       },
+      providers,
     });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/model-providers") {
+    sendJson(response, 200, {
+      providers: options.modelProviderStore ? await options.modelProviderStore.list() : [],
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/model-providers") {
+    if (!options.modelProviderStore) {
+      sendJson(response, 503, { error: "Model provider store is not configured" });
+      return;
+    }
+
+    try {
+      const provider = await options.modelProviderStore.create(
+        parseModelProviderInput(await readJsonBody<unknown>(request)),
+      );
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "model_provider.created",
+        targetType: "model_provider",
+        targetId: provider.id,
+        status: "success",
+        summary: `Model provider created: ${provider.label}`,
+        metadata: sanitizeAuditMetadata({
+          kind: provider.kind,
+          providerType: provider.providerType,
+          modelIds: provider.modelIds,
+          apiKeySecretHandle: provider.apiKeySecretHandle,
+        }),
+      });
+      sendJson(response, 201, { provider });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid model provider",
+      });
+    }
+    return;
+  }
+
+  const modelProviderMatch = url.pathname.match(/^\/api\/model-providers\/([^/]+)$/);
+  if (modelProviderMatch && request.method === "PATCH") {
+    if (!options.modelProviderStore) {
+      sendJson(response, 503, { error: "Model provider store is not configured" });
+      return;
+    }
+
+    const id = decodeURIComponent(modelProviderMatch[1] ?? "");
+    try {
+      const provider = await options.modelProviderStore.update(
+        id,
+        parseModelProviderUpdate(await readJsonBody<unknown>(request)),
+      );
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "model_provider.updated",
+        targetType: "model_provider",
+        targetId: provider.id,
+        status: "success",
+        summary: `Model provider updated: ${provider.label}`,
+        metadata: sanitizeAuditMetadata({
+          kind: provider.kind,
+          status: provider.status,
+          healthStatus: provider.healthStatus,
+        }),
+      });
+      sendJson(response, 200, { provider });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid model provider update",
+      });
+    }
+    return;
+  }
+
+  if (modelProviderMatch && request.method === "DELETE") {
+    if (!options.modelProviderStore) {
+      sendJson(response, 503, { error: "Model provider store is not configured" });
+      return;
+    }
+
+    const id = decodeURIComponent(modelProviderMatch[1] ?? "");
+    const deleted = await options.modelProviderStore.delete(id);
+    if (!deleted) {
+      sendJson(response, 404, { error: "Model provider not found" });
+      return;
+    }
+    await recordAudit(options, {
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "model_provider.deleted",
+      targetType: "model_provider",
+      targetId: id,
+      status: "success",
+      summary: `Model provider deleted: ${id}`,
+    });
+    sendJson(response, 200, { deleted: true });
     return;
   }
 
@@ -2508,6 +2621,104 @@ function parseTierSettingsInput(item: unknown) {
         ? candidate.escalateOnFailure
         : undefined,
   };
+}
+
+function parseModelProviderInput(item: unknown): ModelProviderInput {
+  if (!item || typeof item !== "object") {
+    throw new Error("Invalid model provider");
+  }
+  const candidate = item as Record<string, unknown>;
+  return {
+    id: optionalString(candidate.id),
+    label: requiredString(candidate.label, "label"),
+    kind: parseModelProviderKind(candidate.kind),
+    providerType: parseModelProviderType(candidate.providerType),
+    baseUrl: optionalString(candidate.baseUrl),
+    modelIds: parseStringList(candidate.modelIds),
+    defaultModel: optionalString(candidate.defaultModel),
+    apiKeySecretHandle: optionalString(candidate.apiKeySecretHandle),
+    dimensions: parseOptionalNumber(candidate.dimensions),
+    status: parseOptionalModelProviderStatus(candidate.status),
+    healthStatus: parseOptionalModelProviderHealthStatus(candidate.healthStatus),
+    healthDetail: optionalString(candidate.healthDetail),
+  };
+}
+
+function parseModelProviderUpdate(item: unknown): ModelProviderUpdateInput {
+  if (!item || typeof item !== "object") {
+    throw new Error("Invalid model provider update");
+  }
+  const candidate = item as Record<string, unknown>;
+  return {
+    label: optionalString(candidate.label),
+    kind: candidate.kind === undefined ? undefined : parseModelProviderKind(candidate.kind),
+    providerType:
+      candidate.providerType === undefined ? undefined : parseModelProviderType(candidate.providerType),
+    baseUrl: optionalString(candidate.baseUrl),
+    modelIds: candidate.modelIds === undefined ? undefined : parseStringList(candidate.modelIds),
+    defaultModel: optionalString(candidate.defaultModel),
+    apiKeySecretHandle: optionalString(candidate.apiKeySecretHandle),
+    dimensions: parseOptionalNumber(candidate.dimensions),
+    status: parseOptionalModelProviderStatus(candidate.status),
+    healthStatus: parseOptionalModelProviderHealthStatus(candidate.healthStatus),
+    healthDetail: optionalString(candidate.healthDetail),
+  };
+}
+
+function parseModelProviderKind(value: unknown): "chat" | "embedding" {
+  if (value === "chat" || value === "embedding") return value;
+  throw new Error("Invalid model provider kind");
+}
+
+function parseModelProviderType(value: unknown): ModelProviderInput["providerType"] {
+  if (
+    value === "local" ||
+    value === "remote" ||
+    value === "openai-compatible" ||
+    value === "deterministic"
+  ) {
+    return value;
+  }
+  throw new Error("Invalid model provider type");
+}
+
+function parseOptionalModelProviderStatus(value: unknown): ModelProviderInput["status"] {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "available" || value === "disabled" || value === "failed") return value;
+  throw new Error("Invalid model provider status");
+}
+
+function parseOptionalModelProviderHealthStatus(value: unknown): ModelProviderInput["healthStatus"] {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "unknown" || value === "ok" || value === "failed") return value;
+  throw new Error("Invalid model provider health status");
+}
+
+function requiredString(value: unknown, field: string): string {
+  const text = optionalString(value);
+  if (!text) throw new Error(`${field} is required`);
+  return text;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function parseStringList(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value.split(/\n|,/).map((item) => item.trim()).filter(Boolean);
+  }
+  throw new Error("modelIds must be an array or comma-separated string");
+}
+
+function parseOptionalNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
 }
 
 function contentType(filePath: string): string {

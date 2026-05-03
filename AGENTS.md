@@ -83,8 +83,10 @@ the editable tier policy is stored in Postgres and exposed through the System In
 panel.
 
 Embedding is a separate memory-retrieval capability, not a chat tier. The Models page
-reads `/api/models/catalog` to show discovered local chat models and the active embedding
-provider; future DB-backed embedding selection should trigger memory re-embedding.
+reads `/api/models/catalog` and `/api/model-providers` to show discovered local chat
+models, the active embedding provider, and durable local/remote provider registry entries.
+Future runtime routing should resolve tier model ids through this provider registry, and
+future DB-backed embedding selection should trigger memory re-embedding.
 
 Durable artifact storage in Docker uses:
 
@@ -145,6 +147,12 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/agents/callFrame.ts](src/agents/callFrame.ts) - durable agent call-frame and
   return self-check helpers for worker/reviewer spans and future recursive agents.
 - [src/agents/modelTier.ts](src/agents/modelTier.ts) - model tier selection policy.
+- [src/settings/modelProviderStore.ts](src/settings/modelProviderStore.ts) - durable
+  model provider registry contract for chat and embedding endpoints.
+- [src/settings/postgresModelProviderStore.ts](src/settings/postgresModelProviderStore.ts)
+  - Postgres-backed `model_providers` adapter.
+- [docs/modules/model-providers.md](docs/modules/model-providers.md) - provider registry,
+  embedding-provider, and future runtime resolver notes.
 - [src/agents/prompts.ts](src/agents/prompts.ts) - prompts for classification, planning,
   workers, reviewers, synthesis, and learning.
 - [src/instance/userStore.ts](src/instance/userStore.ts) - user and channel identity
@@ -336,6 +344,8 @@ For documentation-only changes:
   QA registration blocking.
 - `tests/toolBuildProviders.test.ts` covers provider-backed TypeScript generation and
   generated metadata registration.
+- `tests/modelProviderStore.test.ts` covers model provider defaults, normalization, and
+  CRUD lifecycle.
 - `tests/userStore.test.ts` covers local user and allowed channel identity resolution.
 - `tests/webUiStatic.test.ts` covers the page-based web console information architecture.
 
@@ -456,6 +466,9 @@ For documentation-only changes:
   same requester user or an explicit private-memory grant.
 - Built-in and future generated tool contracts should be synced into `tool_modules` so
   source/status/health/version metadata survives restarts.
+- Model provider records live in `model_providers`; store remote credentials by secret
+  handle name only, keep embeddings separate from chat tiers, and avoid putting raw API
+  keys in prompts, memory, trace events, or docs.
 - Missing capabilities should create `tool_build_requests` with TypeScript module paths,
   schemas, acceptance criteria, and QA criteria before any generated code is promoted.
 - Existing capabilities that are too weak should create a rework request for a new tool

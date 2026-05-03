@@ -24,6 +24,9 @@ export type AuditAction =
   | "channel_identity.deleted"
   | "secret_handle.created"
   | "secret_handle.deleted"
+  | "model_provider.created"
+  | "model_provider.updated"
+  | "model_provider.deleted"
   | "memory.created"
   | "memory.updated"
   | "memory.embeddings_rebuilt";

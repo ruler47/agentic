@@ -675,6 +675,9 @@ Implemented:
 - API/UI model catalog for the configured local OpenAI-compatible `/models` endpoint and
   the active embedding provider. Embedding is treated as a separate memory capability,
   not as a chat tier.
+- Durable `model_providers` registry with in-memory/Postgres stores, API/UI CRUD, local
+  and remote OpenAI-compatible chat providers, deterministic/OpenAI-compatible embedding
+  providers, secret-handle references, model id catalogs, and embedding dimensions.
 - `LlmClient` reads current tier settings for each request.
 - `LlmClient` retries failed model requests inside the same tier, then escalates to the
   next tier when policy allows.
@@ -690,9 +693,10 @@ Remaining:
 - LLM-driven tier choice with hard runtime caps.
 - Metrics comparing worker tier vs reviewer tier quality.
 - Store per-tier provider/base URL/API key secret handles in the settings UI.
-- Persist a model provider registry with local discovered models, manually added remote
-  OpenAI-compatible providers, API-key secret handles, health checks, and selectable chat
-  tier candidates.
+- Provider-aware runtime resolver so tier entries can point at explicit provider/model
+  references instead of the current single `LLM_BASE_URL`.
+- Provider healthcheck actions and health history.
+- Selectable provider/model dropdowns in tier cards.
 - Persist embedding provider settings (`EMBEDDING_MODEL`, base URL, dimensions, secret
   handle) in the database and trigger memory re-embedding when the embedding model
   changes. This should be a dedicated "Memory embedding model" setting rather than Tier S/M/L/XL.

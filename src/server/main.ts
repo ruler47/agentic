@@ -19,6 +19,8 @@ import { InMemorySecretHandleStore } from "../secrets/secretHandleStore.js";
 import { PostgresSecretHandleStore } from "../secrets/postgresSecretHandleStore.js";
 import { InMemoryModelTierSettingsStore } from "../settings/modelTierSettings.js";
 import { PostgresModelTierSettingsStore } from "../settings/postgresModelTierSettings.js";
+import { InMemoryModelProviderStore } from "../settings/modelProviderStore.js";
+import { PostgresModelProviderStore } from "../settings/postgresModelProviderStore.js";
 import { createWebApp } from "./http.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { FileReadTool, FileWriteTool } from "../tools/fileTools.js";
@@ -116,6 +118,9 @@ const conversationStore = pool
 const modelTierSettings = pool
   ? new PostgresModelTierSettingsStore(pool)
   : new InMemoryModelTierSettingsStore();
+const modelProviderStore = pool
+  ? new PostgresModelProviderStore(pool)
+  : new InMemoryModelProviderStore();
 const auditEventStore = pool ? new PostgresAuditEventStore(pool) : new InMemoryAuditEventStore();
 const groupProfileStore = pool ? new PostgresGroupProfileStore(pool) : new InMemoryGroupProfileStore();
 const userStore = pool ? new PostgresUserStore(pool) : new InMemoryUserStore();
@@ -147,6 +152,7 @@ const server = createWebApp({
   toolBuildWorkflow,
   reloadGeneratedTools,
   modelTierSettings,
+  modelProviderStore,
   artifactStore,
   auditEventStore,
   groupProfileStore,

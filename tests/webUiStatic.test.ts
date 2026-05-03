@@ -39,7 +39,11 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /function renderGroupProfilePage/);
   assert.match(app, /function saveModelTiers/);
   assert.match(app, /\/api\/models\/catalog/);
+  assert.match(app, /\/api\/model-providers/);
   assert.match(app, /Model Catalog/);
+  assert.match(app, /Provider Registry/);
+  assert.match(app, /data-action="create-model-provider"/);
+  assert.match(app, /data-action="delete-model-provider"/);
   assert.match(app, /Local chat models/);
   assert.match(app, /Embedding/);
   assert.match(app, /data-action="create-tool-build-request"/);

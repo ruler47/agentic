@@ -346,6 +346,30 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     `);
 
     await pool.query(`
+      create table if not exists model_providers (
+        id text primary key,
+        label text not null,
+        kind text not null check (kind in ('chat', 'embedding')),
+        provider_type text not null check (provider_type in ('local', 'remote', 'openai-compatible', 'deterministic')),
+        base_url text,
+        model_ids text[] not null default '{}',
+        default_model text,
+        api_key_secret_handle text,
+        dimensions integer,
+        status text not null check (status in ('available', 'disabled', 'failed')),
+        health_status text not null check (health_status in ('unknown', 'ok', 'failed')),
+        health_detail text,
+        created_at timestamptz not null,
+        updated_at timestamptz not null
+      );
+    `);
+
+    await pool.query(`
+      create index if not exists model_providers_kind_status_idx
+      on model_providers(kind, status, updated_at desc);
+    `);
+
+    await pool.query(`
       create table if not exists tool_modules (
         name text primary key,
         version text not null,

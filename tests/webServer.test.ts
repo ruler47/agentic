@@ -8,6 +8,7 @@ import { createWebApp } from "../src/server/http.js";
 import { InMemoryConversationThreadStore } from "../src/conversations/inMemoryConversationThreadStore.js";
 import { InMemoryRunStore } from "../src/runs/inMemoryRunStore.js";
 import { InMemoryModelTierSettingsStore } from "../src/settings/modelTierSettings.js";
+import { InMemoryModelProviderStore } from "../src/settings/modelProviderStore.js";
 import { AgentArtifact, AgentEventSink, AgentRunResult, ArtifactCreateInput } from "../src/types.js";
 import { UniversalAgent } from "../src/agents/universalAgent.js";
 import { LocalArtifactStore } from "../src/artifacts/artifactStore.js";
@@ -1323,6 +1324,16 @@ test("web server exposes and updates model tier settings", async () => {
       { tier: "S", models: ["small-a"], maxAttempts: 2 },
       { tier: "M", models: ["medium-a"], maxAttempts: 2 },
     ]),
+    modelProviderStore: new InMemoryModelProviderStore([
+      {
+        id: "test-chat",
+        label: "Test chat",
+        kind: "chat",
+        providerType: "openai-compatible",
+        baseUrl: "http://localhost:1234/v1",
+        modelIds: ["small-a"],
+      },
+    ]),
   });
 
   try {
@@ -1353,11 +1364,63 @@ test("web server exposes and updates model tier settings", async () => {
 
     assert.equal(initial.tiers[0].tier, "S");
     assert.equal(catalog.chat.defaultModel, process.env.LLM_MODEL ?? "google/gemma-4-26b-a4b");
+    assert.equal(catalog.providers[0].id, "test-chat");
     assert.equal(Array.isArray(catalog.chat.models), true);
     assert.equal(catalog.embedding.dimensions, Number(process.env.MEMORY_EMBEDDING_DIMENSIONS ?? "128"));
     assert.equal(updateResponse.status, 200);
     assert.deepEqual(updated.tiers[0].models, ["small-a", "small-b"]);
     assert.equal(updated.tiers[0].maxAttempts, 3);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server manages model provider registry", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    modelProviderStore: new InMemoryModelProviderStore([]),
+    auditEventStore: new InMemoryAuditEventStore(),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createResponse = await fetch(`${baseUrl}/api/model-providers`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        label: "Remote GPT",
+        kind: "chat",
+        providerType: "openai-compatible",
+        baseUrl: "https://api.example.test/v1",
+        modelIds: ["gpt-x"],
+        apiKeySecretHandle: "remote-gpt-key",
+      }),
+    });
+    const created = await createResponse.json();
+    const updateResponse = await fetch(`${baseUrl}/api/model-providers/${created.provider.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "disabled", modelIds: ["gpt-x", "gpt-y"] }),
+    });
+    const updated = await updateResponse.json();
+    const list = await (await fetch(`${baseUrl}/api/model-providers`)).json();
+    const deleteResponse = await fetch(`${baseUrl}/api/model-providers/${created.provider.id}`, {
+      method: "DELETE",
+    });
+
+    assert.equal(createResponse.status, 201);
+    assert.equal(created.provider.id, "remote-gpt");
+    assert.equal(updated.provider.status, "disabled");
+    assert.equal(updated.provider.apiKeySecretHandle, "remote-gpt-key");
+    assert.deepEqual(updated.provider.modelIds, ["gpt-x", "gpt-y"]);
+    assert.equal(list.providers.length, 1);
+    assert.equal(deleteResponse.status, 200);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

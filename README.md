@@ -78,11 +78,10 @@ docker compose up --build
 ```
 
 If a tier override is not set, the app falls back to `LLM_MODEL`.
-In the web console, open System Inventory to edit and persist model tier policy in
-Postgres.
-Model providers can be local OpenAI-compatible endpoints or remote providers such as the
-OpenAI API. Remote API keys should be stored through secret handles/settings rather than
-prompts or memory.
+In the web console, open Models to edit and persist model tier policy in Postgres.
+The same page now includes a durable Provider Registry for local endpoints, remote
+OpenAI-compatible providers, and memory embedding providers. Remote API keys should be
+stored through secret handles/settings rather than prompts or memory.
 
 Optional memory embedding provider:
 
@@ -96,6 +95,15 @@ docker compose up --build
 Without `EMBEDDING_MODEL`, memory retrieval uses the portable deterministic local
 embedding provider. Remote embedding vectors are projected into the current 128-dimensional
 pgvector column and fall back locally if the endpoint fails.
+
+Provider registry API:
+
+```bash
+curl http://127.0.0.1:3000/api/model-providers
+curl -X POST http://127.0.0.1:3000/api/model-providers \
+  -H 'content-type: application/json' \
+  -d '{"label":"OpenAI prod","kind":"chat","providerType":"openai-compatible","baseUrl":"https://api.openai.com/v1","modelIds":["gpt-5.2"],"apiKeySecretHandle":"openai-prod-key"}'
+```
 
 Memory operators can rebuild and evaluate retrieval through the web API:
 

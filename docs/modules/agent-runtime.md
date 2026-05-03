@@ -107,6 +107,8 @@ Runtime responsibilities with context:
 ## Extension Points
 
 - Replace `LlmClient` with another OpenAI-compatible or provider-specific client.
+- Resolve model ids through the durable provider registry described in
+  `docs/modules/model-providers.md` so local and remote chat providers can coexist.
 - Replace `SkillMemory` with a database-backed implementation.
 - Add tool execution to worker agents through a tool registry.
 - Add self-service tool scaffolding on top of the versioned tool contract.

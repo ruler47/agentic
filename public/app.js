@@ -59,6 +59,7 @@ const state = {
   buildRequests: [],
   secretHandles: [],
   tiers: [],
+  modelProviders: [],
   modelCatalog: undefined,
   users: [],
   auditEvents: [],
@@ -101,6 +102,9 @@ document.addEventListener("submit", (event) => {
   }
   if (form.dataset.action === "save-model-tiers") {
     void saveModelTiers(form);
+  }
+  if (form.dataset.action === "create-model-provider") {
+    void createModelProvider(form);
   }
   if (form.dataset.action === "save-group-profile") {
     void saveGroupProfile(form);
@@ -152,6 +156,7 @@ document.addEventListener("click", (event) => {
     userId,
     identityId,
     allowStatus,
+    providerId,
   } = action.dataset;
   if (actionName === "navigate" && route) {
     navigate(route);
@@ -229,6 +234,9 @@ document.addEventListener("click", (event) => {
   if (actionName === "delete-secret-handle" && secretHandle) {
     void deleteSecretHandle(secretHandle);
   }
+  if (actionName === "delete-model-provider" && providerId) {
+    void deleteModelProvider(providerId);
+  }
   if (actionName === "delete-user" && userId) {
     void deleteUser(userId);
   }
@@ -299,6 +307,7 @@ async function refreshData() {
       buildRequests,
       secretHandles,
       tiers,
+      modelProviders,
       modelCatalog,
       users,
       auditEvents,
@@ -314,6 +323,7 @@ async function refreshData() {
       fetchJson("/api/tool-build-requests").then((data) => data.requests ?? []),
       fetchJson("/api/secret-handles").then((data) => data.secretHandles ?? []),
       fetchJson("/api/settings/model-tiers").then((data) => data.tiers ?? []),
+      fetchJson("/api/model-providers").then((data) => data.providers ?? []),
       fetchJson("/api/models/catalog").catch(() => undefined),
       fetchJson("/api/users").then((data) => data.users ?? []),
       fetchJson("/api/audit-events").then((data) => data.events ?? []),
@@ -331,6 +341,7 @@ async function refreshData() {
       buildRequests,
       secretHandles,
       tiers,
+      modelProviders,
       modelCatalog,
       users,
       auditEvents,
@@ -2261,6 +2272,7 @@ function toolBuildCardComment(request) {
 function renderModelsPage() {
   const chatModels = state.modelCatalog?.chat?.models ?? [];
   const embeddingModels = state.modelCatalog?.embedding?.models ?? [];
+  const providers = state.modelProviders.length ? state.modelProviders : state.modelCatalog?.providers ?? [];
   return `
     <section class="page-stack">
       <section class="surface-panel model-catalog-panel">
@@ -2293,6 +2305,69 @@ function renderModelsPage() {
           </article>
         </div>
       </section>
+      <section class="surface-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Provider Registry</h2>
+            <p>Register local and remote OpenAI-compatible providers. Store secret handles here, not raw API keys; chat tiers reference model ids, while memory uses an embedding provider.</p>
+          </div>
+          <span class="context-chip">${providers.length} providers</span>
+        </div>
+        <div class="model-provider-grid">
+          ${providers.map(renderModelProviderCard).join("") || renderEmptyState("No model providers", "Add a local, remote, or embedding provider.", "Providers")}
+        </div>
+      </section>
+      <form data-action="create-model-provider" class="surface-panel settings-form">
+        <div class="section-heading">
+          <div>
+            <h2>Add Provider</h2>
+            <p>Use this for local LM Studio/Ollama-compatible endpoints, OpenAI-compatible remote APIs, or a dedicated embedding model for memory.</p>
+          </div>
+          <button type="submit" class="primary-button">Add Provider</button>
+        </div>
+        <div class="settings-grid">
+          <label>
+            <span>Label</span>
+            <input name="label" placeholder="OpenAI GPT-5.2" required />
+          </label>
+          <label>
+            <span>Kind</span>
+            <select name="kind">
+              <option value="chat">Chat</option>
+              <option value="embedding">Embedding</option>
+            </select>
+          </label>
+          <label>
+            <span>Provider type</span>
+            <select name="providerType">
+              <option value="openai-compatible">OpenAI-compatible</option>
+              <option value="local">Local</option>
+              <option value="remote">Remote</option>
+              <option value="deterministic">Deterministic</option>
+            </select>
+          </label>
+          <label>
+            <span>Base URL</span>
+            <input name="baseUrl" placeholder="https://api.openai.com/v1" />
+          </label>
+          <label>
+            <span>Model ids</span>
+            <textarea name="modelIds" rows="3" placeholder="gpt-5.2&#10;text-embedding-3-large"></textarea>
+          </label>
+          <label>
+            <span>Default model</span>
+            <input name="defaultModel" placeholder="gpt-5.2" />
+          </label>
+          <label>
+            <span>Secret handle</span>
+            <input name="apiKeySecretHandle" placeholder="openai-prod-api-key" />
+          </label>
+          <label>
+            <span>Embedding dimensions</span>
+            <input name="dimensions" type="number" min="1" max="8192" placeholder="1536" />
+          </label>
+        </div>
+      </form>
       <form data-action="save-model-tiers" class="surface-panel settings-form">
         <div class="section-heading">
           <div>
@@ -2306,6 +2381,34 @@ function renderModelsPage() {
         </div>
       </form>
     </section>
+  `;
+}
+
+function renderModelProviderCard(provider) {
+  const models = provider.modelIds ?? [];
+  return `
+    <article class="tool-card">
+      <div class="card-topline">
+        <span>${escapeHtml(provider.kind)} · ${escapeHtml(provider.providerType)}</span>
+        <span>${escapeHtml(provider.status ?? "available")}</span>
+      </div>
+      <h3>${escapeHtml(provider.label)}</h3>
+      <p class="muted">${escapeHtml(provider.baseUrl ?? "No network endpoint required")}</p>
+      <div class="model-pill-list">
+        ${models.length
+          ? models.map((model) => `<span class="model-pill">${escapeHtml(model)}</span>`).join("")
+          : `<span class="muted">${provider.kind === "embedding" ? "Deterministic or not configured" : "No model ids yet"}</span>`}
+      </div>
+      <dl class="compact-meta">
+        <div><dt>Default</dt><dd>${escapeHtml(provider.defaultModel ?? "not set")}</dd></div>
+        <div><dt>Secret</dt><dd>${escapeHtml(provider.apiKeySecretHandle ?? "none")}</dd></div>
+        <div><dt>Health</dt><dd>${escapeHtml(provider.healthStatus ?? "unknown")}</dd></div>
+        ${provider.dimensions ? `<div><dt>Dimensions</dt><dd>${escapeHtml(String(provider.dimensions))}</dd></div>` : ""}
+      </dl>
+      <div class="card-actions">
+        <button type="button" class="ghost-button" data-action="delete-model-provider" data-provider-id="${escapeHtml(provider.id)}">Delete</button>
+      </div>
+    </article>
   `;
 }
 
@@ -2814,6 +2917,55 @@ async function saveModelTiers(form) {
     render();
   } finally {
     setComposerBusy(form, false);
+  }
+}
+
+async function createModelProvider(form) {
+  const formData = new FormData(form);
+  const provider = {
+    label: String(formData.get("label") ?? "").trim(),
+    kind: String(formData.get("kind") ?? "chat"),
+    providerType: String(formData.get("providerType") ?? "openai-compatible"),
+    baseUrl: String(formData.get("baseUrl") ?? "").trim() || undefined,
+    modelIds: String(formData.get("modelIds") ?? "")
+      .split(/\n|,/)
+      .map((model) => model.trim())
+      .filter(Boolean),
+    defaultModel: String(formData.get("defaultModel") ?? "").trim() || undefined,
+    apiKeySecretHandle: String(formData.get("apiKeySecretHandle") ?? "").trim() || undefined,
+    dimensions: String(formData.get("dimensions") ?? "").trim()
+      ? Number(formData.get("dimensions"))
+      : undefined,
+  };
+
+  setComposerBusy(form, true);
+  try {
+    const data = await fetchJson("/api/model-providers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(provider),
+    });
+    state.modelProviders = [...state.modelProviders, data.provider].filter(Boolean);
+    form.reset();
+    await refreshData();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  } finally {
+    setComposerBusy(form, false);
+  }
+}
+
+async function deleteModelProvider(providerId) {
+  try {
+    await fetchJson(`/api/model-providers/${encodeURIComponent(providerId)}`, {
+      method: "DELETE",
+    });
+    state.modelProviders = state.modelProviders.filter((provider) => provider.id !== providerId);
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
   }
 }
 
