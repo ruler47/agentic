@@ -429,6 +429,9 @@ For documentation-only changes:
 - Trace Lab graph mode supports both category columns and call-depth columns. Preserve
   `parentSpanId` and dependency payloads so both layouts can draw direct arrows and
   dependency arrows correctly.
+- Trace Lab inspector should render `payload.callFrame` and `payload.selfCheck` as
+  readable operator sections, not only as raw JSON, because those are the Phase 4/6
+  contracts for recursive agent debugging.
 - Artifact cards should render a useful preview whenever possible: image thumbnails,
   text/content previews, or a typed placeholder for binary files.
 - Text-like artifacts, including generated output files, should keep a bounded

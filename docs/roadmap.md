@@ -725,6 +725,9 @@ Implemented:
   Timeline, Graph, Logs, and the selected span inspector.
 - Compact Trace Lab inspector evidence blocks for memory hits, tool payload summaries,
   and artifacts carried by selected span payloads.
+- Trace Lab inspector renders durable agent call frames and return self-check results as
+  first-class operator sections: caller span, local task, output contract, returned
+  summary, readiness, checks, warnings, evidence count, and artifact count.
 - Trace Lab inspector artifact evidence now renders the same preview cards as the main
   artifact panels instead of only filename/path text.
 - Trace Lab run directory for `/trace`, so opening the section lists runs instead of

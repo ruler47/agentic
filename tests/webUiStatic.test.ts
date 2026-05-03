@@ -69,6 +69,10 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /function applyTraceFilters/);
   assert.match(app, /function filterEventsForTrace/);
   assert.match(app, /function renderInspectorEvidence/);
+  assert.match(app, /function renderInspectorCallFrame/);
+  assert.match(app, /function renderInspectorSelfCheck/);
+  assert.match(app, /Agent call frame/);
+  assert.match(app, /Return self-check/);
   assert.match(app, /function renderTraceRunDirectory/);
   assert.match(app, /function renderTraceRunItem/);
   assert.match(app, /window\.location\.hash = normalized/);

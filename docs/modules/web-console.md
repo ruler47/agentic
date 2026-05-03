@@ -399,8 +399,9 @@ console is intentionally split by user intent:
 - Trace Lab is the deep inspector with live Timeline, Graph, and Logs modes, a selected
   span inspector, a return link to the originating Run Workspace, and client-side filters
   for actor, activity, status, tool, and model tier.
-- The Trace Lab inspector surfaces compact memory-hit, tool-evidence, and artifact blocks
-  from the selected span payload instead of requiring operators to read raw JSON first.
+- The Trace Lab inspector surfaces durable agent call frames, return self-checks, compact
+  memory-hit, tool-evidence, and artifact blocks from the selected span payload instead
+  of requiring operators to read raw JSON first.
 - Opening Trace Lab without a run ID shows a run directory instead of silently selecting
   the newest run. Graph nodes show explicit caller/callee labels so parent-child
   relationships remain readable even when visual edges are dense.

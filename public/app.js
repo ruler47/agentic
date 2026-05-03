@@ -1237,9 +1237,76 @@ function renderInspector(node) {
       ${contextBlock("Input summary", node.parentTitle ? `Called by ${node.parentTitle}` : "Root coordinator span.")}
       ${contextBlock("Output summary", node.detail || "No detail payload.")}
       ${node.dependencySpanIds.length ? contextBlock("Dependency spans", node.dependencySpanIds.join("\n")) : ""}
+      ${renderInspectorCallFrame(node)}
+      ${renderInspectorSelfCheck(node)}
       ${renderInspectorEvidence(node)}
       ${renderSpanToolRequestForm(node)}
     </div>
+  `;
+}
+
+function renderInspectorCallFrame(node) {
+  const callFrame = callFrameFromPayload(node.payload);
+  if (!callFrame) return "";
+  return `
+    <section class="context-block call-frame-card">
+      <div class="call-frame-heading">
+        <span>Agent call frame</span>
+        <strong>${escapeHtml(callFrame.status ?? node.status)}</strong>
+      </div>
+      <dl class="call-frame-meta">
+        <div><dt>Frame</dt><dd>${escapeHtml(callFrame.id ?? "unknown")}</dd></div>
+        <div><dt>Role</dt><dd>${escapeHtml(callFrame.role ?? node.actor)}</dd></div>
+        <div><dt>Actor</dt><dd>${escapeHtml(callFrame.actor ?? node.actor)}</dd></div>
+        <div><dt>Depth</dt><dd>${escapeHtml(String(callFrame.depth ?? "n/a"))}</dd></div>
+        <div><dt>Caller span</dt><dd>${escapeHtml(callFrame.parentSpanId ?? node.parentSpanId ?? "root")}</dd></div>
+        <div><dt>Model tier</dt><dd>${escapeHtml(callFrame.modelTier ?? modelTierFor(node) ?? "not set")}</dd></div>
+      </dl>
+      ${callFrame.localTask ? `<details open><summary>Local task</summary><p>${escapeHtml(callFrame.localTask)}</p></details>` : ""}
+      ${callFrame.outputContract ? `<details><summary>Output contract</summary><p>${escapeHtml(callFrame.outputContract)}</p></details>` : ""}
+      ${callFrame.outputSummary ? `<details><summary>Returned summary</summary><p>${escapeHtml(callFrame.outputSummary)}</p></details>` : ""}
+    </section>
+  `;
+}
+
+function renderInspectorSelfCheck(node) {
+  const selfCheck = selfCheckFromPayload(node.payload);
+  if (!selfCheck) return "";
+  const checks = Array.isArray(selfCheck.checks) ? selfCheck.checks : [];
+  const warnings = Array.isArray(selfCheck.warnings) ? selfCheck.warnings : [];
+  return `
+    <section class="context-block self-check-card ${selfCheck.readyToReturn ? "ready" : "blocked"}">
+      <div class="self-check-heading">
+        <span>Return self-check</span>
+        <strong>${selfCheck.readyToReturn ? "ready" : "blocked"}</strong>
+      </div>
+      <div class="self-check-metrics">
+        <span>${escapeHtml(String(selfCheck.evidenceCount ?? 0))} evidence</span>
+        <span>${escapeHtml(String(selfCheck.artifactCount ?? 0))} artifacts</span>
+        <span>${escapeHtml(formatRelative(selfCheck.checkedAt ?? node.lastTimestamp))}</span>
+      </div>
+      <ul class="self-check-list">
+        ${checks.length
+          ? checks
+              .map(
+                (check) => `
+                  <li class="${check.ok ? "ok" : "fail"}">
+                    <strong>${check.ok ? "pass" : "fail"}</strong>
+                    <span>${escapeHtml(check.name ?? "check")}</span>
+                    <small>${escapeHtml(check.reason ?? "")}</small>
+                  </li>
+                `,
+              )
+              .join("")
+          : `<li class="fail"><strong>missing</strong><span>No structured checks</span></li>`}
+      </ul>
+      ${warnings.length
+        ? `<details open><summary>Warnings</summary><p>${warnings.map((warning) => escapeHtml(warning)).join("<br>")}</p></details>`
+        : ""}
+      ${selfCheck.limitations?.length
+        ? `<details><summary>Limitations</summary><p>${selfCheck.limitations.map((item) => escapeHtml(item)).join("<br>")}</p></details>`
+        : ""}
+    </section>
   `;
 }
 
@@ -1274,6 +1341,16 @@ function renderInspectorEvidence(node) {
   }
 
   return blocks.join("");
+}
+
+function callFrameFromPayload(payload) {
+  if (!payload || typeof payload !== "object") return undefined;
+  return payload.callFrame && typeof payload.callFrame === "object" ? payload.callFrame : undefined;
+}
+
+function selfCheckFromPayload(payload) {
+  if (!payload || typeof payload !== "object") return undefined;
+  return payload.selfCheck && typeof payload.selfCheck === "object" ? payload.selfCheck : undefined;
 }
 
 function renderSpanToolRequestForm(node) {
