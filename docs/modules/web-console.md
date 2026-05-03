@@ -139,6 +139,10 @@ POST /api/tool-build-requests
 GET /api/tool-build-requests/:id
 PATCH /api/tool-build-requests/:id
 POST /api/tool-build-requests/:id/run
+GET /api/secret-handles
+POST /api/secret-handles
+GET /api/secret-handles/:handle
+DELETE /api/secret-handles/:handle
 ```
 
 `GET /api/tools` returns persistent registry metadata when configured: name, version,
@@ -186,6 +190,14 @@ runs isolated generated-tool tests plus isolated build, performs promotion tests
 the real project after isolated QA passes, registers QA-passed metadata, and reloads
 generated tools into the active registry. Failed QA reports can be returned to the builder
 for bounded retry attempts before a request becomes `qa_failed`.
+
+`GET /api/secret-handles` and `POST /api/secret-handles` expose the credential reference
+registry used by Tool Builds, generated tools, channel adapters, and future remote model
+providers. A secret handle stores only a provider (`env` or `external`), label, scopes,
+and `secretRef` such as `TELEGRAM_BOT_TOKEN` or a vault path. Raw values (`token`,
+`password`, `apiKey`, `value`) are rejected by the API. `DELETE
+/api/secret-handles/:handle` removes a handle and writes an audit event; no endpoint
+returns the underlying secret value.
 
 The server also runs a background Tool Builder worker by default. It claims the oldest
 `requested` card atomically, moves it to `building`, executes the same workflow used by

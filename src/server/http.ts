@@ -22,6 +22,11 @@ import {
 } from "../memory/retrievalEvaluation.js";
 import { reviewMemoryProposals } from "../memory/memoryProposalReview.js";
 import { AgentRunRecord, RunCreateContext, RunStore } from "../runs/types.js";
+import {
+  rejectRawSecretPayload,
+  SecretHandleInput,
+  SecretHandleStore,
+} from "../secrets/secretHandleStore.js";
 import { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
 import { ToolSchema, ToolStartupMode } from "../tools/tool.js";
 import { ToolRegistry } from "../tools/registry.js";
@@ -41,6 +46,7 @@ export type WebAppOptions = {
   toolBuildWorkflow?: ToolBuildWorkflow;
   reloadGeneratedTools?: () => Promise<void>;
   modelTierSettings?: ModelTierSettingsStore;
+  secretHandleStore?: SecretHandleStore;
   artifactStore?: ArtifactStore;
   conversationStore?: ConversationThreadStore;
   auditEventStore?: AuditEventStore;
@@ -699,6 +705,96 @@ async function routeRequest(
       await options.reloadGeneratedTools?.();
     }
     sendJson(response, 200, result);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/secret-handles") {
+    sendJson(response, 200, {
+      secretHandles: options.secretHandleStore ? await options.secretHandleStore.list() : [],
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/secret-handles") {
+    if (!options.secretHandleStore) {
+      sendJson(response, 503, { error: "Secret handle store is not configured" });
+      return;
+    }
+
+    try {
+      const body = await readJsonBody<unknown>(request);
+      rejectRawSecretPayload(body);
+      const secretHandle = await options.secretHandleStore.create(parseSecretHandleInput(body));
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "secret_handle.created",
+        targetType: "secret_handle",
+        targetId: secretHandle.handle,
+        status: "success",
+        summary: `Secret handle created: ${secretHandle.handle}`,
+        metadata: sanitizeAuditMetadata({
+          provider: secretHandle.provider,
+          secretRef: secretHandle.secretRef,
+          scopes: secretHandle.scopes,
+        }),
+      });
+      sendJson(response, 201, { secretHandle });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid secret handle request",
+      });
+    }
+    return;
+  }
+
+  const secretHandleMatch = url.pathname.match(/^\/api\/secret-handles\/([^/]+)$/);
+  if (request.method === "GET" && secretHandleMatch) {
+    if (!options.secretHandleStore) {
+      sendJson(response, 503, { error: "Secret handle store is not configured" });
+      return;
+    }
+
+    const secretHandle = await options.secretHandleStore.get(decodeURIComponent(secretHandleMatch[1] ?? ""));
+    if (!secretHandle) {
+      sendJson(response, 404, { error: "Secret handle not found" });
+      return;
+    }
+    sendJson(response, 200, { secretHandle });
+    return;
+  }
+
+  if (request.method === "DELETE" && secretHandleMatch) {
+    if (!options.secretHandleStore) {
+      sendJson(response, 503, { error: "Secret handle store is not configured" });
+      return;
+    }
+
+    const handle = decodeURIComponent(secretHandleMatch[1] ?? "");
+    const existing = await options.secretHandleStore.get(handle);
+    if (!existing) {
+      sendJson(response, 404, { error: "Secret handle not found" });
+      return;
+    }
+
+    await options.secretHandleStore.delete(handle);
+    await recordAudit(options, {
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "secret_handle.deleted",
+      targetType: "secret_handle",
+      targetId: handle,
+      status: "success",
+      summary: `Secret handle deleted: ${handle}`,
+      metadata: sanitizeAuditMetadata({
+        provider: existing.provider,
+        secretRef: existing.secretRef,
+        scopes: existing.scopes,
+      }),
+    });
+    sendJson(response, 200, { deleted: true, secretHandle: existing });
     return;
   }
 
@@ -1752,6 +1848,21 @@ function parseToolBuildReworkInput(value: unknown): string {
     throw new Error("feedback is required");
   }
   return candidate.feedback.trim();
+}
+
+function parseSecretHandleInput(value: unknown): SecretHandleInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("secret handle request must be an object");
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return {
+    handle: parseOptionalText(candidate.handle),
+    label: parseRequiredText(candidate.label, "label"),
+    provider: parseRequiredText(candidate.provider, "provider") as SecretHandleInput["provider"],
+    secretRef: parseRequiredText(candidate.secretRef, "secretRef"),
+    scopes: parseOptionalStringArray(candidate.scopes, "scopes"),
+  };
 }
 
 function parseOptionalReason(value: unknown): string | undefined {

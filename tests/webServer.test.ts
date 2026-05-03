@@ -18,6 +18,7 @@ import { InMemoryAuditEventStore } from "../src/audit/inMemoryAuditEventStore.js
 import { InMemoryGroupProfileStore } from "../src/instance/groupProfileStore.js";
 import { InMemoryUserStore } from "../src/instance/userStore.js";
 import { SkillMemory } from "../src/memory/skillMemory.js";
+import { InMemorySecretHandleStore } from "../src/secrets/secretHandleStore.js";
 
 class FakeAgent {
   async run(task: string, options?: {
@@ -1129,6 +1130,67 @@ test("web server registers generated tool metadata with conflict checks", async 
     assert.equal(createBody.tool.status, "disabled");
     assert.equal(conflictResponse.status, 400);
     assert.equal(tools.tools[0].source, "generated");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server manages secret handles without accepting raw secret values", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const secretHandleStore = new InMemorySecretHandleStore();
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    secretHandleStore,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const rejectedResponse = await fetch(`${baseUrl}/api/secret-handles`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        label: "Telegram bot",
+        provider: "env",
+        secretRef: "TELEGRAM_BOT_TOKEN",
+        token: "raw-value-should-not-enter-the-system",
+      }),
+    });
+    const createResponse = await fetch(`${baseUrl}/api/secret-handles`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        handle: "secret.telegram.bot",
+        label: "Telegram bot",
+        provider: "env",
+        secretRef: "TELEGRAM_BOT_TOKEN",
+        scopes: ["instance-local", "tool:channel.telegram.bot"],
+      }),
+    });
+    const created = await createResponse.json();
+    const listed = await (await fetch(`${baseUrl}/api/secret-handles`)).json();
+    const detail = await (await fetch(`${baseUrl}/api/secret-handles/secret.telegram.bot`)).json();
+    const deleteResponse = await fetch(`${baseUrl}/api/secret-handles/secret.telegram.bot`, { method: "DELETE" });
+    const deleted = await deleteResponse.json();
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+
+    assert.equal(rejectedResponse.status, 400);
+    assert.equal(createResponse.status, 201);
+    assert.equal(created.secretHandle.handle, "secret.telegram.bot");
+    assert.equal(created.secretHandle.secretRef, "TELEGRAM_BOT_TOKEN");
+    assert.equal(JSON.stringify(created).includes("raw-value-should-not-enter-the-system"), false);
+    assert.equal(listed.secretHandles.length, 1);
+    assert.deepEqual(detail.secretHandle.scopes, ["instance-local", "tool:channel.telegram.bot"]);
+    assert.equal(deleteResponse.status, 200);
+    assert.equal(deleted.deleted, true);
+    assert.equal(audit.events.some((event: { action: string }) => event.action === "secret_handle.created"), true);
+    assert.equal(audit.events.some((event: { action: string }) => event.action === "secret_handle.deleted"), true);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

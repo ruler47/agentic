@@ -15,6 +15,8 @@ import { PostgresSkillMemory } from "../memory/postgresSkillMemory.js";
 import { createTextEmbeddingProviderFromEnv } from "../memory/textEmbedding.js";
 import { InMemoryRunStore } from "../runs/inMemoryRunStore.js";
 import { PostgresRunStore } from "../runs/postgresRunStore.js";
+import { InMemorySecretHandleStore } from "../secrets/secretHandleStore.js";
+import { PostgresSecretHandleStore } from "../secrets/postgresSecretHandleStore.js";
 import { InMemoryModelTierSettingsStore } from "../settings/modelTierSettings.js";
 import { PostgresModelTierSettingsStore } from "../settings/postgresModelTierSettings.js";
 import { createWebApp } from "./http.js";
@@ -109,6 +111,7 @@ const modelTierSettings = pool
 const auditEventStore = pool ? new PostgresAuditEventStore(pool) : new InMemoryAuditEventStore();
 const groupProfileStore = pool ? new PostgresGroupProfileStore(pool) : new InMemoryGroupProfileStore();
 const userStore = pool ? new PostgresUserStore(pool) : new InMemoryUserStore();
+const secretHandleStore = pool ? new PostgresSecretHandleStore(pool) : new InMemorySecretHandleStore();
 const localArtifactStore = new LocalArtifactStore();
 const s3Config = s3ConfigFromEnv();
 const artifactStore =
@@ -139,6 +142,7 @@ const server = createWebApp({
   auditEventStore,
   groupProfileStore,
   userStore,
+  secretHandleStore,
 });
 
 const recoveredRuns = await runStore.recoverInterrupted(

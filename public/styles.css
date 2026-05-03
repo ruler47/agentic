@@ -1892,6 +1892,34 @@ textarea {
   min-height: 140px;
 }
 
+.secret-handle-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+}
+
+.secret-handle-strip > span {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.secret-handle-strip code,
+.context-list code {
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(53, 230, 193, 0.22);
+  background: rgba(53, 230, 193, 0.08);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 0.82rem;
+}
+
 .trace-directory-hero {
   display: flex;
   align-items: center;

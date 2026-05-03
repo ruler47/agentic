@@ -212,6 +212,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   policy contract and in-memory implementation.
 - [src/settings/postgresModelTierSettings.ts](src/settings/postgresModelTierSettings.ts)
   - Postgres-backed model tier policy.
+- [src/secrets/secretHandleStore.ts](src/secrets/secretHandleStore.ts) - secret-handle
+  metadata contract, validation, raw-secret rejection, and in-memory resolver for env refs.
+- [src/secrets/postgresSecretHandleStore.ts](src/secrets/postgresSecretHandleStore.ts) -
+  Postgres-backed `secret_handles` metadata store.
 - [src/instance/groupProfileStore.ts](src/instance/groupProfileStore.ts) - editable
   single-instance group profile contract.
 - [src/instance/postgresGroupProfileStore.ts](src/instance/postgresGroupProfileStore.ts)
@@ -444,6 +448,11 @@ For documentation-only changes:
 - Tool Build requests can be reworked through `POST /api/tool-build-requests/:id/rework`.
   Preserve the original request and create a new requested revision with operator feedback
   instead of overwriting prior QA evidence.
+- Secret handles are metadata references, not raw secrets. Use `POST /api/secret-handles`
+  with provider `env` or `external`, a `secretRef`, and scopes; the API rejects raw
+  `token`, `password`, `apiKey`, or `value` payloads. Tools and future model/channel
+  adapters should refer to handles, then resolve them at runtime through the store/policy
+  layer.
 - Generated tool metadata registration must reject builtin name collisions and version
   conflicts. Generated modules are loaded only from compiled project-local paths, after
   exported name/version/capabilities match metadata and healthcheck passes.

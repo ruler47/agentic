@@ -15,6 +15,8 @@ export type AuditAction =
   | "tool_build.registered"
   | "conversation_thread.deleted"
   | "group_profile.updated"
+  | "secret_handle.created"
+  | "secret_handle.deleted"
   | "memory.created"
   | "memory.updated"
   | "memory.embeddings_rebuilt";

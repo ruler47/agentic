@@ -56,6 +56,7 @@ const state = {
   memoryReviews: [],
   tools: [],
   buildRequests: [],
+  secretHandles: [],
   tiers: [],
   users: [],
   auditEvents: [],
@@ -113,6 +114,9 @@ document.addEventListener("submit", (event) => {
   if (form.dataset.action === "rework-tool") {
     void reworkTool(form);
   }
+  if (form.dataset.action === "create-secret-handle") {
+    void createSecretHandle(form);
+  }
 });
 
 document.addEventListener("click", (event) => {
@@ -130,6 +134,7 @@ document.addEventListener("click", (event) => {
     memoryStatus,
     toolName,
     buildId,
+    secretHandle,
     memoryFilter,
   } = action.dataset;
   if (actionName === "navigate" && route) {
@@ -200,6 +205,9 @@ document.addEventListener("click", (event) => {
   if (actionName === "delete-tool-build" && buildId) {
     void deleteToolBuild(buildId);
   }
+  if (actionName === "delete-secret-handle" && secretHandle) {
+    void deleteSecretHandle(secretHandle);
+  }
 });
 
 document.addEventListener("pointerover", (event) => {
@@ -258,6 +266,7 @@ async function refreshData() {
       memoryReviews,
       tools,
       buildRequests,
+      secretHandles,
       tiers,
       users,
       auditEvents,
@@ -270,6 +279,7 @@ async function refreshData() {
       fetchJson("/api/memories/review-queue").then((data) => data.reviews ?? []),
       fetchJson("/api/tools").then((data) => data.tools ?? []),
       fetchJson("/api/tool-build-requests").then((data) => data.requests ?? []),
+      fetchJson("/api/secret-handles").then((data) => data.secretHandles ?? []),
       fetchJson("/api/settings/model-tiers").then((data) => data.tiers ?? []),
       fetchJson("/api/users").then((data) => data.users ?? []),
       fetchJson("/api/audit-events").then((data) => data.events ?? []),
@@ -284,6 +294,7 @@ async function refreshData() {
       memoryReviews,
       tools,
       buildRequests,
+      secretHandles,
       tiers,
       users,
       auditEvents,
@@ -1992,9 +2003,15 @@ function renderToolBuildsPage() {
             <input name="capability" placeholder="api.aml.score, channel.telegram.bot, browser.flight-search" required />
           </label>
           <label>
-            <span>Docs, keys, and expected behavior</span>
-            <textarea name="reason" placeholder="Paste docs URL, secret handle, examples, acceptance criteria, and how the agent should use this capability." required></textarea>
+            <span>Docs, secret handles, and expected behavior</span>
+            <textarea name="reason" placeholder="Paste docs URL, existing secret handle names, examples, acceptance criteria, and how the agent should use this capability. Do not paste raw tokens." required></textarea>
           </label>
+          <div class="secret-handle-strip">
+            <span>Available secret handles</span>
+            ${state.secretHandles.length
+              ? state.secretHandles.map((secret) => `<code>${escapeHtml(secret.handle)}</code>`).join("")
+              : `<small>No handles yet. Add one in Settings before requesting credentialed API/channel tools.</small>`}
+          </div>
           <div class="composer-grid compact-grid">
             <label>
               <span>Desired tool name</span>
@@ -2269,10 +2286,95 @@ function renderAuditEventRow(event) {
 }
 
 function renderSettingsPage() {
-  return renderPlaceholderPage("Settings", "Instance name, timezone, locale, storage, artifact retention, secret store, and backup/export.", [
-    `Instance: ${state.instance?.id ?? "instance-local"}`,
-    `Timezone: ${state.instance?.timeZone ?? "Europe/Madrid"}`,
-  ]);
+  return `
+    <section class="page-stack">
+      <section class="surface-hero">
+        <span class="eyebrow">Instance configuration</span>
+        <h2>Settings</h2>
+        <p>Local instance settings and secret handles used by generated tools, model providers, and future channel adapters.</p>
+        <div class="metric-card-grid">
+          ${metricCard("Instance", state.instance?.id ?? "instance-local", state.instance?.name ?? "Local Agentic Assistant")}
+          ${metricCard("Timezone", state.instance?.timeZone ?? "Europe/Madrid", state.instance?.locale ?? "ru-RU")}
+          ${metricCard("Secret handles", String(state.secretHandles.length), "No raw values are exposed")}
+        </div>
+      </section>
+
+      <section class="surface-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Secret Handles</h2>
+            <p>Register references to environment variables or external secret manager paths. The UI and APIs never store raw API keys.</p>
+          </div>
+          <span class="context-chip">redacted by design</span>
+        </div>
+        <form data-action="create-secret-handle" class="settings-form">
+          <div class="composer-grid compact-grid">
+            <label>
+              <span>Handle</span>
+              <input name="handle" placeholder="secret.telegram.bot" />
+            </label>
+            <label>
+              <span>Label</span>
+              <input name="label" placeholder="Telegram bot token" required />
+            </label>
+            <label>
+              <span>Provider</span>
+              <select name="provider">
+                <option value="env">Environment variable</option>
+                <option value="external">External secret manager</option>
+              </select>
+            </label>
+            <label>
+              <span>Secret ref</span>
+              <input name="secretRef" placeholder="TELEGRAM_BOT_TOKEN" required />
+            </label>
+          </div>
+          <label>
+            <span>Scopes</span>
+            <input name="scopes" placeholder="instance-local, tool:channel.telegram.bot" />
+          </label>
+          <div class="composer-bottom">
+            <p class="composer-hint">Paste only references such as env var names or vault paths. Never paste the secret value itself.</p>
+            <button type="submit" class="primary-button">Create Secret Handle</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card-grid">
+        ${state.secretHandles.map(renderSecretHandleCard).join("") || emptyState("No secret handles", "Credentialed tools can be requested after a handle is registered.")}
+      </section>
+    </section>
+  `;
+}
+
+function renderSecretHandleCard(secret) {
+  return `
+    <article class="tool-card">
+      <div class="card-topline">
+        <span>${escapeHtml(secret.provider)}</span>
+        <span>${formatRelative(secret.updatedAt ?? secret.createdAt)}</span>
+      </div>
+      <h3>${escapeHtml(secret.handle)}</h3>
+      <p>${escapeHtml(secret.label)}</p>
+      <div class="context-list">
+        <span>Ref: <code>${escapeHtml(secret.secretRef)}</code></span>
+        <span>Scopes: ${(secret.scopes ?? []).map((scope) => `<code>${escapeHtml(scope)}</code>`).join(" ") || "instance-local"}</span>
+      </div>
+      <div class="card-actions">
+        <button type="button" class="ghost-button danger-button" data-action="delete-secret-handle" data-secret-handle="${escapeHtml(secret.handle)}">Delete</button>
+      </div>
+    </article>
+  `;
+}
+
+function metricCard(label, value, detail) {
+  return `
+    <article class="metric-card">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small>${escapeHtml(detail)}</small>
+    </article>
+  `;
 }
 
 function renderDiagnosticsPage() {
@@ -2642,6 +2744,55 @@ async function runToolBuild(buildId) {
     state.buildRequests = [data.request, ...state.buildRequests.filter((item) => item.id !== data.request.id)];
     const tools = await fetchJson("/api/tools");
     state.tools = tools.tools ?? state.tools;
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function createSecretHandle(form) {
+  const formData = new FormData(form);
+  setComposerBusy(form, true);
+  try {
+    const data = await fetchJson("/api/secret-handles", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        handle: normalizeOptionalInput(formData.get("handle")),
+        label: String(formData.get("label") ?? ""),
+        provider: String(formData.get("provider") ?? "env"),
+        secretRef: String(formData.get("secretRef") ?? ""),
+        scopes: parseListInput(formData.get("scopes")),
+      }),
+    });
+    state.secretHandles = [
+      data.secretHandle,
+      ...state.secretHandles.filter((item) => item.handle !== data.secretHandle.handle),
+    ];
+    state.notice = {
+      title: "Secret handle saved",
+      body: `${data.secretHandle.handle} now points to ${data.secretHandle.secretRef}.`,
+    };
+    form.reset();
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  } finally {
+    setComposerBusy(form, false);
+  }
+}
+
+async function deleteSecretHandle(handle) {
+  if (!window.confirm(`Delete secret handle ${handle}? Tools that reference it will need a replacement handle.`)) return;
+  try {
+    await fetchJson(`/api/secret-handles/${encodeURIComponent(handle)}`, { method: "DELETE" });
+    state.secretHandles = state.secretHandles.filter((item) => item.handle !== handle);
+    state.notice = {
+      title: "Secret handle deleted",
+      body: `${handle} was removed from the local registry.`,
+    };
     render();
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);

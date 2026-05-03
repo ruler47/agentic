@@ -406,6 +406,23 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       create index if not exists tool_build_requests_capability_status_idx
       on tool_build_requests(capability, status, created_at desc);
     `);
+
+    await pool.query(`
+      create table if not exists secret_handles (
+        handle text primary key,
+        label text not null,
+        provider text not null check (provider in ('env', 'external')),
+        secret_ref text not null,
+        scopes text[] not null default '{}',
+        created_at timestamptz not null,
+        updated_at timestamptz not null
+      );
+    `);
+
+    await pool.query(`
+      create index if not exists secret_handles_updated_at_idx
+      on secret_handles(updated_at desc);
+    `);
   } finally {
     await pool.end();
   }

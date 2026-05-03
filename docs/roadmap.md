@@ -354,11 +354,17 @@ Remaining Phase 3 gaps:
 - Fold API-docs onboarding into Tool Builds: admin uploads/pastes documentation, desired
   use cases, and a credential secret handle; the builder creates a scoped TypeScript tool
   contract, tests, QA report, and registry metadata. PARTIAL: the UI/API can create
-  capability requests; autonomous docs parsing and credential secret-store wiring remain.
+  capability requests and register secret handles that point to env vars or external
+  secret-manager refs without exposing raw values; autonomous docs parsing and generated
+  tool runtime credential resolution remain.
 - Treat channel adapters as tools, not special one-off screens: Telegram, WhatsApp, Slack,
   email, and custom inbound/outbound adapters should be built through Tool Builds,
   registered in the tool registry, and then monitored on the Channels runtime page.
 - Store credentials as secret handles, never in prompts, memory, artifacts, or source.
+  DONE for the metadata/API/UI layer: `secret_handles` stores provider, label, scopes, and
+  `secretRef`, rejects raw token/password/apiKey/value payloads, and audits create/delete.
+  Remaining work is wiring generated tools/model providers to request handles through a
+  policy-aware resolver.
 - Add instance/user tool policy so a tool can be installed globally but enabled only for
   this instance, specific roles, or specific users.
 - Move generated-tool QA from temporary workspace isolation to a stricter worker service

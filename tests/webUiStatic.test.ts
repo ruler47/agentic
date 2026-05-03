@@ -38,6 +38,12 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /function renderGroupProfilePage/);
   assert.match(app, /function saveModelTiers/);
   assert.match(app, /data-action="create-tool-build-request"/);
+  assert.match(app, /\/api\/secret-handles/);
+  assert.match(app, /function createSecretHandle/);
+  assert.match(app, /function deleteSecretHandle/);
+  assert.match(app, /data-action="create-secret-handle"/);
+  assert.match(app, /data-action="delete-secret-handle"/);
+  assert.match(app, /Available secret handles/);
   assert.match(app, /data-live-run-duration/);
   assert.match(app, /function updateLiveTimers/);
   assert.match(app, /function cancelRun/);
@@ -154,6 +160,7 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".tools-layout",
     ".kanban-heading",
     ".kanban-board",
+    ".secret-handle-strip",
     ".empty-state",
   ]) {
     assert.match(styles, new RegExp(componentClass.replace(".", "\\.")));

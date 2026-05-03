@@ -158,9 +158,17 @@ fallback. Without them, the app uses `LocalArtifactStore`.
 
 ### Secrets
 
-Future API/tool onboarding requires a secret store. Credentials provided by an admin
-should be stored as secret handles and referenced by tools at runtime.
-This also includes remote model provider credentials such as OpenAI API keys.
+API/tool onboarding uses a secret-handle registry. Credentials provided by an admin are
+referenced by handle and resolved by provider at runtime; raw values do not enter prompts,
+traces, memories, generated source, or artifacts. The current implementation supports:
+
+- `env` handles that point to environment variable names such as `TELEGRAM_BOT_TOKEN`;
+- `external` handles that point to an external secret-manager path;
+- Postgres-backed `secret_handles` metadata plus in-memory test storage;
+- `GET/POST/DELETE /api/secret-handles` with raw token/password/apiKey/value payload
+  rejection and audit events for create/delete.
+
+This also covers remote model provider credentials such as OpenAI API keys.
 
 Do not store secrets in:
 
@@ -170,9 +178,9 @@ Do not store secrets in:
 - artifacts;
 - trace event details.
 
-Local development can start with encrypted Postgres records or environment-backed secret
-handles. Production should use a dedicated secret manager such as Vault, cloud KMS/Secret
-Manager, or another deployment-appropriate backend.
+Local development should prefer environment-backed handles. Production should use a
+dedicated secret manager such as Vault, cloud KMS/Secret Manager, or another
+deployment-appropriate backend.
 
 ### Workspace Files
 
