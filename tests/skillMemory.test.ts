@@ -102,6 +102,47 @@ test("SkillMemory filters search by visible scopes and explains matches", async 
   }
 });
 
+test("SkillMemory requires exact scope ids for non-global memory visibility", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+
+  try {
+    const dima = await memory.add({
+      title: "Dima pharmacy preference",
+      tags: ["pharmacy", "preference"],
+      summary: "Dima wants concise pharmacy answers.",
+      reusableProcedure: "Keep pharmacy responses concise for Dima.",
+      scope: "user",
+      scopeId: "user-dima",
+      status: "accepted",
+      sensitivity: "private",
+    });
+    await memory.add({
+      title: "Other user pharmacy preference",
+      tags: ["pharmacy", "preference"],
+      summary: "Another user wants verbose pharmacy answers.",
+      reusableProcedure: "Give long pharmacy responses for the other user.",
+      scope: "user",
+      scopeId: "user-other",
+      status: "accepted",
+      sensitivity: "private",
+    });
+
+    const broadUserScope = await memory.search("pharmacy preference", 5, {
+      visibleScopes: [{ scope: "user" }],
+    });
+    const exactUserScope = await memory.search("pharmacy preference", 5, {
+      visibleScopes: [{ scope: "user", scopeId: "user-dima" }],
+    });
+
+    assert.deepEqual(broadUserScope, []);
+    assert.equal(exactUserScope.length, 1);
+    assert.equal(exactUserScope[0]?.id, dima.id);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("SkillMemory returns empty list when file does not exist", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
   const memory = new SkillMemory(join(dir, "missing.json"));

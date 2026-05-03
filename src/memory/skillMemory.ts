@@ -211,7 +211,7 @@ export function isMemoryVisible(entry: SkillMemoryEntry, visibleScopes: MemorySc
   return visibleScopes.some((candidate) => {
     if (candidate.scope !== scope) return false;
     if (scope === "global") return true;
-    return candidate.scopeId === undefined || candidate.scopeId === entry.scopeId;
+    return Boolean(candidate.scopeId) && candidate.scopeId === entry.scopeId;
   });
 }
 

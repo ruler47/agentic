@@ -161,7 +161,10 @@ Tasks:
   scopes, and asserts the retrieved memory reaches classification/direct-answer prompts
   while out-of-scope memory is excluded.
 - Add permissions so agents cannot read another user's private memory unless policy and
-  task context allow it.
+  task context allow it. PARTIAL: runtime visible-scope retrieval now requires exact
+  `scopeId` matches for user/group/thread/run memories, so broad `scope=user` queries no
+  longer expose every user's accepted/private memory. Full role/policy rules are still
+  pending.
 - Add UI for browsing and editing group/user memory separately.
 
 Remaining memory gaps:
@@ -170,8 +173,8 @@ Remaining memory gaps:
   text-feature hashing, not a true semantic embedding model.
 - The agent only stores a memory when the LLM returns `shouldStore: true`.
 - Stored lessons are generic, so specific repeated requests may not match well.
-- Runtime memory retrieval enforces accepted-only and visible-scope filtering, but does
-  not yet evaluate full role/policy rules for sensitive/private memories.
+- Runtime memory retrieval enforces accepted-only and exact visible-scope filtering, but
+  does not yet evaluate full role/policy rules for sensitive/private memories.
 - Memory proposals from completed runs are classified into group/user/thread/run scope by
   the learning model, but they are not yet re-reviewed by a separate memory-specialist
   agent before entering the review queue.

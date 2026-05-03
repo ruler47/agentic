@@ -322,6 +322,8 @@ For documentation-only changes:
   being sent to local OpenAI-compatible models with limited context.
 - Runtime memory retrieval should pass visible scopes for the active group, requester,
   thread, and run so unrelated scoped memory does not enter the prompt.
+- Non-global memory visibility requires exact `scopeId` matches. Do not reintroduce
+  wildcard user/group/thread/run memory access without a policy-layer check.
 - Postgres memory search writes `memory_embedding` vectors when pgvector is available.
   The current provider is deterministic text-feature hashing so the contract is portable;
   replace it through the embedding module rather than inlining provider calls.
