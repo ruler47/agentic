@@ -153,8 +153,11 @@ Tasks:
   vector(128)` and an HNSW cosine index are created when pgvector is available; memory
   writes use a configurable embedding provider with deterministic fallback.
 - Search by semantic similarity plus tags. PARTIAL: Postgres search now merges lexical
-  and vector candidates before visibility/status filtering; real semantic quality depends
-  on configuring `EMBEDDING_MODEL` and measuring retrieval against representative runs.
+  and vector candidates before visibility/status filtering. A reusable retrieval
+  evaluation harness plus `POST /api/memories/evaluate-retrieval` can score representative
+  query fixtures by expected memory ids, recall, top-hit match, visible scopes, and
+  limits. Real semantic quality still depends on configuring `EMBEDDING_MODEL` and
+  maintaining production-like evaluation cases.
 - Add a re-embedding/backfill job for provider changes. DONE for the operator path:
   `POST /api/memories/reembed` rebuilds stored vectors for the active provider and the
   Memory page exposes a "Rebuild embeddings" action with audit coverage.
@@ -169,8 +172,10 @@ Tasks:
   `scopeId` matches for user/group/thread/run memories, so broad `scope=user` queries no
   longer expose every user's accepted/private memory. A deterministic memory policy
   evaluator now simulates accepted/status, exact-scope, private-requester, and sensitive
-  grant decisions for the operator UI. Full runtime role/policy enforcement is still
-  pending.
+  grant decisions for the operator UI. The same evaluator is also applied before
+  memories are injected into agent prompts: sensitive memories need an explicit runtime
+  grant, and private memories are limited to the same requester user unless an override
+  is supplied. Editable role/policy records are still pending.
 - Add UI for browsing and editing group/user memory separately. DONE for the current
   operator workflow: the Memory page
   now separates entries by status and exact scope (`global`, `group`, `user`, `thread`,
@@ -182,12 +187,13 @@ Tasks:
 
 Remaining memory gaps:
 
-- Real semantic retrieval still needs a configured embedding model and quality evaluation
-  against representative runs.
+- Real semantic retrieval still needs a configured embedding model and a growing set of
+  production-like retrieval evaluation fixtures.
 - The agent only stores a memory when the LLM returns `shouldStore: true`.
 - Stored lessons are generic, so specific repeated requests may not match well.
-- Runtime memory retrieval enforces accepted-only and exact visible-scope filtering, but
-  does not yet enforce the full role/policy simulation for sensitive/private memories.
+- Runtime memory retrieval enforces accepted-only, exact visible-scope filtering, and the
+  deterministic sensitive/private memory policy before prompt injection. It is not yet
+  connected to editable role/policy records or persistent policy decisions.
 - Memory proposals from completed runs are classified into group/user/thread/run scope by
   the learning model, but they are not yet re-reviewed by a separate memory-specialist
   agent before entering the review queue.

@@ -186,6 +186,40 @@ GET /api/settings/model-tiers
 PUT /api/settings/model-tiers
 ```
 
+Memory operations:
+
+```http
+GET /api/memories
+POST /api/memories
+PATCH /api/memories/:id
+POST /api/memories/reembed
+POST /api/memories/evaluate-retrieval
+```
+
+`POST /api/memories/reembed` rebuilds every stored memory vector for the active embedding
+provider and records a `memory.embeddings_rebuilt` audit event.
+
+`POST /api/memories/evaluate-retrieval` accepts retrieval quality cases:
+
+```json
+{
+  "cases": [
+    {
+      "id": "spanish-pharmacy",
+      "query": "Spanish pharmacy AEMPS sources",
+      "expectedMemoryIds": ["memory-id"],
+      "visibleScopes": [{ "scope": "global" }, { "scope": "group", "scopeId": "group-local" }],
+      "limit": 5,
+      "minRecall": 1
+    }
+  ]
+}
+```
+
+The response reports `passed`, `averageRecall`, `topHitMatched`, retrieved IDs, and
+missing IDs per case. Use it to keep semantic memory retrieval measurable when changing
+embedding providers, tags, or stored memory summaries.
+
 Audit events:
 
 ```http

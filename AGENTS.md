@@ -176,7 +176,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/memory/skillMemory.ts](src/memory/skillMemory.ts) - shared file-based skill memory.
 - [src/memory/memoryPolicy.ts](src/memory/memoryPolicy.ts) - deterministic memory access
   policy evaluator used to simulate accepted/status, exact-scope, private requester, and
-  sensitive grant decisions before full runtime role-policy enforcement exists.
+  sensitive grant decisions in the Memory page and before runtime prompt injection.
+- [src/memory/retrievalEvaluation.ts](src/memory/retrievalEvaluation.ts) - reusable
+  memory retrieval quality harness for query fixtures, expected memory IDs, recall, and
+  top-hit checks.
 - [src/memory/textEmbedding.ts](src/memory/textEmbedding.ts) - deterministic local
   embedding provider, OpenAI-compatible embedding adapter, fallback wrapper, projection
   to the current pgvector width, and pgvector payload formatter for memory retrieval
@@ -283,9 +286,11 @@ For documentation-only changes:
 
 - `tests/json.test.ts` covers JSON extraction from model output.
 - `tests/skillMemory.test.ts` covers file-backed skill memory.
+- `tests/memoryRetrievalEvaluation.test.ts` covers retrieval quality fixture scoring.
 - `tests/toolRegistry.test.ts` covers tool registration and lookup.
 - `tests/universalAgent.test.ts` covers direct and delegated orchestration with a fake
-  LLM, including accepted scoped memory retrieval for repeated similar tasks.
+  LLM, including accepted scoped memory retrieval, runtime sensitive/private memory
+  policy filtering, and repeated similar tasks.
 - `tests/artifactStore.test.ts` covers local artifact persistence, durable
   metadata/object payload separation, and download metadata.
 - `tests/auditEventStore.test.ts` covers normalized in-memory audit events.
@@ -388,6 +393,10 @@ For documentation-only changes:
 - New capabilities must be implemented as TypeScript tool modules with schemas,
   capabilities, healthchecks, tests, and registry wiring. Runtime code should request a
   capability from `ToolRegistry` rather than embedding one-off tool logic.
+- Runtime memory injection must pass through the deterministic memory policy evaluator
+  when visible scopes are available: only accepted exact-scope memories are eligible,
+  sensitive memories require an explicit runtime grant, and private memories require the
+  same requester user or an explicit private-memory grant.
 - Built-in and future generated tool contracts should be synced into `tool_modules` so
   source/status/health/version metadata survives restarts.
 - Missing capabilities should create `tool_build_requests` with TypeScript module paths,

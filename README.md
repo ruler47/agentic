@@ -92,6 +92,15 @@ Without `EMBEDDING_MODEL`, memory retrieval uses the portable deterministic loca
 embedding provider. Remote embedding vectors are projected into the current 128-dimensional
 pgvector column and fall back locally if the endpoint fails.
 
+Memory operators can rebuild and evaluate retrieval through the web API:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/memories/reembed
+curl -X POST http://127.0.0.1:3000/api/memories/evaluate-retrieval \
+  -H 'content-type: application/json' \
+  -d '{"cases":[{"id":"example","query":"Spanish pharmacy sources","expectedMemoryIds":["memory-id"]}]}'
+```
+
 ## Verify
 
 ```bash

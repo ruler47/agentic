@@ -736,6 +736,21 @@ test("web server supports scoped memory review lifecycle", async () => {
       body: JSON.stringify({ status: "accepted", confidence: 0.95 }),
     });
     const accepted = await acceptResponse.json();
+    const evaluationResponse = await fetch(`${baseUrl}/api/memories/evaluate-retrieval`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        cases: [
+          {
+            id: "telegram-routing",
+            query: "Telegram whitelisted users thread routing",
+            expectedMemoryIds: [created.memory.id],
+            visibleScopes: [{ scope: "global" }, { scope: "group", scopeId: "group-local" }],
+          },
+        ],
+      }),
+    });
+    const evaluation = await evaluationResponse.json();
     const editResponse = await fetch(`${baseUrl}/api/memories/${encodeURIComponent(created.memory.id)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -766,6 +781,9 @@ test("web server supports scoped memory review lifecycle", async () => {
     assert.equal(acceptResponse.status, 200);
     assert.equal(accepted.memory.status, "accepted");
     assert.equal(accepted.memory.confidence, 0.95);
+    assert.equal(evaluationResponse.status, 200);
+    assert.equal(evaluation.passed, true);
+    assert.equal(evaluation.results[0].topHitMatched, true);
     assert.equal(editResponse.status, 200);
     assert.equal(edited.memory.title, "Telegram continuity policy");
     assert.equal(edited.memory.scope, "user");

@@ -1138,6 +1138,97 @@ test("UniversalAgent retrieves accepted scoped memories for similar repeated tas
   }
 });
 
+test("UniversalAgent applies memory policy before prompt injection", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  await memory.add({
+    title: "Sensitive pharmacy preference",
+    tags: ["pharmacy", "spain"],
+    summary: "The family has a sensitive pharmacy preference.",
+    reusableProcedure: "Only use this preference when sensitive memory is explicitly allowed.",
+    scope: "group",
+    scopeId: "group-family",
+    status: "accepted",
+    confidence: 0.95,
+    sensitivity: "sensitive",
+  });
+  await memory.add({
+    title: "Normal pharmacy preference",
+    tags: ["pharmacy", "spain"],
+    summary: "The family prefers official Spanish medicine sources.",
+    reusableProcedure: "Prefer AEMPS and official Spanish sources first.",
+    scope: "group",
+    scopeId: "group-family",
+    status: "accepted",
+    confidence: 0.9,
+    sensitivity: "normal",
+  });
+  const fakeLlm = new CapturingFakeLlm();
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+  const events: AgentEvent[] = [];
+
+  try {
+    await agent.run("pharmacy spain preference", {
+      instanceId: "group-family",
+      requesterUserId: "user-dima",
+      memoryScopes: [{ scope: "global" }, { scope: "group", scopeId: "group-family" }],
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    const memoryEvent = events.find((event) => event.type === "memory-search-completed");
+    const retrieved = memoryEvent?.payload as Array<{ title: string }> | undefined;
+
+    assert.equal(memoryEvent?.detail, "1 relevant memories found; 1 blocked by memory policy");
+    assert.deepEqual(retrieved?.map((item) => item.title), ["Normal pharmacy preference"]);
+    assert.doesNotMatch(fakeLlm.prompts.join("\n"), /Sensitive pharmacy preference/);
+    assert.match(fakeLlm.prompts.join("\n"), /Normal pharmacy preference/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent can inject sensitive memory with explicit runtime grant", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  await memory.add({
+    title: "Sensitive pharmacy preference",
+    tags: ["pharmacy", "spain"],
+    summary: "The family has a sensitive pharmacy preference.",
+    reusableProcedure: "Use the sensitive preference when the run policy allows it.",
+    scope: "group",
+    scopeId: "group-family",
+    status: "accepted",
+    confidence: 0.95,
+    sensitivity: "sensitive",
+  });
+  const fakeLlm = new CapturingFakeLlm();
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+  const events: AgentEvent[] = [];
+
+  try {
+    await agent.run("pharmacy spain preference", {
+      instanceId: "group-family",
+      requesterUserId: "user-dima",
+      memoryScopes: [{ scope: "global" }, { scope: "group", scopeId: "group-family" }],
+      allowSensitiveMemory: true,
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    const memoryEvent = events.find((event) => event.type === "memory-search-completed");
+    const retrieved = memoryEvent?.payload as Array<{ title: string }> | undefined;
+
+    assert.equal(memoryEvent?.detail, "1 relevant memories found");
+    assert.deepEqual(retrieved?.map((item) => item.title), ["Sensitive pharmacy preference"]);
+    assert.match(fakeLlm.prompts.join("\n"), /Sensitive pharmacy preference/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent emits observable lifecycle events", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));

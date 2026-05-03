@@ -16,6 +16,10 @@ import {
 import { GroupProfileStore } from "../instance/groupProfileStore.js";
 import { InMemoryUserStore, UserRecord, UserStore } from "../instance/userStore.js";
 import { MemoryListOptions, MemoryUpdateInput, SkillMemoryStore } from "../memory/skillMemory.js";
+import {
+  evaluateMemoryRetrieval,
+  MemoryRetrievalEvaluationCase,
+} from "../memory/retrievalEvaluation.js";
 import { RunCreateContext, RunStore } from "../runs/types.js";
 import { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
 import { ToolSchema, ToolStartupMode } from "../tools/tool.js";
@@ -318,6 +322,26 @@ async function routeRequest(
     } catch (error) {
       sendJson(response, 500, {
         error: error instanceof Error ? error.message : "Memory embedding rebuild failed",
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/memories/evaluate-retrieval") {
+    if (!options.skillMemory) {
+      sendJson(response, 503, { error: "Memory store is not configured" });
+      return;
+    }
+
+    try {
+      const report = await evaluateMemoryRetrieval(
+        options.skillMemory,
+        parseMemoryRetrievalEvaluationCases(await readJsonBody<unknown>(request)),
+      );
+      sendJson(response, 200, report);
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid memory retrieval evaluation request",
       });
     }
     return;
@@ -1495,6 +1519,64 @@ function parseMemoryUpdateInput(value: unknown): MemoryUpdateInput {
   if (candidate.sourceThreadId !== undefined) update.sourceThreadId = parseOptionalText(candidate.sourceThreadId);
   if (candidate.evidence !== undefined) update.evidence = parseOptionalStringArray(candidate.evidence, "evidence") ?? [];
   return update;
+}
+
+function parseMemoryRetrievalEvaluationCases(value: unknown): MemoryRetrievalEvaluationCase[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("memory retrieval evaluation request must be an object");
+  }
+
+  const candidate = value as Record<string, unknown>;
+  if (!Array.isArray(candidate.cases) || candidate.cases.length === 0) {
+    throw new Error("cases must be a non-empty array");
+  }
+
+  return candidate.cases.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`cases[${index}] must be an object`);
+    }
+
+    const entry = item as Record<string, unknown>;
+    const expectedMemoryIds = parseOptionalStringArray(entry.expectedMemoryIds, `cases[${index}].expectedMemoryIds`);
+    if (!expectedMemoryIds?.length) {
+      throw new Error(`cases[${index}].expectedMemoryIds must contain at least one memory id`);
+    }
+
+    return {
+      id: parseRequiredText(entry.id, `cases[${index}].id`),
+      query: parseRequiredText(entry.query, `cases[${index}].query`),
+      expectedMemoryIds,
+      visibleScopes: parseOptionalMemoryScopeFilters(entry.visibleScopes, `cases[${index}].visibleScopes`),
+      limit: parseOptionalPositiveInteger(entry.limit, `cases[${index}].limit`),
+      minRecall: parseOptionalConfidence(entry.minRecall),
+    };
+  });
+}
+
+function parseOptionalMemoryScopeFilters(value: unknown, field: string) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`${field}[${index}] must be an object`);
+    }
+
+    const candidate = item as Record<string, unknown>;
+    return {
+      scope: parseMemoryScope(candidate.scope),
+      scopeId: parseOptionalText(candidate.scopeId),
+    };
+  });
+}
+
+function parseOptionalPositiveInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+    throw new Error(`${field} must be an integer from 1 to 100`);
+  }
+  return parsed;
 }
 
 function parseRequiredText(value: unknown, field: string): string {

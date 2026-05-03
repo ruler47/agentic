@@ -7,6 +7,7 @@ import {
   normalizeMemoryStatus,
   SkillMemoryStore,
 } from "../memory/skillMemory.js";
+import { evaluateMemoryPolicy, MemoryPolicyDecision } from "../memory/memoryPolicy.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { shouldUseWebSearch } from "../tools/webSearchTool.js";
 import {
@@ -72,6 +73,8 @@ type RunOptions = {
     relevantArtifactIds: string[];
   };
   memoryScopes?: MemoryScopeFilter[];
+  allowSensitiveMemory?: boolean;
+  allowPrivateMemory?: boolean;
   saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>;
   requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>;
   now?: Date;
@@ -164,7 +167,8 @@ export class UniversalAgent {
       options.timeZone,
     );
     const memoryStartedAt = new Date();
-    const memories = await this.skillMemory.search(taskContext, 5, { visibleScopes: options.memoryScopes });
+    const memoryCandidates = await this.skillMemory.search(taskContext, 12, { visibleScopes: options.memoryScopes });
+    const { memories, blocked } = filterMemoriesForRuntime(memoryCandidates, options);
     await emit({
       spanId: memorySpanId,
       parentSpanId: runSpanId,
@@ -173,7 +177,12 @@ export class UniversalAgent {
       activity: "memory",
       status: "completed",
       title: "Skill memory searched",
-      detail: `${memories.length} relevant memories found`,
+      detail: [
+        `${memories.length} relevant memories found`,
+        blocked.length > 0 ? `${blocked.length} blocked by memory policy` : undefined,
+      ]
+        .filter(Boolean)
+        .join("; "),
       startedAt: memoryStartedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(memoryStartedAt),
@@ -1638,6 +1647,35 @@ function compactMemoriesForPrompt(memories: SkillMemoryEntry[]): SkillMemoryEntr
     reusableProcedure: limitText(memory.reusableProcedure, promptBudget.memoryEntryChars),
     evidence: (memory.evidence ?? []).slice(0, 4).map((item) => limitText(item, promptBudget.memoryEvidenceChars)),
   }));
+}
+
+function filterMemoriesForRuntime(
+  candidates: SkillMemoryEntry[],
+  options: RunOptions,
+): { memories: SkillMemoryEntry[]; blocked: Array<{ memory: SkillMemoryEntry; decision: MemoryPolicyDecision }> } {
+  if (!options.memoryScopes?.length) {
+    return { memories: candidates.slice(0, 5), blocked: [] };
+  }
+
+  const allowed: SkillMemoryEntry[] = [];
+  const blocked: Array<{ memory: SkillMemoryEntry; decision: MemoryPolicyDecision }> = [];
+
+  for (const memory of candidates) {
+    const decision = evaluateMemoryPolicy(memory, {
+      visibleScopes: options.memoryScopes,
+      requesterUserId: options.requesterUserId,
+      allowSensitive: options.allowSensitiveMemory,
+      allowPrivate: options.allowPrivateMemory,
+    });
+
+    if (decision.status === "allowed") {
+      allowed.push(memory);
+    } else {
+      blocked.push({ memory, decision });
+    }
+  }
+
+  return { memories: allowed.slice(0, 5), blocked };
 }
 
 function compactWorkerResultsForPrompt(workerResults: WorkerResult[], maxTotalOutputChars: number): WorkerResult[] {
