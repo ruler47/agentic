@@ -24,6 +24,10 @@ import {
   WorkerResult,
 } from "../types.js";
 import { asksForChart } from "../artifacts/chartArtifact.js";
+import {
+  artifactMatchesRequirement,
+  inspectArtifactRequirement,
+} from "../artifacts/artifactRequirementQuality.js";
 import { inspectBrowserScreenshotEvidence } from "../artifacts/semanticArtifactQuality.js";
 import { isChartToolData } from "../tools/chartGenerateTool.js";
 import { isBrowserOperateData } from "../tools/browserOperateTool.js";
@@ -2200,19 +2204,26 @@ function hardGateReview(workerResult: WorkerResult): ReviewResult | undefined {
     };
   }
 
-  return undefined;
-}
-
-function artifactMatchesRequirement(artifact: AgentArtifact, requirement: ArtifactRequirement): boolean {
-  if (requirement.kind === "screenshot") return artifact.mimeType === "image/png";
-  if (requirement.kind === "chart") return artifact.mimeType === "image/svg+xml" || artifact.mimeType === "image/png";
-  if (requirement.kind === "image") return artifact.mimeType.startsWith("image/");
-  if (requirement.kind === "document") {
-    return ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"].includes(
-      artifact.mimeType,
+  const weakTypedArtifacts = (workerResult.subtask.requiredArtifacts ?? [])
+    .filter((requirement) => requirement.required !== false)
+    .flatMap((requirement) =>
+      (workerResult.artifacts ?? [])
+        .filter((artifact) => artifactMatchesRequirement(artifact, requirement))
+        .map((artifact) => ({ artifact, requirement, report: inspectArtifactRequirement(artifact, requirement) }))
+        .filter(({ report }) => !report.ok),
     );
+
+  if (weakTypedArtifacts.length > 0) {
+    return {
+      subtaskId: workerResult.subtask.id,
+      verdict: "needs_revision",
+      notes: `Required artifact failed typed QA: ${weakTypedArtifacts
+        .map(({ artifact, report }) => `${artifact.filename}: ${report.reason}`)
+        .join("; ")}. Regenerate the artifact or report that a useful artifact cannot be produced.`,
+    };
   }
-  return artifact.kind === "output";
+
+  return undefined;
 }
 
 function isClearlyIrrelevantArtifact(artifact: AgentArtifact): boolean {

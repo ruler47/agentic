@@ -401,6 +401,12 @@ such as SVG charts. Text-like input and generated output artifacts store a short
 `contentPreview`; the UI renders text/source snippets and compact CSV/TSV table previews
 instead of showing only filenames and storage paths.
 
+Reviewer hard-gates also validate typed artifact contracts before accepting worker
+results. A required dataset must look like data, a required source bundle must look like
+source/markup, and document/image/chart/screenshot requirements must match their expected
+MIME/extension class. Inspectable data/source artifacts with empty previews are treated
+as weak evidence and must be regenerated or explicitly reported as impossible.
+
 ## Information Architecture
 
 The browser UI is a page-based product shell, not a single debug dashboard. Future work

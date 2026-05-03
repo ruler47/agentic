@@ -379,6 +379,9 @@ For documentation-only changes:
   `contentPreview` so Run Workspace, Conversations, Artifacts, and Trace Lab can render
   useful previews without downloading the file. CSV/TSV previews render as compact tables
   in the UI.
+- Typed artifact requirements are checked by `src/artifacts/artifactRequirementQuality.ts`.
+  Review gates should reject wrong MIME/extension classes and weak inspectable previews
+  before accepting a worker result as satisfying `requiredArtifacts`.
 - Future Trace Lab "Create tool request / bug" actions should carry selected span context
   into Tool Builder: run/span IDs, actor, tool name/version/capability, input/output
   summaries, artifacts, QA evidence, and the operator's comment.

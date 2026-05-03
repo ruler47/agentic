@@ -612,7 +612,11 @@ Remaining:
 - Add richer artifact previews in the UI for PDFs and source bundles. PARTIAL: datasets
   now show compact table previews and source/text artifacts show stored content previews;
   PDFs still use typed preview tiles and need richer page/thumb extraction.
-- Make reviewers artifact-aware across all file types, not only chart requests.
+- Make reviewers artifact-aware across all file types, not only chart requests. PARTIAL:
+  typed artifact contracts now reject obvious mismatches such as PNG proof for a data
+  requirement, empty inspectable previews for data/source artifacts, and invalid
+  document/image/chart/screenshot MIME classes. Remaining work is richer content-specific
+  inspection for PDFs, source bundles, and multi-file reports.
 - Make planning dependency-aware so a review subtask cannot run before the artifact it is
   supposed to review exists. DONE for subtask-level DAG execution; remaining work is
   explicit typed artifact contracts.
@@ -668,8 +672,9 @@ Implementation tasks:
   preserve diagnostic screenshots when a site blocks automation.
 - Add artifact-aware review prompts that fail when a requested file is missing or only
   represented as code/prose. PARTIAL: worker/coordinator/synthesis prompts now require a
-  self-check before returning weak, irrelevant, empty, or unsupported outputs; typed
-  artifact inspection across every file type remains.
+  self-check before returning weak, irrelevant, empty, or unsupported outputs; deterministic
+  typed artifact QA now covers data/source/document/image/chart/screenshot contract
+  compatibility. Remaining work is deeper semantic inspection across every artifact type.
 - Add weak browser/screenshot evidence gates. PARTIAL: workers, reviewers, and synthesis
   prompts now reject blank/loading/login/blocked/unrelated screenshots, and deterministic
   review gates force a revision when a worker describes such weak evidence. Deterministic
