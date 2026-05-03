@@ -993,6 +993,7 @@ test("web server exposes tool build requests", async () => {
         requiredInputs: ["markdown"],
         requiredOutputs: ["artifact"],
         credentialHandles: ["secret.pdf.vendor"],
+        credentialNotes: "api key 12312, secret 8978",
       }),
     });
     const response = await fetch(`${baseUrl}/api/tool-build-requests`);
@@ -1057,8 +1058,14 @@ test("web server exposes tool build requests", async () => {
     assert.equal(created.request.contract.displayName, "PDF Report");
     assert.equal(created.request.contract.toolName, "generated.pdf.report");
     assert.deepEqual(created.request.credentialHandles, ["secret.pdf.vendor"]);
+    assert.equal(created.request.credentialNotes, "api key 12312, secret 8978");
     assert.ok(
       created.request.contract.builderInstructions.some((instruction: string) => instruction.includes("secret.pdf.vendor")),
+    );
+    assert.ok(
+      created.request.contract.builderInstructions.some((instruction: string) =>
+        instruction.includes("Operator supplied credential notes"),
+      ),
     );
     assert.equal(updateResponse.status, 200);
     assert.equal(updated.request.status, "qa_passed");
@@ -1068,6 +1075,7 @@ test("web server exposes tool build requests", async () => {
     assert.equal(rework.request.status, "requested");
     assert.equal(rework.request.reworkOf, created.request.id);
     assert.deepEqual(rework.request.credentialHandles, ["secret.pdf.vendor"]);
+    assert.equal(rework.request.credentialNotes, "api key 12312, secret 8978");
     assert.equal(rework.request.displayName, "PDF Report");
     assert.match(rework.request.feedback, /stricter artifact validation/);
     assert.equal(stopResponse.status, 200);
@@ -1091,6 +1099,46 @@ test("web server exposes tool build requests", async () => {
     );
     assert.equal(audit.events.some((event: { action: string }) => event.action === "tool_build.stopped"), true);
     assert.equal(audit.events.some((event: { action: string }) => event.action === "tool_build.deleted"), true);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server infers tool build capability from human request fields", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const secretHandleStore = new InMemorySecretHandleStore();
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolBuildRequestStore,
+    secretHandleStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/api/tool-build-requests`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        displayName: "Wallet Risk Lookup",
+        reason: "Create a reusable HTTP API tool. Docs: https://provider.example/docs. It accepts chain and wallet address and returns risk score.",
+        credentialNotes: "api key 12312",
+        qaCriteria: ["schemas validated", "no credential leakage"],
+      }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 201);
+    assert.equal(body.request.displayName, "Wallet Risk Lookup");
+    assert.equal(body.request.capability, "api.wallet-risk-lookup");
+    assert.equal(body.request.contract.toolName, "generated.api.wallet.risk.lookup");
+    assert.equal(body.request.credentialNotes, "api key 12312");
+    assert.deepEqual(body.request.credentialHandles, ["secret.api.wallet-risk-lookup"]);
+    assert.equal(await secretHandleStore.resolve?.("secret.api.wallet-risk-lookup"), "api key 12312");
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

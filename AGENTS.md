@@ -511,14 +511,14 @@ For documentation-only changes:
 - Tool Build requests can be reworked through `POST /api/tool-build-requests/:id/rework`.
   Preserve the original request and create a new requested revision with operator feedback
   instead of overwriting prior QA evidence.
-- Tool Build requests can include `credentialHandles`. Keep these as structured metadata
-  and builder instructions; do not require generated tools to scrape handles from the
-  free-form reason text.
-- Tool Build requests also accept a human `displayName`. The server generates the stable
-  system `desiredToolName` automatically when the UI leaves it blank, checking existing
-  registry/build names where possible. The UI should ask for a display name, capability,
-  description/docs/instructions, and credential-key helper lines rather than forcing users
-  to invent internal module names.
+- Tool Build requests can include low-level `credentialHandles` from runtime callers and
+  human `credentialNotes` from the UI. Do not display raw credential notes on cards or
+  write them into source, tests, prompts, traces, memory, artifacts, or audit metadata.
+- Tool Build requests accept a human `displayName`; if the UI omits `capability`, the
+  server infers a stable internal capability from the name/description and generates the
+  system `desiredToolName`, checking existing registry/build names where possible. The UI
+  should ask for a tool name, description/docs/instructions, optional credentials text,
+  and QA criteria rather than forcing users to invent internal capability/module names.
 - Generated tool modules can be deleted from the Tools page or
   `DELETE /api/tools/generated-modules/:name`; built-in tools are protected. Deleting a
   generated tool removes registry metadata and unregisters the active runtime copy when
@@ -527,12 +527,15 @@ For documentation-only changes:
   names like `api.aml.score`. The capability should be a stable machine id; docs URLs,
   endpoint examples, expected behavior, QA criteria, and credential handles belong in the
   request description/structured fields. The generated module must keep credentials behind
-  declared secret handles and return structured HTTP status/json/text evidence.
+  declared secret handles and return structured HTTP status/json/text/score evidence.
+  API tools should surface useful nested `score` fields from provider JSON rather than
+  reducing a successful call to "HTTP 200" only.
 - Secret handles are metadata references, not raw secrets. Use `POST /api/secret-handles`
-  with provider `env` or `external`, a `secretRef`, and scopes; the API rejects raw
-  `token`, `password`, `apiKey`, or `value` payloads. Tools and future model/channel
-  adapters should refer to handles, then resolve them at runtime through the store/policy
-  layer.
+  with provider `env`, `external`, or UI-created `inline`, a `secretRef`, and scopes. The
+  public API rejects raw `token`, `password`, `apiKey`, or `value` payloads; the simplified
+  Tool Builds form may accept free-form credential notes and convert them into a scoped
+  inline secret handle for the generated tool. Tools and future model/channel adapters
+  should refer to handles, then resolve them at runtime through the store/policy layer.
 - Generated tool metadata registration must reject builtin name collisions and version
   conflicts. Generated modules are loaded only from compiled project-local paths, after
   exported name/version/capabilities match metadata and healthcheck passes.

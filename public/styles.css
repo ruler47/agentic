@@ -2206,6 +2206,33 @@ textarea {
   min-height: 140px;
 }
 
+.expandable-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.expandable-panel > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.expandable-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.expandable-panel > summary h2,
+.expandable-panel > summary p {
+  margin: 0;
+}
+
+.expandable-panel > form {
+  padding: 0 22px 22px;
+}
+
 .secret-handle-strip {
   display: flex;
   flex-wrap: wrap;

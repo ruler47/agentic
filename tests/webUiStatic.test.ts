@@ -47,9 +47,11 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /Local chat models/);
   assert.match(app, /Embedding/);
   assert.match(app, /data-action="create-tool-build-request"/);
-  assert.match(app, /Display name/);
+  assert.match(app, /Request a Tool/);
+  assert.match(app, /Tool name/);
+  assert.match(app, /name="credentialNotes"/);
+  assert.match(app, /The builder will derive the internal system name/);
   assert.match(app, /System name:/);
-  assert.match(app, /function parseCredentialSpecInput/);
   assert.match(app, /data-action="delete-tool"/);
   assert.match(app, /\/api\/tools\/generated-modules\/\$\{encodeURIComponent\(toolName\)\}/);
   assert.match(app, /\/api\/secret-handles/);
@@ -57,9 +59,10 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /function deleteSecretHandle/);
   assert.match(app, /data-action="create-secret-handle"/);
   assert.match(app, /data-action="delete-secret-handle"/);
-  assert.match(app, /Available secret handles/);
   assert.match(app, /credentialHandles/);
-  assert.match(app, /Credential keys/);
+  assert.doesNotMatch(app, /Credential keys/);
+  assert.doesNotMatch(app, /Existing credential handles/);
+  assert.doesNotMatch(app, /Request a Capability/);
   assert.match(app, /data-live-run-duration/);
   assert.match(app, /function updateLiveTimers/);
   assert.match(app, /function cancelRun/);

@@ -1380,17 +1380,16 @@ function renderSpanToolRequestForm(node) {
         <input type="hidden" name="sourceRunId" value="${escapeHtml(activeRun()?.id ?? "")}" />
         <input type="hidden" name="sourceSpanId" value="${escapeHtml(node.spanId)}" />
         <input type="hidden" name="taskSummary" value="${escapeHtml(activeRun()?.task ?? "")}" />
-        <label>
-          <span>Capability or bug bucket</span>
-          <input name="capability" value="${escapeHtml(capability)}" required />
-        </label>
+        <input type="hidden" name="capability" value="${escapeHtml(capability)}" />
         <label>
           <span>Context and requested fix</span>
           <textarea name="reason" required>${escapeHtml(reason)}</textarea>
         </label>
         <label>
           <span>QA criteria</span>
-          <input name="qaCriteria" value="reproduce span failure, add regression test, prove useful evidence, no secret leakage" />
+          <textarea name="qaCriteria" rows="3">Reproduce the observed failure.
+Add a regression test for the corrected behavior.
+Prove the produced result is useful evidence and does not leak credentials.</textarea>
         </label>
         <button type="submit" class="ghost-button">Create contextual request</button>
       </form>
@@ -2206,6 +2205,13 @@ function formatToolHealth(tool) {
 
 function renderToolBuildsPage() {
   const columns = ["requested", "building", "qa_failed", "qa_passed", "registered", "blocked"];
+  const defaultQaCriteria = [
+    "The generated tool must be TypeScript, reusable outside this specific request, documented, and registered only after QA passes.",
+    "Validate input/output schemas and reject unsafe or incomplete inputs with structured failures.",
+    "Add focused automated tests for success, invalid input, and provider/tool failure paths.",
+    "Run a manual smoke check that proves the tool can satisfy the requested capability.",
+    "Do not leak credentials into prompts, logs, generated source, tests, traces, memory, or artifacts.",
+  ].join("\n");
   return `
     <section class="page-stack">
       <section class="surface-hero">
@@ -2216,56 +2222,41 @@ function renderToolBuildsPage() {
           ${columns.map((column) => `<span><strong>${formatStatusLabel(column)}</strong>${escapeHtml(toolBuildStatusDescription(column))}</span>`).join("")}
         </div>
       </section>
-      <section class="surface-panel tool-build-request-panel">
-        <div class="section-heading">
+      <details class="surface-panel tool-build-request-panel expandable-panel">
+        <summary>
           <div>
-            <h2>Request a Capability</h2>
-            <p>Use this for APIs, browser skills, files, Telegram/Slack/WhatsApp adapters, and any missing tool. Capability is a stable machine name; put docs, endpoints, examples, and acceptance rules in the description.</p>
+            <span class="eyebrow">Builder + QA + registry</span>
+            <h2>Request a Tool</h2>
+            <p>Describe the tool you need in normal language. The builder will derive the internal system name, schemas, settings, and QA plan.</p>
           </div>
-          <span class="context-chip">Builder + QA + registry</span>
-        </div>
+          <span class="context-chip">Open request form</span>
+        </summary>
         <form data-action="create-tool-build-request" class="settings-form">
           <label>
-            <span>Display name</span>
-            <input name="displayName" placeholder="AML Score" required />
+            <span>Tool name</span>
+            <input name="displayName" placeholder="Tool name" required />
             <small>Human name shown in Tools, traces, and operator screens. The builder generates the internal system name automatically.</small>
           </label>
           <label>
-            <span>Capability</span>
-            <input name="capability" placeholder="api.aml.score" required />
-            <small>Good: <code>api.aml.score</code>. Avoid prose like “API AML Score”; the builder routes by this stable capability id.</small>
+            <span>Description, docs, and expected behavior</span>
+            <textarea name="reason" placeholder="Describe what the tool should do, where the documentation is, what inputs it should accept, what result it should return, and how an agent should know when to use it." required></textarea>
           </label>
           <label>
-            <span>Description, docs, and expected behavior</span>
-            <textarea name="reason" placeholder="Example: Create a reusable HTTP JSON API tool for AML score lookups. Docs: https://provider.example/docs. Expected use: given network + wallet address, call the provider endpoint and return score/risk/reasons/raw response. Do not paste raw tokens." required></textarea>
+            <span>Credentials</span>
+            <textarea name="credentialNotes" rows="3" placeholder="Paste credentials or references only if this tool needs access. Example: API key, bot token, client id/secret. The builder will infer how to store and use them."></textarea>
+            <small>The builder treats this as sensitive setup context and must not leak it into generated code, traces, tests, memory, or artifacts.</small>
           </label>
-          <div class="secret-handle-strip">
-            <span>Available secret handles</span>
-            ${state.secretHandles.length
-              ? state.secretHandles.map((secret) => `<code>${escapeHtml(secret.handle)}</code>`).join("")
-              : `<small>No handles yet. Add one in Settings before requesting credentialed API/channel tools.</small>`}
-          </div>
-          <div class="composer-grid compact-grid">
-            <label>
-              <span>Credential keys</span>
-              <textarea name="credentialKeys" rows="3" placeholder="secret.aml.gl.api=AML_GL_API_KEY&#10;secret.crm.api=external:vault/crm/api-key"></textarea>
-              <small>Format: <code>handle=ENV_VAR</code> or <code>handle=external:secret/ref</code>. Raw key values are intentionally not accepted.</small>
-            </label>
-            <label>
-              <span>QA criteria</span>
-              <input name="qaCriteria" placeholder="smoke call passes, schemas validated, no secret leakage" />
-            </label>
-            <label>
-              <span>Existing credential handles</span>
-              <input name="credentialHandles" placeholder="secret.telegram.bot, secret.crm.api" />
-            </label>
-          </div>
+          <label>
+            <span>QA criteria</span>
+            <textarea name="qaCriteria" rows="5">${escapeHtml(defaultQaCriteria)}</textarea>
+            <small>You can add extra acceptance checks here before creating the request.</small>
+          </label>
           <div class="composer-bottom">
-            <p class="composer-hint">The module must be TypeScript, independently documented, tested, and registered only after QA passes.</p>
+            <p class="composer-hint">Created tools must be TypeScript modules with docs, tests, healthchecks, and registry metadata.</p>
             <button type="submit" class="primary-button">Create Build Request</button>
           </div>
         </form>
-      </section>
+      </details>
       <section class="kanban-board">
         ${columns
           .map(
@@ -2294,12 +2285,13 @@ function renderBuildCard(request) {
         <span>${formatRelative(request.updatedAt ?? request.createdAt)}</span>
       </div>
       <strong>${escapeHtml(request.displayName || request.capability)}</strong>
-      <small class="status-note">Capability: ${escapeHtml(request.capability)}</small>
+      <small class="status-note">System capability: ${escapeHtml(request.capability)}</small>
       <small class="status-note">${escapeHtml(toolBuildCardComment(request))}</small>
       <p>${escapeHtml(request.reason)}</p>
       <small>${escapeHtml(request.contract?.toolName ?? "tool contract pending")}</small>
       <small>${escapeHtml(request.contract?.modulePath ?? "module pending")}</small>
       ${(request.credentialHandles ?? []).length ? `<small class="status-note">Credentials: ${request.credentialHandles.map((handle) => `<code>${escapeHtml(handle)}</code>`).join(" ")}</small>` : ""}
+      ${request.credentialNotes ? `<small class="status-note">Credentials: provided by operator</small>` : ""}
       ${request.feedback ? `<small class="status-note">Latest feedback: ${escapeHtml(request.feedback)}</small>` : ""}
       ${request.statusDetail ? `<small class="status-note">Status detail: ${escapeHtml(request.statusDetail)}</small>` : ""}
       ${request.qaReport ? `<small class="status-note">QA: ${escapeHtml(request.qaReport.summary)}</small>` : ""}
@@ -3298,41 +3290,6 @@ function normalizeOptionalInput(value) {
   return text || undefined;
 }
 
-function parseCredentialSpecInput(value, capability) {
-  return String(value ?? "")
-    .split(/\n|,/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const separator = line.indexOf("=");
-      if (separator === -1) {
-        throw new Error(`Credential key "${line}" must use handle=ENV_VAR or handle=external:ref`);
-      }
-      const handle = line.slice(0, separator).trim();
-      const rawRef = line.slice(separator + 1).trim();
-      if (!handle || !rawRef) {
-        throw new Error(`Credential key "${line}" must include both handle and secret reference.`);
-      }
-      const externalPrefix = "external:";
-      const provider = rawRef.startsWith(externalPrefix) ? "external" : "env";
-      const secretRef = provider === "external" ? rawRef.slice(externalPrefix.length).trim() : rawRef;
-      if (!secretRef) {
-        throw new Error(`Credential key "${line}" has an empty secret reference.`);
-      }
-      return {
-        handle,
-        label: handle,
-        provider,
-        secretRef,
-        scopes: uniqueList(["instance-local", capability ? `tool:${capability}` : undefined]),
-      };
-    });
-}
-
-function uniqueList(values) {
-  return [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
-}
-
 async function createToolBuildRequest(form) {
   const formData = new FormData(form);
   const qaCriteria = String(formData.get("qaCriteria") ?? "")
@@ -3342,34 +3299,19 @@ async function createToolBuildRequest(form) {
   const capability = String(formData.get("capability") ?? "").trim();
   setComposerBusy(form, true);
   try {
-    const credentialSpecs = parseCredentialSpecInput(formData.get("credentialKeys"), capability);
-    for (const credential of credentialSpecs) {
-      const data = await fetchJson("/api/secret-handles", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(credential),
-      });
-      state.secretHandles = [
-        data.secretHandle,
-        ...state.secretHandles.filter((item) => item.handle !== data.secretHandle.handle),
-      ];
-    }
-    const credentialHandles = uniqueList([
-      ...parseListInput(formData.get("credentialHandles")),
-      ...credentialSpecs.map((credential) => credential.handle),
-    ]);
     const data = await fetchJson("/api/tool-build-requests", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        capability,
+        capability: capability || undefined,
         displayName: String(formData.get("displayName") ?? ""),
         reason: String(formData.get("reason") ?? ""),
         sourceRunId: String(formData.get("sourceRunId") ?? "") || undefined,
         sourceSpanId: String(formData.get("sourceSpanId") ?? "") || undefined,
         taskSummary: String(formData.get("taskSummary") ?? "") || undefined,
         qaCriteria,
-        credentialHandles,
+        credentialHandles: parseListInput(formData.get("credentialHandles")),
+        credentialNotes: String(formData.get("credentialNotes") ?? "") || undefined,
       }),
     });
     state.buildRequests = [data.request, ...state.buildRequests.filter((item) => item.id !== data.request.id)];

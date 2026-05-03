@@ -219,7 +219,7 @@ Builder -> QA -> Registrar lifecycle.
 Target workflow:
 
 ```text
-admin provides API docs + credentials + desired use cases
+admin provides a tool name, docs/instructions, optional credentials, and desired use cases
   -> agent reads docs and proposes a TypeScript tool contract
   -> Tool Builder creates module and tests
   -> Tool QA verifies behavior against docs and smoke calls

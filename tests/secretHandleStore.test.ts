@@ -25,6 +25,20 @@ test("secret handle store keeps refs without storing raw values", async () => {
   assert.equal(await store.resolve?.(created.handle), "runtime-secret");
 });
 
+test("secret handle store can resolve inline credentials for generated tool QA", async () => {
+  const store = new InMemorySecretHandleStore();
+  const created = await store.create({
+    handle: "secret.api.gl-aml",
+    label: "GL AML credentials",
+    provider: "inline",
+    secretRef: "runtime-inline-key",
+    scopes: ["instance-local", "tool:api.gl-aml"],
+  });
+
+  assert.equal(created.provider, "inline");
+  assert.equal(await store.resolve?.("secret.api.gl-aml"), "runtime-inline-key");
+});
+
 test("secret handle validation rejects raw secret payloads and invalid env refs", () => {
   assert.throws(
     () => rejectRawSecretPayload({ token: "do-not-store-me", label: "bad" }),

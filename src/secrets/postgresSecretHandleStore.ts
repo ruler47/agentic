@@ -79,7 +79,9 @@ export class PostgresSecretHandleStore implements SecretHandleStore {
 
   async resolve(handle: string): Promise<string | undefined> {
     const record = await this.get(handle);
-    if (!record || record.provider !== "env") return undefined;
+    if (!record) return undefined;
+    if (record.provider === "inline") return record.secretRef;
+    if (record.provider !== "env") return undefined;
     return process.env[record.secretRef];
   }
 }

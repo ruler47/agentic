@@ -216,7 +216,8 @@ export class GenericApiToolBuildProvider implements ToolBuildProvider {
     const testPath = request.contract.testPath;
     const toolName = request.contract.toolName;
     const capability = request.capability;
-    const allowedSecretHandles = request.credentialHandles ?? [];
+    const allowedSecretHandles = resolveApiSecretHandles(request);
+    const preset = inferApiEndpointPreset(request);
 
     return {
       modulePath,
@@ -227,13 +228,69 @@ export class GenericApiToolBuildProvider implements ToolBuildProvider {
       inputSchema: genericApiInputSchema(),
       outputSchema: genericApiOutputSchema(),
       requiredSecretHandles: allowedSecretHandles,
-      docsMarkdown: genericApiDocsMarkdown(capability, allowedSecretHandles),
+      docsMarkdown: genericApiDocsMarkdown(capability, allowedSecretHandles, preset),
       files: [
-        { path: modulePath, content: genericApiToolSource(toolName, capability, allowedSecretHandles) },
-        { path: testPath, content: genericApiToolTestSource(modulePath, toolName, capability, allowedSecretHandles) },
+        { path: modulePath, content: genericApiToolSource(toolName, capability, allowedSecretHandles, preset) },
+        { path: testPath, content: genericApiToolTestSource(modulePath, toolName, capability, allowedSecretHandles, preset) },
       ],
     };
   }
+}
+
+type ApiEndpointPreset = {
+  provider: "glprotocol";
+  defaultAuthHeaderName: string;
+  defaultAuthScheme: string;
+  networkTickers: Record<string, string>;
+};
+
+function resolveApiSecretHandles(request: ToolBuildRequest): string[] {
+  if (request.credentialHandles?.length) return request.credentialHandles;
+  if (!request.credentialNotes?.trim()) return [];
+  return [secretHandleFromCapability(request.capability)];
+}
+
+function secretHandleFromCapability(capability: string): string {
+  const slug = capability
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, ".")
+    .replace(/^[^a-z]+/, "")
+    .replace(/[.:-]+$/g, "")
+    .slice(0, 96) || "generated.tool";
+  return `secret.${slug}`;
+}
+
+function inferApiEndpointPreset(request: ToolBuildRequest): ApiEndpointPreset | undefined {
+  const text = [
+    request.capability,
+    request.displayName,
+    request.reason,
+    request.taskSummary,
+  ].join(" ");
+  if (!/glprotocol\.com|global\s+ledger|gl\s+aml|глобал\s+леджер/i.test(text)) return undefined;
+
+  return {
+    provider: "glprotocol",
+    defaultAuthHeaderName: "x-api-key",
+    defaultAuthScheme: "",
+    networkTickers: {
+      bitcoin: "btc",
+      btc: "btc",
+      litecoin: "ltc",
+      ltc: "ltc",
+      ethereum: "eth",
+      ether: "eth",
+      eth: "eth",
+      эфир: "eth",
+      эфира: "eth",
+      tron: "tron",
+      trx: "tron",
+      bnb: "bnb",
+      bsc: "bnb",
+      avalanche: "avax",
+      avax: "avax",
+    },
+  };
 }
 
 type CommandResult = {
@@ -319,10 +376,24 @@ function formatCommandCheck(label: string, result: CommandResult): string {
   return `${label} ${status} with exit ${result.exitCode ?? "none"}${output ? `: ${output}` : ""}`;
 }
 
-function genericApiDocsMarkdown(capability: string, allowedSecretHandles: string[]): string {
+function genericApiDocsMarkdown(
+  capability: string,
+  allowedSecretHandles: string[],
+  preset?: ApiEndpointPreset,
+): string {
   const secretText = allowedSecretHandles.length
     ? `Declared secret handles: ${allowedSecretHandles.map((handle) => `\`${handle}\``).join(", ")}.`
     : "No secret handles were declared at build time; runtime calls must be unauthenticated.";
+  const presetText = preset?.provider === "glprotocol"
+    ? [
+        "",
+        "Global Ledger preset:",
+        "- address risk: `network` + `address`",
+        "- transaction risk: `network` + `transactionHash`",
+        "- auth header: `x-api-key` from the declared secret handle",
+        "- supported networks map to Global Ledger tickers such as `ethereum -> eth`.",
+      ].join("\n")
+    : "";
 
   return [
     `# ${capability}`,
@@ -333,6 +404,7 @@ function genericApiDocsMarkdown(capability: string, allowedSecretHandles: string
     "",
     "Use this tool for documented HTTPS APIs where the agent can provide endpoint, method, query/body, and an optional declared credential handle.",
     "Do not paste raw credentials into tool inputs; store them as secret handles first.",
+    presetText,
   ].join("\n");
 }
 
@@ -341,6 +413,12 @@ function genericApiInputSchema(): ToolSchema {
     type: "object",
     properties: {
       url: { type: "string", minLength: 1 },
+      baseUrl: { type: "string", minLength: 1 },
+      operation: { type: "string" },
+      network: { type: "string" },
+      address: { type: "string" },
+      transactionHash: { type: "string" },
+      token: { type: "string" },
       method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
       query: { type: "object" },
       headers: { type: "object" },
@@ -350,7 +428,6 @@ function genericApiInputSchema(): ToolSchema {
       authScheme: { type: "string" },
       timeoutMs: { type: "number" },
     },
-    required: ["url"],
   };
 }
 
@@ -366,6 +443,8 @@ function genericApiOutputSchema(): ToolSchema {
           status: { type: "number" },
           url: { type: "string" },
           method: { type: "string" },
+          provider: { type: "string" },
+          score: {},
           json: {},
           text: { type: "string" },
         },
@@ -375,12 +454,23 @@ function genericApiOutputSchema(): ToolSchema {
   };
 }
 
-function genericApiToolSource(toolName: string, capability: string, allowedSecretHandles: string[]): string {
+function genericApiToolSource(
+  toolName: string,
+  capability: string,
+  allowedSecretHandles: string[],
+  preset?: ApiEndpointPreset,
+): string {
   return `import { Tool, ToolExecutionContext, ToolInput, ToolResult } from "../tool.js";
 
 type JsonRecord = Record<string, unknown>;
 
-const allowedSecretHandles = ${JSON.stringify(allowedSecretHandles)};
+const allowedSecretHandles: string[] = ${JSON.stringify(allowedSecretHandles)};
+const apiPreset = ${JSON.stringify(preset ?? null)} as null | {
+  provider: "glprotocol";
+  defaultAuthHeaderName: string;
+  defaultAuthScheme: string;
+  networkTickers: Record<string, string>;
+};
 
 export const tool: Tool = {
   name: ${JSON.stringify(toolName)},
@@ -393,6 +483,12 @@ export const tool: Tool = {
     type: "object",
     properties: {
       url: { type: "string", minLength: 1 },
+      baseUrl: { type: "string", minLength: 1 },
+      operation: { type: "string" },
+      network: { type: "string" },
+      address: { type: "string" },
+      transactionHash: { type: "string" },
+      token: { type: "string" },
       method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
       query: { type: "object" },
       headers: { type: "object" },
@@ -401,8 +497,7 @@ export const tool: Tool = {
       authHeaderName: { type: "string" },
       authScheme: { type: "string" },
       timeoutMs: { type: "number" }
-    },
-    required: ["url"]
+    }
   },
   outputSchema: {
     type: "object",
@@ -415,6 +510,8 @@ export const tool: Tool = {
           status: { type: "number" },
           url: { type: "string" },
           method: { type: "string" },
+          provider: { type: "string" },
+          score: {},
           json: {},
           text: { type: "string" }
         }
@@ -426,7 +523,7 @@ export const tool: Tool = {
     return { ok: true, detail: "Generic API adapter module is importable; runtime calls require a documented endpoint." };
   },
   async run(input: ToolInput, context?: ToolExecutionContext): Promise<ToolResult> {
-    const parsedUrl = buildUrl(input.url, input.query);
+    const parsedUrl = buildRequestUrl(input);
     if (!parsedUrl.ok) return { ok: false, content: parsedUrl.error };
 
     const method = normalizeMethod(input.method);
@@ -456,15 +553,18 @@ export const tool: Tool = {
       const response = await fetch(parsedUrl.url, init);
       const text = await response.text();
       const json = parseJson(text);
+      const score = extractScore(json);
       const data = {
         status: response.status,
         url: parsedUrl.url,
         method,
+        provider: apiPreset?.provider,
+        score,
         json,
         text: json === undefined ? text : undefined
       };
       const content = response.ok
-        ? "API call succeeded with HTTP " + response.status + "."
+        ? "API call succeeded with HTTP " + response.status + (score === undefined ? "." : "; score: " + String(score) + ".")
         : "API call failed with HTTP " + response.status + ".";
 
       return { ok: response.ok, content, data };
@@ -484,6 +584,43 @@ export default tool;
 function normalizeMethod(value: unknown): string {
   const method = typeof value === "string" ? value.toUpperCase() : "GET";
   return ["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method) ? method : "GET";
+}
+
+function buildRequestUrl(input: ToolInput): { ok: true; url: string } | { ok: false; error: string } {
+  if (typeof input.url === "string" && input.url.trim()) {
+    return buildUrl(input.url, input.query);
+  }
+  if (apiPreset?.provider !== "glprotocol") {
+    return { ok: false, error: "api-http-json requires a url input unless this generated tool has an API preset." };
+  }
+
+  const ticker = normalizeNetwork(input.network);
+  if (!ticker) {
+    return { ok: false, error: "Global Ledger calls require a supported network such as ethereum, bitcoin, tron, bnb, or avax." };
+  }
+
+  const query: JsonRecord = isRecord(input.query) ? { ...input.query } : {};
+  if (typeof input.token === "string" && input.token.trim()) {
+    query.token = input.token.trim();
+  }
+
+  const baseUrl = typeof input.baseUrl === "string" && input.baseUrl.trim()
+    ? input.baseUrl.trim().replace(/\\/+$/g, "")
+    : "https://" + ticker + ".glprotocol.com";
+
+  if (typeof input.transactionHash === "string" && input.transactionHash.trim()) {
+    return buildUrl(baseUrl + "/api/report/tx_hash/" + encodeURIComponent(input.transactionHash.trim()), query);
+  }
+  if (typeof input.address === "string" && input.address.trim()) {
+    return buildUrl(baseUrl + "/api/report/address/" + encodeURIComponent(input.address.trim()), query);
+  }
+  return { ok: false, error: "Global Ledger calls require address or transactionHash input." };
+}
+
+function normalizeNetwork(value: unknown): string | undefined {
+  if (!apiPreset || typeof value !== "string") return undefined;
+  const key = value.trim().toLowerCase();
+  return apiPreset.networkTickers[key];
 }
 
 function buildUrl(value: unknown, query: unknown): { ok: true; url: string } | { ok: false; error: string } {
@@ -527,8 +664,11 @@ async function buildHeaders(
     }
   }
 
-  if (typeof input.secretHandle === "string" && input.secretHandle.trim()) {
-    const handle = input.secretHandle.trim();
+  const requestedHandle = typeof input.secretHandle === "string" && input.secretHandle.trim()
+    ? input.secretHandle.trim()
+    : allowedSecretHandles[0];
+  if (requestedHandle) {
+    const handle = requestedHandle;
     if (!allowedSecretHandles.includes(handle)) {
       return { ok: false, error: "Secret handle " + handle + " was not declared in the Tool Build request." };
     }
@@ -539,12 +679,16 @@ async function buildHeaders(
     if (!secret) return { ok: false, error: "Secret handle " + handle + " could not be resolved." };
     const authHeaderName = typeof input.authHeaderName === "string" && input.authHeaderName.trim()
       ? input.authHeaderName.trim()
-      : "authorization";
-    const authScheme = typeof input.authScheme === "string" ? input.authScheme.trim() : "Bearer";
+      : apiPreset?.defaultAuthHeaderName ?? "authorization";
+    const authScheme = typeof input.authScheme === "string" ? input.authScheme.trim() : apiPreset?.defaultAuthScheme ?? "Bearer";
     headers.set(authHeaderName, authScheme ? authScheme + " " + secret : secret);
   }
 
   return { ok: true, headers, hasContentType };
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseJson(text: string): unknown {
@@ -555,6 +699,37 @@ function parseJson(text: string): unknown {
     return undefined;
   }
 }
+
+function extractScore(value: unknown): unknown {
+  if (!isRecord(value) && !Array.isArray(value)) return undefined;
+  if (isRecord(value) && value.score !== undefined) return value.score;
+
+  const scores: unknown[] = [];
+  collectNestedScores(value, scores);
+  if (scores.length === 0) return undefined;
+
+  const numericScores = scores
+    .map((score) => typeof score === "number" ? score : typeof score === "string" ? Number(score) : Number.NaN)
+    .filter((score) => Number.isFinite(score));
+  if (numericScores.length > 0) return Math.max(...numericScores);
+  if (scores.length === 1) return scores[0];
+  return scores.slice(0, 10);
+}
+
+function collectNestedScores(value: unknown, scores: unknown[]): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectNestedScores(item, scores);
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, nested] of Object.entries(value)) {
+    if (key.toLowerCase() === "score" && nested !== undefined && nested !== null) {
+      scores.push(nested);
+      continue;
+    }
+    collectNestedScores(nested, scores);
+  }
+}
 `;
 }
 
@@ -563,9 +738,44 @@ function genericApiToolTestSource(
   toolName: string,
   capability: string,
   allowedSecretHandles: string[],
+  preset?: ApiEndpointPreset,
 ): string {
   const importPath = relative("tests/generated", modulePath).replace(/\\/g, "/").replace(/\.ts$/, ".js");
-  const secretHandle = allowedSecretHandles[0] ?? "secret.test.api";
+  const secretHandle = allowedSecretHandles[0];
+  const sampleAddress = "0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2";
+  const isGlPreset = preset?.provider === "glprotocol";
+  const runInput = isGlPreset
+    ? `{
+        baseUrl: "http://127.0.0.1:" + address.port,
+        network: "ethereum",
+        address: ${JSON.stringify(sampleAddress)}
+      }`
+    : `{
+        url: "http://127.0.0.1:" + address.port + "/score",
+        query: { address: ${JSON.stringify(sampleAddress)} }${secretHandle ? `,\n        secretHandle: ${JSON.stringify(secretHandle)}` : ""}
+      }`;
+  const expectedPath = isGlPreset
+    ? `/api/report/address/${sampleAddress}`
+    : "/score";
+  const expectedAuth = secretHandle
+    ? (isGlPreset ? "test-token" : "Bearer test-token")
+    : null;
+  const responseJson = isGlPreset
+    ? `{
+      path: url.pathname,
+      sources: [
+        { name: "low-risk-source", funds: { score: 30 } },
+        { name: "highest-risk-source", funds: { score: 60 } }
+      ],
+      auth: request.headers.authorization ?? request.headers["x-api-key"] ?? null
+    }`
+    : `{
+      path: url.pathname,
+      address: url.searchParams.get("address"),
+      score: 42,
+      auth: request.headers.authorization ?? request.headers["x-api-key"] ?? null
+    }`;
+  const expectedScore = isGlPreset ? 60 : 42;
 
   return `import test from "node:test";
 import assert from "node:assert/strict";
@@ -599,34 +809,29 @@ test("${toolName} calls a JSON API endpoint with query and declared secret handl
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({
-      path: url.pathname,
-      address: url.searchParams.get("address"),
-      auth: request.headers.authorization ?? null
-    }));
+    response.end(JSON.stringify(${responseJson}));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;
 
   try {
     const result = await tool.run(
-      {
-        url: "http://127.0.0.1:" + address.port + "/score",
-        query: { address: "0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2" },
-        secretHandle: ${JSON.stringify(secretHandle)}
-      },
+      ${runInput},
       {
         toolName: tool.name,
         now: new Date("2026-05-03T00:00:00.000Z"),
         resolveSecret: async (handle) => handle === ${JSON.stringify(secretHandle)} ? "test-token" : undefined
       }
     );
-    const data = result.data as { json?: { path?: string; address?: string; auth?: string } } | undefined;
+    const data = result.data as { score?: unknown; json?: { path?: string; address?: string | null; auth?: string | null; score?: number } } | undefined;
 
     assert.equal(result.ok, true);
-    assert.equal(data?.json?.path, "/score");
-    assert.equal(data?.json?.address, "0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2");
-    assert.equal(data?.json?.auth, "Bearer test-token");
+    assert.equal(data?.json?.path, ${JSON.stringify(expectedPath)});
+    ${isGlPreset ? "" : `assert.equal(data?.json?.address, ${JSON.stringify(sampleAddress)});`}
+    ${isGlPreset ? "" : `assert.equal(data?.json?.score, ${expectedScore});`}
+    assert.equal(data?.score, ${expectedScore});
+    assert.match(result.content, /score: ${expectedScore}/);
+    assert.equal(data?.json?.auth ?? null, ${JSON.stringify(expectedAuth)});
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }

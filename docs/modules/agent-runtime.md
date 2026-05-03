@@ -213,8 +213,11 @@ generation. `BrowserScreenshotToolBuildProvider` can satisfy `browser-screenshot
 by writing a Playwright TypeScript tool and generated tests. `GenericApiToolBuildProvider`
 can satisfy reusable API capability requests such as `api.aml.score` by writing a
 domain-neutral HTTPS JSON adapter with typed URL/method/query/body inputs, optional
-declared secret handles, generated tests against a local HTTP server, and provider-specific
-registry metadata. `CommandToolQaRunner` now uses
+declared secret handles, generated tests against a local HTTP server, structured
+status/url/json/text evidence, and nested `score` extraction for score-bearing API
+responses. Provider presets can still stay generic; for example a Global Ledger-style
+request maps network/address inputs to the documented HTTPS endpoint while keeping the
+API key behind a declared secret handle. `CommandToolQaRunner` now uses
 temporary workspace isolation: it copies project source/tests/config into a disposable QA
 directory, links dependencies, runs the generated-tool test and build there with command
 timeouts, then runs promotion tests/build in the real project only after isolated QA

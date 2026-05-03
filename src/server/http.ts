@@ -754,7 +754,9 @@ async function routeRequest(
         parseToolBuildRequestInput(await readJsonBody<unknown>(request)),
         options,
       );
-      const buildRequest = await options.toolBuildRequestStore.create(requestInput);
+      const buildRequest = await options.toolBuildRequestStore.create(
+        await attachInlineCredentialHandle(requestInput, options),
+      );
       await recordAudit(options, {
         instanceId: "instance-local",
         actorId: "user-admin",
@@ -912,7 +914,7 @@ async function routeRequest(
       }
 
       const feedback = parseToolBuildReworkInput(await readJsonBody<unknown>(request));
-      const reworkRequest = await options.toolBuildRequestStore.create({
+      const reworkRequestInput = await attachInlineCredentialHandle({
         capability: original.capability,
         displayName: original.displayName,
         reason: `${original.reason}\n\nRework feedback for ${original.id}:\n${feedback}`,
@@ -927,9 +929,11 @@ async function routeRequest(
           `Rework feedback must be addressed: ${feedback}`,
         ]),
         credentialHandles: original.credentialHandles,
+        credentialNotes: original.credentialNotes,
         reworkOf: original.id,
         feedback,
-      });
+      }, options);
+      const reworkRequest = await options.toolBuildRequestStore.create(reworkRequestInput);
 
       await recordAudit(options, {
         instanceId: "instance-local",
@@ -962,9 +966,12 @@ async function routeRequest(
       return;
     }
 
-    const result = await options.toolBuildWorkflow.runOnce(
-      decodeURIComponent(toolBuildRunMatch[1] ?? ""),
-    );
+    const requestId = decodeURIComponent(toolBuildRunMatch[1] ?? "");
+    const buildRequest = await options.toolBuildRequestStore?.get(requestId);
+    if (buildRequest) {
+      await ensureInlineCredentialSecret(buildRequest, options);
+    }
+    const result = await options.toolBuildWorkflow.runOnce(requestId);
     if (result.request.status === "registered") {
       await options.reloadGeneratedTools?.();
     }
@@ -2325,17 +2332,17 @@ function parseToolBuildRequestInput(value: unknown) {
   }
 
   const candidate = value as Record<string, unknown>;
-  if (typeof candidate.capability !== "string" || candidate.capability.trim() === "") {
-    throw new Error("capability is required");
-  }
   if (typeof candidate.reason !== "string" || candidate.reason.trim() === "") {
     throw new Error("reason is required");
   }
+  const displayName = parseOptionalText(candidate.displayName);
+  const reason = candidate.reason.trim();
+  const capability = parseOptionalText(candidate.capability) ?? inferToolBuildCapability(displayName, reason);
 
   return {
-    capability: candidate.capability.trim(),
-    displayName: parseOptionalText(candidate.displayName),
-    reason: candidate.reason.trim(),
+    capability,
+    displayName,
+    reason,
     sourceRunId: typeof candidate.sourceRunId === "string" ? candidate.sourceRunId : undefined,
     sourceSpanId: typeof candidate.sourceSpanId === "string" ? candidate.sourceSpanId : undefined,
     taskSummary: typeof candidate.taskSummary === "string" ? candidate.taskSummary : undefined,
@@ -2344,9 +2351,83 @@ function parseToolBuildRequestInput(value: unknown) {
     requiredOutputs: parseOptionalStringArray(candidate.requiredOutputs, "requiredOutputs"),
     qaCriteria: parseOptionalStringArray(candidate.qaCriteria, "qaCriteria"),
     credentialHandles: parseOptionalStringArray(candidate.credentialHandles, "credentialHandles"),
+    credentialNotes: parseOptionalText(candidate.credentialNotes),
     reworkOf: typeof candidate.reworkOf === "string" ? candidate.reworkOf : undefined,
     feedback: typeof candidate.feedback === "string" ? candidate.feedback : undefined,
   };
+}
+
+function inferToolBuildCapability(displayName: string | undefined, reason: string): string {
+  const text = `${displayName ?? ""} ${reason}`.toLowerCase();
+  const source = displayName ?? reason;
+  const slug = slugifyCapabilityPart(source);
+  if (/\b(browser|screenshot|screen capture|скрин|скриншот)\b/.test(text)) return "browser-screenshot";
+  if (/\b(api|http|https|endpoint|openapi|swagger|webhook|bot|token|key|ключ)\b/.test(text)) {
+    return `api.${slug}`;
+  }
+  return `tool.${slug}`;
+}
+
+async function attachInlineCredentialHandle<TInput extends ReturnType<typeof parseToolBuildRequestInput>>(
+  input: TInput,
+  options: WebAppOptions,
+): Promise<TInput> {
+  if (!input.credentialNotes?.trim() || input.credentialHandles?.length || !options.secretHandleStore) return input;
+
+  const handle = await ensureInlineCredentialSecret(input, options);
+  return {
+    ...input,
+    credentialHandles: handle ? [handle] : input.credentialHandles,
+  };
+}
+
+async function ensureInlineCredentialSecret(
+  input: {
+    capability: string;
+    displayName?: string;
+    credentialNotes?: string;
+    credentialHandles?: string[];
+  },
+  options: WebAppOptions,
+): Promise<string | undefined> {
+  if (!input.credentialNotes?.trim() || input.credentialHandles?.length || !options.secretHandleStore) return undefined;
+
+  const handle = secretHandleFromCapability(input.capability);
+  await options.secretHandleStore.create({
+    handle,
+    label: `${input.displayName ?? input.capability} credentials`,
+    provider: "inline",
+    secretRef: input.credentialNotes.trim(),
+    scopes: ["instance-local", `tool:${input.capability}`],
+  });
+  return handle;
+}
+
+function secretHandleFromCapability(capability: string): string {
+  const slug = capability
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, ".")
+    .replace(/^[^a-z]+/, "")
+    .replace(/[.:-]+$/g, "")
+    .slice(0, 96) || "generated.tool";
+  return `secret.${slug}`;
+}
+
+function slugifyCapabilityPart(value: string): string {
+  return (
+    value
+      .toLowerCase()
+      .replace(/https?:\/\/\S+/g, " ")
+      .replace(/[^a-z0-9а-яё]+/gi, "-")
+      .replace(/^-+|-+$/g, "")
+      .split("-")
+      .filter(Boolean)
+      .slice(0, 8)
+      .join("-")
+      .replace(/[^a-z0-9-]+/g, "")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "tool"
+  );
 }
 
 async function assignGeneratedToolName(

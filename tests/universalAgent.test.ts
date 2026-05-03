@@ -578,6 +578,81 @@ test("UniversalAgent executes market time-series tools inside delegated subtasks
   }
 });
 
+test("UniversalAgent auto-routes AML address requests to registered API JSON tools", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"direct","reason":"looks like a short lookup","domains":["crypto"],"riskLevel":"low"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "aml",
+          title: "Lookup wallet AML risk",
+          role: "researcher",
+          prompt: "Get the AML score for the Ethereum address.",
+          expectedOutput: "AML score evidence.",
+          reviewCriteria: ["Uses registered tool evidence"],
+        },
+      ],
+    }),
+    "AML score evidence: score 42.",
+    JSON.stringify({ subtaskId: "aml", verdict: "pass", notes: "Uses tool evidence." }),
+    "Final AML answer with score 42.",
+    '{"shouldStore":false}',
+  ]);
+  const registry = new ToolRegistry();
+  let capturedInput: Record<string, unknown> | undefined;
+  registry.register({
+    name: "generated.api.gl.aml",
+    displayName: "GL AML",
+    version: "1.0.0",
+    description: "Global Ledger AML score API for wallet address and transaction risk.",
+    capabilities: ["api.gl-aml", "api-http-json", "http-api-call"],
+    requiredSecretHandles: ["secret.api.gl-aml"],
+    async run(input) {
+      capturedInput = input;
+      return {
+        ok: true,
+        content: "API call succeeded with HTTP 200; score: 42.",
+        data: {
+          status: 200,
+          url: "https://eth.glprotocol.com/api/report/address/0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2",
+          provider: "glprotocol",
+          score: 42,
+          json: { score: 42 },
+        },
+      };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const toolEvents: AgentEvent[] = [];
+
+  try {
+    const result = await agent.run(
+      "Дай амл скор адреса в эфире 0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2",
+      {
+        onEvent: (event) => {
+          if (event.activity === "tool") toolEvents.push(event);
+        },
+        toolExecutionContext: {
+          resolveSecret: async (handle) => handle === "secret.api.gl-aml" ? "test-token" : undefined,
+        },
+      },
+    );
+
+    assert.equal(result.complexity.mode, "delegated");
+    assert.equal(capturedInput?.network, "ethereum");
+    assert.equal(capturedInput?.address, "0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2");
+    assert.equal(capturedInput?.secretHandle, "secret.api.gl-aml");
+    assert.ok(toolEvents.some((event) => event.title === "Tool: generated.api.gl.aml" && event.status === "completed"));
+    assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /Structured tool data/);
+    assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /score: 42/);
+    assert.match(result.finalAnswer, /42/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent executes declared browser operate tool inputs and saves screenshots", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));

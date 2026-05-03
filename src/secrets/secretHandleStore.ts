@@ -1,4 +1,4 @@
-export type SecretHandleProvider = "env" | "external";
+export type SecretHandleProvider = "env" | "external" | "inline";
 
 export type SecretHandleInput = {
   handle?: string;
@@ -59,7 +59,9 @@ export class InMemorySecretHandleStore implements SecretHandleStore {
 
   async resolve(handle: string): Promise<string | undefined> {
     const record = this.handles.get(handle);
-    if (!record || record.provider !== "env") return undefined;
+    if (!record) return undefined;
+    if (record.provider === "inline") return record.secretRef;
+    if (record.provider !== "env") return undefined;
     return process.env[record.secretRef];
   }
 }
@@ -104,8 +106,8 @@ function normalizeRequiredText(value: unknown, field: string): string {
 }
 
 function normalizeProvider(value: unknown): SecretHandleProvider {
-  if (value === "env" || value === "external") return value;
-  throw new Error("provider must be env or external");
+  if (value === "env" || value === "external" || value === "inline") return value;
+  throw new Error("provider must be env, external, or inline");
 }
 
 function normalizeSecretRef(value: unknown, provider: SecretHandleProvider): string {
@@ -115,6 +117,9 @@ function normalizeSecretRef(value: unknown, provider: SecretHandleProvider): str
   }
   if (provider === "external" && /[\r\n]/.test(secretRef)) {
     throw new Error("external secretRef must be a single-line secret manager reference");
+  }
+  if (provider === "inline" && /[\r\n]/.test(secretRef)) {
+    throw new Error("inline secretRef must be a single-line secret value");
   }
   return secretRef;
 }

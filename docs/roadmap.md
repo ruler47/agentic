@@ -499,15 +499,20 @@ Remaining Phase 3 gaps:
 - Replace provider-authored source with a higher-level Tool Builder agent that can create
   new providers/modules for unknown capability families.
 - Fold API-docs onboarding into Tool Builds: admin uploads/pastes documentation, desired
-  use cases, and a credential secret handle; the builder creates a scoped TypeScript tool
+  use cases, and credential setup notes; the builder creates a scoped TypeScript tool
   contract, tests, QA report, and registry metadata. PARTIAL: the UI/API can create
-  capability requests, attach structured `credentialHandles` to the Tool Build contract,
-  register secret handles that point to env vars or external secret-manager refs without
-  exposing raw values, create secret handles from `handle=ENV_VAR` helper lines, generate
-  internal system names automatically, persist human `displayName`, and provider-build
-  generic HTTPS JSON API adapters such as `api.aml.score`. Remaining work is autonomous
-  docs parsing into endpoint presets, richer provider-specific schemas, and policy-aware
-  runtime credential resolution for all generated tools.
+  human tool requests without asking the operator for internal capability ids, infer
+  capability/system names automatically, persist human `displayName`, store optional
+  credential notes as sensitive setup context, attach structured `credentialHandles` when
+  low-level callers provide them, register secret handles that point to env vars,
+  external secret-manager refs, or Tool-Build-scoped inline material, and provider-build
+  generic HTTPS JSON API adapters such as `api.aml.score`. Generated API adapters return
+  structured HTTP status/url/json/text plus extracted nested score evidence when provider
+  JSON exposes `score` fields, so successful calls are useful to downstream agents rather
+  than only saying "HTTP 200". Remaining work is autonomous docs parsing into endpoint
+  presets, encrypted/secret-manager-backed material storage for pasted credentials, richer
+  provider-specific schemas, and policy-aware runtime credential resolution for all
+  generated tools.
 - Make generated tools manageable from the registry. DONE for human display names,
   generated-system-name handoff, persistent `display_name` columns, Tools-page delete
   buttons, `DELETE /api/tools/generated-modules/:name`, and built-in protection.
@@ -834,10 +839,10 @@ Admin pages:
   controls, continuation composer, and destructive delete with associated runs/traces.
 - Memory: global/group/user/run scopes with match reasons and edit controls.
 - Tools: registry, credentials, capabilities, health, examples.
-- Tool Builds: capability requests for APIs, browser/file capabilities, and channel
-  adapters; builder/QA lifecycle; generated source/test bundles. Current UI explains
-  requested/building/QA/registered states, shows real queue counts, and lets operators
-  trigger the builder workflow for a queued request.
+- Tool Builds: human tool requests for APIs, browser/file capabilities, and channel
+  adapters; inferred internal capabilities; builder/QA lifecycle; generated source/test
+  bundles. Current UI explains requested/building/QA/registered states, shows real queue
+  counts, and lets operators trigger the builder workflow for a queued request.
 - Policies: permissions for memory access, tool use, outbound messages, and federation.
 
 ## Phase 7: Durable Artifacts

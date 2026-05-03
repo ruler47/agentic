@@ -75,11 +75,43 @@ test("GeneratedToolFileBuilder creates reusable API adapter modules for API capa
     assert.equal(output.modulePath, "src/tools/generated/api-aml-scoreTool.ts");
     assert.equal(output.displayName, "AML Score");
     assert.deepEqual(output.capabilities, ["api.aml.score", "api-http-json", "http-api-call"]);
-    assert.deepEqual(output.inputSchema?.required, ["url"]);
+    assert.equal(output.inputSchema?.required, undefined);
     assert.deepEqual(output.requiredSecretHandles, ["secret.aml.gl.api"]);
     assert.match(moduleSource, /api-http-json/);
     assert.ok(moduleSource.includes("secret.aml.gl.api"));
     assert.match(testSource, /0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2/);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("GeneratedToolFileBuilder creates Global Ledger API preset modules from credential notes", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agentic-builder-"));
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const request = await requestStore.create({
+    capability: "api.gl-aml",
+    displayName: "GL AML",
+    reason: "Docs: https://common.glprotocol.com/api-doc/. Create AML check for address or transaction by blockchain name.",
+    desiredToolName: "generated.api.gl.aml",
+    credentialNotes: "api key should be used as x-api-key",
+    requiredInputs: ["network", "address", "transactionHash"],
+    requiredOutputs: ["score", "json"],
+  });
+  const builder = new GeneratedToolFileBuilder([new GenericApiToolBuildProvider()], projectRoot);
+
+  try {
+    const output = await builder.build(request);
+    const moduleSource = await readFile(join(projectRoot, output.modulePath), "utf8");
+    const testSource = await readFile(join(projectRoot, output.testPath), "utf8");
+
+    assert.equal(output.modulePath, "src/tools/generated/api-gl-amlTool.ts");
+    assert.deepEqual(output.requiredSecretHandles, ["secret.api.gl-aml"]);
+    assert.match(output.docsMarkdown ?? "", /Global Ledger preset/);
+    assert.match(moduleSource, /x-api-key/);
+    assert.match(moduleSource, /glprotocol/);
+    assert.match(moduleSource, /api\/report\/address/);
+    assert.match(testSource, /network: "ethereum"/);
+    assert.match(testSource, /x-api-key/);
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }

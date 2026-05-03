@@ -174,25 +174,28 @@ same-version overwrites so a tool rework cannot silently replace the active cont
 contracts. The System Inventory panel shows the latest build queue items next to tools and
 memories.
 
-`POST /api/tool-build-requests` accepts a missing capability payload (`capability`, human
-`displayName`, `reason`, optional source run/span IDs, task summary, inputs/outputs/QA
-criteria, and `credentialHandles`) and creates the same durable contract the runtime uses
-after `tool-missing`. If `desiredToolName` is omitted, the server generates a stable
-system name from the capability (`generated.api.aml.score`) and avoids already-used names
-where possible. Trace Lab's span inspector uses this endpoint for contextual "Create tool
+`POST /api/tool-build-requests` accepts a human tool request payload (`displayName`,
+`reason`, optional credential notes, optional source run/span IDs, task summary,
+inputs/outputs/QA criteria, and optional low-level `credentialHandles`) and creates the
+same durable contract the runtime uses after `tool-missing`. If `capability` is omitted,
+the server infers a stable internal capability from the name/description, then generates a
+system name such as `generated.api.aml.score` while avoiding already-used names where
+possible. Trace Lab's span inspector uses this endpoint for contextual "Create tool
 request / bug" forms, preserving the selected run/span context in the build request.
-Credential handles are carried as structured metadata into the builder instructions so
-generated tools can request credentials by handle without parsing raw free-form text.
+Credential notes are stored as sensitive operator setup context; UI cards only show that
+credentials were provided and builder instructions forbid leaking raw credential material
+into source, tests, prompts, traces, memory, or artifacts.
 
 The Tool Builds UI intentionally keeps the form simple:
 
 - **Display name**: the human label shown throughout the registry and trace surfaces.
-- **Capability**: a stable machine id such as `api.aml.score`.
 - **Description/docs**: the actual task, API docs, endpoint examples, expected behavior,
   and acceptance notes.
-- **Credential keys**: helper lines like `secret.aml.gl.api=AML_GL_API_KEY` or
-  `secret.crm.api=external:vault/crm/api-key`. The UI creates secret-handle metadata and
-  passes only handles into the build request; raw key values are not accepted.
+- **Credentials**: optional operator notes such as an API key, bot token, or secret
+  reference. The builder must infer durable settings/secret handles and must not expose
+  the raw material in generated outputs.
+- **QA criteria**: prefilled universal requirements for TypeScript, tests, manual smoke,
+  schemas, and credential non-leakage. Operators can append case-specific checks.
 
 `GET /api/tool-build-requests/:id` and `PATCH /api/tool-build-requests/:id` provide the
 builder lifecycle handoff. Builder, QA, and Registrar agents can mark a request as
@@ -217,11 +220,14 @@ for bounded retry attempts before a request becomes `qa_failed`.
 
 `GET /api/secret-handles` and `POST /api/secret-handles` expose the credential reference
 registry used by Tool Builds, generated tools, channel adapters, and future remote model
-providers. A secret handle stores only a provider (`env` or `external`), label, scopes,
-and `secretRef` such as `TELEGRAM_BOT_TOKEN` or a vault path. Raw values (`token`,
-`password`, `apiKey`, `value`) are rejected by the API. `DELETE
-/api/secret-handles/:handle` removes a handle and writes an audit event; no endpoint
-returns the underlying secret value.
+providers. A secret handle stores a provider (`env`, `external`, or UI-created `inline`),
+label, scopes, and `secretRef` such as `TELEGRAM_BOT_TOKEN`, a vault path, or the scoped
+inline credential material created from a Tool Build form. Raw values (`token`,
+`password`, `apiKey`, `value`) are rejected by the public API shape. The simplified Tool
+Build form may accept free-form credential notes and convert them into a generated
+tool-scoped inline secret handle before QA. `DELETE /api/secret-handles/:handle` removes a
+handle and writes an audit event; list/get responses do not expose the underlying secret
+value.
 
 `GET /api/tool-migrations` lists tool-owned migration records. Optional query filters are
 `toolName` and `status` (`pending`, `applied`, `failed`, `rolled_back`). `POST
@@ -633,8 +639,10 @@ Tool Builds:
 
 - missing capability requests;
 - API-docs onboarding and channel-adapter requests;
-- stable capability ids such as `api.aml.score`, with docs/endpoints/examples in the
-  request description and secret names in `credentialHandles`;
+- human tool requests where the server infers stable capability ids such as
+  `api.aml.score` from the display name and description;
+- docs/endpoints/examples in the request description and optional sensitive credential
+  notes for the builder to convert into durable settings/secret handles;
 - builder/QA/registrar lifecycle;
 - generated source/test artifacts;
 - QA reports and retry history.

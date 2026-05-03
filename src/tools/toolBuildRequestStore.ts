@@ -20,6 +20,7 @@ export type ToolBuildRequestInput = {
   requiredOutputs?: string[];
   qaCriteria?: string[];
   credentialHandles?: string[];
+  credentialNotes?: string;
   reworkOf?: string;
   feedback?: string;
 };
@@ -192,6 +193,12 @@ export function createToolBuildContract(input: ToolBuildRequestInput): ToolBuild
             "Do not copy raw credentials into source, prompts, tests, logs, or artifacts.",
           ]
         : []),
+      ...(input.credentialNotes?.trim()
+        ? [
+            "Operator supplied credential notes for this request. Infer durable secret handles/settings from the request and documentation.",
+            "Never echo raw credential material into source, tests, logs, traces, memory, or artifacts.",
+          ]
+        : []),
       "Add focused tests for the module contract and behavior.",
       "Run automated tests and a manual smoke check before changing registry status.",
       "Register the module only after QA passes.",
@@ -221,6 +228,7 @@ function cloneRequest(request: ToolBuildRequest): ToolBuildRequest {
     reworkOf: request.reworkOf,
     feedback: request.feedback,
     credentialHandles: request.credentialHandles ? [...request.credentialHandles] : undefined,
+    credentialNotes: request.credentialNotes,
     qaReport: request.qaReport
       ? {
           ...request.qaReport,

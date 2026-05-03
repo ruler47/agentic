@@ -213,7 +213,14 @@ export class UniversalAgent {
 
     const classificationStartedAt = new Date();
     const classificationTier = selectModelTier("classification");
-    const complexity = await this.classify(taskContext, memories, classificationTier);
+    let complexity = await this.classify(taskContext, memories, classificationTier);
+    if (complexity.mode === "direct" && hasActionableApiToolRequest(taskContext, this.tools.list())) {
+      complexity = {
+        ...complexity,
+        mode: "delegated",
+        reason: `${complexity.reason} Registered API tool execution is required.`,
+      };
+    }
     await emit({
       spanId: classificationSpanId,
       parentSpanId: runSpanId,
@@ -733,6 +740,16 @@ export class UniversalAgent {
       artifacts.push(...marketEvidence.artifacts);
     }
 
+    const apiEvidence = await this.collectApiToolEvidence(
+      subtask,
+      toolNeedText,
+      emit,
+      parentSpanId,
+      toolExecutionContext,
+    );
+    evidence.push(...apiEvidence.evidence);
+    artifacts.push(...apiEvidence.artifacts);
+
     const declaredToolEvidence = await this.collectDeclaredToolInputs(
       subtask,
       evidence,
@@ -941,6 +958,70 @@ export class UniversalAgent {
 
     return {
       text: evidence.length > 0 ? evidence.join("\n\n") : "No market time-series evidence was collected.",
+      evidence,
+      artifacts,
+    };
+  }
+
+  private async collectApiToolEvidence(
+    subtask: Subtask,
+    text: string,
+    emit: AgentEventEmitter,
+    parentSpanId: string,
+    toolExecutionContext?: BaseToolExecutionContext,
+  ): Promise<CollectedToolEvidence> {
+    const evidence: string[] = [];
+    const artifacts: AgentArtifact[] = [];
+    const declaredToolNames = new Set(Object.keys(subtask.toolInputs ?? {}));
+    const apiTools = this.tools
+      .findByCapability("api-http-json")
+      .filter((tool) => !declaredToolNames.has(tool.name));
+
+    for (const tool of apiTools) {
+      const input = inferApiToolInput(tool, text);
+      if (!input) continue;
+
+      const spanId = createSpanId(`tool-${tool.name}`);
+      const startedAt = new Date();
+      await emit({
+        spanId,
+        parentSpanId,
+        type: "tool-started",
+        actor: tool.name,
+        activity: "tool",
+        status: "started",
+        title: `Tool: ${tool.name}`,
+        detail: summarizeToolInput(input),
+        startedAt: startedAt.toISOString(),
+        payload: { tool: tool.name, input: sanitizeToolPayload(input) },
+      });
+
+      const result = await this.executeTool(tool, input, toolExecutionContext, {
+        spanId,
+        parentSpanId,
+        capability: tool.capabilities[0] ?? "api-http-json",
+        caller: `worker:${subtask.role}`,
+      });
+      await emit({
+        spanId,
+        parentSpanId,
+        type: "tool-completed",
+        actor: tool.name,
+        activity: "tool",
+        status: result.ok ? "completed" : "failed",
+        title: `Tool: ${tool.name}`,
+        detail: result.content,
+        startedAt: startedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(startedAt),
+        payload: sanitizeToolPayload(result),
+      });
+
+      evidence.push(formatDeclaredToolEvidence(tool.name, result, []));
+    }
+
+    return {
+      text: evidence.length > 0 ? evidence.join("\n\n") : "No API tool evidence was collected.",
       evidence,
       artifacts,
     };
@@ -2282,6 +2363,42 @@ function shouldCollectMarketTimeseries(subtask: Subtask, text: string): boolean 
   );
 }
 
+function hasActionableApiToolRequest(text: string, tools: Tool[]): boolean {
+  return tools.some((tool) => inferApiToolInput(tool, text));
+}
+
+function inferApiToolInput(tool: Tool, text: string): ToolInput | undefined {
+  if (!tool.capabilities.includes("api-http-json")) return undefined;
+  const descriptor = `${tool.name} ${tool.displayName ?? ""} ${tool.description} ${tool.capabilities.join(" ")}`;
+  const isAmlTool = /(?:aml|anti[-\s]?money|risk|score|скор|риск|санкц|gl[-\s]?aml|global\s+ledger)/i.test(descriptor);
+  const asksForAml = /(?:aml|anti[-\s]?money|risk|score|скор|риск|санкц|провер|чек|адрес|address|transaction|tx)/i.test(text);
+  if (!isAmlTool || !asksForAml) return undefined;
+
+  const transactionHash = text.match(/\b0x[a-fA-F0-9]{64}\b/)?.[0];
+  const address = transactionHash ? undefined : text.match(/\b0x[a-fA-F0-9]{40}\b/)?.[0];
+  if (!transactionHash && !address) return undefined;
+
+  const network = inferApiNetwork(text);
+  const input: ToolInput = {
+    network,
+    operation: transactionHash ? "transaction-risk-score" : "address-risk-score",
+  };
+  if (transactionHash) input.transactionHash = transactionHash;
+  if (address) input.address = address;
+  const secretHandle = tool.requiredSecretHandles?.[0];
+  if (secretHandle) input.secretHandle = secretHandle;
+  return input;
+}
+
+function inferApiNetwork(text: string): string {
+  if (/\b(?:btc|bitcoin)\b|биткоин/i.test(text)) return "bitcoin";
+  if (/\b(?:tron|trx)\b|трон/i.test(text)) return "tron";
+  if (/\b(?:bnb|bsc|binance)\b/i.test(text)) return "bnb";
+  if (/\b(?:avax|avalanche)\b/i.test(text)) return "avax";
+  if (/\b(?:eth|ether|ethereum)\b|эфир/i.test(text)) return "ethereum";
+  return "ethereum";
+}
+
 function inferMarketTimeseriesRequests(text: string): Array<{ symbol: string; vsCurrency: string; days: number }> {
   const days = inferMarketDays(text);
   const vsCurrency = /\beur\b|евро/i.test(text) ? "eur" : "usd";
@@ -2409,7 +2526,20 @@ function formatDeclaredToolEvidence(
     return limitText(`Declared tool evidence from ${toolName}:\n${result.content}${artifactText}${extractedText}`, promptBudget.toolEvidenceChars);
   }
 
-  return limitText(`Declared tool evidence from ${toolName}:\n${result.content}${artifactText}`, promptBudget.toolEvidenceChars);
+  const dataText = formatToolDataEvidence(result.data);
+  return limitText(`Declared tool evidence from ${toolName}:\n${result.content}${dataText}${artifactText}`, promptBudget.toolEvidenceChars);
+}
+
+function formatToolDataEvidence(data: unknown): string {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return "";
+  const record = data as Record<string, unknown>;
+  const lines: string[] = [];
+  if (record.provider !== undefined) lines.push(`provider: ${String(record.provider)}`);
+  if (record.status !== undefined) lines.push(`httpStatus: ${String(record.status)}`);
+  if (record.url !== undefined) lines.push(`url: ${String(record.url)}`);
+  if (record.score !== undefined) lines.push(`score: ${String(record.score)}`);
+  if (lines.length === 0) return "";
+  return `\nStructured tool data:\n${lines.map((line) => `- ${line}`).join("\n")}`;
 }
 
 function improveDeclaredToolInput(
