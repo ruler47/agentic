@@ -44,6 +44,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /data-action="create-secret-handle"/);
   assert.match(app, /data-action="delete-secret-handle"/);
   assert.match(app, /Available secret handles/);
+  assert.match(app, /credentialHandles/);
+  assert.match(app, /Credential handles/);
   assert.match(app, /data-live-run-duration/);
   assert.match(app, /function updateLiveTimers/);
   assert.match(app, /function cancelRun/);

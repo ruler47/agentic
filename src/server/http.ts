@@ -508,6 +508,7 @@ async function routeRequest(
         metadata: {
           capability: buildRequest.capability,
           desiredToolName: buildRequest.desiredToolName,
+          credentialHandles: buildRequest.credentialHandles,
           modulePath: buildRequest.contract.modulePath,
         },
       });
@@ -663,6 +664,7 @@ async function routeRequest(
           ...(original.qaCriteria ?? []),
           `Rework feedback must be addressed: ${feedback}`,
         ]),
+        credentialHandles: original.credentialHandles,
         reworkOf: original.id,
         feedback,
       });
@@ -1833,6 +1835,7 @@ function parseToolBuildRequestInput(value: unknown) {
     requiredInputs: parseOptionalStringArray(candidate.requiredInputs, "requiredInputs"),
     requiredOutputs: parseOptionalStringArray(candidate.requiredOutputs, "requiredOutputs"),
     qaCriteria: parseOptionalStringArray(candidate.qaCriteria, "qaCriteria"),
+    credentialHandles: parseOptionalStringArray(candidate.credentialHandles, "credentialHandles"),
     reworkOf: typeof candidate.reworkOf === "string" ? candidate.reworkOf : undefined,
     feedback: typeof candidate.feedback === "string" ? candidate.feedback : undefined,
   };

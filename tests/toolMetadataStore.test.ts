@@ -167,6 +167,7 @@ test("tool build request store creates a reusable builder and QA contract", asyn
     sourceSpanId: "span-1",
     requiredInputs: ["url"],
     requiredOutputs: ["artifact"],
+    credentialHandles: ["secret.browser.proxy"],
   });
   const [stored] = await store.list();
 
@@ -175,6 +176,8 @@ test("tool build request store creates a reusable builder and QA contract", asyn
   assert.equal(request.contract.modulePath, "src/tools/generated/browser-screenshotTool.ts");
   assert.equal(request.contract.testPath, "tests/generated/browser-screenshotTool.test.ts");
   assert.deepEqual(request.contract.inputSchema.required, ["url"]);
+  assert.deepEqual(request.credentialHandles, ["secret.browser.proxy"]);
+  assert.ok(request.contract.builderInstructions.some((instruction) => instruction.includes("secret.browser.proxy")));
   assert.ok(request.contract.qaCriteria.some((criterion) => criterion.includes("Manual smoke check")));
   assert.equal(stored?.id, request.id);
 });

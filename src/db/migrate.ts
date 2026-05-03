@@ -384,6 +384,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         required_inputs text[],
         required_outputs text[],
         qa_criteria text[],
+        credential_handles text[],
         rework_of text,
         feedback text,
         status text not null check (status in ('requested', 'building', 'qa_failed', 'qa_passed', 'registered', 'blocked')),
@@ -401,6 +402,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table tool_build_requests add column if not exists registered_tool_name text;`);
     await pool.query(`alter table tool_build_requests add column if not exists rework_of text;`);
     await pool.query(`alter table tool_build_requests add column if not exists feedback text;`);
+    await pool.query(`alter table tool_build_requests add column if not exists credential_handles text[];`);
 
     await pool.query(`
       create index if not exists tool_build_requests_capability_status_idx

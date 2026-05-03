@@ -448,6 +448,9 @@ For documentation-only changes:
 - Tool Build requests can be reworked through `POST /api/tool-build-requests/:id/rework`.
   Preserve the original request and create a new requested revision with operator feedback
   instead of overwriting prior QA evidence.
+- Tool Build requests can include `credentialHandles`. Keep these as structured metadata
+  and builder instructions; do not require generated tools to scrape handles from the
+  free-form reason text.
 - Secret handles are metadata references, not raw secrets. Use `POST /api/secret-handles`
   with provider `env` or `external`, a `secretRef`, and scopes; the API rejects raw
   `token`, `password`, `apiKey`, or `value` payloads. Tools and future model/channel

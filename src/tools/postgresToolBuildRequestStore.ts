@@ -21,6 +21,7 @@ type ToolBuildRequestRow = {
   required_inputs: string[] | null;
   required_outputs: string[] | null;
   qa_criteria: string[] | null;
+  credential_handles: string[] | null;
   rework_of: string | null;
   feedback: string | null;
   status: ToolBuildRequestStatus;
@@ -45,13 +46,13 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
         insert into tool_build_requests (
           id, capability, reason, source_run_id, source_span_id, task_summary,
           desired_tool_name, required_inputs, required_outputs, qa_criteria,
-          rework_of, feedback,
+          credential_handles, rework_of, feedback,
           status, contract, created_at, updated_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'requested', $13, $14, $14)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'requested', $14, $15, $15)
         returning id, capability, reason, source_run_id, source_span_id, task_summary,
                   desired_tool_name, required_inputs, required_outputs, qa_criteria,
-                  rework_of, feedback,
+                  credential_handles, rework_of, feedback,
                   status, status_detail, qa_report, registered_tool_name,
                   contract, created_at, updated_at
       `,
@@ -66,6 +67,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
         input.requiredInputs ?? null,
         input.requiredOutputs ?? null,
         input.qaCriteria ?? null,
+        input.credentialHandles ?? null,
         input.reworkOf ?? null,
         input.feedback ?? null,
         contract,
@@ -81,7 +83,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
       `
         select id, capability, reason, source_run_id, source_span_id, task_summary,
                desired_tool_name, required_inputs, required_outputs, qa_criteria,
-               rework_of, feedback,
+               credential_handles, rework_of, feedback,
                status, status_detail, qa_report, registered_tool_name,
                contract, created_at, updated_at
         from tool_build_requests
@@ -98,7 +100,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
       `
         select id, capability, reason, source_run_id, source_span_id, task_summary,
                desired_tool_name, required_inputs, required_outputs, qa_criteria,
-               rework_of, feedback,
+               credential_handles, rework_of, feedback,
                status, status_detail, qa_report, registered_tool_name,
                contract, created_at, updated_at
         from tool_build_requests
@@ -124,7 +126,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
         where id = $1
         returning id, capability, reason, source_run_id, source_span_id, task_summary,
                   desired_tool_name, required_inputs, required_outputs, qa_criteria,
-                  rework_of, feedback,
+                  credential_handles, rework_of, feedback,
                   status, status_detail, qa_report, registered_tool_name,
                   contract, created_at, updated_at
       `,
@@ -164,7 +166,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
         where id in (select id from next_request)
         returning id, capability, reason, source_run_id, source_span_id, task_summary,
                   desired_tool_name, required_inputs, required_outputs, qa_criteria,
-                  rework_of, feedback,
+                  credential_handles, rework_of, feedback,
                   status, status_detail, qa_report, registered_tool_name,
                   contract, created_at, updated_at
       `,
@@ -196,6 +198,7 @@ function mapRow(row: ToolBuildRequestRow | undefined): ToolBuildRequest {
     requiredInputs: row.required_inputs ?? undefined,
     requiredOutputs: row.required_outputs ?? undefined,
     qaCriteria: row.qa_criteria ?? undefined,
+    credentialHandles: row.credential_handles ?? undefined,
     reworkOf: row.rework_of ?? undefined,
     feedback: row.feedback ?? undefined,
     status: row.status,

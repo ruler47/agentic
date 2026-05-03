@@ -2021,6 +2021,10 @@ function renderToolBuildsPage() {
               <span>QA criteria</span>
               <input name="qaCriteria" placeholder="smoke call passes, schemas validated, no secret leakage" />
             </label>
+            <label>
+              <span>Credential handles</span>
+              <input name="credentialHandles" placeholder="secret.telegram.bot, secret.crm.api" />
+            </label>
           </div>
           <div class="composer-bottom">
             <p class="composer-hint">The module must be TypeScript, independently documented, tested, and registered only after QA passes.</p>
@@ -2060,6 +2064,7 @@ function renderBuildCard(request) {
       <p>${escapeHtml(request.reason)}</p>
       <small>${escapeHtml(request.contract?.toolName ?? "tool contract pending")}</small>
       <small>${escapeHtml(request.contract?.modulePath ?? "module pending")}</small>
+      ${(request.credentialHandles ?? []).length ? `<small class="status-note">Credentials: ${request.credentialHandles.map((handle) => `<code>${escapeHtml(handle)}</code>`).join(" ")}</small>` : ""}
       ${request.feedback ? `<small class="status-note">Latest feedback: ${escapeHtml(request.feedback)}</small>` : ""}
       ${request.statusDetail ? `<small class="status-note">Status detail: ${escapeHtml(request.statusDetail)}</small>` : ""}
       ${request.qaReport ? `<small class="status-note">QA: ${escapeHtml(request.qaReport.summary)}</small>` : ""}
@@ -2713,6 +2718,7 @@ async function createToolBuildRequest(form) {
         sourceSpanId: String(formData.get("sourceSpanId") ?? "") || undefined,
         taskSummary: String(formData.get("taskSummary") ?? "") || undefined,
         qaCriteria,
+        credentialHandles: parseListInput(formData.get("credentialHandles")),
       }),
     });
     state.buildRequests = [data.request, ...state.buildRequests.filter((item) => item.id !== data.request.id)];

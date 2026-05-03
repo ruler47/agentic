@@ -18,6 +18,7 @@ export type ToolBuildRequestInput = {
   requiredInputs?: string[];
   requiredOutputs?: string[];
   qaCriteria?: string[];
+  credentialHandles?: string[];
   reworkOf?: string;
   feedback?: string;
 };
@@ -182,6 +183,12 @@ export function createToolBuildContract(input: ToolBuildRequestInput): ToolBuild
     builderInstructions: [
       "Create a TypeScript module implementing the Tool interface.",
       "Keep dependencies explicit and minimal; prefer existing project utilities.",
+      ...(input.credentialHandles?.length
+        ? [
+            `Use only these credential handles when credentials are needed: ${input.credentialHandles.join(", ")}.`,
+            "Do not copy raw credentials into source, prompts, tests, logs, or artifacts.",
+          ]
+        : []),
       "Add focused tests for the module contract and behavior.",
       "Run automated tests and a manual smoke check before changing registry status.",
       "Register the module only after QA passes.",
@@ -209,6 +216,7 @@ function cloneRequest(request: ToolBuildRequest): ToolBuildRequest {
     qaCriteria: request.qaCriteria ? [...request.qaCriteria] : undefined,
     reworkOf: request.reworkOf,
     feedback: request.feedback,
+    credentialHandles: request.credentialHandles ? [...request.credentialHandles] : undefined,
     qaReport: request.qaReport
       ? {
           ...request.qaReport,

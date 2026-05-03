@@ -989,6 +989,7 @@ test("web server exposes tool build requests", async () => {
         reason: "Need PDF report artifacts.",
         requiredInputs: ["markdown"],
         requiredOutputs: ["artifact"],
+        credentialHandles: ["secret.pdf.vendor"],
       }),
     });
     const response = await fetch(`${baseUrl}/api/tool-build-requests`);
@@ -1050,6 +1051,10 @@ test("web server exposes tool build requests", async () => {
 
     assert.equal(createdResponse.status, 201);
     assert.equal(created.request.contract.toolName, "generated.pdf.report");
+    assert.deepEqual(created.request.credentialHandles, ["secret.pdf.vendor"]);
+    assert.ok(
+      created.request.contract.builderInstructions.some((instruction: string) => instruction.includes("secret.pdf.vendor")),
+    );
     assert.equal(updateResponse.status, 200);
     assert.equal(updated.request.status, "qa_passed");
     assert.equal(updated.request.qaReport.checks.length, 2);
@@ -1057,6 +1062,7 @@ test("web server exposes tool build requests", async () => {
     assert.equal(reworkResponse.status, 201);
     assert.equal(rework.request.status, "requested");
     assert.equal(rework.request.reworkOf, created.request.id);
+    assert.deepEqual(rework.request.credentialHandles, ["secret.pdf.vendor"]);
     assert.match(rework.request.feedback, /stricter artifact validation/);
     assert.equal(stopResponse.status, 200);
     assert.equal(stopped.request.status, "blocked");
