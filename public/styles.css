@@ -1403,6 +1403,35 @@ textarea {
   color: var(--secondary);
 }
 
+.proposal-review {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 10px 12px;
+  color: var(--secondary);
+}
+
+.proposal-review strong {
+  display: block;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.proposal-review.blocked {
+  border-color: rgba(251, 113, 133, 0.24);
+  background: rgba(251, 113, 133, 0.08);
+}
+
+.proposal-review.needs_review {
+  border-color: rgba(251, 191, 36, 0.24);
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.proposal-review.ready {
+  border-color: rgba(74, 222, 128, 0.24);
+  background: rgba(74, 222, 128, 0.08);
+}
+
 .tabs-row {
   justify-content: flex-start;
 }

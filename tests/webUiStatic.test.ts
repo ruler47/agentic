@@ -77,6 +77,9 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /Tool request created/);
   assert.match(app, /navigate\("tool-builds"\)/);
   assert.match(app, /function renderMemoryDetail/);
+  assert.match(app, /\/api\/memories\/review-queue/);
+  assert.match(app, /function renderMemoryProposalReview/);
+  assert.match(app, /Blocked proposals/);
   assert.match(app, /function renderMemoryScopeSections/);
   assert.match(app, /function renderMemoryEditForm/);
   assert.match(app, /function saveMemory/);
@@ -146,6 +149,7 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".memory-tabs",
     ".memory-scope-summary",
     ".memory-scope-section",
+    ".proposal-review",
     ".memory-edit-form",
     ".tools-layout",
     ".kanban-heading",

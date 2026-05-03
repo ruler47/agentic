@@ -847,6 +847,7 @@ test("web server supports scoped memory review lifecycle", async () => {
     });
     const created = await createResponse.json();
     const proposed = await (await fetch(`${baseUrl}/api/memories?status=proposed`)).json();
+    const reviewQueue = await (await fetch(`${baseUrl}/api/memories/review-queue`)).json();
     const acceptResponse = await fetch(`${baseUrl}/api/memories/${encodeURIComponent(created.memory.id)}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -895,6 +896,13 @@ test("web server supports scoped memory review lifecycle", async () => {
     assert.equal(created.memory.status, "proposed");
     assert.equal(created.memory.scope, "group");
     assert.equal(proposed.memories.length, 1);
+    assert.equal(reviewQueue.summary.total, 1);
+    assert.equal(reviewQueue.reviews[0].memoryId, created.memory.id);
+    assert.equal(reviewQueue.reviews[0].status, "needs_review");
+    assert.equal(
+      reviewQueue.reviews[0].findings.some((finding: { code: string }) => finding.code === "missing_source"),
+      true,
+    );
     assert.equal(acceptResponse.status, 200);
     assert.equal(accepted.memory.status, "accepted");
     assert.equal(accepted.memory.confidence, 0.95);

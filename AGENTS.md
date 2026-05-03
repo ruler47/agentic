@@ -342,6 +342,8 @@ For documentation-only changes:
   and late LLM/tool events or results must not overwrite it.
 - If a completed run returns `result.learnedSkill`, the web server records a compact
   `memory.created` audit event with scope/status/sensitivity metadata.
+- Proposed memories are exposed through `GET /api/memories/review-queue`, which applies
+  deterministic guardrails before an operator accepts a memory into retrieval.
 - For DAG dependencies, also preserve `payload.dependencySpanIds` so the UI can draw
   additional upstream arrows.
 - Worker/reviewer LLM failures should emit explicit failed spans before throwing, so a

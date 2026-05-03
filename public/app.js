@@ -53,6 +53,7 @@ const state = {
   runs: [],
   conversations: [],
   memories: [],
+  memoryReviews: [],
   tools: [],
   buildRequests: [],
   tiers: [],
@@ -254,6 +255,7 @@ async function refreshData() {
       runs,
       conversations,
       memories,
+      memoryReviews,
       tools,
       buildRequests,
       tiers,
@@ -265,6 +267,7 @@ async function refreshData() {
       fetchJson("/api/runs").then((data) => data.runs ?? []),
       fetchJson("/api/conversation-threads").then((data) => data.threads ?? []),
       fetchJson("/api/memories").then((data) => data.memories ?? []),
+      fetchJson("/api/memories/review-queue").then((data) => data.reviews ?? []),
       fetchJson("/api/tools").then((data) => data.tools ?? []),
       fetchJson("/api/tool-build-requests").then((data) => data.requests ?? []),
       fetchJson("/api/settings/model-tiers").then((data) => data.tiers ?? []),
@@ -278,6 +281,7 @@ async function refreshData() {
       runs,
       conversations,
       memories,
+      memoryReviews,
       tools,
       buildRequests,
       tiers,
@@ -1402,6 +1406,7 @@ function renderMemoryPage() {
           <div class="memory-metrics">
             ${miniInsight("Accepted", String(accepted.length))}
             ${miniInsight("Review queue", String(reviewQueue.length))}
+            ${miniInsight("Blocked proposals", String(state.memoryReviews.filter((review) => review.status === "blocked").length))}
             ${miniInsight("Rejected", String(rejected.length))}
             ${miniInsight("Archived", String(archived.length))}
           </div>
@@ -1520,6 +1525,7 @@ function renderMemoryDetail(memory) {
         <span>${formatRelative(memory.createdAt)}</span>
       </div>
       ${contextBlock("Retrieval impact", memoryRetrievalImpact(memory))}
+      ${renderMemoryProposalReview(memory)}
       ${renderMemoryPolicySimulation(memory)}
       ${contextBlock("Summary", memory.summary || "No summary.")}
       ${contextBlock("Reusable procedure", memory.reusableProcedure || "No procedure recorded.")}
@@ -1610,6 +1616,7 @@ function renderMemoryReviewItem(memory) {
       <strong>${escapeHtml(memory.title)}</strong>
       <span>${escapeHtml(formatMemoryScope(memory))} · ${formatConfidence(memory.confidence)}</span>
       <p>${escapeHtml(memory.summary)}</p>
+      ${renderMemoryProposalReview(memory, { compact: true })}
       <div class="card-actions">
         <button type="button" class="ghost-button" data-action="update-memory-status" data-memory-id="${memory.id}" data-memory-status="accepted">Accept</button>
         <button type="button" class="ghost-button danger-button" data-action="update-memory-status" data-memory-id="${memory.id}" data-memory-status="rejected">Reject</button>
@@ -1652,6 +1659,35 @@ function memoryRetrievalImpact(memory) {
   const scope = memoryScopeOf(memory);
   if (scope === "global") return "Accepted global memory can be considered for every matching run.";
   return `Accepted ${scope} memory is injected only when the active run includes exact scope id ${memory.scopeId ?? "(missing)"}.`;
+}
+
+function renderMemoryProposalReview(memory, options = {}) {
+  if (normalizeMemoryStatus(memory.status) !== "proposed") return "";
+  const review = state.memoryReviews.find((candidate) => candidate.memoryId === memory.id);
+  if (!review) return "";
+  const findingSummary = (review.findings ?? [])
+    .map((finding) => `${finding.severity}: ${finding.message}`)
+    .join("\n");
+
+  if (options.compact) {
+    return `
+      <div class="proposal-review compact ${escapeHtml(review.status)}">
+        <strong>${escapeHtml(proposalReviewLabel(review.status))}</strong>
+        <span>${escapeHtml(review.recommendedAction)}</span>
+      </div>
+    `;
+  }
+
+  return contextBlock(
+    "Proposal review",
+    `${proposalReviewLabel(review.status)}\n${review.recommendedAction}${findingSummary ? `\n\n${findingSummary}` : ""}`,
+  );
+}
+
+function proposalReviewLabel(status) {
+  if (status === "blocked") return "Blocked before accept";
+  if (status === "needs_review") return "Needs operator review";
+  return "Ready for review";
 }
 
 function renderMemoryPolicySimulation(memory) {

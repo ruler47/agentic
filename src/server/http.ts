@@ -20,6 +20,7 @@ import {
   evaluateMemoryRetrieval,
   MemoryRetrievalEvaluationCase,
 } from "../memory/retrievalEvaluation.js";
+import { reviewMemoryProposals } from "../memory/memoryProposalReview.js";
 import { AgentRunRecord, RunCreateContext, RunStore } from "../runs/types.js";
 import { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
 import { ToolSchema, ToolStartupMode } from "../tools/tool.js";
@@ -344,6 +345,27 @@ async function routeRequest(
         error: error instanceof Error ? error.message : "Invalid memory retrieval evaluation request",
       });
     }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/memories/review-queue") {
+    if (!options.skillMemory) {
+      sendJson(response, 503, { error: "Memory store is not configured" });
+      return;
+    }
+
+    const memories = await options.skillMemory.list({ status: "proposed", includeArchived: true });
+    const reviews = reviewMemoryProposals(memories);
+    sendJson(response, 200, {
+      memories,
+      reviews,
+      summary: {
+        total: reviews.length,
+        ready: reviews.filter((review) => review.status === "ready").length,
+        needsReview: reviews.filter((review) => review.status === "needs_review").length,
+        blocked: reviews.filter((review) => review.status === "blocked").length,
+      },
+    });
     return;
   }
 

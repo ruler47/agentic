@@ -204,11 +204,17 @@ Memory operations:
 
 ```http
 GET /api/memories
+GET /api/memories/review-queue
 POST /api/memories
 PATCH /api/memories/:id
 POST /api/memories/reembed
 POST /api/memories/evaluate-retrieval
 ```
+
+`GET /api/memories/review-queue` returns proposed memories with deterministic proposal
+reviews. The review flags unsafe accepts before an LLM memory specialist exists: missing
+non-global `scopeId`, private memory outside user scope, low confidence, missing
+evidence/source links, and sensitive/private policy risks.
 
 `POST /api/memories/reembed` rebuilds every stored memory vector for the active embedding
 provider and records a `memory.embeddings_rebuilt` audit event.

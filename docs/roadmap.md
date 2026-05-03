@@ -151,7 +151,10 @@ Tasks:
   events exist. The run learning step now asks the model to classify each reusable memory
   as global/group/user/thread/run with confidence, sensitivity, evidence, and status;
   non-global or sensitive/private learned memories are forced into `proposed` review
-  state before they can be retrieved.
+  state before they can be retrieved. Proposed memories now also have deterministic
+  pre-review guardrails (`GET /api/memories/review-queue`) that flag missing scope IDs,
+  missing evidence/source links, low confidence, and private/sensitive policy risks
+  before an operator accepts them.
 - Add embeddings with `pgvector`. DONE for the current schema: `skill_memories.memory_embedding
   vector(128)` and an HNSW cosine index are created when pgvector is available; memory
   writes use a configurable embedding provider with deterministic fallback.
@@ -198,8 +201,9 @@ Remaining memory gaps:
   deterministic sensitive/private memory policy before prompt injection. It is not yet
   connected to editable role/policy records or persistent policy decisions.
 - Memory proposals from completed runs are classified into group/user/thread/run scope by
-  the learning model and audited as `memory.created`, but they are not yet re-reviewed by
-  a separate memory-specialist agent before entering the review queue.
+  the learning model, audited as `memory.created`, and checked by deterministic
+  pre-review guardrails, but they are not yet re-reviewed by a separate LLM
+  memory-specialist agent before entering the review queue.
 - Memory policy simulation currently uses the selected run context and deterministic
   rules. It is not yet connected to editable role/policy records or audit decisions.
 
