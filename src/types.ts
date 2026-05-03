@@ -113,7 +113,23 @@ export type AgentArtifact = {
   url: string;
   description?: string;
   contentPreview?: string;
+  quality?: ArtifactQualityMetadata;
   createdAt: string;
+};
+
+export type ArtifactQualityMetadata = {
+  status: "passed" | "warning" | "failed";
+  reviewedAt: string;
+  checks: ArtifactQualityCheck[];
+};
+
+export type ArtifactQualityCheck = {
+  name: string;
+  ok: boolean;
+  decision: string;
+  reason: string;
+  signals?: string[];
+  warnings?: string[];
 };
 
 export type ArtifactUploadInput = {
@@ -128,6 +144,7 @@ export type ArtifactCreateInput = {
   mimeType: string;
   content: string | Buffer;
   description?: string;
+  quality?: ArtifactQualityMetadata;
 };
 
 export type AgentRunResult = {

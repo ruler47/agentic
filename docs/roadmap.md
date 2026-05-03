@@ -600,6 +600,9 @@ Implemented:
 - Text-like input and generated output artifacts now store `contentPreview` in metadata;
   the UI renders short previews for text/source artifacts and compact table previews for
   CSV/TSV datasets.
+- Artifact metadata can now persist compact QA decisions (`quality`) with check names,
+  pass/warning/fail status, reasons, warnings, and matched signals; the UI renders these
+  as small QA badges on artifact cards.
 - The runtime invokes the registered `chart.generate` TypeScript tool when a task asks
   for a graph/chart and task context or worker output contains a parsable time series.
 - Artifact creation emits trace events.
@@ -615,8 +618,10 @@ Remaining:
 - Make reviewers artifact-aware across all file types, not only chart requests. PARTIAL:
   typed artifact contracts now reject obvious mismatches such as PNG proof for a data
   requirement, empty inspectable previews for data/source artifacts, and invalid
-  document/image/chart/screenshot MIME classes. Remaining work is richer content-specific
-  inspection for PDFs, source bundles, and multi-file reports.
+  document/image/chart/screenshot MIME classes. Accepted tool-generated artifacts now
+  carry durable QA metadata that can feed UI review and future tool-rework requests.
+  Remaining work is richer content-specific inspection for PDFs, source bundles, and
+  multi-file reports.
 - Make planning dependency-aware so a review subtask cannot run before the artifact it is
   supposed to review exists. DONE for subtask-level DAG execution; remaining work is
   explicit typed artifact contracts.

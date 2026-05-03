@@ -543,7 +543,7 @@ test("UniversalAgent executes market time-series tools inside delegated subtasks
   const events: AgentEvent[] = [];
 
   try {
-    const result = await agent.run("Собери BTC market data за месяц и дай краткий анализ тренда.", {
+    const result = await agent.run("Собери BTC market data за 2 дня и дай краткий анализ тренда.", {
       saveArtifact: async (artifact): Promise<AgentArtifact> => {
         savedArtifacts.push(artifact);
         return {
@@ -566,8 +566,10 @@ test("UniversalAgent executes market time-series tools inside delegated subtasks
     assert.equal(marketInputs.length, 1);
     assert.equal((marketInputs[0] as { symbol?: string }).symbol, "BTC");
     assert.equal((marketInputs[0] as { vsCurrency?: string }).vsCurrency, "usd");
+    assert.equal((marketInputs[0] as { days?: number }).days, 2);
     assert.equal(savedArtifacts.length, 1);
     assert.equal(savedArtifacts[0]?.filename, "bitcoin-usd-30d-timeseries.csv");
+    assert.equal(savedArtifacts[0]?.quality?.checks[0]?.name, "tool-output-contract-qa");
     assert.equal(result.workerResults[0]?.artifacts?.[0]?.url, "/artifacts/bitcoin.csv");
     assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /market\.timeseries/);
     assert.ok(events.some((event) => event.type === "tool-completed" && event.actor === "market.timeseries"));

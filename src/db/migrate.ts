@@ -251,11 +251,17 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         url text not null,
         description text,
         content_preview text,
+        quality jsonb,
         storage_provider text not null,
         object_key text not null,
         checksum_sha256 text not null,
         created_at timestamptz not null
       );
+    `);
+
+    await pool.query(`
+      alter table artifacts
+      add column if not exists quality jsonb;
     `);
 
     await pool.query(`

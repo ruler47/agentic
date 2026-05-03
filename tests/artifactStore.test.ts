@@ -25,6 +25,11 @@ test("LocalArtifactStore saves uploads and generated artifacts", async () => {
       mimeType: "image/svg+xml",
       content: "<svg></svg>",
       description: "chart",
+      quality: {
+        status: "passed",
+        reviewedAt: "2026-05-03T00:00:00.000Z",
+        checks: [{ name: "typed-artifact-contract-qa", ok: true, decision: "usable", reason: "valid svg" }],
+      },
     });
     const listed = await store.list("run-1");
     const read = await store.read("run-1", output.id);
@@ -35,7 +40,9 @@ test("LocalArtifactStore saves uploads and generated artifacts", async () => {
     assert.equal(output.kind, "output");
     assert.equal(output.url, `/api/runs/run-1/artifacts/${output.id}`);
     assert.equal(output.contentPreview, "<svg></svg>");
+    assert.equal(output.quality?.status, "passed");
     assert.equal(listed.length, 2);
+    assert.equal(listed.find((artifact) => artifact.id === output.id)?.quality?.checks[0]?.decision, "usable");
     assert.equal(await readFile(read!.path!, "utf8"), "<svg></svg>");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -57,6 +64,11 @@ test("DurableArtifactStore stores metadata separately from object payloads", asy
     mimeType: "text/csv",
     content: "city,score\nMalaga,91",
     description: "dataset",
+    quality: {
+      status: "passed",
+      reviewedAt: "2026-05-03T00:00:00.000Z",
+      checks: [{ name: "tool-output-contract-qa", ok: true, decision: "usable", reason: "valid data" }],
+    },
   });
 
   const listed = await store.list("run-2");
@@ -68,7 +80,9 @@ test("DurableArtifactStore stores metadata separately from object payloads", asy
   assert.equal(input.contentPreview, "# hello");
   assert.equal(readInput?.content?.toString("utf8"), "# hello");
   assert.equal(output.contentPreview, "city,score\nMalaga,91");
+  assert.equal(output.quality?.checks[0]?.name, "tool-output-contract-qa");
   assert.equal(readOutput?.content?.toString("utf8"), "city,score\nMalaga,91");
+  assert.equal(record?.artifact.quality?.status, "passed");
   assert.equal(record?.storageProvider, "memory");
   assert.match(record?.objectKey ?? "", /^run-2\/output\/artifact_/);
   assert.equal(record?.checksumSha256.length, 64);

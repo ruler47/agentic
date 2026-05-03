@@ -60,6 +60,7 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /graph-arrow-head-failed/);
   assert.match(app, /failed-target/);
   assert.match(app, /function artifactPreview/);
+  assert.match(app, /function renderArtifactQuality/);
   assert.match(app, /function renderDatasetPreview/);
   assert.match(app, /function artifactTypeLabel/);
   assert.match(styles, /\.artifact-table-preview/);
@@ -131,6 +132,7 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".graph-edge.failed-target",
     ".artifact-preview",
     ".artifact-copy",
+    ".artifact-quality",
     ".legend-line.dashed",
     ".notice-banner",
     ".inline-artifact-link",

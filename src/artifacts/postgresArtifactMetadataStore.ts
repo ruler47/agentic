@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { AgentArtifact, AgentArtifactKind } from "../types.js";
+import { AgentArtifact, AgentArtifactKind, ArtifactQualityMetadata } from "../types.js";
 import { ArtifactMetadataRecord, ArtifactMetadataStore } from "./artifactStore.js";
 
 type ArtifactRow = {
@@ -12,6 +12,7 @@ type ArtifactRow = {
   url: string;
   description: string | null;
   content_preview: string | null;
+  quality: ArtifactQualityMetadata | null;
   storage_provider: string;
   object_key: string;
   checksum_sha256: string;
@@ -34,12 +35,13 @@ export class PostgresArtifactMetadataStore implements ArtifactMetadataStore {
           url,
           description,
           content_preview,
+          quality,
           storage_provider,
           object_key,
           checksum_sha256,
           created_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14)
         on conflict (id) do update set
           run_id = excluded.run_id,
           kind = excluded.kind,
@@ -49,6 +51,7 @@ export class PostgresArtifactMetadataStore implements ArtifactMetadataStore {
           url = excluded.url,
           description = excluded.description,
           content_preview = excluded.content_preview,
+          quality = excluded.quality,
           storage_provider = excluded.storage_provider,
           object_key = excluded.object_key,
           checksum_sha256 = excluded.checksum_sha256
@@ -63,6 +66,7 @@ export class PostgresArtifactMetadataStore implements ArtifactMetadataStore {
         record.artifact.url,
         record.artifact.description ?? null,
         record.artifact.contentPreview ?? null,
+        record.artifact.quality ? JSON.stringify(record.artifact.quality) : null,
         record.storageProvider,
         record.objectKey,
         record.checksumSha256,
@@ -112,6 +116,7 @@ function mapArtifactRow(row: ArtifactRow): ArtifactMetadataRecord {
       url: row.url,
       description: row.description ?? undefined,
       contentPreview: row.content_preview ?? undefined,
+      quality: row.quality ?? undefined,
       createdAt: row.created_at.toISOString(),
     },
     storageProvider: row.storage_provider,

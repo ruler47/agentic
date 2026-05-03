@@ -151,6 +151,8 @@ The chart tool is data-agnostic: series names come from the input keys, and valu
 read from common numeric fields or the first numeric field in each point.
 Text-like input and generated output artifacts also store a short content preview, so the
 UI can show source/text snippets and compact CSV/TSV table previews before download.
+Accepted artifacts can include compact `quality` metadata from deterministic or tool-level
+QA; the UI shows this as a QA badge with the underlying reason available on hover.
 Market/crypto time-series requests can use the registered `market.timeseries` tool,
 which fetches structured CoinGecko data, returns normalized points, and saves a CSV
 artifact that downstream chart generation can consume.

@@ -400,6 +400,9 @@ The Answer panel renders links for `result.artifacts`, including generated outpu
 such as SVG charts. Text-like input and generated output artifacts store a short
 `contentPreview`; the UI renders text/source snippets and compact CSV/TSV table previews
 instead of showing only filenames and storage paths.
+Artifacts can also include durable `quality` metadata with compact QA checks, decisions,
+reasons, warnings, and matched signals. The UI renders this as a small QA badge on
+artifact cards so operators can see why an output file was accepted.
 
 Reviewer hard-gates also validate typed artifact contracts before accepting worker
 results. A required dataset must look like data, a required source bundle must look like
@@ -486,7 +489,8 @@ Trace Lab:
   messages. Bold text, Markdown links, and application-local artifact URLs are clickable;
   image artifacts get compact previews where space allows. Text-like artifacts show a
   short content preview when `contentPreview` is available, while binary/PDF/source
-  artifacts show typed preview tiles instead of only a path and filename.
+  artifacts show typed preview tiles instead of only a path and filename. Artifact QA
+  badges are shown when `quality` metadata exists.
 - PNG browser screenshots are visually and semantically QA-checked before storage.
   Near-empty screenshots, loader/blocker browser evidence, and task-mismatched browser
   context are emitted as failed artifact trace events instead of being presented as useful

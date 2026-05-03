@@ -1191,6 +1191,38 @@ textarea {
   line-height: 1.35;
 }
 
+.artifact-quality {
+  width: max-content;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 999px;
+  color: var(--secondary);
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-quality.passed {
+  border-color: rgba(74, 222, 128, 0.3);
+  background: rgba(74, 222, 128, 0.08);
+  color: #4ade80;
+}
+
+.artifact-quality.warning {
+  border-color: rgba(251, 191, 36, 0.34);
+  background: rgba(251, 191, 36, 0.08);
+  color: #fbbf24;
+}
+
+.artifact-quality.failed {
+  border-color: rgba(251, 113, 133, 0.34);
+  background: rgba(251, 113, 133, 0.08);
+  color: #fb7185;
+}
+
 .artifact-icon {
   display: grid;
   place-items: center;

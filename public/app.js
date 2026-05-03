@@ -833,6 +833,7 @@ function renderArtifactStrip(artifacts, expanded = false) {
 function renderArtifactCard(artifact) {
   const isImage = artifact.mimeType?.startsWith("image/");
   const preview = artifactPreview(artifact);
+  const quality = renderArtifactQuality(artifact.quality);
   return `
     <a class="artifact-card" href="${artifact.url}" target="_blank" rel="noreferrer">
       <span class="artifact-preview ${isImage ? "image" : "text"}">
@@ -842,8 +843,23 @@ function renderArtifactCard(artifact) {
         <strong>${escapeHtml(artifact.filename)}</strong>
         <small>${artifact.kind} · ${artifact.mimeType} · ${formatBytes(artifact.sizeBytes)}</small>
         ${artifact.description ? `<em>${escapeHtml(truncate(artifact.description, 120))}</em>` : ""}
+        ${quality}
       </span>
     </a>
+  `;
+}
+
+function renderArtifactQuality(quality) {
+  if (!quality || !Array.isArray(quality.checks) || !quality.checks.length) return "";
+  const firstFailed = quality.checks.find((check) => !check.ok);
+  const firstWarning = quality.checks.find((check) => check.warnings?.length);
+  const primary = firstFailed ?? firstWarning ?? quality.checks[0];
+  const label =
+    quality.status === "passed" ? "QA passed" : quality.status === "warning" ? "QA warning" : "QA failed";
+  return `
+    <span class="artifact-quality ${escapeHtml(quality.status)}" title="${escapeHtml(primary?.reason ?? label)}">
+      ${escapeHtml(label)}
+    </span>
   `;
 }
 

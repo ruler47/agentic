@@ -28,6 +28,11 @@ import {
   artifactMatchesRequirement,
   inspectArtifactRequirement,
 } from "../artifacts/artifactRequirementQuality.js";
+import {
+  mergeArtifactQualityMetadata,
+  semanticArtifactQualityMetadata,
+  toolArtifactQualityMetadata,
+} from "../artifacts/artifactQualityMetadata.js";
 import { inspectBrowserScreenshotEvidence } from "../artifacts/semanticArtifactQuality.js";
 import { isChartToolData } from "../tools/chartGenerateTool.js";
 import { isBrowserOperateData } from "../tools/browserOperateTool.js";
@@ -819,7 +824,18 @@ export class UniversalAgent {
       const savedArtifacts: AgentArtifact[] = [];
       if (result.ok && saveArtifact && isMarketTimeseriesData(result.data)) {
         const artifactStartedAt = new Date();
-        const artifact = await saveArtifact(result.data.artifact);
+        const artifact = await saveArtifact({
+          ...result.data.artifact,
+          quality: mergeArtifactQualityMetadata(
+            result.data.artifact.quality,
+            toolArtifactQualityMetadata({
+              capability: "market-timeseries",
+              toolName: marketTool.name,
+              ok: result.data.points.length > 0,
+              reason: `${result.data.points.length} normalized point(s) returned for ${result.data.symbol}/${result.data.vsCurrency}.`,
+            }),
+          ),
+        });
         savedArtifacts.push(artifact);
         await emit({
           spanId: createSpanId("artifact-market-data"),
@@ -926,7 +942,13 @@ export class UniversalAgent {
             });
             continue;
           }
-          const artifact = await saveArtifact(artifactInput);
+          const artifact = await saveArtifact({
+            ...artifactInput,
+            quality: mergeArtifactQualityMetadata(
+              artifactInput.quality,
+              semanticArtifactQualityMetadata(artifactQa),
+            ),
+          });
           savedArtifacts.push(artifact);
           await emit({
             spanId: createSpanId("artifact"),
@@ -1330,7 +1352,7 @@ export class UniversalAgent {
 
     const artifactStartedAt = new Date();
     const artifactSpanId = createSpanId("artifact");
-    const artifactInput = toArtifact(toolResult.data);
+    let artifactInput = toArtifact(toolResult.data);
     if (capability === "browser-screenshot") {
       const artifactQa = inspectBrowserScreenshotEvidence({
         artifact: artifactInput,
@@ -1355,6 +1377,23 @@ export class UniversalAgent {
         });
         return undefined;
       }
+      artifactInput = {
+        ...artifactInput,
+        quality: mergeArtifactQualityMetadata(artifactInput.quality, semanticArtifactQualityMetadata(artifactQa)),
+      };
+    } else {
+      artifactInput = {
+        ...artifactInput,
+        quality: mergeArtifactQualityMetadata(
+          artifactInput.quality,
+          toolArtifactQualityMetadata({
+            capability,
+            toolName: tool.name,
+            ok: true,
+            reason: "Tool returned a valid artifact payload.",
+          }),
+        ),
+      };
     }
     const artifact = await saveArtifact(artifactInput);
     await emit({
@@ -2036,12 +2075,27 @@ function inferMarketSymbols(text: string): string[] {
 }
 
 function inferMarketDays(text: string): number {
+  const explicitDays =
+    text.match(/(?:last|past|за|последн(?:ие|их|ий|юю)?)\s*(\d{1,4})\s*(?:day|days|дн(?:я|ей|и|ь)?)/i) ??
+    text.match(/(\d{1,4})\s*(?:day|days|дн(?:я|ей|и|ь)?)/i);
+  if (explicitDays?.[1]) return clampMarketDays(Number(explicitDays[1]));
+
+  const explicitMonths =
+    text.match(/(?:last|past|за|последн(?:ие|их|ий|юю)?)\s*(\d{1,3})\s*(?:month|months|мес(?:яц|яца|яцев)?)/i) ??
+    text.match(/(\d{1,3})\s*(?:month|months|мес(?:яц|яца|яцев)?)/i);
+  if (explicitMonths?.[1]) return clampMarketDays(Number(explicitMonths[1]) * 30);
+
   if (/пол\s*года|half\s*(?:a\s*)?year|6\s*months|six\s*months/i.test(text)) return 180;
   if (/год|year|12\s*months/i.test(text)) return 365;
   if (/лет[оа]|summer/i.test(text)) return 120;
   if (/месяц|month|30\s*days/i.test(text)) return 30;
   if (/недел|week|7\s*days/i.test(text)) return 7;
   return 30;
+}
+
+function clampMarketDays(days: number): number {
+  if (!Number.isFinite(days)) return 30;
+  return Math.max(1, Math.min(3650, Math.round(days)));
 }
 
 function buildSearchQueries(subtask: Subtask): string[] {

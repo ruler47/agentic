@@ -153,6 +153,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/artifacts/artifactStore.ts](src/artifacts/artifactStore.ts) - artifact store
   contracts, local fallback store, durable metadata/object-store composition, and
   in-memory test stores.
+- [src/artifacts/artifactQualityMetadata.ts](src/artifacts/artifactQualityMetadata.ts)
+  - compact artifact QA metadata helpers persisted with artifact records.
 - [src/artifacts/postgresArtifactMetadataStore.ts](src/artifacts/postgresArtifactMetadataStore.ts)
   - Postgres-backed artifact metadata table adapter.
 - [src/artifacts/s3ObjectStore.ts](src/artifacts/s3ObjectStore.ts) - minimal
@@ -387,6 +389,10 @@ For documentation-only changes:
 - Typed artifact requirements are checked by `src/artifacts/artifactRequirementQuality.ts`.
   Review gates should reject wrong MIME/extension classes and weak inspectable previews
   before accepting a worker result as satisfying `requiredArtifacts`.
+- Artifact records may carry `quality` metadata. When deterministic QA or a tool accepts
+  an artifact, persist the compact check names, decisions, reasons, and matched signals so
+  UI/API users can understand why the file is usable and future rework requests can inherit
+  the evidence.
 - Future Trace Lab "Create tool request / bug" actions should carry selected span context
   into Tool Builder: run/span IDs, actor, tool name/version/capability, input/output
   summaries, artifacts, QA evidence, and the operator's comment.

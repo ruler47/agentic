@@ -105,6 +105,7 @@ export class LocalArtifactStore implements ArtifactStore {
       url: `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(id)}`,
       description: input.description,
       contentPreview: previewContent(input.mimeType, content),
+      quality: input.quality,
       createdAt: new Date().toISOString(),
     };
     const manifest = await this.readManifest(runId);
@@ -206,6 +207,7 @@ export class DurableArtifactStore implements ArtifactStore {
       url: `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(id)}`,
       description: input.description,
       contentPreview: previewContent(input.mimeType, content),
+      quality: input.quality,
       createdAt: new Date().toISOString(),
     };
 
