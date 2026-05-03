@@ -226,7 +226,8 @@ Implemented registry persistence:
 - `tool_modules` Postgres table.
 - Built-in tool metadata sync on server startup.
 - Tool health status persisted after `/api/tools/health`.
-- API/UI expose source, status, schemas, startup mode, and capabilities.
+- API/UI expose source, status, schemas, startup mode, capabilities, health detail, and a
+  registry healthcheck action that updates persistent metadata.
 
 Every tool call must emit trace events with:
 

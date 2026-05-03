@@ -373,6 +373,8 @@ For documentation-only changes:
   source/status/health/version metadata survives restarts.
 - Missing capabilities should create `tool_build_requests` with TypeScript module paths,
   schemas, acceptance criteria, and QA criteria before any generated code is promoted.
+- The Tools UI has a registry healthcheck action backed by `GET /api/tools/health`; keep
+  tool status and health detail in persistent metadata when changing tool contracts.
 - Tool Build Queue consumers should update durable lifecycle state through the store/API:
   `requested`, `building`, `qa_failed`, `qa_passed`, `registered`, or `blocked`, with QA
   evidence attached before registration.

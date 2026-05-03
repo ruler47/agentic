@@ -181,6 +181,9 @@ document.addEventListener("click", (event) => {
     state.selectedToolName = toolName;
     render();
   }
+  if (actionName === "run-tool-health") {
+    void runToolHealthchecks();
+  }
   if (actionName === "run-tool-build" && buildId) {
     void runToolBuild(buildId);
   }
@@ -1589,9 +1592,14 @@ function renderToolsPage() {
     <section class="tools-layout">
       <section class="page-stack">
         <section class="surface-hero">
-          <span class="eyebrow">Tool registry</span>
-          <h2>Installed capabilities</h2>
-          <p>Built-in and generated TypeScript tools live here. Full test/configure actions are still on the roadmap; current cards expose contract and health metadata.</p>
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Tool registry</span>
+              <h2>Installed capabilities</h2>
+              <p>Built-in and generated TypeScript tools live here. Healthchecks update persistent registry metadata and surface failed tools for rework.</p>
+            </div>
+            <button type="button" class="primary-button" data-action="run-tool-health">Run Healthchecks</button>
+          </div>
         </section>
         ${renderFilterBar("Search tools...", ["Status", "Source", "Capability"])}
         <div class="card-grid">
@@ -1634,10 +1642,12 @@ function renderToolDetail(tool) {
         <span>${escapeHtml(tool.source ?? "builtin")}</span>
         <span>${escapeHtml(tool.status ?? "available")}</span>
         <span>v${escapeHtml(tool.version ?? "n/a")}</span>
+        ${tool.lastHealthOk === undefined ? "" : `<span>${tool.lastHealthOk ? "healthy" : "unhealthy"}</span>`}
       </div>
       ${contextBlock("Purpose", tool.description || "No description.")}
       ${contextBlock("Capabilities", (tool.capabilities ?? []).join("\n") || "No capabilities.")}
       ${contextBlock("Startup mode", tool.startupMode ?? "default")}
+      ${contextBlock("Health", formatToolHealth(tool))}
       ${contextBlock("Schema", formatToolSchemas(tool))}
       ${tool.status === "failed" ? renderToolReworkForm(tool, failureProblem) : ""}
     </div>
@@ -1674,6 +1684,12 @@ function formatToolSchemas(tool) {
   const input = tool.inputSchema ? JSON.stringify(tool.inputSchema, null, 2) : "No input schema.";
   const output = tool.outputSchema ? JSON.stringify(tool.outputSchema, null, 2) : "No output schema.";
   return `Input:\n${input}\n\nOutput:\n${output}`;
+}
+
+function formatToolHealth(tool) {
+  if (tool.lastHealthOk === undefined) return "Healthcheck has not been run yet.";
+  const status = tool.lastHealthOk ? "healthy" : "unhealthy";
+  return `${status}: ${tool.lastHealthDetail || "No detail recorded."}`;
 }
 
 function renderToolBuildsPage() {
@@ -2217,13 +2233,34 @@ async function saveMemory(form) {
     });
     state.memories = [data.memory, ...state.memories.filter((memory) => memory.id !== data.memory.id)];
     state.selectedMemoryId = data.memory.id;
-    state.notice = { type: "success", message: "Memory updated." };
+    state.notice = {
+      title: "Memory updated",
+      body: `${data.memory.title} is saved with ${data.memory.scope}${data.memory.scopeId ? `:${data.memory.scopeId}` : ""} scope.`,
+    };
     render();
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);
     render();
   } finally {
     setComposerBusy(form, false);
+  }
+}
+
+async function runToolHealthchecks() {
+  try {
+    const result = await fetchJson("/api/tools/health");
+    const failed = (result.tools ?? []).filter((tool) => !tool.ok);
+    await refreshData();
+    state.notice = {
+      title: failed.length ? "Tool healthchecks failed" : "Tool healthchecks passed",
+      body: failed.length
+        ? `${failed.length} tool healthcheck${failed.length === 1 ? "" : "s"} failed.`
+        : `Healthchecks passed for ${(result.tools ?? []).length} tool${(result.tools ?? []).length === 1 ? "" : "s"}.`,
+    };
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
   }
 }
 

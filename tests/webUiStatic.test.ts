@@ -78,6 +78,11 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /memoryScopeTitle/);
   assert.match(app, /Retrieval impact/);
   assert.match(app, /function renderToolDetail/);
+  assert.match(app, /function runToolHealthchecks/);
+  assert.match(app, /data-action="run-tool-health"/);
+  assert.match(app, /\/api\/tools\/health/);
+  assert.match(app, /title: failed\.length \? "Tool healthchecks failed" : "Tool healthchecks passed"/);
+  assert.match(app, /title: "Memory updated"/);
   assert.match(app, /function runToolBuild/);
   assert.match(app, /function reworkToolBuild/);
   assert.match(app, /function stopToolBuild/);
