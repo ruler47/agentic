@@ -26,6 +26,8 @@ type ToolBuildRequestRow = {
   credential_notes: string | null;
   rework_of: string | null;
   feedback: string | null;
+  replaces_tool_name: string | null;
+  replaces_version: string | null;
   status: ToolBuildRequestStatus;
   status_detail: string | null;
   qa_report: ToolBuildQaReport | null;
@@ -48,13 +50,13 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
         insert into tool_build_requests (
           id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
           desired_tool_name, required_inputs, required_outputs, qa_criteria,
-          credential_handles, credential_notes, rework_of, feedback,
+          credential_handles, credential_notes, rework_of, feedback, replaces_tool_name, replaces_version,
           status, contract, created_at, updated_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'requested', $16, $17, $17)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'requested', $18, $19, $19)
         returning id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
                   desired_tool_name, required_inputs, required_outputs, qa_criteria,
-                  credential_handles, credential_notes, rework_of, feedback,
+                  credential_handles, credential_notes, rework_of, feedback, replaces_tool_name, replaces_version,
                   status, status_detail, qa_report, registered_tool_name,
                   contract, created_at, updated_at
       `,
@@ -74,6 +76,8 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
         input.credentialNotes ?? null,
         input.reworkOf ?? null,
         input.feedback ?? null,
+        input.replacesToolName ?? null,
+        input.replacesVersion ?? null,
         contract,
         now,
       ],
@@ -87,7 +91,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
       `
         select id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
                desired_tool_name, required_inputs, required_outputs, qa_criteria,
-               credential_handles, credential_notes, rework_of, feedback,
+               credential_handles, credential_notes, rework_of, feedback, replaces_tool_name, replaces_version,
                status, status_detail, qa_report, registered_tool_name,
                contract, created_at, updated_at
         from tool_build_requests
@@ -104,7 +108,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
       `
         select id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
                desired_tool_name, required_inputs, required_outputs, qa_criteria,
-               credential_handles, credential_notes, rework_of, feedback,
+               credential_handles, credential_notes, rework_of, feedback, replaces_tool_name, replaces_version,
                status, status_detail, qa_report, registered_tool_name,
                contract, created_at, updated_at
         from tool_build_requests
@@ -130,7 +134,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
         where id = $1
         returning id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
                   desired_tool_name, required_inputs, required_outputs, qa_criteria,
-                  credential_handles, credential_notes, rework_of, feedback,
+                  credential_handles, credential_notes, rework_of, feedback, replaces_tool_name, replaces_version,
                   status, status_detail, qa_report, registered_tool_name,
                   contract, created_at, updated_at
       `,
@@ -170,7 +174,7 @@ export class PostgresToolBuildRequestStore implements ToolBuildRequestStore {
         where id in (select id from next_request)
         returning id, capability, display_name, reason, source_run_id, source_span_id, task_summary,
                   desired_tool_name, required_inputs, required_outputs, qa_criteria,
-                  credential_handles, credential_notes, rework_of, feedback,
+                  credential_handles, credential_notes, rework_of, feedback, replaces_tool_name, replaces_version,
                   status, status_detail, qa_report, registered_tool_name,
                   contract, created_at, updated_at
       `,
@@ -207,6 +211,8 @@ function mapRow(row: ToolBuildRequestRow | undefined): ToolBuildRequest {
     credentialNotes: row.credential_notes ?? undefined,
     reworkOf: row.rework_of ?? undefined,
     feedback: row.feedback ?? undefined,
+    replacesToolName: row.replaces_tool_name ?? undefined,
+    replacesVersion: row.replaces_version ?? undefined,
     status: row.status,
     statusDetail: row.status_detail ?? undefined,
     qaReport: row.qa_report ?? undefined,

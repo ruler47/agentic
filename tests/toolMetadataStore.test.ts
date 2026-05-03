@@ -206,6 +206,10 @@ test("InMemoryToolMetadataStore promotes generated replacements only after versi
   assert.equal(replacement.version, "1.1.0");
   assert.equal(replacement.status, "disabled");
   assert.equal(stored?.version, "1.1.0");
+  assert.equal(stored?.versions?.[0]?.version, "1.1.0");
+  assert.equal(stored?.versions?.[0]?.active, true);
+  assert.deepEqual(await store.listVersions("generated.browser.screenshot"), stored?.versions);
+  assert.equal((await store.activateVersion("generated.browser.screenshot", "1.1.0")).version, "1.1.0");
   assert.deepEqual(stored?.capabilities, ["browser-screenshot", "artifact-generation"]);
 });
 
@@ -311,6 +315,27 @@ test("tool build request store preserves rework feedback", async () => {
   assert.equal(stored?.reworkOf, original.id);
   assert.match(stored?.feedback ?? "", /thread routing/);
   assert.deepEqual(stored?.qaCriteria, ["feedback is addressed"]);
+});
+
+test("tool build request store creates versioned replacement contracts", async () => {
+  const store = new InMemoryToolBuildRequestStore();
+  const request = await store.create({
+    capability: "api.gl-aml",
+    displayName: "GL AML",
+    reason: "Change request: totalFunds is the final score and sources[].funds drives sources.",
+    desiredToolName: "generated.api.gl.aml",
+    replacesToolName: "generated.api.gl.aml",
+    replacesVersion: "1.0.0",
+    qaCriteria: ["root totalFunds is returned as score"],
+  });
+
+  assert.equal(request.replacesToolName, "generated.api.gl.aml");
+  assert.equal(request.replacesVersion, "1.0.0");
+  assert.equal(request.contract.version, "1.1.0");
+  assert.equal(request.contract.replacesVersion, "1.0.0");
+  assert.equal(request.contract.toolName, "generated.api.gl.aml");
+  assert.equal(request.contract.modulePath, "src/tools/generated/api-gl-aml-v1-1-0Tool.ts");
+  assert.equal(request.contract.testPath, "tests/generated/api-gl-aml-v1-1-0Tool.test.ts");
 });
 
 test("tool build request store deletes lifecycle requests", async () => {

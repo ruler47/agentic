@@ -477,6 +477,9 @@ For documentation-only changes:
 - Existing capabilities that are too weak should create a rework request for a new tool
   version. Do not silently overwrite the old version; preserve changelog, QA evidence,
   failure context, and promotion decision.
+- Generated tool versions are persisted in `tool_module_versions`. `tool_modules`
+  represents the active version, while older registered versions remain available for
+  inspection and explicit activation through the Tools UI/API.
 - Tool registry metadata should grow toward a complete operator catalog: name, version,
   changelog, capabilities, schemas, required configuration keys, required secret handles,
   provider URLs, limits, tool-owned storage contracts, migrations, examples,
@@ -542,6 +545,13 @@ For documentation-only changes:
 - Generated tool replacements must not overwrite the active contract directly. Promote a
   replacement with an explicit `replacesVersion`; the store rejects stale handoffs,
   builtin replacement attempts, and same-version "upgrades".
+- The Tools UI supports search across display/system names, versions, descriptions,
+  capabilities, status/source, docs/examples, settings/secrets, and schemas. Generated
+  tool detail cards expose active-version selection and "Request change / new version",
+  which creates a Tool Build request with `replacesToolName` and `replacesVersion`.
+- The generated Global Ledger AML adapter treats root `totalFunds` as the final AML Score.
+  `sources[].funds` is source-level evidence; expose unique source names with
+  `funds.share` percentages instead of using nested `funds.score` as the final score.
 - The first self-service generated capability is `browser-screenshot`. The Docker runtime
   includes Chromium and project source/tests so the Builder workflow can write generated
   TypeScript, run targeted tests, rebuild `dist`, register metadata, reload the generated

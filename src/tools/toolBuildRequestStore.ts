@@ -23,6 +23,8 @@ export type ToolBuildRequestInput = {
   credentialNotes?: string;
   reworkOf?: string;
   feedback?: string;
+  replacesToolName?: string;
+  replacesVersion?: string;
 };
 
 export type ToolBuildContract = {
@@ -38,6 +40,8 @@ export type ToolBuildContract = {
   acceptanceCriteria: string[];
   qaCriteria: string[];
   builderInstructions: string[];
+  version: string;
+  replacesVersion?: string;
 };
 
 export type ToolBuildQaReport = {
@@ -144,6 +148,8 @@ export class InMemoryToolBuildRequestStore implements ToolBuildRequestStore {
 export function createToolBuildContract(input: ToolBuildRequestInput): ToolBuildContract {
   const slug = slugify(input.capability || "tool-capability");
   const toolName = input.desiredToolName?.trim() || `generated.${slug.replace(/-/g, ".")}`;
+  const version = input.replacesVersion ? bumpMinorVersion(input.replacesVersion) : "1.0.0";
+  const pathSlug = input.replacesVersion ? `${slug}-v${version.replace(/[^a-z0-9]+/gi, "-")}` : slug;
   const requiredInputs = input.requiredInputs?.length ? input.requiredInputs : ["task", "context"];
   const requiredOutputs = input.requiredOutputs?.length ? input.requiredOutputs : ["content", "data"];
   const qaCriteria = input.qaCriteria?.length
@@ -158,8 +164,8 @@ export function createToolBuildContract(input: ToolBuildRequestInput): ToolBuild
   return {
     toolName,
     displayName: input.displayName?.trim() || undefined,
-    modulePath: `src/tools/generated/${slug}Tool.ts`,
-    testPath: `tests/generated/${slug}Tool.test.ts`,
+    modulePath: `src/tools/generated/${pathSlug}Tool.ts`,
+    testPath: `tests/generated/${pathSlug}Tool.test.ts`,
     capability: input.capability,
     description: `Generated tool module for capability: ${input.capability}.`,
     startupMode: "on-demand",
@@ -184,6 +190,8 @@ export function createToolBuildContract(input: ToolBuildRequestInput): ToolBuild
       "Emits enough content/data for the parent agent to cite evidence in the final answer.",
     ],
     qaCriteria,
+    version,
+    replacesVersion: input.replacesVersion,
     builderInstructions: [
       "Create a TypeScript module implementing the Tool interface.",
       "Keep dependencies explicit and minimal; prefer existing project utilities.",
@@ -204,6 +212,13 @@ export function createToolBuildContract(input: ToolBuildRequestInput): ToolBuild
       "Register the module only after QA passes.",
     ],
   };
+}
+
+function bumpMinorVersion(version: string): string {
+  const [majorRaw, minorRaw] = version.split(".");
+  const major = Number.parseInt(majorRaw ?? "1", 10);
+  const minor = Number.parseInt(minorRaw ?? "0", 10);
+  return `${Number.isFinite(major) ? major : 1}.${Number.isFinite(minor) ? minor + 1 : 1}.0`;
 }
 
 function createToolBuildRequestId(capability: string): string {
@@ -227,6 +242,8 @@ function cloneRequest(request: ToolBuildRequest): ToolBuildRequest {
     qaCriteria: request.qaCriteria ? [...request.qaCriteria] : undefined,
     reworkOf: request.reworkOf,
     feedback: request.feedback,
+    replacesToolName: request.replacesToolName,
+    replacesVersion: request.replacesVersion,
     credentialHandles: request.credentialHandles ? [...request.credentialHandles] : undefined,
     credentialNotes: request.credentialNotes,
     qaReport: request.qaReport
@@ -243,6 +260,8 @@ function cloneRequest(request: ToolBuildRequest): ToolBuildRequest {
       acceptanceCriteria: [...request.contract.acceptanceCriteria],
       qaCriteria: [...request.contract.qaCriteria],
       builderInstructions: [...request.contract.builderInstructions],
+      version: request.contract.version,
+      replacesVersion: request.contract.replacesVersion,
     },
   };
 }

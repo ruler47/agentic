@@ -170,6 +170,12 @@ replacement version for an existing generated tool. The request body must includ
 `replacesVersion`; the catalog rejects stale promotions, builtin replacement attempts, and
 same-version overwrites so a tool rework cannot silently replace the active contract.
 
+`POST /api/tools/generated-modules/:name/activate-version` switches the active generated
+tool version to an already registered version. The response includes the selected tool
+metadata and the version list. The Tools UI exposes this as an active-version selector;
+newly promoted replacements become the highest active version by default, while older
+versions remain inspectable.
+
 `GET /api/tool-build-requests` returns missing capability requests with builder and QA
 contracts. The System Inventory panel shows the latest build queue items next to tools and
 memories.
@@ -196,6 +202,13 @@ The Tool Builds UI intentionally keeps the form simple:
   the raw material in generated outputs.
 - **QA criteria**: prefilled universal requirements for TypeScript, tests, manual smoke,
   schemas, and credential non-leakage. Operators can append case-specific checks.
+
+The Tools page supports registry search across display name, system name, version,
+description, capabilities/tags, source/status, declared settings/secrets, docs/examples,
+and schemas. Generated tool detail panels expose delete, active-version selection, and a
+"Request change / new version" form. That rework form creates a normal Tool Build request
+with `replacesToolName` and `replacesVersion`, so fixes and behavior changes follow the
+same Builder → QA → Registrar → promotion path as missing capabilities.
 
 `GET /api/tool-build-requests/:id` and `PATCH /api/tool-build-requests/:id` provide the
 builder lifecycle handoff. Builder, QA, and Registrar agents can mark a request as

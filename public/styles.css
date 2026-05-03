@@ -866,6 +866,23 @@ textarea {
   line-height: 1.5;
 }
 
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.inline-form select {
+  min-width: 180px;
+  flex: 1;
+}
+
+.context-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .context-block a {
   color: var(--accent);
   text-decoration: none;

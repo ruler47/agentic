@@ -275,6 +275,7 @@ test("UniversalAgent records a tool build request when a required capability is 
           status: "requested",
           contract: {
             toolName: "generated.chart.generation",
+            version: "1.0.0",
             modulePath: "src/tools/generated/chart-generationTool.ts",
             testPath: "tests/generated/chart-generationTool.test.ts",
             capability: request.capability,
@@ -363,6 +364,7 @@ test("UniversalAgent can use a newly built screenshot tool in the same run", asy
           registeredToolName: screenshotTool.name,
           contract: {
             toolName: screenshotTool.name,
+            version: "1.0.0",
             modulePath: "src/tools/generated/browser-screenshotTool.ts",
             testPath: "tests/generated/browser-screenshotTool.test.ts",
             capability: request.capability,

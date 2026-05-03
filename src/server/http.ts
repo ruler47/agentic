@@ -676,6 +676,38 @@ async function routeRequest(
     return;
   }
 
+  const activateVersionMatch = url.pathname.match(/^\/api\/tools\/generated-modules\/([^/]+)\/activate-version$/);
+  if (request.method === "POST" && activateVersionMatch) {
+    if (!options.toolMetadataStore) {
+      sendJson(response, 503, { error: "Tool metadata store is not configured" });
+      return;
+    }
+
+    try {
+      const name = decodeURIComponent(activateVersionMatch[1] ?? "");
+      const body = await readJsonBody<unknown>(request);
+      const version = parseRequiredText(isRecord(body) ? body.version : undefined, "version");
+      const tool = await options.toolMetadataStore.activateVersion(name, version);
+      await options.reloadGeneratedTools?.();
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool.version_activated",
+        targetType: "tool",
+        targetId: name,
+        status: "success",
+        summary: `Activated ${name} ${version}`,
+      });
+      sendJson(response, 200, { tool });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid generated tool version activation",
+      });
+    }
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/tools/health") {
     const tools = options.toolRegistry?.list() ?? [];
     const health = await Promise.all(
@@ -932,6 +964,8 @@ async function routeRequest(
         credentialNotes: original.credentialNotes,
         reworkOf: original.id,
         feedback,
+        replacesToolName: original.replacesToolName,
+        replacesVersion: original.replacesVersion,
       }, options);
       const reworkRequest = await options.toolBuildRequestStore.create(reworkRequestInput);
 
@@ -2354,6 +2388,8 @@ function parseToolBuildRequestInput(value: unknown) {
     credentialNotes: parseOptionalText(candidate.credentialNotes),
     reworkOf: typeof candidate.reworkOf === "string" ? candidate.reworkOf : undefined,
     feedback: typeof candidate.feedback === "string" ? candidate.feedback : undefined,
+    replacesToolName: typeof candidate.replacesToolName === "string" ? candidate.replacesToolName : undefined,
+    replacesVersion: typeof candidate.replacesVersion === "string" ? candidate.replacesVersion : undefined,
   };
 }
 

@@ -9,6 +9,7 @@ export type AuditAction =
   | "tool.used"
   | "tool.failed"
   | "tool.deleted"
+  | "tool.version_activated"
   | "tool_build.requested"
   | "tool_build.rework_requested"
   | "tool_build.stopped"

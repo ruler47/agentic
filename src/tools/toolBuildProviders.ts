@@ -147,10 +147,10 @@ export class MetadataToolRegistrar implements ToolRegistrar {
 
   async register(request: ToolBuildRequest, output: ToolBuildOutput): Promise<string> {
     const toolName = request.contract.toolName;
-    await this.metadataStore.registerGenerated({
+    const input = {
       name: toolName,
       displayName: output.displayName ?? request.displayName ?? request.contract.displayName,
-      version: "1.0.0",
+      version: request.contract.version,
       description: request.contract.description,
       capabilities: output.capabilities ?? [request.capability],
       startupMode: request.contract.startupMode,
@@ -160,7 +160,16 @@ export class MetadataToolRegistrar implements ToolRegistrar {
       testPath: output.testPath,
       requiredSecretHandles: output.requiredSecretHandles ?? request.credentialHandles,
       docsMarkdown: output.docsMarkdown,
-    });
+    };
+
+    if (request.replacesVersion) {
+      await this.metadataStore.promoteReplacement({
+        ...input,
+        replacesVersion: request.replacesVersion,
+      });
+    } else {
+      await this.metadataStore.registerGenerated(input);
+    }
 
     return toolName;
   }
@@ -191,7 +200,7 @@ export class BrowserScreenshotToolBuildProvider implements ToolBuildProvider {
       displayName: request.displayName ?? request.contract.displayName,
       capabilities: [request.capability, "browser-screenshot", "artifact-generation"],
       files: [
-        { path: modulePath, content: browserScreenshotToolSource(toolName, capability) },
+        { path: modulePath, content: browserScreenshotToolSource(toolName, capability, request.contract.version) },
         { path: testPath, content: browserScreenshotToolTestSource(modulePath, toolName) },
       ],
     };
@@ -230,7 +239,7 @@ export class GenericApiToolBuildProvider implements ToolBuildProvider {
       requiredSecretHandles: allowedSecretHandles,
       docsMarkdown: genericApiDocsMarkdown(capability, allowedSecretHandles, preset),
       files: [
-        { path: modulePath, content: genericApiToolSource(toolName, capability, allowedSecretHandles, preset) },
+        { path: modulePath, content: genericApiToolSource(toolName, capability, allowedSecretHandles, preset, request.contract.version) },
         { path: testPath, content: genericApiToolTestSource(modulePath, toolName, capability, allowedSecretHandles, preset) },
       ],
     };
@@ -445,6 +454,7 @@ function genericApiOutputSchema(): ToolSchema {
           method: { type: "string" },
           provider: { type: "string" },
           score: {},
+          sources: {},
           json: {},
           text: { type: "string" },
         },
@@ -459,6 +469,7 @@ function genericApiToolSource(
   capability: string,
   allowedSecretHandles: string[],
   preset?: ApiEndpointPreset,
+  version = "1.0.0",
 ): string {
   return `import { Tool, ToolExecutionContext, ToolInput, ToolResult } from "../tool.js";
 
@@ -474,7 +485,7 @@ const apiPreset = ${JSON.stringify(preset ?? null)} as null | {
 
 export const tool: Tool = {
   name: ${JSON.stringify(toolName)},
-  version: "1.0.0",
+  version: ${JSON.stringify(version)},
   description: "Calls a documented HTTPS JSON API endpoint with structured input and optional declared secret-handle authentication.",
   capabilities: [${JSON.stringify(capability)}, "api-http-json", "http-api-call"],
   startupMode: "on-demand",
@@ -512,6 +523,7 @@ export const tool: Tool = {
           method: { type: "string" },
           provider: { type: "string" },
           score: {},
+          sources: {},
           json: {},
           text: { type: "string" }
         }
@@ -554,17 +566,19 @@ export const tool: Tool = {
       const text = await response.text();
       const json = parseJson(text);
       const score = extractScore(json);
+      const sources = extractSources(json);
       const data = {
         status: response.status,
         url: parsedUrl.url,
         method,
         provider: apiPreset?.provider,
         score,
+        sources,
         json,
         text: json === undefined ? text : undefined
       };
       const content = response.ok
-        ? "API call succeeded with HTTP " + response.status + (score === undefined ? "." : "; score: " + String(score) + ".")
+        ? "API call succeeded with HTTP " + response.status + (score === undefined ? "." : "; score: " + String(score) + ".") + (sources.length === 0 ? "" : " Sources: " + sources.map((source) => source.name + (source.share === undefined ? "" : " (" + source.share + "%)")).join(", ") + ".")
         : "API call failed with HTTP " + response.status + ".";
 
       return { ok: response.ok, content, data };
@@ -702,6 +716,7 @@ function parseJson(text: string): unknown {
 
 function extractScore(value: unknown): unknown {
   if (!isRecord(value) && !Array.isArray(value)) return undefined;
+  if (apiPreset?.provider === "glprotocol" && isRecord(value) && value.totalFunds !== undefined) return value.totalFunds;
   if (isRecord(value) && value.score !== undefined) return value.score;
 
   const scores: unknown[] = [];
@@ -729,6 +744,35 @@ function collectNestedScores(value: unknown, scores: unknown[]): void {
     }
     collectNestedScores(nested, scores);
   }
+}
+
+function extractSources(value: unknown): Array<{ name: string; share?: number; score?: unknown }> {
+  if (!isRecord(value) || !Array.isArray(value.sources)) return [];
+  const byName = new Map<string, { name: string; share?: number; score?: unknown }>();
+  for (const item of value.sources) {
+    if (!isRecord(item)) continue;
+    const funds = isRecord(item.funds) ? item.funds : {};
+    const rawName = typeof item.name === "string" ? item.name : typeof item.type === "string" ? item.type : undefined;
+    if (!rawName?.trim()) continue;
+    const name = rawName.trim();
+    const existing = byName.get(name);
+    const share = numericValue(funds.share ?? item.share);
+    const score = funds.score ?? item.score;
+    const bestShare = share === undefined
+      ? existing?.share
+      : Math.max(existing?.share ?? 0, share);
+    byName.set(name, {
+      name,
+      share: bestShare,
+      score: existing?.score ?? score,
+    });
+  }
+  return [...byName.values()].sort((a, b) => (b.share ?? 0) - (a.share ?? 0));
+}
+
+function numericValue(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 `;
 }
@@ -763,9 +807,10 @@ function genericApiToolTestSource(
   const responseJson = isGlPreset
     ? `{
       path: url.pathname,
+      totalFunds: 62,
       sources: [
-        { name: "low-risk-source", funds: { score: 30 } },
-        { name: "highest-risk-source", funds: { score: 60 } }
+        { name: "low-risk-source", funds: { score: 30, share: 25 } },
+        { name: "highest-risk-source", funds: { score: 60, share: 75 } }
       ],
       auth: request.headers.authorization ?? request.headers["x-api-key"] ?? null
     }`
@@ -775,7 +820,7 @@ function genericApiToolTestSource(
       score: 42,
       auth: request.headers.authorization ?? request.headers["x-api-key"] ?? null
     }`;
-  const expectedScore = isGlPreset ? 60 : 42;
+  const expectedScore = isGlPreset ? 62 : 42;
 
   return `import test from "node:test";
 import assert from "node:assert/strict";
@@ -823,7 +868,7 @@ test("${toolName} calls a JSON API endpoint with query and declared secret handl
         resolveSecret: async (handle) => handle === ${JSON.stringify(secretHandle)} ? "test-token" : undefined
       }
     );
-    const data = result.data as { score?: unknown; json?: { path?: string; address?: string | null; auth?: string | null; score?: number } } | undefined;
+    const data = result.data as { score?: unknown; sources?: Array<{ name: string; share?: number }>; json?: { path?: string; address?: string | null; auth?: string | null; score?: number } } | undefined;
 
     assert.equal(result.ok, true);
     assert.equal(data?.json?.path, ${JSON.stringify(expectedPath)});
@@ -831,6 +876,7 @@ test("${toolName} calls a JSON API endpoint with query and declared secret handl
     ${isGlPreset ? "" : `assert.equal(data?.json?.score, ${expectedScore});`}
     assert.equal(data?.score, ${expectedScore});
     assert.match(result.content, /score: ${expectedScore}/);
+    ${isGlPreset ? `assert.deepEqual(data?.sources?.map((source) => [source.name, source.share]), [["highest-risk-source", 75], ["low-risk-source", 25]]);` : ""}
     assert.equal(data?.json?.auth ?? null, ${JSON.stringify(expectedAuth)});
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -839,7 +885,7 @@ test("${toolName} calls a JSON API endpoint with query and declared secret handl
 `;
 }
 
-function browserScreenshotToolSource(toolName: string, capability: string): string {
+function browserScreenshotToolSource(toolName: string, capability: string, version = "1.0.0"): string {
   return `import { chromium } from "@playwright/test";
 import { Tool, ToolInput, ToolResult } from "../tool.js";
 
@@ -855,7 +901,7 @@ type ScreenshotData = {
 
 export const tool: Tool = {
   name: ${JSON.stringify(toolName)},
-  version: "1.0.0",
+  version: ${JSON.stringify(version)},
   description: "Captures a browser screenshot and returns it as an artifact payload.",
   capabilities: [${JSON.stringify(capability)}, "browser-screenshot", "artifact-generation"],
   startupMode: "on-demand",

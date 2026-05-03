@@ -137,12 +137,18 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /function deleteToolBuild/);
   assert.match(app, /function deleteConversationThread/);
   assert.match(app, /function reworkTool/);
+  assert.match(app, /function activateToolVersion/);
+  assert.match(app, /function filterToolsForView/);
+  assert.match(app, /function renderToolVersionPicker/);
   assert.match(app, /function renderMarkdown/);
   assert.match(app, /function renderInlineMarkdown/);
   assert.match(app, /function normalizeInlineMath/);
   assert.match(app, /markdown-list/);
   assert.match(app, /data-action="rework-tool-build"/);
   assert.match(app, /data-action="rework-tool"/);
+  assert.match(app, /data-action="search-tools"/);
+  assert.match(app, /data-action="activate-tool-version"/);
+  assert.match(app, /replacesVersion/);
   assert.match(app, /data-action="stop-tool-build"/);
   assert.match(app, /data-action="delete-tool-build"/);
   assert.match(app, /data-action="delete-thread"/);

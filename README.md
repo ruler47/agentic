@@ -228,6 +228,11 @@ auditable capabilities with dry-run preview, policy approval, and exact scope.
 Channel adapters such as Telegram should be built and managed through this same
 tool/version/QA flow rather than as special runtime integrations.
 
+Generated tools can now be changed through the same lifecycle: the Tools page can search
+by display name, system name, description, tags/capabilities, docs, schemas, and version;
+generated tool detail panels can create a versioned change request; and registered
+versions can be selected as active without deleting earlier versions.
+
 ## Shape
 
 ```text

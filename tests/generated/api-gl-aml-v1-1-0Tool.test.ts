@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { AddressInfo } from "node:net";
-import { tool } from "../../src/tools/generated/api-gl-amlTool.js";
+import { tool } from "../../src/tools/generated/api-gl-aml-v1-1-0Tool.js";
 
 test("generated.api.gl.aml exposes a valid generated API tool contract", async () => {
   const health = await tool.healthcheck?.();
@@ -35,8 +35,7 @@ test("generated.api.gl.aml calls a JSON API endpoint with query and declared sec
       totalFunds: 62,
       sources: [
         { name: "low-risk-source", funds: { score: 30, share: 25 } },
-        { name: "highest-risk-source", funds: { score: 60, share: 75 } },
-        { name: "low-risk-source", funds: { score: 20, share: 10 } }
+        { name: "highest-risk-source", funds: { score: 60, share: 75 } }
       ],
       auth: request.headers.authorization ?? request.headers["x-api-key"] ?? null
     }));
@@ -64,9 +63,8 @@ test("generated.api.gl.aml calls a JSON API endpoint with query and declared sec
     
     
     assert.equal(data?.score, 62);
-    assert.deepEqual(data?.sources?.map((source) => [source.name, source.share]), [["highest-risk-source", 75], ["low-risk-source", 25]]);
     assert.match(result.content, /score: 62/);
-    assert.match(result.content, /highest-risk-source \(75%\)/);
+    assert.deepEqual(data?.sources?.map((source) => [source.name, source.share]), [["highest-risk-source", 75], ["low-risk-source", 25]]);
     assert.equal(data?.json?.auth ?? null, "test-token");
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

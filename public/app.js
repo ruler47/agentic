@@ -70,6 +70,7 @@ const state = {
   selectedMemoryId: undefined,
   memoryFilter: "all",
   selectedToolName: undefined,
+  toolSearch: "",
   hoveredGraphSpanId: undefined,
   traceGraphLayout: "category",
   traceFilters: {
@@ -121,6 +122,9 @@ document.addEventListener("submit", (event) => {
   if (form.dataset.action === "rework-tool") {
     void reworkTool(form);
   }
+  if (form.dataset.action === "activate-tool-version") {
+    void activateToolVersion(form);
+  }
   if (form.dataset.action === "create-secret-handle") {
     void createSecretHandle(form);
   }
@@ -132,6 +136,15 @@ document.addEventListener("submit", (event) => {
   }
   if (form.dataset.action === "create-channel-identity") {
     void createChannelIdentity(form);
+  }
+});
+
+document.addEventListener("input", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) return;
+  if (target.dataset.action === "search-tools") {
+    state.toolSearch = target.value;
+    render();
   }
 });
 
@@ -2020,7 +2033,12 @@ function renderArtifactsPage() {
 }
 
 function renderToolsPage() {
-  const selected = state.tools.find((tool) => tool.name === state.selectedToolName) ?? state.tools[0];
+  const visibleTools = filterToolsForView(state.tools);
+  const selected =
+    visibleTools.find((tool) => tool.name === state.selectedToolName) ??
+    state.tools.find((tool) => tool.name === state.selectedToolName) ??
+    visibleTools[0] ??
+    state.tools[0];
   return `
     <section class="tools-layout">
       <section class="page-stack">
@@ -2034,11 +2052,20 @@ function renderToolsPage() {
             <button type="button" class="primary-button" data-action="run-tool-health">Run Healthchecks</button>
           </div>
         </section>
-        ${renderFilterBar("Search tools...", ["Status", "Source", "Capability"])}
+        <section class="filter-bar">
+          <input data-action="search-tools" value="${escapeHtml(state.toolSearch ?? "")}" placeholder="Search tools by name, system id, description, tags, version, or schema..." />
+          <button type="button">Status</button>
+          <button type="button">Source</button>
+          <button type="button">Capability</button>
+        </section>
         <div class="card-grid">
-          ${state.tools.length
-            ? state.tools.map(renderToolCard).join("")
-            : renderEmptyState("No tools", "Register your first tool.", "Tools")}
+          ${visibleTools.length
+            ? visibleTools.map(renderToolCard).join("")
+            : renderEmptyState(
+                state.tools.length ? "No matching tools" : "No tools",
+                state.tools.length ? "Try another name, system id, tag, or description." : "Register your first tool.",
+                "Tools",
+              )}
         </div>
       </section>
       <aside class="surface-panel inspector-panel">
@@ -2046,6 +2073,42 @@ function renderToolsPage() {
       </aside>
     </section>
   `;
+}
+
+function filterToolsForView(tools) {
+  const query = String(state.toolSearch ?? "").trim().toLowerCase();
+  if (!query) return tools;
+  return tools.filter((tool) => toolMatchesSearch(tool, query));
+}
+
+function toolMatchesSearch(tool, query) {
+  const haystack = [
+    tool.displayName,
+    tool.name,
+    tool.version,
+    tool.description,
+    tool.source,
+    tool.status,
+    tool.startupMode,
+    ...(tool.capabilities ?? []),
+    ...(tool.requiredConfigurationKeys ?? []),
+    ...(tool.requiredSecretHandles ?? []),
+    tool.docsMarkdown,
+    JSON.stringify(tool.inputSchema ?? {}),
+    JSON.stringify(tool.outputSchema ?? {}),
+    ...(tool.examples ?? []).flatMap((example) => [
+      example.title,
+      example.description,
+      JSON.stringify(example.input ?? {}),
+    ]),
+    ...(tool.versions ?? []).flatMap((version) => [
+      version.version,
+      version.status,
+      version.active ? "active" : "",
+      version.lastHealthDetail,
+    ]),
+  ];
+  return haystack.some((value) => String(value ?? "").toLowerCase().includes(query));
 }
 
 function renderToolCard(tool) {
@@ -2093,10 +2156,54 @@ function renderToolDetail(tool) {
       ${contextBlock("Telemetry", formatToolTelemetry(tool))}
       ${contextBlock("Examples", formatToolExamples(tool))}
       ${contextBlock("Schema", formatToolSchemas(tool))}
-      ${tool.status === "failed" ? renderToolReworkForm(tool, failureProblem) : ""}
+      ${renderToolVersionPicker(tool)}
+      ${renderToolReworkForm(tool, failureProblem)}
       ${tool.source === "generated" ? `<button type="button" class="ghost-button danger-button" data-action="delete-tool" data-tool-name="${tool.name}">Delete generated tool</button>` : ""}
     </div>
   `;
+}
+
+function renderToolVersionPicker(tool) {
+  if (tool.source !== "generated") return "";
+  const versions = normalizeToolVersions(tool);
+  return `
+    <section class="context-block">
+      <h4>Active version</h4>
+      <form data-action="activate-tool-version" class="inline-form">
+        <input type="hidden" name="toolName" value="${escapeHtml(tool.name)}" />
+        <select name="version" aria-label="Active tool version">
+          ${versions
+            .map(
+              (version) => `
+                <option value="${escapeHtml(version.version)}" ${version.active ? "selected" : ""}>
+                  v${escapeHtml(version.version)}${version.active ? " · active" : ""}${version.status ? ` · ${escapeHtml(version.status)}` : ""}
+                </option>
+              `,
+            )
+            .join("")}
+        </select>
+        <button type="submit" class="ghost-button">Activate</button>
+      </form>
+      <p class="context-note">Change requests create a new version; the highest generated version is promoted by default after QA.</p>
+    </section>
+  `;
+}
+
+function normalizeToolVersions(tool) {
+  const versions = Array.isArray(tool.versions) && tool.versions.length
+    ? tool.versions
+    : [{ version: tool.version ?? "1.0.0", active: true, status: tool.status }];
+  return [...versions].sort(compareToolVersionsDesc);
+}
+
+function compareToolVersionsDesc(a, b) {
+  const left = String(a.version ?? "0.0.0").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const right = String(b.version ?? "0.0.0").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const delta = (right[index] ?? 0) - (left[index] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
 }
 
 function formatToolSettings(tool) {
@@ -2166,17 +2273,27 @@ function formatToolExamples(tool) {
 }
 
 function renderToolReworkForm(tool, failureProblem) {
+  const isFailed = tool.status === "failed";
+  const defaultFeedback = isFailed
+    ? failureProblem
+    : [
+        `Change request for "${tool.displayName || tool.name}".`,
+        "Describe the behavior to add or correct. Preserve reusable TypeScript module boundaries, docs, tests, healthchecks, and public contract compatibility where possible.",
+      ].join("\n");
+  const activeVersion = normalizeToolVersions(tool).find((version) => version.active)?.version ?? tool.version ?? "1.0.0";
   return `
-    <details class="rework-box tool-rework-box" open>
-      <summary>Rework tool</summary>
+    <details class="rework-box tool-rework-box">
+      <summary>Request change / new version</summary>
       <form data-action="rework-tool" class="rework-form">
         <input type="hidden" name="toolName" value="${escapeHtml(tool.name)}" />
+        <input type="hidden" name="displayName" value="${escapeHtml(tool.displayName || tool.name)}" />
         <input type="hidden" name="capability" value="${escapeHtml((tool.capabilities ?? [tool.name])[0] ?? tool.name)}" />
+        <input type="hidden" name="replacesVersion" value="${escapeHtml(activeVersion)}" />
         <label>
-          <span>Problem to fix</span>
-          <textarea name="feedback" required>${escapeHtml(failureProblem)}</textarea>
+          <span>Change request</span>
+          <textarea name="feedback" required>${escapeHtml(defaultFeedback)}</textarea>
         </label>
-        <button type="submit" class="ghost-button">Create tool rework request</button>
+        <button type="submit" class="ghost-button">Create versioned change request</button>
       </form>
     </details>
   `;
@@ -3503,8 +3620,10 @@ async function deleteConversationThread(threadId) {
 async function reworkTool(form) {
   const formData = new FormData(form);
   const toolName = String(formData.get("toolName") ?? "").trim();
+  const displayName = String(formData.get("displayName") ?? toolName).trim();
   const capability = String(formData.get("capability") ?? toolName).trim();
   const feedback = String(formData.get("feedback") ?? "").trim();
+  const replacesVersion = String(formData.get("replacesVersion") ?? "").trim();
   setComposerBusy(form, true);
   try {
     const data = await fetchJson("/api/tool-build-requests", {
@@ -3512,18 +3631,53 @@ async function reworkTool(form) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         capability,
-        reason: feedback,
+        displayName,
+        reason: `Change request for ${displayName || toolName}:\n${feedback}`,
         desiredToolName: toolName,
         feedback,
+        replacesToolName: toolName,
+        replacesVersion: replacesVersion || undefined,
         qaCriteria: [
-          "Existing failed behavior is reproduced by a regression test.",
-          "Replacement TypeScript module passes automated QA and manual smoke testing.",
-          "Tool metadata can be registered without losing its public capability contract.",
+          "The new version preserves the tool name and creates a higher semantic version.",
+          "Requested behavior is covered by a focused regression test and a manual smoke test.",
+          "Replacement TypeScript module passes isolated QA before it is promoted as the active version.",
+          "Tool metadata, docs, schemas, required settings/secrets, and examples remain agent-readable.",
         ],
       }),
     });
     state.buildRequests = [data.request, ...state.buildRequests.filter((item) => item.id !== data.request.id)];
+    state.notice = {
+      title: "Tool change request created",
+      body: `${data.request.displayName || data.request.capability} will build a new version from ${replacesVersion || "the active version"}.`,
+    };
     navigate("tool-builds");
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  } finally {
+    setComposerBusy(form, false);
+  }
+}
+
+async function activateToolVersion(form) {
+  const formData = new FormData(form);
+  const toolName = String(formData.get("toolName") ?? "").trim();
+  const version = String(formData.get("version") ?? "").trim();
+  if (!toolName || !version) return;
+  setComposerBusy(form, true);
+  try {
+    const data = await fetchJson(`/api/tools/generated-modules/${encodeURIComponent(toolName)}/activate-version`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version }),
+    });
+    state.tools = [data.tool, ...state.tools.filter((tool) => tool.name !== data.tool.name)];
+    state.selectedToolName = data.tool.name;
+    state.notice = {
+      title: "Tool version activated",
+      body: `${data.tool.displayName || data.tool.name} now uses v${data.tool.version}.`,
+    };
+    render();
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);
     render();

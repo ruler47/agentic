@@ -515,7 +515,10 @@ Remaining Phase 3 gaps:
   generated tools.
 - Make generated tools manageable from the registry. DONE for human display names,
   generated-system-name handoff, persistent `display_name` columns, Tools-page delete
-  buttons, `DELETE /api/tools/generated-modules/:name`, and built-in protection.
+  buttons, full-text-ish Tools-page search across labels/system ids/descriptions/tags/docs
+  and schemas, `DELETE /api/tools/generated-modules/:name`, built-in protection,
+  versioned rework requests from the Tools page, generated replacement promotion, and
+  active-version selection through `POST /api/tools/generated-modules/:name/activate-version`.
   Remaining work is richer version history/changelog, operator tickets linked directly to
   generated tool versions, and visual diffs between replacement versions.
 - Treat channel adapters as tools, not special one-off screens: Telegram, WhatsApp, Slack,
@@ -534,11 +537,12 @@ Remaining Phase 3 gaps:
   already supports bounded retry attempts.
 - Persist generated source bundles and QA artifacts in object storage.
 - Add first-class replacement/version promotion for installed failed tools after a
-  tool-level rework request is built and QA-approved. PARTIAL: the metadata store and web
-  API now support explicit generated-tool replacement promotion with `replacesVersion`,
-  stale-version rejection, same-version rejection, and builtin replacement protection.
-  Remaining work is to wire Tool Builder/Registrar automatically from a rework request to
-  this promotion endpoint after QA passes.
+  tool-level rework request is built and QA-approved. DONE for the main lifecycle:
+  Tools-page rework creates a versioned Tool Build request, the Builder emits a new
+  TypeScript module/test path, QA runs in isolation, the Registrar promotes the new
+  `replacesVersion`, `tool_module_versions` keeps old/new versions, and operators can
+  switch the active version. Remaining work is richer changelog/diff display and
+  policy/approval gates before promotion in sensitive environments.
 - Add version diff/changelog UI for tool replacement requests, showing what the new
   version adds compared with the previous version and why the previous version failed.
 - Add tool-level settings UI for required env variables, secret handles, provider URLs,

@@ -2538,6 +2538,21 @@ function formatToolDataEvidence(data: unknown): string {
   if (record.status !== undefined) lines.push(`httpStatus: ${String(record.status)}`);
   if (record.url !== undefined) lines.push(`url: ${String(record.url)}`);
   if (record.score !== undefined) lines.push(`score: ${String(record.score)}`);
+  if (Array.isArray(record.sources) && record.sources.length > 0) {
+    const sourceText = record.sources
+      .slice(0, 12)
+      .map((source) => {
+        if (!source || typeof source !== "object") return undefined;
+        const item = source as Record<string, unknown>;
+        const name = typeof item.name === "string" ? item.name : undefined;
+        if (!name) return undefined;
+        const share = item.share === undefined ? "" : ` (${String(item.share)}%)`;
+        return `${name}${share}`;
+      })
+      .filter(Boolean)
+      .join(", ");
+    if (sourceText) lines.push(`sources: ${sourceText}`);
+  }
   if (lines.length === 0) return "";
   return `\nStructured tool data:\n${lines.map((line) => `- ${line}`).join("\n")}`;
 }

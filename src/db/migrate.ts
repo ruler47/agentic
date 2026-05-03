@@ -419,6 +419,61 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table tool_modules add column if not exists last_failure_at timestamptz;`);
 
     await pool.query(`
+      create table if not exists tool_module_versions (
+        name text not null,
+        version text not null,
+        active boolean not null default false,
+        display_name text,
+        description text not null,
+        capabilities text[] not null default '{}',
+        startup_mode text not null check (startup_mode in ('always-on', 'on-demand', 'ephemeral')),
+        input_schema jsonb,
+        output_schema jsonb,
+        module_path text,
+        test_path text,
+        source text not null check (source in ('generated')),
+        status text not null check (status in ('available', 'disabled', 'failed')),
+        last_health_ok boolean,
+        last_health_detail text,
+        required_configuration_keys text[] not null default '{}',
+        required_secret_handles text[] not null default '{}',
+        settings_schema jsonb,
+        storage_contract jsonb,
+        docs_markdown text,
+        examples jsonb not null default '[]',
+        success_count integer not null default 0 check (success_count >= 0),
+        failure_count integer not null default 0 check (failure_count >= 0),
+        last_success_at timestamptz,
+        last_failure_at timestamptz,
+        updated_at timestamptz not null,
+        primary key (name, version)
+      );
+    `);
+
+    await pool.query(`
+      insert into tool_module_versions (
+        name, version, active, display_name, description, capabilities, startup_mode,
+        input_schema, output_schema, module_path, test_path, source, status,
+        last_health_ok, last_health_detail, required_configuration_keys,
+        required_secret_handles, settings_schema, storage_contract, docs_markdown,
+        examples, success_count, failure_count, last_success_at, last_failure_at, updated_at
+      )
+      select name, version, true, display_name, description, capabilities, startup_mode,
+             input_schema, output_schema, module_path, test_path, source, status,
+             last_health_ok, last_health_detail, required_configuration_keys,
+             required_secret_handles, settings_schema, storage_contract, docs_markdown,
+             examples, success_count, failure_count, last_success_at, last_failure_at, updated_at
+      from tool_modules
+      where source = 'generated'
+      on conflict (name, version) do nothing;
+    `);
+
+    await pool.query(`
+      create index if not exists tool_module_versions_name_active_idx
+      on tool_module_versions(name, active);
+    `);
+
+    await pool.query(`
       create table if not exists tool_migrations (
         id text primary key,
         tool_name text not null,
@@ -458,6 +513,8 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         credential_notes text,
         rework_of text,
         feedback text,
+        replaces_tool_name text,
+        replaces_version text,
         status text not null check (status in ('requested', 'building', 'qa_failed', 'qa_passed', 'registered', 'blocked')),
         status_detail text,
         qa_report jsonb,
@@ -476,6 +533,8 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table tool_build_requests add column if not exists feedback text;`);
     await pool.query(`alter table tool_build_requests add column if not exists credential_handles text[];`);
     await pool.query(`alter table tool_build_requests add column if not exists credential_notes text;`);
+    await pool.query(`alter table tool_build_requests add column if not exists replaces_tool_name text;`);
+    await pool.query(`alter table tool_build_requests add column if not exists replaces_version text;`);
 
     await pool.query(`
       create index if not exists tool_build_requests_capability_status_idx

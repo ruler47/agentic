@@ -1362,11 +1362,23 @@ test("web server promotes generated tool replacements through explicit version h
       }),
     });
     const promoteBody = await promoteResponse.json();
+    const activateResponse = await fetch(
+      `${baseUrl}/api/tools/generated-modules/generated.browser.screenshot/activate-version`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: "1.1.0" }),
+      },
+    );
+    const activateBody = await activateResponse.json();
 
     assert.equal(staleResponse.status, 400);
     assert.equal(promoteResponse.status, 200);
     assert.equal(promoteBody.tool.version, "1.1.0");
     assert.equal(promoteBody.tool.status, "disabled");
+    assert.equal(activateResponse.status, 200);
+    assert.equal(activateBody.tool.version, "1.1.0");
+    assert.equal(activateBody.tool.versions[0].active, true);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

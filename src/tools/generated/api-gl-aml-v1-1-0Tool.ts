@@ -12,7 +12,7 @@ const apiPreset = {"provider":"glprotocol","defaultAuthHeaderName":"x-api-key","
 
 export const tool: Tool = {
   name: "generated.api.gl.aml",
-  version: "1.0.0",
+  version: "1.1.0",
   description: "Calls a documented HTTPS JSON API endpoint with structured input and optional declared secret-handle authentication.",
   capabilities: ["api.gl-aml", "api-http-json", "http-api-call"],
   startupMode: "on-demand",
@@ -258,42 +258,6 @@ function extractScore(value: unknown): unknown {
   return scores.slice(0, 10);
 }
 
-function extractSources(value: unknown): Array<{ name: string; share?: number; score?: unknown }> {
-  if (!isRecord(value) || !Array.isArray(value.sources)) return [];
-  const byName = new Map<string, { name: string; share?: number; score?: unknown }>();
-  for (const item of value.sources) {
-    if (!isRecord(item)) continue;
-    const name = typeof item.name === "string" && item.name.trim()
-      ? item.name.trim()
-      : typeof item.type === "string" && item.type.trim()
-        ? item.type.trim()
-        : undefined;
-    if (!name) continue;
-    const funds = isRecord(item.funds) ? item.funds : {};
-    const share = numericValue(funds.share ?? item.share);
-    const score = funds.score ?? item.score;
-    const existing = byName.get(name);
-    if (!existing) {
-      byName.set(name, { name, share, score });
-      continue;
-    }
-    if (share !== undefined && (existing.share === undefined || share > existing.share)) {
-      existing.share = share;
-    }
-    if (existing.score === undefined && score !== undefined) existing.score = score;
-  }
-  return [...byName.values()].sort((a, b) => (b.share ?? -1) - (a.share ?? -1) || a.name.localeCompare(b.name));
-}
-
-function numericValue(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-}
-
 function collectNestedScores(value: unknown, scores: unknown[]): void {
   if (Array.isArray(value)) {
     for (const item of value) collectNestedScores(item, scores);
@@ -307,4 +271,33 @@ function collectNestedScores(value: unknown, scores: unknown[]): void {
     }
     collectNestedScores(nested, scores);
   }
+}
+
+function extractSources(value: unknown): Array<{ name: string; share?: number; score?: unknown }> {
+  if (!isRecord(value) || !Array.isArray(value.sources)) return [];
+  const byName = new Map<string, { name: string; share?: number; score?: unknown }>();
+  for (const item of value.sources) {
+    if (!isRecord(item)) continue;
+    const funds = isRecord(item.funds) ? item.funds : {};
+    const rawName = typeof item.name === "string" ? item.name : typeof item.type === "string" ? item.type : undefined;
+    if (!rawName?.trim()) continue;
+    const name = rawName.trim();
+    const existing = byName.get(name);
+    const share = numericValue(funds.share ?? item.share);
+    const score = funds.score ?? item.score;
+    const bestShare = share === undefined
+      ? existing?.share
+      : Math.max(existing?.share ?? 0, share);
+    byName.set(name, {
+      name,
+      share: bestShare,
+      score: existing?.score ?? score,
+    });
+  }
+  return [...byName.values()].sort((a, b) => (b.share ?? 0) - (a.share ?? 0));
+}
+
+function numericValue(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

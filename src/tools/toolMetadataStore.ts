@@ -3,6 +3,15 @@ import { Tool, ToolExample, ToolHealth, ToolSchema, ToolStartupMode, ToolStorage
 export type ToolModuleSource = "builtin" | "generated";
 export type ToolModuleStatus = "available" | "disabled" | "failed";
 
+export type ToolModuleVersionSummary = {
+  version: string;
+  active: boolean;
+  status: ToolModuleStatus;
+  modulePath?: string;
+  testPath?: string;
+  updatedAt: string;
+};
+
 export type ToolModuleMetadata = {
   name: string;
   displayName?: string;
@@ -29,6 +38,7 @@ export type ToolModuleMetadata = {
   lastSuccessAt?: string;
   lastFailureAt?: string;
   updatedAt: string;
+  versions?: ToolModuleVersionSummary[];
 };
 
 export type GeneratedToolModuleInput = {
@@ -56,11 +66,13 @@ export type GeneratedToolReplacementInput = GeneratedToolModuleInput & {
 
 export type ToolMetadataStore = {
   list(): Promise<ToolModuleMetadata[]>;
+  listVersions(name: string): Promise<ToolModuleVersionSummary[]>;
   syncBuiltins(tools: Tool[]): Promise<ToolModuleMetadata[]>;
   updateHealth(name: string, health: ToolHealth): Promise<void>;
   recordUsage(name: string, outcome: "success" | "failure", at?: Date): Promise<void>;
   registerGenerated(input: GeneratedToolModuleInput): Promise<ToolModuleMetadata>;
   promoteReplacement(input: GeneratedToolReplacementInput): Promise<ToolModuleMetadata>;
+  activateVersion(name: string, version: string): Promise<ToolModuleMetadata>;
   deleteGenerated(name: string): Promise<boolean>;
 };
 
@@ -75,8 +87,13 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
 
   async list(): Promise<ToolModuleMetadata[]> {
     return [...this.modules.values()]
-      .map(cloneModule)
+      .map((item) => ({ ...cloneModule(item), versions: this.versionsFor(item.name, item.version) }))
       .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async listVersions(name: string): Promise<ToolModuleVersionSummary[]> {
+    const existing = this.modules.get(name);
+    return existing ? this.versionsFor(name, existing.version) : [];
   }
 
   async syncBuiltins(tools: Tool[]): Promise<ToolModuleMetadata[]> {
@@ -182,7 +199,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
     };
     this.modules.set(stored.name, cloneModule(stored));
 
-    return cloneModule(stored);
+    return { ...cloneModule(stored), versions: this.versionsFor(stored.name, stored.version) };
   }
 
   async promoteReplacement(input: GeneratedToolReplacementInput): Promise<ToolModuleMetadata> {
@@ -219,7 +236,19 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
     };
     this.modules.set(stored.name, cloneModule(stored));
 
-    return cloneModule(stored);
+    return { ...cloneModule(stored), versions: this.versionsFor(stored.name, stored.version) };
+  }
+
+  async activateVersion(name: string, version: string): Promise<ToolModuleMetadata> {
+    const existing = this.modules.get(name);
+    if (!existing) throw new Error(`Generated tool ${name} was not found.`);
+    if (existing.source === "builtin") throw new Error(`Cannot switch builtin tool ${name}.`);
+    if (existing.version !== version) {
+      throw new Error(
+        `Version ${version} for ${name} is not available in the in-memory registry after restart; rebuild or re-promote it first.`,
+      );
+    }
+    return { ...cloneModule(existing), versions: this.versionsFor(name, existing.version) };
   }
 
   async deleteGenerated(name: string): Promise<boolean> {
@@ -229,6 +258,21 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       throw new Error(`Cannot delete builtin tool ${name}.`);
     }
     return this.modules.delete(name);
+  }
+
+  private versionsFor(name: string, activeVersion: string): ToolModuleVersionSummary[] {
+    const module = this.modules.get(name);
+    if (!module) return [];
+    return [
+      {
+        version: module.version,
+        active: module.version === activeVersion,
+        status: module.status,
+        modulePath: module.modulePath,
+        testPath: module.testPath,
+        updatedAt: module.updatedAt,
+      },
+    ];
   }
 }
 

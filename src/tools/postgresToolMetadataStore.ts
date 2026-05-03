@@ -7,6 +7,7 @@ import {
   ToolModuleMetadata,
   ToolModuleSource,
   ToolModuleStatus,
+  ToolModuleVersionSummary,
   validateReplacement,
 } from "./toolMetadataStore.js";
 
@@ -38,6 +39,10 @@ type ToolModuleRow = {
   updated_at: Date;
 };
 
+type ToolModuleVersionRow = ToolModuleRow & {
+  active: boolean;
+};
+
 export class PostgresToolMetadataStore implements ToolMetadataStore {
   constructor(private readonly pool: PgPool) {}
 
@@ -53,7 +58,28 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
       order by name
     `);
 
-    return rows.rows.map(mapRow);
+    const modules = rows.rows.map(mapRow);
+    await this.attachVersions(modules);
+    return modules;
+  }
+
+  async listVersions(name: string): Promise<ToolModuleVersionSummary[]> {
+    const rows = await this.pool.query<ToolModuleVersionRow>(
+      `
+        select name, display_name, version, description, capabilities, startup_mode, input_schema,
+               output_schema, module_path, test_path, source, status,
+               last_health_ok, last_health_detail, required_configuration_keys,
+               required_secret_handles, settings_schema, storage_contract, docs_markdown,
+               examples, success_count, failure_count, last_success_at, last_failure_at,
+               updated_at, active
+        from tool_module_versions
+        where name = $1
+        order by string_to_array(version, '.')::int[] desc nulls last, updated_at desc
+      `,
+      [name],
+    );
+
+    return rows.rows.map(mapVersionSummary);
   }
 
   async syncBuiltins(tools: Tool[]): Promise<ToolModuleMetadata[]> {
@@ -120,6 +146,17 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
       `,
       [name, health.ok ? "available" : "failed", health.ok, health.detail, new Date().toISOString()],
     );
+    await this.pool.query(
+      `
+        update tool_module_versions
+        set status = $2,
+            last_health_ok = $3,
+            last_health_detail = $4,
+            updated_at = $5
+        where name = $1 and active = true
+      `,
+      [name, health.ok ? "available" : "failed", health.ok, health.detail, new Date().toISOString()],
+    );
   }
 
   async recordUsage(name: string, outcome: "success" | "failure", at = new Date()): Promise<void> {
@@ -132,6 +169,18 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
             last_failure_at = case when $3 = 1 then $4 else last_failure_at end,
             updated_at = $4
         where name = $1
+      `,
+      [name, outcome === "success" ? 1 : 0, outcome === "failure" ? 1 : 0, at.toISOString()],
+    );
+    await this.pool.query(
+      `
+        update tool_module_versions
+        set success_count = success_count + $2,
+            failure_count = failure_count + $3,
+            last_success_at = case when $2 = 1 then $4 else last_success_at end,
+            last_failure_at = case when $3 = 1 then $4 else last_failure_at end,
+            updated_at = $4
+        where name = $1 and active = true
       `,
       [name, outcome === "success" ? 1 : 0, outcome === "failure" ? 1 : 0, at.toISOString()],
     );
@@ -218,6 +267,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           new Date().toISOString(),
         ],
       );
+      await this.upsertVersionRow(input, rows.rows[0], true);
       await this.pool.query("commit");
 
       return mapRow(rows.rows[0]);
@@ -297,6 +347,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           new Date().toISOString(),
         ],
       );
+      await this.upsertVersionRow(input, rows.rows[0], true);
       await this.pool.query("commit");
 
       return mapRow(rows.rows[0]);
@@ -332,6 +383,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         throw new Error(`Cannot delete builtin tool ${name}.`);
       }
 
+      await this.pool.query("delete from tool_module_versions where name = $1", [name]);
       await this.pool.query("delete from tool_modules where name = $1", [name]);
       await this.pool.query("commit");
       return true;
@@ -339,6 +391,215 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
       await this.pool.query("rollback");
       throw error;
     }
+  }
+
+  async activateVersion(name: string, version: string): Promise<ToolModuleMetadata> {
+    await this.pool.query("begin");
+    try {
+      const active = await this.pool.query<ToolModuleRow>(
+        `
+          select name, display_name, version, description, capabilities, startup_mode, input_schema,
+                 output_schema, module_path, test_path, source, status,
+                 last_health_ok, last_health_detail, required_configuration_keys,
+                 required_secret_handles, settings_schema, storage_contract, docs_markdown,
+                 examples, success_count, failure_count, last_success_at, last_failure_at,
+                 updated_at
+          from tool_modules
+          where name = $1
+          for update
+        `,
+        [name],
+      );
+      const current = active.rows[0] ? mapRow(active.rows[0]) : undefined;
+      if (!current) throw new Error(`Generated tool ${name} was not found.`);
+      if (current.source === "builtin") throw new Error(`Cannot switch builtin tool ${name}.`);
+
+      const selected = await this.pool.query<ToolModuleRow>(
+        `
+          select name, display_name, version, description, capabilities, startup_mode, input_schema,
+                 output_schema, module_path, test_path, source, status,
+                 last_health_ok, last_health_detail, required_configuration_keys,
+                 required_secret_handles, settings_schema, storage_contract, docs_markdown,
+                 examples, success_count, failure_count, last_success_at, last_failure_at,
+                 updated_at
+          from tool_module_versions
+          where name = $1 and version = $2
+          for update
+        `,
+        [name, version],
+      );
+      const selectedRow = selected.rows[0];
+      if (!selectedRow) throw new Error(`Version ${version} for ${name} was not found.`);
+
+      const rows = await this.pool.query<ToolModuleRow>(
+        `
+          update tool_modules
+          set display_name = $2,
+              version = $3,
+              description = $4,
+              capabilities = $5,
+              startup_mode = $6,
+              input_schema = $7,
+              output_schema = $8,
+              module_path = $9,
+              test_path = $10,
+              required_configuration_keys = $11,
+              required_secret_handles = $12,
+              settings_schema = $13,
+              storage_contract = $14,
+              docs_markdown = $15,
+              examples = $16,
+              source = 'generated',
+              status = 'disabled',
+              last_health_ok = null,
+              last_health_detail = null,
+              updated_at = $17
+          where name = $1
+          returning name, display_name, version, description, capabilities, startup_mode, input_schema,
+                    output_schema, module_path, test_path, source, status,
+                    last_health_ok, last_health_detail, required_configuration_keys,
+                    required_secret_handles, settings_schema, storage_contract, docs_markdown,
+                    examples, success_count, failure_count, last_success_at, last_failure_at,
+                    updated_at
+        `,
+        [
+          selectedRow.name,
+          selectedRow.display_name,
+          selectedRow.version,
+          selectedRow.description,
+          selectedRow.capabilities,
+          selectedRow.startup_mode,
+          selectedRow.input_schema,
+          selectedRow.output_schema,
+          selectedRow.module_path,
+          selectedRow.test_path,
+          selectedRow.required_configuration_keys,
+          selectedRow.required_secret_handles,
+          selectedRow.settings_schema,
+          selectedRow.storage_contract,
+          selectedRow.docs_markdown,
+          JSON.stringify(selectedRow.examples ?? []),
+          new Date().toISOString(),
+        ],
+      );
+      await this.pool.query("update tool_module_versions set active = (version = $2) where name = $1", [name, version]);
+      await this.pool.query("commit");
+      const module = mapRow(rows.rows[0]);
+      module.versions = await this.listVersions(name);
+      return module;
+    } catch (error) {
+      await this.pool.query("rollback");
+      throw error;
+    }
+  }
+
+  private async attachVersions(modules: ToolModuleMetadata[]): Promise<void> {
+    if (modules.length === 0) return;
+    const rows = await this.pool.query<ToolModuleVersionRow>(
+      `
+        select name, display_name, version, description, capabilities, startup_mode, input_schema,
+               output_schema, module_path, test_path, source, status,
+               last_health_ok, last_health_detail, required_configuration_keys,
+               required_secret_handles, settings_schema, storage_contract, docs_markdown,
+               examples, success_count, failure_count, last_success_at, last_failure_at,
+               updated_at, active
+        from tool_module_versions
+        where name = any($1)
+        order by name, string_to_array(version, '.')::int[] desc nulls last, updated_at desc
+      `,
+      [modules.map((module) => module.name)],
+    );
+    const byName = new Map<string, ToolModuleVersionSummary[]>();
+    for (const row of rows.rows) {
+      const list = byName.get(row.name) ?? [];
+      list.push(mapVersionSummary(row));
+      byName.set(row.name, list);
+    }
+    for (const module of modules) {
+      module.versions = byName.get(module.name) ?? [
+        {
+          version: module.version,
+          active: true,
+          status: module.status,
+          modulePath: module.modulePath,
+          testPath: module.testPath,
+          updatedAt: module.updatedAt,
+        },
+      ];
+    }
+  }
+
+  private async upsertVersionRow(
+    input: GeneratedToolModuleInput,
+    row: ToolModuleRow,
+    active: boolean,
+  ): Promise<void> {
+    if (active) {
+      await this.pool.query("update tool_module_versions set active = false where name = $1", [input.name]);
+    }
+    await this.pool.query(
+      `
+        insert into tool_module_versions (
+          name, version, active, display_name, description, capabilities, startup_mode, input_schema,
+          output_schema, module_path, test_path, source, status, last_health_ok, last_health_detail,
+          required_configuration_keys, required_secret_handles, settings_schema, storage_contract,
+          docs_markdown, examples, success_count, failure_count, last_success_at, last_failure_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'generated', $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+        on conflict (name, version) do update
+        set active = excluded.active,
+            display_name = excluded.display_name,
+            description = excluded.description,
+            capabilities = excluded.capabilities,
+            startup_mode = excluded.startup_mode,
+            input_schema = excluded.input_schema,
+            output_schema = excluded.output_schema,
+            module_path = excluded.module_path,
+            test_path = excluded.test_path,
+            source = 'generated',
+            status = excluded.status,
+            last_health_ok = excluded.last_health_ok,
+            last_health_detail = excluded.last_health_detail,
+            required_configuration_keys = excluded.required_configuration_keys,
+            required_secret_handles = excluded.required_secret_handles,
+            settings_schema = excluded.settings_schema,
+            storage_contract = excluded.storage_contract,
+            docs_markdown = excluded.docs_markdown,
+            examples = excluded.examples,
+            success_count = excluded.success_count,
+            failure_count = excluded.failure_count,
+            last_success_at = excluded.last_success_at,
+            last_failure_at = excluded.last_failure_at,
+            updated_at = excluded.updated_at
+      `,
+      [
+        row.name,
+        row.version,
+        active,
+        row.display_name,
+        row.description,
+        row.capabilities,
+        row.startup_mode,
+        row.input_schema,
+        row.output_schema,
+        row.module_path,
+        row.test_path,
+        row.status,
+        row.last_health_ok,
+        row.last_health_detail,
+        row.required_configuration_keys,
+        row.required_secret_handles,
+        row.settings_schema,
+        row.storage_contract,
+        row.docs_markdown,
+        JSON.stringify(row.examples ?? []),
+        row.success_count,
+        row.failure_count,
+        row.last_success_at?.toISOString(),
+        row.last_failure_at?.toISOString(),
+        row.updated_at.toISOString(),
+      ],
+    );
   }
 }
 
@@ -368,6 +629,17 @@ function mapRow(row: ToolModuleRow): ToolModuleMetadata {
     failureCount: row.failure_count ?? 0,
     lastSuccessAt: row.last_success_at?.toISOString(),
     lastFailureAt: row.last_failure_at?.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+function mapVersionSummary(row: ToolModuleVersionRow): ToolModuleVersionSummary {
+  return {
+    version: row.version,
+    active: row.active,
+    status: row.status,
+    modulePath: row.module_path ?? undefined,
+    testPath: row.test_path ?? undefined,
     updatedAt: row.updated_at.toISOString(),
   };
 }

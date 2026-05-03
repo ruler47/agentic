@@ -117,6 +117,41 @@ test("GeneratedToolFileBuilder creates Global Ledger API preset modules from cre
   }
 });
 
+test("GeneratedToolFileBuilder creates versioned Global Ledger replacements", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agentic-builder-"));
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const request = await requestStore.create({
+    capability: "api.gl-aml",
+    displayName: "GL AML",
+    reason:
+      "Change request: Global Ledger root totalFunds is the final AML score. sources[].funds lists detected sources with share percentages.",
+    desiredToolName: "generated.api.gl.aml",
+    credentialNotes: "api key should be used as x-api-key",
+    replacesToolName: "generated.api.gl.aml",
+    replacesVersion: "1.0.0",
+    requiredInputs: ["network", "address", "transactionHash"],
+    requiredOutputs: ["score", "sources", "json"],
+  });
+  const builder = new GeneratedToolFileBuilder([new GenericApiToolBuildProvider()], projectRoot);
+
+  try {
+    const output = await builder.build(request);
+    const moduleSource = await readFile(join(projectRoot, output.modulePath), "utf8");
+    const testSource = await readFile(join(projectRoot, output.testPath), "utf8");
+
+    assert.equal(request.contract.version, "1.1.0");
+    assert.equal(output.modulePath, "src/tools/generated/api-gl-aml-v1-1-0Tool.ts");
+    assert.equal(output.testPath, "tests/generated/api-gl-aml-v1-1-0Tool.test.ts");
+    assert.match(moduleSource, /version: "1\.1\.0"/);
+    assert.match(moduleSource, /totalFunds/);
+    assert.match(moduleSource, /extractSources/);
+    assert.match(testSource, /totalFunds: 62/);
+    assert.match(testSource, /highest-risk-source", 75/);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
 test("MetadataToolRegistrar registers generated provider output", async () => {
   const requestStore = new InMemoryToolBuildRequestStore();
   const metadataStore = new InMemoryToolMetadataStore();
@@ -175,4 +210,39 @@ test("MetadataToolRegistrar preserves provider-specific capabilities and secret 
   assert.deepEqual(metadata?.inputSchema?.required, ["url"]);
   assert.deepEqual(metadata?.requiredSecretHandles, ["secret.aml.gl.api"]);
   assert.equal(metadata?.docsMarkdown, "# API adapter");
+});
+
+test("MetadataToolRegistrar promotes versioned replacements", async () => {
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const metadataStore = new InMemoryToolMetadataStore();
+  await metadataStore.registerGenerated({
+    name: "generated.api.gl.aml",
+    displayName: "GL AML",
+    version: "1.0.0",
+    description: "Original GL AML adapter.",
+    capabilities: ["api.gl-aml", "api-http-json"],
+    modulePath: "src/tools/generated/api-gl-amlTool.ts",
+  });
+  const request = await requestStore.create({
+    capability: "api.gl-aml",
+    displayName: "GL AML",
+    reason: "Change request.",
+    desiredToolName: "generated.api.gl.aml",
+    replacesToolName: "generated.api.gl.aml",
+    replacesVersion: "1.0.0",
+  });
+  const registrar = new MetadataToolRegistrar(metadataStore);
+
+  const registeredToolName = await registrar.register(request, {
+    modulePath: request.contract.modulePath,
+    testPath: request.contract.testPath,
+    summary: "Generated API module replacement.",
+    capabilities: ["api.gl-aml", "api-http-json", "http-api-call"],
+  });
+  const [metadata] = await metadataStore.list();
+
+  assert.equal(registeredToolName, "generated.api.gl.aml");
+  assert.equal(metadata?.version, "1.1.0");
+  assert.equal(metadata?.versions?.[0]?.active, true);
+  assert.equal(metadata?.modulePath, "src/tools/generated/api-gl-aml-v1-1-0Tool.ts");
 });
