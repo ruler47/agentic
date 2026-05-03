@@ -3,7 +3,11 @@ export type AgentRole =
   | "planner"
   | "worker"
   | "reviewer"
-  | "synthesizer";
+  | "synthesizer"
+  | "tool-builder"
+  | "tool-qa"
+  | "tool-registrar"
+  | "tool-user";
 
 export type Message = {
   role: "system" | "user" | "assistant";
@@ -174,6 +178,7 @@ export type AgentEventType =
   | "tool-build-requested"
   | "tool-started"
   | "tool-completed"
+  | "agent-self-check-completed"
   | "synthesis-started"
   | "synthesis-completed"
   | "learning-completed"
@@ -188,6 +193,7 @@ export type AgentActivity =
   | "review"
   | "synthesis"
   | "tool"
+  | "agent"
   | "database";
 
 export type AgentEventStatus = "started" | "completed" | "failed";

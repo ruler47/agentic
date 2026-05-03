@@ -51,6 +51,13 @@ import {
   workerSystemPrompt,
 } from "./prompts.js";
 import { selectModelTier } from "./modelTier.js";
+import {
+  buildReviewSelfCheck,
+  buildWorkerSelfCheck,
+  completeCallFrame,
+  createReviewerCallFrame,
+  createWorkerCallFrame,
+} from "./callFrame.js";
 
 type PlanResponse = {
   subtasks: Subtask[];
@@ -558,17 +565,29 @@ export class UniversalAgent {
     const modelTier = selectModelTier("worker", complexity, subtask);
     const spanId = createSpanId(isRevision ? `worker-revision-${subtask.id}` : `worker-${subtask.id}`);
     const startedAt = new Date();
+    const actor = `worker:${subtask.role}`;
+    const callFrame = createWorkerCallFrame({
+      runId: toolExecutionContext?.runId,
+      spanId,
+      parentSpanId,
+      subtask,
+      actor,
+      modelTier,
+      startedAt: startedAt.toISOString(),
+      dependencySpanIds,
+      revisionOfFrameId: isRevision ? `frame_${parentSpanId}` : undefined,
+    });
     await emit({
       spanId,
       parentSpanId,
       type: "worker-started",
-      actor: `worker:${subtask.role}`,
+      actor,
       activity: "worker",
       status: "started",
       title: isRevision ? `Worker revision: ${subtask.title}` : `Worker: ${subtask.title}`,
       detail: revisionInstructions ?? subtask.role,
       startedAt: startedAt.toISOString(),
-      payload: { subtask, modelTier, dependencySpanIds },
+      payload: { subtask, modelTier, dependencySpanIds, callFrame },
     });
 
     let collectedEvidence: CollectedToolEvidence | undefined;
@@ -598,7 +617,7 @@ export class UniversalAgent {
         spanId,
         parentSpanId,
         type: "worker-failed",
-        actor: `worker:${subtask.role}`,
+        actor,
         activity: "worker",
         status: "failed",
         title: isRevision ? `Worker revision failed: ${subtask.title}` : `Worker failed: ${subtask.title}`,
@@ -612,33 +631,17 @@ export class UniversalAgent {
           dependencySpanIds,
           error: formatErrorMessage(error),
           evidencePreview: collectedEvidence ? limitText(collectedEvidence.text, 2000) : undefined,
+          callFrame: completeCallFrame(callFrame, {
+            status: "failed",
+            completedAt: new Date().toISOString(),
+            outputSummary: formatErrorMessage(error),
+          }),
         },
       });
       throw error;
     }
 
-    await emit({
-      spanId,
-      parentSpanId,
-      type: "worker-completed",
-      actor: `worker:${subtask.role}`,
-      activity: "llm",
-      status: "completed",
-      title: isRevision ? `Worker revision: ${subtask.title}` : `Worker: ${subtask.title}`,
-      detail: output,
-      startedAt: startedAt.toISOString(),
-      completedAt: new Date().toISOString(),
-      durationMs: elapsedMs(startedAt),
-      payload: {
-        subtask,
-        output,
-        modelTier,
-        dependencySpanIds,
-        artifacts: collectedEvidence.artifacts,
-      },
-    });
-
-    return {
+    const workerResult: WorkerResult = {
       subtask,
       output,
       toolEvidence: collectedEvidence.evidence,
@@ -646,6 +649,54 @@ export class UniversalAgent {
       traceSpanId: spanId,
       modelTier,
     };
+    const selfCheckStartedAt = new Date();
+    const selfCheck = buildWorkerSelfCheck(workerResult, selfCheckStartedAt);
+    await emit({
+      spanId: createSpanId(`self-check-${subtask.id}`),
+      parentSpanId: spanId,
+      type: "agent-self-check-completed",
+      actor,
+      activity: "agent",
+      status: selfCheck.readyToReturn ? "completed" : "failed",
+      title: `Self-check: ${subtask.title}`,
+      detail: selfCheck.readyToReturn
+        ? "Ready to return."
+        : `Needs repair before return: ${selfCheck.warnings.join("; ")}`,
+      startedAt: selfCheckStartedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(selfCheckStartedAt),
+      payload: { callFrame, selfCheck },
+    });
+
+    const completedAt = new Date().toISOString();
+    await emit({
+      spanId,
+      parentSpanId,
+      type: "worker-completed",
+      actor,
+      activity: "llm",
+      status: "completed",
+      title: isRevision ? `Worker revision: ${subtask.title}` : `Worker: ${subtask.title}`,
+      detail: output,
+      startedAt: startedAt.toISOString(),
+      completedAt,
+      durationMs: elapsedMs(startedAt),
+      payload: {
+        subtask,
+        output,
+        modelTier,
+        dependencySpanIds,
+        artifacts: collectedEvidence.artifacts,
+        callFrame: completeCallFrame(callFrame, {
+          status: "completed",
+          completedAt,
+          outputSummary: limitText(output, 800),
+        }),
+        selfCheck,
+      },
+    });
+
+    return workerResult;
   }
 
   private async collectToolEvidence(
@@ -1123,7 +1174,13 @@ export class UniversalAgent {
       requestToolBuild,
       toolExecutionContext,
     );
-    const review = await this.review(complexity, workerResult, emit, workerResult.traceSpanId ?? parentSpanId);
+    const review = await this.review(
+      complexity,
+      workerResult,
+      emit,
+      workerResult.traceSpanId ?? parentSpanId,
+      toolExecutionContext?.runId,
+    );
 
     if (review.verdict === "pass") {
       return { workerResult, review, attempts: [workerResult], reviews: [review] };
@@ -1149,6 +1206,7 @@ export class UniversalAgent {
       revisedWorkerResult,
       emit,
       revisedWorkerResult.traceSpanId ?? workerResult.traceSpanId ?? parentSpanId,
+      toolExecutionContext?.runId,
     );
 
     return {
@@ -1548,10 +1606,19 @@ export class UniversalAgent {
     workerResult: WorkerResult,
     emit: AgentEventEmitter,
     parentSpanId: string,
+    runId?: string,
   ): Promise<ReviewResult> {
     const spanId = createSpanId(`review-${workerResult.subtask.id}`);
     const startedAt = new Date();
     const modelTier = selectModelTier("review", complexity, workerResult.subtask);
+    const callFrame = createReviewerCallFrame({
+      runId,
+      spanId,
+      parentSpanId,
+      workerResult,
+      modelTier,
+      startedAt: startedAt.toISOString(),
+    });
     await emit({
       spanId,
       parentSpanId,
@@ -1561,11 +1628,28 @@ export class UniversalAgent {
       status: "started",
       title: `Review: ${workerResult.subtask.title}`,
       startedAt: startedAt.toISOString(),
-      payload: { workerResult, modelTier },
+      payload: { workerResult, modelTier, callFrame },
     });
 
     const deterministicReview = hardGateReview(workerResult);
     if (deterministicReview) {
+      const selfCheckStartedAt = new Date();
+      const selfCheck = buildReviewSelfCheck(deterministicReview, workerResult, spanId, selfCheckStartedAt);
+      await emit({
+        spanId: createSpanId(`self-check-review-${workerResult.subtask.id}`),
+        parentSpanId: spanId,
+        type: "agent-self-check-completed",
+        actor: "reviewer",
+        activity: "agent",
+        status: selfCheck.readyToReturn ? "completed" : "failed",
+        title: `Self-check: Review ${workerResult.subtask.title}`,
+        detail: selfCheck.readyToReturn ? "Ready to return." : selfCheck.warnings.join("; "),
+        startedAt: selfCheckStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(selfCheckStartedAt),
+        payload: { callFrame, selfCheck },
+      });
+      const completedAt = new Date().toISOString();
       await emit({
         spanId,
         parentSpanId,
@@ -1576,9 +1660,19 @@ export class UniversalAgent {
         title: `Review: ${workerResult.subtask.title}`,
         detail: `${deterministicReview.verdict}: ${deterministicReview.notes}`,
         startedAt: startedAt.toISOString(),
-        completedAt: new Date().toISOString(),
+        completedAt,
         durationMs: elapsedMs(startedAt),
-        payload: { ...deterministicReview, modelTier, deterministic: true },
+        payload: {
+          ...deterministicReview,
+          modelTier,
+          deterministic: true,
+          callFrame: completeCallFrame(callFrame, {
+            status: "completed",
+            completedAt,
+            outputSummary: `${deterministicReview.verdict}: ${deterministicReview.notes}`,
+          }),
+          selfCheck,
+        },
       });
       return deterministicReview;
     }
@@ -1603,10 +1697,36 @@ export class UniversalAgent {
         startedAt: startedAt.toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: elapsedMs(startedAt),
-        payload: { workerResult: compactWorkerResultForPrompt(workerResult, 2000), modelTier, error: formatErrorMessage(error) },
+        payload: {
+          workerResult: compactWorkerResultForPrompt(workerResult, 2000),
+          modelTier,
+          error: formatErrorMessage(error),
+          callFrame: completeCallFrame(callFrame, {
+            status: "failed",
+            completedAt: new Date().toISOString(),
+            outputSummary: formatErrorMessage(error),
+          }),
+        },
       });
       throw error;
     }
+    const selfCheckStartedAt = new Date();
+    const selfCheck = buildReviewSelfCheck(review, workerResult, spanId, selfCheckStartedAt);
+    await emit({
+      spanId: createSpanId(`self-check-review-${workerResult.subtask.id}`),
+      parentSpanId: spanId,
+      type: "agent-self-check-completed",
+      actor: "reviewer",
+      activity: "agent",
+      status: selfCheck.readyToReturn ? "completed" : "failed",
+      title: `Self-check: Review ${workerResult.subtask.title}`,
+      detail: selfCheck.readyToReturn ? "Ready to return." : selfCheck.warnings.join("; "),
+      startedAt: selfCheckStartedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(selfCheckStartedAt),
+      payload: { callFrame, selfCheck },
+    });
+    const completedAt = new Date().toISOString();
     await emit({
       spanId,
       parentSpanId,
@@ -1617,9 +1737,18 @@ export class UniversalAgent {
       title: `Review: ${workerResult.subtask.title}`,
       detail: `${review.verdict}: ${review.notes}`,
       startedAt: startedAt.toISOString(),
-      completedAt: new Date().toISOString(),
+      completedAt,
       durationMs: elapsedMs(startedAt),
-      payload: { ...review, modelTier },
+      payload: {
+        ...review,
+        modelTier,
+        callFrame: completeCallFrame(callFrame, {
+          status: "completed",
+          completedAt,
+          outputSummary: `${review.verdict}: ${review.notes}`,
+        }),
+        selfCheck,
+      },
     });
 
     return review;

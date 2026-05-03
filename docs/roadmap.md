@@ -566,6 +566,8 @@ Remaining Phase 3 gaps:
 
 ## Phase 4: Recursive Universal Agents
 
+Status: partially implemented.
+
 Move from coordinator-only orchestration to recursive agents.
 
 This is the center of the product. The goal is one universal agent implementation that can
@@ -625,12 +627,20 @@ Remaining recursive-agent gaps:
 - Replace the central one-shot planner with an agent runtime that can recursively spawn
   workers, reviewers, tool builders, tool QA agents, and tool users.
 - Persist agent call frames so a child agent has a local task/caller/output contract
-  without needing full global context.
+  without needing full global context. PARTIAL: worker and reviewer spans now carry a
+  structured `callFrame` payload with local task, output contract, caller span,
+  dependency spans, model tier, status, and output summary. These frames are durable
+  because they are stored in `run_events`.
 - Add self-check traces for every agent return, including required artifacts, evidence
-  sufficiency, tool QA status, and known limitations.
+  sufficiency, tool QA status, and known limitations. PARTIAL: workers and reviewers now
+  emit `agent-self-check-completed` events before their completed span is returned
+  upward. Worker checks verify non-empty output, evidence state, required artifact
+  presence, and typed artifact QA. Reviewer checks verify verdict shape, notes, and
+  subtask binding.
 - Add budget/deadline propagation and cancellation through recursive call trees.
 - Add policies for which agents may request new tools, promote versions, use credentials,
   send outbound actions, or contact external instances.
+- Add UI affordances that expose call-frame contracts separately from raw payloads.
 
 ## Phase 5: Model Tier Selection
 

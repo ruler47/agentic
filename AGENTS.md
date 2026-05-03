@@ -142,6 +142,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   instance/user/channel memory, Telegram, outbound action, model provider, and tool
   onboarding model.
 - [src/agents/universalAgent.ts](src/agents/universalAgent.ts) - main coordinator runtime.
+- [src/agents/callFrame.ts](src/agents/callFrame.ts) - durable agent call-frame and
+  return self-check helpers for worker/reviewer spans and future recursive agents.
 - [src/agents/modelTier.ts](src/agents/modelTier.ts) - model tier selection policy.
 - [src/agents/prompts.ts](src/agents/prompts.ts) - prompts for classification, planning,
   workers, reviewers, synthesis, and learning.
@@ -318,7 +320,8 @@ For documentation-only changes:
 - `tests/toolRegistry.test.ts` covers tool registration and lookup.
 - `tests/universalAgent.test.ts` covers direct and delegated orchestration with a fake
   LLM, including accepted scoped memory retrieval, runtime sensitive/private memory
-  policy filtering, and repeated similar tasks.
+  policy filtering, repeated similar tasks, call-frame payloads, and return self-check
+  events.
 - `tests/artifactStore.test.ts` covers local artifact persistence, durable
   metadata/object payload separation, and download metadata.
 - `tests/auditEventStore.test.ts` covers normalized in-memory audit events.
@@ -370,6 +373,9 @@ For documentation-only changes:
   deterministic guardrails before an operator accepts a memory into retrieval.
 - For DAG dependencies, also preserve `payload.dependencySpanIds` so the UI can draw
   additional upstream arrows.
+- Worker and reviewer spans should carry `payload.callFrame`, and agent returns should
+  emit `agent-self-check-completed` before completion. This is the Phase 4 foundation for
+  recursive agents.
 - Worker/reviewer LLM failures should emit explicit failed spans before throwing, so a
   failed run still explains which agent failed and why.
 - Keep LLM prompt inputs compact. Tool evidence, dependency context, memories, worker

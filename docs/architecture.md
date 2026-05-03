@@ -50,6 +50,13 @@ task, decides whether to answer or delegate, optionally requests tools, self-che
 result against the task contract, and returns upward without needing to know whether its
 caller is a human or another agent.
 
+The first runtime slice of that model is event-backed call frames. Worker and reviewer
+spans persist a structured `callFrame` payload with local task, output contract, caller
+span, dependencies, model tier, status, and output summary. Before either span completes,
+the runtime emits `agent-self-check-completed` so the trace records whether that agent
+believed its own return value was ready, which artifacts/evidence were checked, and which
+limitations remained.
+
 ## Product Domain Model
 
 See [Instance Context And Personalized Assistant Model](modules/instance-context.md) for the

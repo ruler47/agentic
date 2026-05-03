@@ -19,6 +19,9 @@ Main file:
 - Run worker agents.
 - Run reviewer agents.
 - Ask workers to revise once when a reviewer returns `needs_revision`.
+- Persist structured worker/reviewer call frames inside run events.
+- Emit a local return self-check before worker/reviewer results are considered ready to
+  move upward.
 - Synthesize the final answer.
 - Store reusable skill memory.
 - Emit typed events for external observers.
@@ -113,6 +116,44 @@ Runtime responsibilities with context:
 - Allow recursive child-agent creation instead of coordinator-owned orchestration.
 - Add a reusable thread classifier that distinguishes new tasks, continuations,
   clarification questions, and corrections before run execution.
+
+## Agent Call Frames And Self-Checks
+
+Phase 4 introduces the first durable contract needed for recursive agents without yet
+replacing the coordinator-led DAG. Worker and reviewer spans now carry a `callFrame`
+payload:
+
+- `id`: stable frame id derived from the span id;
+- `runId`, when available through runtime context;
+- `spanId` and `parentSpanId`;
+- `role` and `actor`;
+- local task and output contract;
+- dependency span ids for reviewed upstream inputs;
+- model tier;
+- started/completed timestamps;
+- status and compact output summary.
+
+Before a worker or reviewer emits its completed span, it emits
+`agent-self-check-completed` as a child event. This is the universal "ready to return"
+check that every future recursive child agent should perform before handing work to its
+caller. Current worker checks are deterministic:
+
+- non-empty output;
+- known evidence state;
+- required artifact presence;
+- typed artifact QA from the artifact requirement contract;
+- visible limitations/blockers in the output.
+
+Current reviewer checks verify:
+
+- valid verdict;
+- explanatory notes;
+- returned `subtaskId` matches the worker being reviewed.
+
+Because call frames and self-checks are stored as normal `run_events`, they are durable in
+Postgres, stream through SSE, and appear in Trace Lab without adding a separate persistence
+path. A later recursive runtime can either keep this event-backed model or project the same
+payload into a dedicated call-frame table if it needs query-heavy scheduling.
 
 ## Tool Registry Metadata
 

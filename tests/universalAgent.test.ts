@@ -1535,6 +1535,83 @@ test("UniversalAgent respects subtask dependencies and passes reviewed outputs f
   }
 });
 
+test("UniversalAgent persists worker and reviewer call frames with return self-checks", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"requires checked work","domains":["research"],"riskLevel":"medium"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "research",
+          title: "Research answer",
+          role: "researcher",
+          prompt: "Produce a checked answer.",
+          expectedOutput: "A complete answer.",
+          reviewCriteria: ["No missing evidence"],
+        },
+      ],
+    }),
+    "Checked worker answer.",
+    '{"subtaskId":"research","verdict":"pass","notes":"Worker answer is complete."}',
+    "Final answer uses checked work.",
+    '{"shouldStore":false}',
+  ]);
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+  const events: AgentEvent[] = [];
+
+  try {
+    await agent.run("Research with self-check frames", {
+      onEvent: (event) => {
+        events.push(event);
+      },
+      toolExecutionContext: {
+        runId: "run-self-check",
+      },
+    });
+
+    const workerStarted = events.find((event) => event.type === "worker-started");
+    const workerCompleted = events.find((event) => event.type === "worker-completed");
+    const reviewCompleted = events.find((event) => event.type === "review-completed");
+    const selfChecks = events.filter((event) => event.type === "agent-self-check-completed");
+
+    assert.equal(selfChecks.length, 2);
+    assert.equal(workerStarted?.spanId, workerCompleted?.spanId);
+    assert.equal(
+      ((workerStarted?.payload as { callFrame?: { id?: string; runId?: string; localTask?: string } } | undefined)
+        ?.callFrame?.runId),
+      "run-self-check",
+    );
+    assert.match(
+      ((workerStarted?.payload as { callFrame?: { localTask?: string } } | undefined)?.callFrame?.localTask) ?? "",
+      /Produce a checked answer/,
+    );
+    assert.equal(
+      ((workerCompleted?.payload as { callFrame?: { status?: string }; selfCheck?: { readyToReturn?: boolean } } | undefined)
+        ?.callFrame?.status),
+      "completed",
+    );
+    assert.equal(
+      ((workerCompleted?.payload as { selfCheck?: { readyToReturn?: boolean } } | undefined)?.selfCheck
+        ?.readyToReturn),
+      true,
+    );
+    assert.equal(selfChecks[0]?.parentSpanId, workerStarted?.spanId);
+    assert.equal(
+      ((reviewCompleted?.payload as { callFrame?: { parentFrameId?: string }; selfCheck?: { readyToReturn?: boolean } } | undefined)
+        ?.selfCheck?.readyToReturn),
+      true,
+    );
+    assert.equal(
+      ((reviewCompleted?.payload as { callFrame?: { parentFrameId?: string } } | undefined)?.callFrame
+        ?.parentFrameId),
+      `frame_${workerCompleted?.spanId}`,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent revises failed worker output before synthesis", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));
