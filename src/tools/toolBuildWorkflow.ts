@@ -72,6 +72,12 @@ export class ToolBuildWorkflow {
 
   private async runRequest(request: ToolBuildRequest): Promise<ToolBuildWorkflowResult> {
     const id = request.id;
+    if (request.status === "registered") {
+      return {
+        request,
+        registeredToolName: request.registeredToolName,
+      };
+    }
 
     try {
       const maxAttempts = Math.max(1, Math.min(this.options.maxAttempts ?? 2, 5));

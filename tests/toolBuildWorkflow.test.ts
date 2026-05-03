@@ -56,6 +56,48 @@ test("ToolBuildWorkflow runs builder, QA, and registrar in order", async () => {
   assert.equal(stored?.registeredToolName, "generated.browser.screenshot");
 });
 
+test("ToolBuildWorkflow is idempotent for already registered requests", async () => {
+  const calls: string[] = [];
+  const store = new InMemoryToolBuildRequestStore();
+  const request = await store.create({
+    capability: "browser-screenshot",
+    reason: "Need screenshots as output artifacts.",
+  });
+  const registered = await store.updateStatus(request.id, {
+    status: "registered",
+    statusDetail: "Already registered by background worker.",
+    registeredToolName: "generated.browser.screenshot",
+  });
+
+  const workflow = new ToolBuildWorkflow(
+    store,
+    {
+      async build() {
+        calls.push("builder");
+        throw new Error("builder should not run");
+      },
+    },
+    {
+      async run() {
+        calls.push("qa");
+        throw new Error("qa should not run");
+      },
+    },
+    {
+      async register() {
+        calls.push("registrar");
+        throw new Error("registrar should not run");
+      },
+    },
+  );
+
+  const result = await workflow.runOnce(registered.id);
+
+  assert.deepEqual(calls, []);
+  assert.equal(result.request.status, "registered");
+  assert.equal(result.registeredToolName, "generated.browser.screenshot");
+});
+
 test("ToolBuildWorkflow blocks registration when QA fails", async () => {
   const calls: string[] = [];
   const store = new InMemoryToolBuildRequestStore();

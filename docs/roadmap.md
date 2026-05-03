@@ -509,7 +509,11 @@ Remaining Phase 3 gaps:
   generic HTTPS JSON API adapters such as `api.aml.score`. Generated API adapters return
   structured HTTP status/url/json/text plus extracted nested score evidence when provider
   JSON exposes `score` fields, so successful calls are useful to downstream agents rather
-  than only saying "HTTP 200". Remaining work is autonomous docs parsing into endpoint
+  than only saying "HTTP 200". The Global Ledger AML adapter has exercised versioned
+  rework in practice: v1.1.0 switched final score extraction to root `totalFunds` and
+  source evidence to `sources[].funds.name`/`sources[].share`, and v1.2.0 added Unified
+  search by forcing `token=supported` for address and transaction report URLs. Remaining
+  work is autonomous docs parsing into endpoint
   presets, encrypted/secret-manager-backed material storage for pasted credentials, richer
   provider-specific schemas, and policy-aware runtime credential resolution for all
   generated tools.

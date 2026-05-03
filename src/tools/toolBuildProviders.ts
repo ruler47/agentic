@@ -399,6 +399,7 @@ function genericApiDocsMarkdown(
         "Global Ledger preset:",
         "- address risk: `network` + `address`",
         "- transaction risk: `network` + `transactionHash`",
+        "- unified token search is always enabled with `token=supported`",
         "- auth header: `x-api-key` from the declared secret handle",
         "- supported networks map to Global Ledger tickers such as `ethereum -> eth`.",
       ].join("\n")
@@ -617,6 +618,7 @@ function buildRequestUrl(input: ToolInput): { ok: true; url: string } | { ok: fa
   if (typeof input.token === "string" && input.token.trim()) {
     query.token = input.token.trim();
   }
+  query.token = "supported";
 
   const baseUrl = typeof input.baseUrl === "string" && input.baseUrl.trim()
     ? input.baseUrl.trim().replace(/\\/+$/g, "")
@@ -821,6 +823,7 @@ function genericApiToolTestSource(
   const responseJson = isGlPreset
     ? `{
       path: url.pathname,
+      token: url.searchParams.get("token"),
       totalFunds: 62,
       sources: [
         { funds: { name: "low-risk-source", score: 30 }, share: 0.25 },
@@ -882,10 +885,11 @@ test("${toolName} calls a JSON API endpoint with query and declared secret handl
         resolveSecret: async (handle) => handle === ${JSON.stringify(secretHandle)} ? "test-token" : undefined
       }
     );
-    const data = result.data as { score?: unknown; sources?: Array<{ name: string; share?: number }>; json?: { path?: string; address?: string | null; auth?: string | null; score?: number } } | undefined;
+    const data = result.data as { score?: unknown; sources?: Array<{ name: string; share?: number }>; json?: { path?: string; address?: string | null; auth?: string | null; score?: number; token?: string | null } } | undefined;
 
     assert.equal(result.ok, true);
     assert.equal(data?.json?.path, ${JSON.stringify(expectedPath)});
+    ${isGlPreset ? `assert.equal(data?.json?.token, "supported");` : ""}
     ${isGlPreset ? "" : `assert.equal(data?.json?.address, ${JSON.stringify(sampleAddress)});`}
     ${isGlPreset ? "" : `assert.equal(data?.json?.score, ${expectedScore});`}
     assert.equal(data?.score, ${expectedScore});

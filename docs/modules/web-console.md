@@ -254,7 +254,9 @@ The server also runs a background Tool Builder worker by default. It claims the 
 `requested` card atomically, moves it to `building`, executes the same workflow used by
 the manual run endpoint, and reloads generated tools after registration. Operators can
 disable the worker with `TOOL_BUILD_WORKER=disabled`; the UI keeps the manual run button
-as a fallback.
+as a fallback. Re-running an already registered build request is intended to be
+idempotent so a manual fallback click does not turn a background-successful build into a
+blocked card.
 
 Model tier settings:
 

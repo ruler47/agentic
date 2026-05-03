@@ -551,7 +551,10 @@ For documentation-only changes:
   which creates a Tool Build request with `replacesToolName` and `replacesVersion`.
 - The generated Global Ledger AML adapter treats root `totalFunds` as the final AML Score.
   `sources[].funds` is source-level evidence; expose unique source names with
-  `funds.share` percentages instead of using nested `funds.score` as the final score.
+  top-level `sources[].share` percentages instead of using nested `funds.score` as the
+  final score. Version 1.2.0 enables Global Ledger Unified search by appending
+  `token=supported` to address and tx hash report URLs, so all supported tokens are
+  analyzed by default.
 - The first self-service generated capability is `browser-screenshot`. The Docker runtime
   includes Chromium and project source/tests so the Builder workflow can write generated
   TypeScript, run targeted tests, rebuild `dist`, register metadata, reload the generated

@@ -217,7 +217,10 @@ declared secret handles, generated tests against a local HTTP server, structured
 status/url/json/text evidence, and nested `score` extraction for score-bearing API
 responses. Provider presets can still stay generic; for example a Global Ledger-style
 request maps network/address inputs to the documented HTTPS endpoint while keeping the
-API key behind a declared secret handle. `CommandToolQaRunner` now uses
+API key behind a declared secret handle. The Global Ledger preset now also has a
+versioned replacement path: v1.1.0 fixed `totalFunds` final-score extraction and source
+parsing, while v1.2.0 enables Unified search by appending `token=supported` to address
+and transaction report URLs. `CommandToolQaRunner` now uses
 temporary workspace isolation: it copies project source/tests/config into a disposable QA
 directory, links dependencies, runs the generated-tool test and build there with command
 timeouts, then runs promotion tests/build in the real project only after isolated QA
