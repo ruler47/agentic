@@ -807,6 +807,28 @@ async function routeRequest(
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/models/catalog") {
+    sendJson(response, 200, {
+      chat: {
+        baseUrl: process.env.LLM_BASE_URL ?? "http://127.0.0.1:1234/v1",
+        defaultModel: process.env.LLM_MODEL ?? "google/gemma-4-26b-a4b",
+        models: await listOpenAiCompatibleModels(process.env.LLM_BASE_URL ?? "http://127.0.0.1:1234/v1"),
+      },
+      embedding: {
+        provider: process.env.EMBEDDING_PROVIDER === "deterministic" || !process.env.EMBEDDING_MODEL
+          ? "deterministic"
+          : "openai-compatible",
+        baseUrl: process.env.EMBEDDING_BASE_URL ?? process.env.LLM_BASE_URL ?? "http://127.0.0.1:1234/v1",
+        model: process.env.EMBEDDING_MODEL,
+        dimensions: Number(process.env.MEMORY_EMBEDDING_DIMENSIONS ?? "128"),
+        models: await listOpenAiCompatibleModels(
+          process.env.EMBEDDING_BASE_URL ?? process.env.LLM_BASE_URL ?? "http://127.0.0.1:1234/v1",
+        ),
+      },
+    });
+    return;
+  }
+
   if (request.method === "PUT" && url.pathname === "/api/settings/model-tiers") {
     if (!options.modelTierSettings) {
       sendJson(response, 503, { error: "Model tier settings are not configured" });
@@ -1569,6 +1591,25 @@ async function auditTraceEvent(
 async function recordAudit(options: WebAppOptions, input: AuditEventInput): Promise<void> {
   if (!options.auditEventStore) return;
   await options.auditEventStore.record(input);
+}
+
+async function listOpenAiCompatibleModels(baseUrl: string): Promise<Array<{ id: string; ownedBy?: string }>> {
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!response.ok) return [];
+    const payload = (await response.json()) as { data?: Array<{ id?: unknown; owned_by?: unknown }> };
+    return (payload.data ?? [])
+      .map((item) => ({
+        id: typeof item.id === "string" ? item.id : "",
+        ownedBy: typeof item.owned_by === "string" ? item.owned_by : undefined,
+      }))
+      .filter((item) => item.id);
+  } catch {
+    return [];
+  }
 }
 
 function sanitizeAuditMetadata(value: unknown): Record<string, unknown> | undefined {

@@ -34,9 +34,14 @@ test("web UI keeps page-based workspace information architecture", async () => {
   }
 
   assert.match(app, /traceMode: "timeline"/);
+  assert.match(app, /traceGraphLayout: "category"/);
   assert.match(app, /"timeline", "graph", "logs"/);
   assert.match(app, /function renderGroupProfilePage/);
   assert.match(app, /function saveModelTiers/);
+  assert.match(app, /\/api\/models\/catalog/);
+  assert.match(app, /Model Catalog/);
+  assert.match(app, /Local chat models/);
+  assert.match(app, /Embedding/);
   assert.match(app, /data-action="create-tool-build-request"/);
   assert.match(app, /\/api\/secret-handles/);
   assert.match(app, /function createSecretHandle/);
@@ -65,8 +70,12 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /window\.location\.hash = normalized/);
   assert.match(app, /function drawGraphEdges/);
   assert.match(app, /function highlightGraphRelations/);
+  assert.match(app, /data-action="set-trace-graph-layout"/);
+  assert.match(app, /function traceGraphColumns/);
+  assert.match(app, /function traceGraphDepths/);
+  assert.match(app, /Call depth/);
   assert.match(app, /class="graph-edge/);
-  assert.match(app, /groupBy\(orderTraceNodes\(nodes, false\)/);
+  assert.match(app, /groupBy\(orderedNodes/);
   assert.match(app, /graph-arrow-head-highlighted/);
   assert.match(app, /graph-arrow-head-failed/);
   assert.match(app, /failed-target/);
@@ -113,6 +122,9 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /function deleteConversationThread/);
   assert.match(app, /function reworkTool/);
   assert.match(app, /function renderMarkdown/);
+  assert.match(app, /function renderInlineMarkdown/);
+  assert.match(app, /function normalizeInlineMath/);
+  assert.match(app, /markdown-list/);
   assert.match(app, /data-action="rework-tool-build"/);
   assert.match(app, /data-action="rework-tool"/);
   assert.match(app, /data-action="stop-tool-build"/);
@@ -141,6 +153,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".trace-run-item",
     ".graph-edge",
     ".graph-legend",
+    ".trace-graph-layout-switch",
+    ".graph-category-chip",
     ".graph-arrow-head-highlighted",
     ".graph-arrow-head-failed",
     ".graph-edge.failed-target",
@@ -152,6 +166,7 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".legend-line.dashed",
     ".notice-banner",
     ".inline-artifact-link",
+    ".markdown-list",
     ".message-artifacts",
     ".memory-layout",
     ".memory-tabs",
@@ -160,6 +175,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".proposal-review",
     ".memory-edit-form",
     ".tools-layout",
+    ".model-catalog-grid",
+    ".model-pill",
     ".kanban-heading",
     ".kanban-board",
     ".secret-handle-strip",

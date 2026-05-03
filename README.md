@@ -131,8 +131,10 @@ node dist/cli.js "Скажи одним предложением, что так�
    - Workers with `dependsOn` wait for reviewed upstream outputs and receive those outputs as compact dependency context.
 5. **Reviewer agents check each worker result.**
    - Reviewers look for missing evidence, bad assumptions, contradictions, and next actions.
-6. **Artifact tools run when the task requires files.**
-   - The runtime accepts user attachments and invokes registered tools such as `chart.generate` for downloadable SVG charts.
+6. **Agents use or request reusable capabilities.**
+   - The runtime accepts user attachments and invokes registered tools through schemas.
+   - Missing abilities become generic Tool Build Requests.
+   - Weak existing abilities become versioned Tool Rework Requests, not one-off patches.
 7. **Coordinator synthesizes final answer.**
    - It uses worker outputs, review notes, and its own judgment.
 8. **Skill memory is updated.**
@@ -148,19 +150,21 @@ S3-compatible object store. The server keeps a local filesystem fallback so olde
 workspace artifacts and non-Docker development still download through the same
 `/api/runs/:id/artifacts/:artifactId` links.
 
-When an answer produces files, the final response can include artifact links. The first
-implemented output artifact tool is `chart.generate`: if the user asks for a graph/chart
-and the task context or workers return parsable time-series arrays, the runtime invokes
-this registered TypeScript tool, saves an SVG chart, and shows it in the Answer panel.
-The chart tool is data-agnostic: series names come from the input keys, and values can be
-read from common numeric fields or the first numeric field in each point.
+When an answer produces files, the final response can include artifact links. Artifact
+creation is driven by reusable tool capabilities, not case-specific runtime branches. For
+example, `chart.generate` is a data-agnostic visualization tool: if the task asks for a
+graph/chart and validated context contains parsable time-series arrays, the runtime can
+invoke this registered TypeScript tool, save an SVG chart, and show it in the Answer
+panel. Series names come from input keys, and values can be read from common numeric
+fields or the first numeric field in each point.
 Text-like input and generated output artifacts also store a short content preview, so the
 UI can show source/text snippets and compact CSV/TSV table previews before download.
 Accepted artifacts can include compact `quality` metadata from deterministic or tool-level
 QA; the UI shows this as a QA badge with the underlying reason available on hover.
-Market/crypto time-series requests can use the registered `market.timeseries` tool,
-which fetches structured CoinGecko data, returns normalized points, and saves a CSV
-artifact that downstream chart generation can consume.
+Structured-data requests should use registered data acquisition tools that return
+validated dataset artifacts. A narrow current example exists for one crypto time-series
+source, but the architectural target is provider-configurable, reusable TypeScript tools
+with schemas, secret handles, source QA, and versioned upgrades.
 
 Screenshot requests use the same artifact path. If `browser-screenshot` is missing, the
 runtime can create a Tool Build Request, run the provider-backed Tool Builder workflow,
@@ -190,6 +194,16 @@ Tool contracts are also persisted in Postgres when the Docker stack is running. 
 health details. Generated tool metadata can be registered with name/version conflict
 checks. Executable generated tools are loaded only from compiled project-local modules,
 validated against metadata, and promoted after health checks pass.
+
+The target registry is an operator-visible capability catalog: tool name, versions,
+changelog, schemas, required settings/env keys, required secret handles, examples,
+success/failure counters, health, linked run/span issues, generated source/tests, QA
+reports, and declared storage contracts. If a tool needs its own persistent data, the
+target flow is versioned tool-owned migrations plus an injected scoped execution context,
+not arbitrary SQL inside the tool body. Destructive data operations should be exposed as
+auditable capabilities with dry-run preview, policy approval, and exact scope.
+Channel adapters such as Telegram should be built and managed through this same
+tool/version/QA flow rather than as special runtime integrations.
 
 ## Shape
 

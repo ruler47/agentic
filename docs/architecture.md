@@ -31,6 +31,25 @@ Every request also has provenance:
 The current implementation is still single-user in code, but future changes should keep
 this one-instance/one-group provenance model in mind.
 
+## Capability Principle
+
+The system should grow through reusable capabilities, not private case patches. A run may
+need a chart, a PDF, a browser proof, an API client, or a channel adapter, but the core
+runtime should not hardcode a special pipeline for that domain. Instead:
+
+- agents inspect the tool registry for existing capability contracts;
+- agents call a tool through its schema when the capability exists;
+- agents request a new generic TypeScript tool when the capability is missing;
+- agents request a new version when an existing tool is close but insufficient;
+- every new or revised tool must include tests, documentation, QA evidence, and review;
+- raw credentials and provider-specific secrets are stored only as secret handles and
+  tool settings, never in prompts, memory, source, artifacts, or traces.
+
+A universal agent should be able to sit anywhere in the call chain. It receives a local
+task, decides whether to answer or delegate, optionally requests tools, self-checks its
+result against the task contract, and returns upward without needing to know whether its
+caller is a human or another agent.
+
 ## Product Domain Model
 
 See [Instance Context And Personalized Assistant Model](modules/instance-context.md) for the
@@ -131,10 +150,17 @@ If a review fails, the worker gets one bounded revision pass before synthesis.
 Tools are TypeScript modules with:
 
 - name and version;
+- changelog and replacement relationship between versions;
 - capabilities;
 - input/output schemas;
 - optional healthcheck;
-- a `run(input)` implementation.
+- a `run(input)` implementation;
+- declared storage requirements and tool-owned migrations, when persistent data is
+  needed;
+- required configuration keys, provider URLs, limits, and feature flags;
+- required secret handles for credentials;
+- success/failure telemetry;
+- linked issues/rework tickets and QA reports.
 
 The runtime asks for capabilities through the registry instead of embedding one-off
 logic in the agent. Built-in tools are synced into `tool_modules` when Postgres is
@@ -148,7 +174,41 @@ Initial tools include:
 - `browser.operate` for reusable Playwright browser automation.
 
 Future tools should be instance/user scope-aware. A tool can be globally available while
-its credentials and usage policy are specific to this instance or to allowed user roles.
+its credentials, settings, provider choices, and usage policy are specific to this
+instance or to allowed user roles. Operators should be able to open a tool, inspect every
+version, see what changed, see success/failure counts, and create a rework ticket that
+passes the relevant run/span/artifact context to a Tool Builder agent.
+
+### Tool-Owned Storage And Migrations
+
+Tools do not currently have a first-class runtime database context. The application has
+Postgres-backed stores and central migrations, and tool metadata/build requests are
+persisted, but generated tools should not create ad hoc database pools or run arbitrary
+SQL from `DATABASE_URL`.
+
+The target contract is:
+
+- a tool version can declare storage needs: schema namespace, tables, indexes,
+  constraints, retention policy, backup/export expectations, and required database
+  permissions;
+- migrations are generated as TypeScript/SQL assets linked to the tool version, not hidden
+  inside `run(input)`;
+- Tool QA runs those migrations in an isolated database, proves they are idempotent, and
+  tests rollback/repair behavior where practical;
+- the Tool Registrar applies migrations only after QA/review passes and records the
+  applied migration version in a durable migration table;
+- tool runtime receives a constrained `ToolExecutionContext` with scoped database client,
+  secret resolver, artifact store, audit writer, logger, and cancellation signal;
+- destructive database operations are explicit capabilities, such as `data.delete`,
+  `records.purge`, or `tool-data.compact`, with preview/dry-run output, policy checks,
+  approval when risk is high, and audit records;
+- a Trace Lab or Tool Detail "create bug/rework request" can include database symptoms or
+  maintenance requests, but the builder must turn them into an auditable admin operation
+  or versioned migration, not a one-off SQL command.
+
+This keeps tool data portable and reviewable: a future Telegram adapter, CRM API adapter,
+or domain-specific data tool can own storage while still being testable, versioned, and
+safe to promote.
 
 ### Browser Operation
 
@@ -178,6 +238,9 @@ preview cards for image artifacts.
 ### Tool Builder Flow
 
 When a required capability is missing, the runtime can create a Tool Build Request.
+When an existing capability is insufficient, the runtime can create a Tool Rework Request
+for a new version of the same tool. Rework must not silently overwrite the old version:
+the new module version needs its own changelog, tests, QA report, and promotion decision.
 
 The current provider-backed flow:
 
@@ -197,6 +260,8 @@ families, but the durable lifecycle and QA/registration boundaries are in place.
 The target flow also supports admin-provided API documentation and credentials. The agent
 should read the docs, propose a reusable TypeScript module contract, build tests, run QA,
 register the tool, and store credentials through secret handles rather than prompt text.
+This same flow should be used for API clients, channel adapters, artifact renderers,
+browser helpers, data acquisition modules, and any other capability family.
 
 ### Model Tiers
 
@@ -237,23 +302,28 @@ Agents should retrieve the minimum useful memory for the current requester and c
 group.
 They must not read another user's private memory unless the task and policy allow it.
 
-### Channels And Telegram
+### Channel Adapters
 
-The web console is the current channel. Telegram is a planned first external channel.
+The web console is the current built-in channel. External channels such as Telegram,
+WhatsApp, Slack, email, or custom webhooks should be implemented as reusable channel
+adapter tools, not as one-off runtime branches. Telegram is the first expected adapter,
+but it should use the same Tool Build, registry, versioning, credential, QA, and policy
+workflow as any other tool.
 
-Telegram target behavior:
+Channel adapter behavior:
 
-- accept requests only from whitelisted Telegram users;
-- map Telegram user IDs to instance users;
+- accept requests only from whitelisted provider identities;
+- map provider user IDs to instance users;
 - decide whether each message starts a new conversation thread or continues an existing
   one;
-- create normal runs with `channel=telegram` metadata;
-- show Telegram-originated runs in the admin console;
+- create normal runs with source channel metadata;
+- show channel-originated runs in the admin console;
 - send answers back to the requester;
 - support auditable outbound messages to a person or group when permitted.
 
-Thread resolution should prefer provider metadata such as reply-to messages or Telegram
-forum topics, then use a bounded classifier over recent compact thread summaries. The
+Thread resolution should prefer provider metadata such as reply-to messages, chat/thread
+IDs, forum topics, or webhook thread IDs, then use a bounded classifier over recent
+compact thread summaries. The
 classifier should return `new_task`, `continuation`, `clarification`, or `correction`
 with confidence and reason. Low-confidence cases can ask the user a short clarification
 instead of executing against the wrong context.

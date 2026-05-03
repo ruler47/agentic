@@ -58,6 +58,7 @@ const state = {
   buildRequests: [],
   secretHandles: [],
   tiers: [],
+  modelCatalog: undefined,
   users: [],
   auditEvents: [],
   activeRunId: undefined,
@@ -68,6 +69,7 @@ const state = {
   memoryFilter: "all",
   selectedToolName: undefined,
   hoveredGraphSpanId: undefined,
+  traceGraphLayout: "category",
   traceFilters: {
     actor: "all",
     activity: "all",
@@ -130,6 +132,7 @@ document.addEventListener("click", (event) => {
     threadId,
     spanId,
     traceMode,
+    traceGraphLayout,
     memoryId,
     memoryStatus,
     toolName,
@@ -168,6 +171,11 @@ document.addEventListener("click", (event) => {
   }
   if (actionName === "set-trace-mode" && traceMode) {
     state.traceMode = traceMode;
+    render();
+  }
+  if (actionName === "set-trace-graph-layout" && traceGraphLayout) {
+    state.traceGraphLayout = traceGraphLayout;
+    state.selectedSpanId = undefined;
     render();
   }
   if (actionName === "select-span" && spanId) {
@@ -268,6 +276,7 @@ async function refreshData() {
       buildRequests,
       secretHandles,
       tiers,
+      modelCatalog,
       users,
       auditEvents,
     ] = await Promise.all([
@@ -281,6 +290,7 @@ async function refreshData() {
       fetchJson("/api/tool-build-requests").then((data) => data.requests ?? []),
       fetchJson("/api/secret-handles").then((data) => data.secretHandles ?? []),
       fetchJson("/api/settings/model-tiers").then((data) => data.tiers ?? []),
+      fetchJson("/api/models/catalog").catch(() => undefined),
       fetchJson("/api/users").then((data) => data.users ?? []),
       fetchJson("/api/audit-events").then((data) => data.events ?? []),
     ]);
@@ -296,6 +306,7 @@ async function refreshData() {
       buildRequests,
       secretHandles,
       tiers,
+      modelCatalog,
       users,
       auditEvents,
       activeRunId: state.activeRunId ?? runs[0]?.id,
@@ -1082,17 +1093,38 @@ function renderTimeline(nodes, options = {}) {
 }
 
 function renderTraceGraph(nodes) {
-  const grouped = groupBy(orderTraceNodes(nodes, false), (node) => graphColumn(node));
-  const columns = ["Coordinator", "Memory & Classifier", "Workers", "Tools", "Synthesis", "Output"];
+  const orderedNodes = orderTraceNodes(nodes, false);
+  const depths = traceGraphDepths(orderedNodes);
+  const columns = traceGraphColumns(orderedNodes, depths);
+  const grouped = groupBy(orderedNodes, (node) => traceGraphColumnFor(node, state.traceGraphLayout, depths));
   return `
     <div class="graph-canvas" data-graph-canvas>
       <svg class="graph-edge-layer" data-graph-edge-layer aria-hidden="true"></svg>
+      <div class="trace-graph-layout-switch" aria-label="Trace graph layout">
+        ${[
+          ["category", "Category"],
+          ["depth", "Call depth"],
+        ]
+          .map(
+            ([layout, label]) => `
+              <button
+                type="button"
+                class="${state.traceGraphLayout === layout ? "active" : ""}"
+                data-action="set-trace-graph-layout"
+                data-trace-graph-layout="${layout}"
+              >
+                ${label}
+              </button>
+            `,
+          )
+          .join("")}
+      </div>
       <div class="graph-legend" aria-label="Graph edge legend">
         <span><i class="legend-line solid"></i> Direct call</span>
         <span><i class="legend-line dashed"></i> Dependency: waits for upstream result</span>
         <span><i class="legend-line failed"></i> Calls a failed span</span>
       </div>
-      <div class="graph-board" data-graph-board>
+      <div class="graph-board" data-graph-board style="--graph-column-count: ${columns.length}">
         ${columns
           .map(
             (column) => `
@@ -1118,6 +1150,7 @@ function renderTraceGraph(nodes) {
                         ${node.dependencySpanIds.length
                           ? `<small class="caller-line">waits for ${node.dependencySpanIds.length} dependency span(s)</small>`
                           : ""}
+                        <span class="graph-category-chip">${escapeHtml(graphColumn(node))}</span>
                       </button>
                     `,
                   )
@@ -2130,13 +2163,45 @@ function toolBuildCardComment(request) {
 }
 
 function renderModelsPage() {
+  const chatModels = state.modelCatalog?.chat?.models ?? [];
+  const embeddingModels = state.modelCatalog?.embedding?.models ?? [];
   return `
     <section class="page-stack">
+      <section class="surface-panel model-catalog-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Model Catalog</h2>
+            <p>Discovered local OpenAI-compatible models and the active embedding provider. Remote providers are added as secret-backed model configs, then assigned to tiers.</p>
+          </div>
+          <span class="context-chip">${chatModels.length} chat · ${embeddingModels.length} embedding candidates</span>
+        </div>
+        <div class="model-catalog-grid">
+          <article class="tool-card">
+            <div class="card-topline"><span>Chat endpoint</span><span>${escapeHtml(state.modelCatalog?.chat?.baseUrl ?? "not loaded")}</span></div>
+            <h3>Local chat models</h3>
+            <div class="model-pill-list">
+              ${chatModels.length
+                ? chatModels.map((model) => `<span class="model-pill">${escapeHtml(model.id)}</span>`).join("")
+                : `<span class="muted">No /models response yet. Check the local server or add model ids manually below.</span>`}
+            </div>
+          </article>
+          <article class="tool-card">
+            <div class="card-topline"><span>Embedding</span><span>${escapeHtml(state.modelCatalog?.embedding?.provider ?? "deterministic")}</span></div>
+            <h3>${escapeHtml(state.modelCatalog?.embedding?.model ?? "Deterministic fallback")}</h3>
+            <p class="muted">Dimensions: ${escapeHtml(String(state.modelCatalog?.embedding?.dimensions ?? 128))}. For semantic memory, configure an embedding model separately from chat tiers.</p>
+            <div class="model-pill-list">
+              ${embeddingModels.length
+                ? embeddingModels.map((model) => `<span class="model-pill">${escapeHtml(model.id)}</span>`).join("")
+                : `<span class="muted">No embedding model catalog available from the configured endpoint.</span>`}
+            </div>
+          </article>
+        </div>
+      </section>
       <form data-action="save-model-tiers" class="surface-panel settings-form">
         <div class="section-heading">
           <div>
             <h2>Model Tier Policy</h2>
-            <p>Add local or OpenAI-compatible remote models. The runtime uses fallback order per tier.</p>
+            <p>Add local or OpenAI-compatible remote chat models. The runtime uses fallback order per tier; embeddings are configured separately for memory retrieval.</p>
           </div>
           <button type="submit" class="primary-button">Save Models</button>
         </div>
@@ -3280,6 +3345,43 @@ function graphColumn(node) {
   return "Output";
 }
 
+function traceGraphColumns(nodes, depths = traceGraphDepths(nodes)) {
+  if (state.traceGraphLayout !== "depth") {
+    return ["Coordinator", "Memory & Classifier", "Workers", "Tools", "Synthesis", "Output"];
+  }
+  const maxDepth = Math.max(0, ...nodes.map((node) => depths.get(node.spanId) ?? 0));
+  return Array.from({ length: maxDepth + 1 }, (_value, index) => `Level ${index + 1}`);
+}
+
+function traceGraphColumnFor(node, layout, depths) {
+  if (layout !== "depth") return graphColumn(node);
+  const depth = depths.get(node.spanId) ?? 0;
+  return `Level ${depth + 1}`;
+}
+
+function traceGraphDepths(nodes) {
+  const nodeBySpan = new Map(nodes.map((node) => [node.spanId, node]));
+  const depthBySpan = new Map();
+  const visiting = new Set();
+
+  const depthFor = (node) => {
+    if (depthBySpan.has(node.spanId)) return depthBySpan.get(node.spanId);
+    if (!node.parentSpanId || !nodeBySpan.has(node.parentSpanId) || visiting.has(node.spanId)) {
+      depthBySpan.set(node.spanId, 0);
+      return 0;
+    }
+    visiting.add(node.spanId);
+    const parentDepth = depthFor(nodeBySpan.get(node.parentSpanId));
+    visiting.delete(node.spanId);
+    const depth = parentDepth + 1;
+    depthBySpan.set(node.spanId, depth);
+    return depth;
+  };
+
+  for (const node of nodes) depthFor(node);
+  return depthBySpan;
+}
+
 function inferCapabilityFromSpan(node) {
   const payload = node.payload && typeof node.payload === "object" ? node.payload : {};
   if (typeof payload.tool === "string") return payload.tool;
@@ -3440,10 +3542,48 @@ function renderMarkdown(value) {
     /-\s*([^\n:]+):\s*\n(\/api\/runs\/[^\s]+)/g,
     "- [$1]($2)",
   );
-  return normalized
-    .split("\n")
-    .map((line) => renderMarkdownLine(line))
-    .join("<br>");
+  const lines = normalized.split("\n");
+  const html = [];
+  let listDepth = 0;
+
+  const closeLists = (targetDepth = 0) => {
+    while (listDepth > targetDepth) {
+      html.push("</ul>");
+      listDepth -= 1;
+    }
+  };
+
+  for (const line of lines) {
+    const artifactLine = line.match(/^\s*[-*]\s*\[?([^\]\n:]+)\]?\((\/api\/runs\/[^)\s]+)\)\s*$/);
+    const sameLineArtifact = line.match(/^\s*[-*]\s*([^:\n]+):\s*(\/api\/runs\/\S+)\s*$/);
+    if (artifactLine || sameLineArtifact) {
+      closeLists();
+      html.push(renderMarkdownLine(line));
+      continue;
+    }
+
+    const item = line.match(/^(\s*)[-*]\s+(.+)$/);
+    if (item) {
+      const depth = Math.min(6, Math.floor(item[1].replaceAll("\t", "  ").length / 2) + 1);
+      while (listDepth < depth) {
+        html.push('<ul class="markdown-list">');
+        listDepth += 1;
+      }
+      closeLists(depth);
+      html.push(`<li>${renderInlineMarkdown(item[2])}</li>`);
+      continue;
+    }
+
+    closeLists();
+    if (!line.trim()) {
+      html.push("<br>");
+      continue;
+    }
+    html.push(`${renderMarkdownLine(line)}<br>`);
+  }
+
+  closeLists();
+  return html.join("").replace(/(?:<br>)+$/g, "");
 }
 
 function renderMarkdownLine(line) {
@@ -3457,17 +3597,35 @@ function renderMarkdownLine(line) {
     return renderInlineArtifactLink(sameLineArtifact[1], sameLineArtifact[2]);
   }
 
-  let html = escapeHtml(line);
+  return renderInlineMarkdown(line);
+}
+
+function renderInlineMarkdown(value) {
+  let html = escapeHtml(normalizeInlineMath(value));
   html = html.replace(
     /\[([^\]]+)\]\((https?:\/\/[^)\s]+|\/api\/[^)\s]+)\)/g,
     (_match, label, url) => `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${label}</a>`,
   );
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/(^|[\s(])\*([^*\n]+)\*(?=$|[\s).,;:!?])/g, "$1<em>$2</em>");
   html = html.replace(
     /(^|[\s(])((?:https?:\/\/|\/api\/runs\/)\S+)/g,
     (_match, prefix, url) => `${prefix}<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${url}</a>`,
   );
   return html;
+}
+
+function normalizeInlineMath(value) {
+  return String(value ?? "")
+    .replace(/\$\\rightarrow\$/g, "→")
+    .replace(/\$\\leftarrow\$/g, "←")
+    .replace(/\$\\to\$/g, "→")
+    .replace(/\$\\geq?\$/g, "≥")
+    .replace(/\$\\leq?\$/g, "≤")
+    .replace(/\$\\pm\$/g, "±")
+    .replace(/\\rightarrow/g, "→")
+    .replace(/\\leftarrow/g, "←")
+    .replace(/\\to/g, "→");
 }
 
 function renderInlineArtifactLink(filename, url) {

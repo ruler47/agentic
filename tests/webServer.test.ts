@@ -1282,6 +1282,7 @@ test("web server exposes and updates model tier settings", async () => {
   try {
     const baseUrl = await listen(server);
     const initial = await (await fetch(`${baseUrl}/api/settings/model-tiers`)).json();
+    const catalog = await (await fetch(`${baseUrl}/api/models/catalog`)).json();
     const updateResponse = await fetch(`${baseUrl}/api/settings/model-tiers`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -1305,6 +1306,9 @@ test("web server exposes and updates model tier settings", async () => {
     const updated = await updateResponse.json();
 
     assert.equal(initial.tiers[0].tier, "S");
+    assert.equal(catalog.chat.defaultModel, process.env.LLM_MODEL ?? "google/gemma-4-26b-a4b");
+    assert.equal(Array.isArray(catalog.chat.models), true);
+    assert.equal(catalog.embedding.dimensions, Number(process.env.MEMORY_EMBEDDING_DIMENSIONS ?? "128"));
     assert.equal(updateResponse.status, 200);
     assert.deepEqual(updated.tiers[0].models, ["small-a", "small-b"]);
     assert.equal(updated.tiers[0].maxAttempts, 3);

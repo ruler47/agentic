@@ -32,13 +32,18 @@ policies without leaking context.
 - Keep this file updated with important project notes, links, commands, and decisions.
 - The user prefers a universal agent that delegates narrow, context-heavy work to
   separate agents, then accumulates the results centrally.
+- The user does not want private hardcoded solutions such as a special market/chart
+  pipeline or a special Telegram branch. Build generic reusable capabilities through the
+  tool registry, Tool Builds, versioned replacements, QA, and documentation.
 - The user expects requests to accept files and responses to return files when the task
   calls for artifacts such as charts, screenshots, reports, datasets, or source bundles.
 - The user wants the system to eventually run for a family or enterprise, with separate
   memory for the whole group and for each member.
-- Telegram bot integration is planned: only whitelisted Telegram users should be able to
-  submit requests, and those requests must be visible in the admin UI.
-- Telegram and web requests need conversation-thread continuity: the system must
+- External channels such as Telegram should be channel-adapter tools built through the
+  same registry/versioning/QA/secret-handle flow as other capabilities. Only whitelisted
+  provider users should be able to submit requests, and those requests must be visible in
+  the admin UI.
+- Channel and web requests need conversation-thread continuity: the system must
   distinguish a new task from a clarification, correction, or follow-up to a previous run.
 - Agents will eventually send auditable outbound messages/reminders to a group or
   individual when policy allows.
@@ -76,6 +81,10 @@ Memory embedding overrides:
 Tier variables can contain one model or a comma-separated fallback list. In the web app,
 the editable tier policy is stored in Postgres and exposed through the System Inventory
 panel.
+
+Embedding is a separate memory-retrieval capability, not a chat tier. The Models page
+reads `/api/models/catalog` to show discovered local chat models and the active embedding
+provider; future DB-backed embedding selection should trigger memory re-embedding.
 
 Durable artifact storage in Docker uses:
 
@@ -385,11 +394,14 @@ For documentation-only changes:
   create new conversation threads.
 - The web console renders final answers and conversation messages as sanitized Markdown.
   Artifact list lines such as `- file.png: /api/runs/.../artifacts/...` should remain
-  clickable download links, and image artifacts should expose a small preview where the
-  UI has room.
+  clickable download links; nested bullet lists, basic emphasis, and common inline TeX
+  symbols such as `$\rightarrow$` should render cleanly.
 - Trace Lab graph edges encode direct `parentSpanId` calls and additional
   `payload.dependencySpanIds` dependencies. Edges that target failed spans must stay red
   even without hover so failure paths remain visible.
+- Trace Lab graph mode supports both category columns and call-depth columns. Preserve
+  `parentSpanId` and dependency payloads so both layouts can draw direct arrows and
+  dependency arrows correctly.
 - Artifact cards should render a useful preview whenever possible: image thumbnails,
   text/content previews, or a typed placeholder for binary files.
 - Text-like artifacts, including generated output files, should keep a bounded
@@ -429,6 +441,24 @@ For documentation-only changes:
   source/status/health/version metadata survives restarts.
 - Missing capabilities should create `tool_build_requests` with TypeScript module paths,
   schemas, acceptance criteria, and QA criteria before any generated code is promoted.
+- Existing capabilities that are too weak should create a rework request for a new tool
+  version. Do not silently overwrite the old version; preserve changelog, QA evidence,
+  failure context, and promotion decision.
+- Tool registry metadata should grow toward a complete operator catalog: name, version,
+  changelog, capabilities, schemas, required configuration keys, required secret handles,
+  provider URLs, limits, tool-owned storage contracts, migrations, examples,
+  success/failure counters, health, linked run/span issues, and generated source/test/QA
+  artifacts.
+- Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
+  needs database access, it must declare storage requirements/migrations and receive a
+  scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,
+  artifact store, logger, and cancellation signal.
+- Tool-owned migrations must be versioned, idempotent, QA-tested in an isolated database,
+  and promoted only with the tool version they belong to. Record the applied migration,
+  checksum, QA evidence, and rollback/repair notes in persistent metadata.
+- Destructive database operations requested through a tool bug/rework flow must become
+  explicit auditable capabilities with exact scope, dry-run preview, policy/approval
+  checks, and audit events. Do not satisfy them by running arbitrary one-off SQL.
 - The Tools UI has a registry healthcheck action backed by `GET /api/tools/health`; keep
   tool status and health detail in persistent metadata when changing tool contracts.
 - Tool Build Queue consumers should update durable lifecycle state through the store/API:
@@ -473,10 +503,10 @@ For documentation-only changes:
   input and expands it into navigate/extract/screenshot commands. On command failure it
   should return any diagnostic screenshot payloads so the runtime can attach proof of
   blockers instead of losing evidence.
-- Market/crypto price and chart tasks should prefer `market.timeseries` for structured
-  numeric evidence before charting. Web search can still provide narrative context and
-  fallback source discovery, but chart data should not be invented from snippets when a
-  structured tool can provide it.
+- Data-driven chart tasks should prefer a registered structured-data acquisition
+  capability before rendering. Web search can still provide narrative context and source
+  discovery, but chart data should not be invented from snippets when a structured tool
+  can provide validated dataset artifacts.
 - Agents must self-check browser and screenshot evidence before returning it. Blank
   pages, endless loaders, login walls, access-denied screens, bot checks, unrelated pages,
   or screenshots without task-relevant content are weak evidence; the agent should retry

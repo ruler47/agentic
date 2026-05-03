@@ -1112,6 +1112,20 @@ textarea {
   white-space: nowrap;
 }
 
+.markdown-list {
+  margin: 8px 0 8px 18px;
+  padding-left: 18px;
+}
+
+.markdown-list .markdown-list {
+  margin-top: 6px;
+  margin-bottom: 6px;
+}
+
+.markdown-list li {
+  margin: 5px 0;
+}
+
 .artifact-strip {
   display: grid;
   gap: 12px;
@@ -1519,7 +1533,7 @@ textarea {
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-columns: repeat(6, minmax(220px, 1fr));
+  grid-template-columns: repeat(var(--graph-column-count, 6), minmax(220px, 1fr));
   column-gap: 74px;
   row-gap: 14px;
   min-width: 1760px;
@@ -1528,6 +1542,36 @@ textarea {
 .graph-canvas {
   position: relative;
   min-width: 1760px;
+}
+
+.trace-graph-layout-switch {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  display: inline-flex;
+  gap: 6px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(7, 11, 18, 0.86);
+  padding: 5px;
+  backdrop-filter: blur(14px);
+}
+
+.trace-graph-layout-switch button {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 820;
+  padding: 7px 11px;
+}
+
+.trace-graph-layout-switch button.active {
+  background: rgba(53, 230, 193, 0.14);
+  color: var(--accent);
 }
 
 .graph-edge-layer {
@@ -1670,6 +1714,17 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.graph-category-chip {
+  width: fit-content;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 8px;
 }
 
 .graph-relation {
@@ -1870,6 +1925,31 @@ textarea {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 14px;
+}
+
+.model-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.model-pill-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.model-pill {
+  max-width: 100%;
+  border: 1px solid rgba(96, 165, 250, 0.24);
+  border-radius: 999px;
+  background: rgba(96, 165, 250, 0.08);
+  color: #bfdbfe;
+  font-size: 12px;
+  font-weight: 760;
+  overflow-wrap: anywhere;
+  padding: 6px 10px;
 }
 
 .tier-editor-card textarea {

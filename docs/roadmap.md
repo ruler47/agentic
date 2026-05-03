@@ -53,6 +53,89 @@ Target capabilities:
 
 See [Instance Context And Personalized Assistant Model](modules/instance-context.md).
 
+## Product Principle: Capability Platform, Not Case Patches
+
+The system must not grow by hardcoding private solutions such as a special "market/chart
+pipeline" or a special "Telegram integration" into the core agent. The product goal is a
+universal agent runtime with reusable building blocks:
+
+- agents receive one local task and decide whether they can solve it directly;
+- agents can delegate to child agents without knowing whether their caller is a human or
+  another agent;
+- every agent self-checks its output against the local task contract before returning it
+  upward;
+- missing abilities are expressed as abstract capabilities, not as one-off fixes for the
+  current user prompt;
+- capabilities are implemented as TypeScript tool modules with schemas, tests, QA
+  evidence, documentation, version history, and runtime telemetry;
+- a tool can be upgraded by creating a new version with a changelog and QA report, then
+  promoting that version after review;
+- credentials, environment variables, provider URLs, and tunable tool settings are stored
+  as registry metadata and secret handles, so operators can configure tools without
+  editing prompts or source code;
+- domain tools such as charts, browser automation, API clients, channel adapters, file
+  processors, or data fetchers are examples of reusable capability families. They are not
+  special runtime branches.
+
+Whenever a concrete run fails, the fix should be classified as one of:
+
+- a prompt/planning issue in the universal agent loop;
+- a missing generic capability;
+- a too-weak existing capability that needs a new version;
+- a tool configuration/credential/policy issue;
+- external site/provider limitation that should become evidence or memory, not a fake
+  success.
+
+## Recent Systemic Findings
+
+### Capability failure example: `run_1777798218331_linj0nh2`
+
+The Bitcoin six-month analysis run completed with a failure-style final answer instead
+of a useful chart. The important fixes are generic capability/runtime improvements, not a
+hardcoded Bitcoin or market-analysis path:
+
+- Query hygiene: a source-discovery tool or planner must not mix stale terms from an
+  unrelated domain into a new task. Search planning needs domain isolation,
+  stale-context guards, and source-specific query templates.
+- Structured data first: if a requested artifact requires numeric data, the agent should
+  search the registry for a reusable structured-data acquisition capability before trying
+  brittle browser scraping. Browser screenshots are proof artifacts, not primary numeric
+  data sources.
+- Provider fallback chain: data-acquisition tools should support configurable providers
+  and fallback attempts through registry settings and secret handles.
+- Tool output QA: a browser tool result that lands on a blocker page such as "Just a
+  moment" or "Verifying you are human" must be marked as blocked/useless evidence, not
+  successful extraction.
+- Capability aliases: artifact requirements like `file-write` should resolve to the
+  existing `file.write` tool or the artifact store instead of creating a blocked tool
+  build request for an already available capability.
+- Artifact preconditions: an artifact-rendering tool should run only after required input
+  artifacts are validated. If the data artifact is missing, the system should repair the
+  upstream acquisition capability rather than repeatedly invoking the renderer with
+  unparsable text.
+- Failure-directed tool requests: when a tool fails because an upstream dependency is
+  missing, the generated bug/tool request should target the upstream capability, not the
+  downstream renderer.
+- Memory learning hygiene: failed-run lessons should enter the memory review queue with
+  conservative scope and wording. They should not become accepted global advice about
+  "bypassing" site protection.
+
+## Progress Snapshot
+
+This is a product/architecture estimate, not a ticket counter.
+
+- Overall target platform: about 45-50% complete. The core run orchestration, traces,
+  artifacts, memory lifecycle, tool registry, and model tier plumbing exist; autonomous
+  recursive agents, broad generated tool families, mature channel adapters, and policy
+  enforcement still remain.
+- Current coordinator prototype: about 70% complete. It can delegate, review, synthesize,
+  call tools, create artifacts, and persist runs, but it is still centrally planned rather
+  than a fully recursive society of agents.
+- Operator UI: about 55% complete. The shell, Dashboard, Runs, Conversations, Trace Lab,
+  Memory, Artifacts, Tools, Tool Builds, Models, Group Profile, Settings, and Diagnostics
+  have useful surfaces; several pages still need deeper interactions and tighter
+  analytics.
+
 ## Phase 0: Instance Foundation
 
 Status: partially implemented.
@@ -211,20 +294,33 @@ Remaining memory gaps:
 
 Status: partially implemented.
 
-The runtime has a first-class tool registry and an initial `web.search` tool powered by
-SearXNG. Built-in tool contracts are synced into a persistent `tool_modules` table when
-Postgres is configured, so future generated tools can be versioned, health-checked, and
-promoted without being only in process memory.
+The runtime has a first-class tool registry. Built-in tool contracts are synced into a
+persistent `tool_modules` table when Postgres is configured, so future generated tools
+can be versioned, health-checked, and promoted without being only in process memory.
+
+The registry is the agent's catalog of bricks and cement. Agents should inspect it before
+inventing a plan, choose existing tools by capability, request a new generic tool when a
+capability is missing, and request a new version when an existing tool is too weak.
 
 Tool contract:
 
 - name;
 - version; DONE
+- version changelog and replacement relationship;
 - input schema; DONE
 - output schema; DONE
 - capabilities; DONE
 - startup mode; DONE
 - healthcheck; DONE
+- required configuration keys and secret handles;
+- operator-editable settings, provider URLs, limits, and feature flags;
+- declared storage contract: schema namespace, table ownership, migrations, retention,
+  backup/export notes, and required database permissions;
+- destructive data capabilities, if any, with dry-run/preview, approval policy, and audit
+  requirements;
+- usage counters: successful runs, failed runs, last success, last failure;
+- QA evidence and reviewer decisions per version;
+- issue/rework tickets linked to runs/spans/artifacts;
 - trace event mapping.
 
 Initial tools:
@@ -248,6 +344,20 @@ Implemented registry persistence:
 - API/UI expose source, status, schemas, startup mode, capabilities, health detail, and a
   registry healthcheck action that updates persistent metadata.
 
+Remaining registry persistence:
+
+- Persist per-version changelogs and replacement links as first-class UI/API fields.
+- Persist tool settings and required env/secret metadata in DB so operators can see which
+  parameters and credentials each tool needs.
+- Persist tool-owned storage contracts and migration metadata so operators can see which
+  tool version owns which tables, indexes, retention rules, and database permissions.
+- Track success/failure counters and recent failure classes per tool version from trace
+  and audit events.
+- Add a tool issue/rework inbox: from any tool, version, run span, or artifact QA failure,
+  create a context-rich request for an agent to analyze and produce a new version.
+- Add agent-readable tool docs/examples so agents know how to call a tool without reading
+  source code.
+
 Every tool call must emit trace events with:
 
 - caller span;
@@ -261,17 +371,28 @@ Every tool call must emit trace events with:
 
 Allow agents to create or activate tools when the registry lacks a needed capability.
 
+Tool Builds are not domain-specific feature work. They are a generic factory for
+versioned TypeScript capabilities. If a user asks for a chart, the agent asks for a
+generic data-visualization/artifact-rendering capability. If a user asks to use a channel
+such as Telegram, the agent asks for a generic inbound/outbound channel-adapter
+capability configured with a secret handle. If a user provides API docs and credentials,
+the agent asks for a generic API-client tool generated from the contract.
+
 Flow:
 
 ```text
 agent needs capability
   -> searches tool registry
   -> activates existing tool if available
+  -> if existing tool is close but insufficient, creates a rework request for a new version
   -> otherwise delegates tool creation to a Tool Builder agent
   -> Tool Builder agent scaffolds the module
   -> Tool Builder agent delegates verification to a Tool QA agent
   -> Tool QA agent writes/runs tests and performs a manual smoke check when applicable
+  -> Tool Code Reviewer checks source, schema, security, and portability
+  -> Tool Behavior Reviewer checks actual outputs against QA criteria and artifact evidence
   -> Tool Registrar agent registers the verified tool contract
+  -> operator/agent promotes the version when QA and review pass
   -> original agent delegates usage to a Tool User agent
   -> Tool User agent invokes the new tool and returns evidence
   -> original agent finishes the user task with that evidence
@@ -302,10 +423,25 @@ Guardrails:
 
 - Generated tools must be sandboxed.
 - Generated tools must include tests.
+- Generated tools must be TypeScript and independently reusable outside the current
+  prompt.
+- Generated tools must not open arbitrary database connections or execute hidden SQL.
+  Database access must go through an injected, scoped tool execution context.
+- Generated tools that need durable storage must declare migrations and database
+  permissions as part of the tool version contract.
+- Generated tools must document input/output contracts, configuration, credential
+  handles, examples, limitations, and portability notes.
 - Tool activation must have resource limits.
 - Tools must be reviewed before becoming reusable.
+- Tool code review and behavior QA must both pass before promotion.
+- Tool storage migrations must pass isolated database QA before promotion.
 - A failed QA step must prevent registration.
+- A failed promoted tool version must remain inspectable and can be superseded, but not
+  silently overwritten.
 - Ephemeral tools must be cleaned up after the run unless explicitly promoted.
+- Tools must not store raw credentials in source, prompts, memory, artifacts, or traces.
+- Tool Builders should prefer capability names and schemas that are abstract enough to
+  reuse across tasks.
 
 Next implementation tasks:
 
@@ -379,6 +515,33 @@ Remaining Phase 3 gaps:
   stale-version rejection, same-version rejection, and builtin replacement protection.
   Remaining work is to wire Tool Builder/Registrar automatically from a rework request to
   this promotion endpoint after QA passes.
+- Add version diff/changelog UI for tool replacement requests, showing what the new
+  version adds compared with the previous version and why the previous version failed.
+- Add tool-level settings UI for required env variables, secret handles, provider URLs,
+  rate limits, and feature flags declared by each tool contract.
+- Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
+  secret resolver, artifact store, audit writer, logger, and cancellation signal. This
+  replaces any pattern where tools import app stores or create their own database pools.
+- Add a `tool_migrations` or `tool_schema_migrations` table that records tool name,
+  version, migration id, checksum, applied time, applied-by actor, QA report, and
+  rollback/repair notes.
+- Extend Tool Builder contracts so a request can ask for persistent storage or a database
+  maintenance capability. The builder must generate versioned migrations, tests,
+  documentation, and operator-visible permission metadata.
+- Run generated tool migrations in an isolated Postgres database during QA, including
+  idempotency checks and fixture-based behavior tests.
+- Promote tool versions transactionally: migration metadata, tool metadata, generated
+  source bundle, QA evidence, and registry activation should move together.
+- Add safe database maintenance actions from Trace Lab/Tool Detail/Tool Builds: the agent
+  can create an auditable request to delete, repair, backfill, or compact records related
+  to a source run/thread/tool, but execution must support dry-run preview, policy
+  approval, audit logging, and exact scope constraints.
+- Add success/failure telemetry rollups per tool and per tool version, fed by trace and
+  audit events.
+- Add "Analyze/rework this tool" actions from the Tool Detail page, Trace Lab spans,
+  failed artifact QA panels, and generated tool health reports. The request should carry
+  source run/span id, tool name/version, input summary, output summary, artifacts, QA
+  failures, and the operator comment.
 - Add span-context bug/rework creation from Trace Lab. PARTIAL: the selected span inspector
   now opens a prefilled Tool Build request form with run id, span id, task summary, actor,
   activity, status, caller, and output/error context. Remaining work: classify the issue
@@ -392,15 +555,25 @@ Remaining Phase 3 gaps:
 
 Move from coordinator-only orchestration to recursive agents.
 
+This is the center of the product. The goal is one universal agent implementation that can
+sit at any point in the call chain. It receives a local task, decides whether to answer
+or delegate, optionally asks for missing tools or tool versions, self-checks its output,
+and returns a reviewed result upward. It does not need to know whether its caller is a
+human, the top-level coordinator, or another child agent.
+
 Desired behavior:
 
 ```text
 agent receives one task
+  -> reads scoped memory and available tool/capability registry
   -> decides if it can solve directly
   -> if not, creates child agents
   -> gives each child only local context
   -> child agents can recursively delegate
+  -> child agents can request missing capabilities or improved tool versions
+  -> each child self-checks result, artifacts, evidence, and contract coverage
   -> child returns reviewed result to parent
+  -> parent self-checks accumulated result
   -> parent accumulates and returns upward
 ```
 
@@ -424,10 +597,27 @@ Additional target behavior:
 
 - child agents can request new child agents without central planner knowing the whole
   future graph;
+- child agents can create Tool Build Requests when they detect missing capabilities;
+- child agents can create Tool Rework Requests when an existing tool is insufficient;
+- child agents can choose model tier and review strictness based on local task risk;
+- every agent performs a local "ready to return" check before returning, independent of
+  whether a separate reviewer exists;
 - each child receives only scoped memory and tool permissions;
 - agents can ask another instance/company/family agent for information through a federated
   request tool;
 - inter-instance answers must include provenance and audit records.
+
+Remaining recursive-agent gaps:
+
+- Replace the central one-shot planner with an agent runtime that can recursively spawn
+  workers, reviewers, tool builders, tool QA agents, and tool users.
+- Persist agent call frames so a child agent has a local task/caller/output contract
+  without needing full global context.
+- Add self-check traces for every agent return, including required artifacts, evidence
+  sufficiency, tool QA status, and known limitations.
+- Add budget/deadline propagation and cancellation through recursive call trees.
+- Add policies for which agents may request new tools, promote versions, use credentials,
+  send outbound actions, or contact external instances.
 
 ## Phase 5: Model Tier Selection
 
@@ -459,6 +649,9 @@ Implemented:
 - Local and remote OpenAI-compatible providers are supported by the LLM client contract.
 - Postgres-backed model tier settings.
 - API/UI for viewing and updating model tier policy.
+- API/UI model catalog for the configured local OpenAI-compatible `/models` endpoint and
+  the active embedding provider. Embedding is treated as a separate memory capability,
+  not as a chat tier.
 - `LlmClient` reads current tier settings for each request.
 - `LlmClient` retries failed model requests inside the same tier, then escalates to the
   next tier when policy allows.
@@ -474,6 +667,12 @@ Remaining:
 - LLM-driven tier choice with hard runtime caps.
 - Metrics comparing worker tier vs reviewer tier quality.
 - Store per-tier provider/base URL/API key secret handles in the settings UI.
+- Persist a model provider registry with local discovered models, manually added remote
+  OpenAI-compatible providers, API-key secret handles, health checks, and selectable chat
+  tier candidates.
+- Persist embedding provider settings (`EMBEDDING_MODEL`, base URL, dimensions, secret
+  handle) in the database and trigger memory re-embedding when the embedding model
+  changes. This should be a dedicated "Memory embedding model" setting rather than Tier S/M/L/XL.
 
 ## Phase 6: Better UI Observability
 
@@ -510,13 +709,16 @@ Implemented:
   readable between columns.
 - Graph mode separates worker/reviewer spans from tool/artifact spans so agent work and
   tool execution are easier to scan.
+- Graph mode can switch between category columns and call-depth columns. Call-depth mode
+  lays spans out by parent-child level while showing the category on each card.
 - Conversation Detail shows request/response artifacts inline when the linked run has
   input or output files.
 - Tool Build cards expose lifecycle previews, stop/delete actions, and revision requests.
   Failed installed tools expose a tool-level rework form on the Tools page that creates a
   durable `requested` rebuild card with the failure details prefilled.
 - Final answers and conversation messages render sanitized Markdown, including bold text,
-  clickable links, and clickable application-local artifact URLs.
+  italic text, nested bullet lists, common inline TeX arrows/symbols, clickable links,
+  and clickable application-local artifact URLs.
 
 Remaining:
 
@@ -656,19 +858,18 @@ Artifacts should be linked from trace cards and final answers.
 Goal: the agent should understand missing artifact capabilities during a task and build or
 activate the required module.
 
-Target examples:
+Target capability families:
 
-- User asks for a market analysis with a graph:
-  - collect structured market data;
-  - generate a real chart image;
-  - review the image/artifact, not just the chart code;
-  - return text plus a downloadable/previewable file.
-- User asks for a dossier with screenshots/photos/PDF:
-  - search/open web pages;
-  - manage cookies/session state when needed;
-  - capture screenshots;
-  - inspect the screenshots;
-  - assemble a PDF/report artifact.
+- data acquisition tools: collect structured records from configured providers or source
+  documents and return validated dataset artifacts;
+- visualization/rendering tools: transform arbitrary structured data into chart/image
+  artifacts without domain-specific assumptions;
+- browser evidence tools: navigate, extract, screenshot, preserve session state, and
+  report blockers as evidence instead of pretending success;
+- document assembly tools: combine text, images, screenshots, tables, and citations into
+  PDF/report/source-bundle artifacts;
+- artifact QA tools: inspect the produced artifact and decide whether it proves the local
+  task contract.
 
 Implementation tasks:
 
@@ -677,11 +878,10 @@ Implementation tasks:
 - Add DAG dependencies between subtasks so reviewers and synthesizers wait for required
   parent artifacts. DONE for reviewed text outputs; remaining work is typed artifact
   dependencies.
-- Add structured data tools for market/crypto time series instead of relying on search
-  snippets. PARTIAL: `market.timeseries` is registered as a reusable TypeScript tool for
-  CoinGecko-backed crypto time-series, returns normalized points, and saves a CSV data
-  artifact when the agent detects market/price/chart tasks for known symbols. Remaining
-  work is provider diversity, OHLCV, equities/FX, and source-specific QA.
+- Add generic structured-data acquisition capability patterns instead of relying on search
+  snippets. PARTIAL: one concrete reusable tool exists for a narrow data source, but the
+  target is a provider-configurable family of data tools with schemas, credential
+  handles, source QA, and artifact preconditions.
 - Implement `browser.screenshot` with page-open, cookie/session handling, screenshot
   capture, and visual QA.
 - Implement reusable `browser.operate` with generic navigation/click/fill/wait/extract
@@ -708,16 +908,33 @@ Implementation tasks:
 - Allow the recursive universal-agent flow to delegate missing capability creation to
   Tool Builder, Tool QA, and Tool Registrar agents.
 
-## Phase 9: Telegram Channel
+## Phase 9: Channel Adapter Tool Family
 
 Status: planned.
 
-Goal: let whitelisted Telegram users submit tasks and receive answers, while admins can
-observe and manage the channel from the web console.
+Goal: let external channels submit tasks and receive answers through reusable channel
+adapter tools. Telegram is the first expected adapter, but it must be built through the
+same registry, Tool Build, versioning, QA, and secret-handle path as any other channel
+such as WhatsApp, Slack, email, or a custom webhook.
+
+Channel adapters are tools with:
+
+- inbound event schema;
+- outbound message schema;
+- source user/chat/thread identity mapping;
+- whitelist/policy hooks;
+- conversation-thread resolution hints;
+- secret handles for bot tokens/webhook secrets;
+- delivery audit events;
+- dry-run/test mode;
+- usage/failure telemetry.
 
 Implementation tasks:
 
-- Add Telegram bot configuration and webhook/polling adapter.
+- Add a generic channel-adapter tool contract and register adapter versions in
+  `tool_modules`.
+- Let Tool Builds create a Telegram adapter when an operator provides bot-token secret
+  handle, desired behavior, and provider docs.
 - Add `channel_identities` mapping Telegram user IDs to users. PARTIAL: the durable table
   and server-side resolver exist; the Telegram adapter/admin whitelist UI still needs to
   write and maintain those rows.
@@ -730,16 +947,17 @@ Implementation tasks:
 - Resolve each Telegram message to a conversation thread or create a new thread.
 - Support `/new`, `/continue`, reply-to, and low-confidence clarification behavior.
 - Store compact thread summaries and update them after each run.
-- Send final answers back to the requester.
-- Store inbound/outbound Telegram messages in an auditable table.
+- Send final answers back to the requester through the originating channel adapter.
+- Store inbound/outbound channel messages in an auditable table.
 - Add tests for allowed user, denied user, run context mapping, continuation detection,
   and forced new-thread commands.
 
 UI tasks:
 
-- Channels page with Telegram status, whitelist, mapped users, chats, and message history.
-- Run Workspace source panel showing the originating Telegram message.
-- Admin-visible conversation log for Telegram-originated runs.
+- Channels page with installed adapter versions, health, settings, whitelist mappings,
+  inbound/outbound message history, and tool telemetry.
+- Run Workspace source panel showing the originating channel message.
+- Admin-visible conversation log for channel-originated runs.
 - Conversation thread inspector with message-to-thread decision confidence and override
   controls.
 
@@ -754,7 +972,7 @@ Implementation tasks:
 - Define outbound action contracts: direct message, group broadcast, scheduled reminder.
 - Add `outbound_actions` table with requester, target, body, policy, status, provider
   response, and audit metadata.
-- Add Telegram outbound tool with dry-run mode first.
+- Add outbound channel adapter tool with dry-run mode first.
 - Add permission checks for who can message whom.
 - Add optional approval queue for sensitive or broad broadcasts.
 - Add delivery status and retry handling.
