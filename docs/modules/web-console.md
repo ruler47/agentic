@@ -47,14 +47,17 @@ content-type: application/json
 }
 ```
 
-The current API accepts the single-user shape; the instance/requester/channel fields
-are target fields for the upcoming context-aware run creation API. The local development
-path should backfill a default instance profile, admin user, and `web` channel for backwards
+The API accepts the single-user shape and context-aware metadata. The local development
+path backfills a default instance profile, admin user, and `web` channel for backwards
 compatibility.
 
 When `threadId` or `parentRunId` is provided, the server should create a continuation run
-inside that conversation thread. When neither is provided, it should create a new thread
-unless the channel adapter has already resolved one.
+inside that conversation thread. When neither is provided, the server runs deterministic
+thread resolution over `requesterUserId`, `channel`, `sourceChatId`, `sourceThreadId`, and
+message text. Same-source follow-ups, corrections, and clarifications reuse the latest
+matching active thread; explicit `/new` and independent requests create a new thread.
+The JSON response includes `threadResolution` with `decision`, `reason`, and resolved
+`threadId` when available, and the run-created audit event stores the same compact reason.
 
 Implemented local defaults:
 
@@ -62,6 +65,8 @@ Implemented local defaults:
 - `requesterUserId=user-admin`
 - `channel=web`
 - new `POST /api/runs` requests create a conversation thread automatically;
+- channel-originated follow-ups can omit `threadId` when `sourceChatId`/`sourceThreadId`
+  identifies the previous conversation;
 - continuation requests can pass `threadId` or use
   `POST /api/conversation-threads/:id/runs`.
 
@@ -234,7 +239,7 @@ Each run contains:
 - `result`
 - `error`
 
-Future run context fields:
+Run context fields:
 
 - `instanceId`
 - `requesterUserId`
@@ -244,7 +249,7 @@ Future run context fields:
 - `sourceMessageId`
 - `sourceChatId`
 - `sourceThreadId`
-- `permissionScope`
+- `permissionScope` (planned policy projection)
 
 `result.artifacts` contains input and output artifacts with downloadable `url` values.
 

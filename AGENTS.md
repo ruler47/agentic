@@ -131,6 +131,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/conversations/inMemoryConversationThreadStore.ts](src/conversations/inMemoryConversationThreadStore.ts)
   and [src/conversations/postgresConversationThreadStore.ts](src/conversations/postgresConversationThreadStore.ts)
   - conversation thread stores for new-task versus continuation flow.
+- [src/conversations/threadResolution.ts](src/conversations/threadResolution.ts) - channel
+  message resolver that decides whether an inbound message starts a new task or continues,
+  clarifies, or corrects an existing thread.
 - [src/audit/inMemoryAuditEventStore.ts](src/audit/inMemoryAuditEventStore.ts)
   and [src/audit/postgresAuditEventStore.ts](src/audit/postgresAuditEventStore.ts)
   - normalized audit log stores for run lifecycle, artifacts, tool use, and future
@@ -206,8 +209,8 @@ Request flow:
 ```text
 User task
   -> Coordinator
-  -> Resolve instance/user/channel context (future, defaulted locally today)
-  -> Resolve conversation thread or create a new one (future)
+  -> Resolve instance/user/channel context (defaulted locally today)
+  -> Resolve conversation thread or create a new one
   -> SkillMemory.search()
   -> Complexity classification
   -> Direct answer or delegated plan
@@ -321,6 +324,10 @@ For documentation-only changes:
 - The web console uses `GET /api/runs/:id/events` as an additive SSE stream for live run
   snapshots and falls back to polling; keep `GET /api/runs` and `GET /api/runs/:id`
   backwards compatible.
+- Inbound channel messages without an explicit `threadId` must pass through
+  `resolveConversationThread()`. This keeps Telegram/Slack-style follow-ups in the
+  matching source chat/thread while allowing explicit `/new` and independent tasks to
+  create new conversation threads.
 - The web console renders final answers and conversation messages as sanitized Markdown.
   Artifact list lines such as `- file.png: /api/runs/.../artifacts/...` should remain
   clickable download links, and image artifacts should expose a small preview where the

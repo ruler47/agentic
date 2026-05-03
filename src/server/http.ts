@@ -9,6 +9,10 @@ import {
   ConversationThreadRecord,
   ConversationThreadStore,
 } from "../conversations/types.js";
+import {
+  resolveConversationThread,
+  ThreadResolutionResult,
+} from "../conversations/threadResolution.js";
 import { GroupProfileStore } from "../instance/groupProfileStore.js";
 import { MemoryListOptions, MemoryUpdateInput, SkillMemoryStore } from "../memory/skillMemory.js";
 import { RunCreateContext, RunStore } from "../runs/types.js";
@@ -729,12 +733,14 @@ async function createRunFromRequest(
   let context: RunCreateContext;
   let thread: ConversationThreadRecord | undefined;
   let threadContext: ConversationThreadContext | undefined;
+  let threadResolution: ThreadResolutionResult | undefined;
 
   try {
     const resolved = await resolveRunContext(body, task, options);
     context = resolved.context;
     thread = resolved.thread;
     threadContext = resolved.threadContext;
+    threadResolution = resolved.threadResolution;
   } catch (error) {
     sendJson(response, 400, {
       error: error instanceof Error ? error.message : "Invalid run context",
@@ -756,6 +762,15 @@ async function createRunFromRequest(
     requesterUserId: context.requesterUserId,
     channel: context.channel,
     summary: `Run created: ${task.slice(0, 160)}`,
+    metadata: threadResolution
+      ? {
+          threadResolution: {
+            decision: threadResolution.decision,
+            reason: threadResolution.reason,
+            threadId: threadResolution.thread?.id,
+          },
+        }
+      : undefined,
   });
   let inputArtifacts: AgentArtifact[] = [];
   try {
@@ -812,7 +827,17 @@ async function createRunFromRequest(
     threadId: context.threadId,
     threadContext,
   });
-  sendJson(response, 202, { run: await options.runStore.get(run.id), thread });
+  sendJson(response, 202, {
+    run: await options.runStore.get(run.id),
+    thread,
+    threadResolution: threadResolution
+      ? {
+          decision: threadResolution.decision,
+          reason: threadResolution.reason,
+          threadId: threadResolution.thread?.id,
+        }
+      : undefined,
+  });
 }
 
 async function resolveRunContext(
@@ -823,6 +848,7 @@ async function resolveRunContext(
   context: RunCreateContext;
   thread?: ConversationThreadRecord;
   threadContext?: ConversationThreadContext;
+  threadResolution?: ThreadResolutionResult;
 }> {
   const instanceId = parseOptionalText(body.instanceId) ?? "instance-local";
   const bodyRequesterUserId = parseOptionalText(body.requesterUserId);
@@ -833,19 +859,37 @@ async function resolveRunContext(
   const requestedThreadId = parseOptionalText(body.threadId);
   let parentRunId = parseOptionalText(body.parentRunId);
   let thread: ConversationThreadRecord | undefined;
+  let threadResolution: ThreadResolutionResult | undefined;
 
   if (options.conversationStore) {
+    const requesterUserId = bodyRequesterUserId ?? "user-admin";
+    const channel = bodyChannel ?? "web";
     if (requestedThreadId) {
       thread = await options.conversationStore.get(requestedThreadId);
       if (!thread) throw new Error("Conversation thread not found");
+      threadResolution = {
+        decision: "explicit_thread",
+        thread,
+        reason: "The request explicitly selected an existing conversation thread.",
+      };
     } else {
-      thread = await options.conversationStore.create({
-        title: task,
-        requesterUserId: bodyRequesterUserId ?? "user-admin",
-        channel: bodyChannel ?? "web",
+      threadResolution = resolveConversationThread({
+        task,
+        requesterUserId,
+        channel,
         sourceChatId,
         sourceThreadId,
+        threads: await options.conversationStore.list(),
       });
+      thread =
+        threadResolution.thread ??
+        (await options.conversationStore.create({
+          title: task,
+          requesterUserId,
+          channel,
+          sourceChatId,
+          sourceThreadId,
+        }));
     }
     parentRunId = parentRunId ?? thread.latestRunId;
   }
@@ -867,6 +911,7 @@ async function resolveRunContext(
   return {
     context,
     thread,
+    threadResolution,
     threadContext: thread
       ? {
           summary: thread.summary,

@@ -85,10 +85,14 @@ Implementation tasks:
 - Show group profile/requester/channel in run headers and trace metadata. PARTIAL:
   run headers include requester/channel/thread; group profile is editable through the UI/API.
 - Add a thread-resolution service that classifies inbound messages as new task,
-  continuation, clarification, or correction.
+  continuation, clarification, or correction. DONE for deterministic channel-aware
+  routing: explicit `threadId` always wins, `/new` and independent tasks create a new
+  thread, and same-source chat/thread follow-ups, clarifications, and corrections reuse
+  the latest matching active thread.
 - Add tests proving run creation requires a resolvable requester context.
 - Add tests proving continuations inherit compact thread context without replaying full
-  transcripts. DONE for web continuation.
+  transcripts. DONE for explicit web continuation and channel-originated follow-up
+  resolution without a supplied `threadId`.
 - Add audit events for run creation, tool use, artifact creation, memory writes, and
   future outbound actions. PARTIAL: run created/started/completed/failed, input/output
   artifacts, tool trace events, and tool build requests/registrations are implemented.

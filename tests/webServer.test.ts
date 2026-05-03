@@ -305,6 +305,76 @@ test("web server creates conversation threads and continues with compact context
   }
 });
 
+test("web server resolves channel follow-ups into existing conversation threads", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const conversationStore = new InMemoryConversationThreadStore();
+  const agent = new ThreadAwareFakeAgent();
+
+  const server = createWebApp({
+    agent: agent as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    conversationStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const firstResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        task: "найди билеты из Стамбула в Малагу",
+        channel: "telegram",
+        sourceChatId: "tg-chat-1",
+        sourceMessageId: "msg-1",
+      }),
+    });
+    const first = await firstResponse.json();
+    await waitForRun(baseUrl, first.run.id);
+
+    const followUpResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        task: "а теперь добавь скриншот результата",
+        channel: "telegram",
+        sourceChatId: "tg-chat-1",
+        sourceMessageId: "msg-2",
+      }),
+    });
+    const followUp = await followUpResponse.json();
+    const completedFollowUp = await waitForRun(baseUrl, followUp.run.id);
+
+    const newTaskResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        task: "найди пять городов Испании по населению",
+        channel: "telegram",
+        sourceChatId: "tg-chat-1",
+        sourceMessageId: "msg-3",
+      }),
+    });
+    const newTask = await newTaskResponse.json();
+    await waitForRun(baseUrl, newTask.run.id);
+    const threads = await (await fetch(`${baseUrl}/api/conversation-threads`)).json();
+
+    assert.equal(firstResponse.status, 202);
+    assert.equal(followUpResponse.status, 202);
+    assert.equal(newTaskResponse.status, 202);
+    assert.equal(followUp.threadResolution.decision, "continue_thread");
+    assert.equal(followUp.run.threadId, first.run.threadId);
+    assert.equal(completedFollowUp.run.parentRunId, first.run.id);
+    assert.equal(newTask.threadResolution.decision, "new_task");
+    assert.notEqual(newTask.run.threadId, first.run.threadId);
+    assert.equal(threads.threads.length, 2);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server deletes a conversation thread with related runs and trace events", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
