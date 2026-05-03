@@ -483,6 +483,99 @@ test("UniversalAgent executes required screenshot artifacts inside delegated sub
   }
 });
 
+test("UniversalAgent executes market time-series tools inside delegated subtasks", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"needs structured market data","domains":["market"],"riskLevel":"medium"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "market-data",
+          title: "Collect BTC market time-series data",
+          role: "researcher",
+          prompt: "Collect BTC price history.",
+          expectedOutput: "Structured BTC market data artifact and trend notes.",
+          reviewCriteria: ["Uses real structured market data"],
+          requiredTools: ["market-timeseries"],
+        },
+      ],
+    }),
+    "BTC market data was collected and saved as /artifacts/bitcoin.csv.",
+    '{"subtaskId":"market-data","verdict":"pass","notes":"Structured market data artifact is present."}',
+    "Final answer cites /artifacts/bitcoin.csv.",
+    '{"shouldStore":false}',
+  ]);
+  const registry = new ToolRegistry();
+  const marketInputs: unknown[] = [];
+  registry.register({
+    name: "market.timeseries",
+    version: "1.0.0",
+    description: "Fake market time-series tool",
+    capabilities: ["market-timeseries", "crypto-timeseries", "structured-market-data"],
+    async run(input) {
+      marketInputs.push(input);
+      return {
+        ok: true,
+        content: "Fetched 2 bitcoin/USD points from CoinGecko.",
+        data: {
+          source: "coingecko",
+          symbol: "BTC",
+          coinId: "bitcoin",
+          vsCurrency: "usd",
+          days: 30,
+          points: [
+            { timestamp: "2026-05-01T00:00:00.000Z", value: 90000 },
+            { timestamp: "2026-05-02T00:00:00.000Z", value: 91000 },
+          ],
+          artifact: {
+            filename: "bitcoin-usd-30d-timeseries.csv",
+            mimeType: "text/csv",
+            content: "timestamp,value\n2026-05-01T00:00:00.000Z,90000\n2026-05-02T00:00:00.000Z,91000\n",
+            description: "BTC/USD time-series data from CoinGecko.",
+          },
+        },
+      };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const savedArtifacts: ArtifactCreateInput[] = [];
+  const events: AgentEvent[] = [];
+
+  try {
+    const result = await agent.run("Собери BTC market data за месяц и дай краткий анализ тренда.", {
+      saveArtifact: async (artifact): Promise<AgentArtifact> => {
+        savedArtifacts.push(artifact);
+        return {
+          id: "artifact-market-data",
+          runId: "run-1",
+          kind: "output",
+          filename: artifact.filename,
+          mimeType: artifact.mimeType,
+          sizeBytes: Buffer.isBuffer(artifact.content) ? artifact.content.byteLength : artifact.content.length,
+          url: "/artifacts/bitcoin.csv",
+          description: artifact.description,
+          createdAt: new Date().toISOString(),
+        };
+      },
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    assert.equal(marketInputs.length, 1);
+    assert.equal((marketInputs[0] as { symbol?: string }).symbol, "BTC");
+    assert.equal((marketInputs[0] as { vsCurrency?: string }).vsCurrency, "usd");
+    assert.equal(savedArtifacts.length, 1);
+    assert.equal(savedArtifacts[0]?.filename, "bitcoin-usd-30d-timeseries.csv");
+    assert.equal(result.workerResults[0]?.artifacts?.[0]?.url, "/artifacts/bitcoin.csv");
+    assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /market\.timeseries/);
+    assert.ok(events.some((event) => event.type === "tool-completed" && event.actor === "market.timeseries"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent executes declared browser operate tool inputs and saves screenshots", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));

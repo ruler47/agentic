@@ -659,7 +659,10 @@ Implementation tasks:
   parent artifacts. DONE for reviewed text outputs; remaining work is typed artifact
   dependencies.
 - Add structured data tools for market/crypto time series instead of relying on search
-  snippets.
+  snippets. PARTIAL: `market.timeseries` is registered as a reusable TypeScript tool for
+  CoinGecko-backed crypto time-series, returns normalized points, and saves a CSV data
+  artifact when the agent detects market/price/chart tasks for known symbols. Remaining
+  work is provider diversity, OHLCV, equities/FX, and source-specific QA.
 - Implement `browser.screenshot` with page-open, cookie/session handling, screenshot
   capture, and visual QA.
 - Implement reusable `browser.operate` with generic navigation/click/fill/wait/extract

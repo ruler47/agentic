@@ -31,6 +31,7 @@ import {
 import { inspectBrowserScreenshotEvidence } from "../artifacts/semanticArtifactQuality.js";
 import { isChartToolData } from "../tools/chartGenerateTool.js";
 import { isBrowserOperateData } from "../tools/browserOperateTool.js";
+import { isMarketTimeseriesData } from "../tools/marketTimeseriesTool.js";
 import { ToolBuildRequest, ToolBuildRequestInput } from "../tools/toolBuildRequestStore.js";
 import { Tool } from "../tools/tool.js";
 import { extractJson } from "../utils/json.js";
@@ -650,6 +651,19 @@ export class UniversalAgent {
       evidence.push(await this.runWebSearch(webSearch, subtask, emit, parentSpanId));
     }
 
+    const marketTool = this.tools.findByCapability("market-timeseries")[0];
+    if (marketTool && shouldCollectMarketTimeseries(subtask, toolNeedText)) {
+      const marketEvidence = await this.runMarketTimeseries(
+        marketTool,
+        toolNeedText,
+        emit,
+        parentSpanId,
+        saveArtifact,
+      );
+      evidence.push(...marketEvidence.evidence);
+      artifacts.push(...marketEvidence.artifacts);
+    }
+
     const declaredToolEvidence = await this.collectDeclaredToolInputs(
       subtask,
       evidence,
@@ -757,6 +771,81 @@ export class UniversalAgent {
     return result.ok
       ? `External tool evidence from ${webSearch.name}:\n${limitText(result.content, promptBudget.toolEvidenceChars)}`
       : `External tool ${webSearch.name} failed:\n${limitText(result.content, 3000)}`;
+  }
+
+  private async runMarketTimeseries(
+    marketTool: Tool,
+    text: string,
+    emit: AgentEventEmitter,
+    parentSpanId: string,
+    saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
+  ): Promise<CollectedToolEvidence> {
+    const evidence: string[] = [];
+    const artifacts: AgentArtifact[] = [];
+    const requests = inferMarketTimeseriesRequests(text);
+
+    for (const request of requests) {
+      const spanId = createSpanId(`tool-${marketTool.name}`);
+      const startedAt = new Date();
+      await emit({
+        spanId,
+        parentSpanId,
+        type: "tool-started",
+        actor: marketTool.name,
+        activity: "tool",
+        status: "started",
+        title: `Tool: ${marketTool.name}`,
+        detail: `${request.symbol}/${request.vsCurrency} for ${request.days} day(s)`,
+        startedAt: startedAt.toISOString(),
+        payload: { tool: marketTool.name, input: request },
+      });
+
+      const result = await marketTool.run(request);
+      await emit({
+        spanId,
+        parentSpanId,
+        type: "tool-completed",
+        actor: marketTool.name,
+        activity: "tool",
+        status: result.ok ? "completed" : "failed",
+        title: `Tool: ${marketTool.name}`,
+        detail: result.content,
+        startedAt: startedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(startedAt),
+        payload: sanitizeToolPayload(result),
+      });
+
+      const savedArtifacts: AgentArtifact[] = [];
+      if (result.ok && saveArtifact && isMarketTimeseriesData(result.data)) {
+        const artifactStartedAt = new Date();
+        const artifact = await saveArtifact(result.data.artifact);
+        savedArtifacts.push(artifact);
+        await emit({
+          spanId: createSpanId("artifact-market-data"),
+          parentSpanId: spanId,
+          type: "artifact-created",
+          actor: "artifact:data",
+          activity: "tool",
+          status: "completed",
+          title: "Market data artifact generated",
+          detail: `${artifact.filename}\n${artifact.url}`,
+          startedAt: artifactStartedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(artifactStartedAt),
+          payload: { artifact },
+        });
+      }
+
+      artifacts.push(...savedArtifacts);
+      evidence.push(formatDeclaredToolEvidence(marketTool.name, result, savedArtifacts));
+    }
+
+    return {
+      text: evidence.length > 0 ? evidence.join("\n\n") : "No market time-series evidence was collected.",
+      evidence,
+      artifacts,
+    };
   }
 
   private async collectDeclaredToolInputs(
@@ -1573,6 +1662,18 @@ function normalizeSubtask(subtask: Subtask): Subtask {
     });
   }
 
+  if (shouldCollectMarketTimeseries(subtask, text)) {
+    requiredTools.add("market-timeseries");
+    if (!requiredArtifacts.some((artifact) => artifact.kind === "data" && artifact.capability === "market-timeseries")) {
+      requiredArtifacts.push({
+        kind: "data",
+        capability: "market-timeseries",
+        description: "Structured market time-series dataset required by the subtask.",
+        required: false,
+      });
+    }
+  }
+
   return {
     ...subtask,
     reviewCriteria: subtask.reviewCriteria ?? [],
@@ -1896,6 +1997,51 @@ function shouldCollectWebSearch(subtask: Subtask, text: string, dependencyContex
       ["web.search", "web-search", "research", "current-information"].includes(tool.toLowerCase()),
     )
   );
+}
+
+function shouldCollectMarketTimeseries(subtask: Subtask, text: string): boolean {
+  const requestedTools = (subtask.requiredTools ?? []).map((tool) => tool.toLowerCase());
+  return (
+    requestedTools.some((tool) => ["market-timeseries", "crypto-timeseries", "structured-market-data"].includes(tool)) ||
+    (/(?:price|market|timeseries|time-series|ohlcv|chart|graph|trend|курс|цена|рынок|график|тренд|динамик)/i.test(
+      text,
+    ) &&
+      inferMarketSymbols(text).length > 0)
+  );
+}
+
+function inferMarketTimeseriesRequests(text: string): Array<{ symbol: string; vsCurrency: string; days: number }> {
+  const days = inferMarketDays(text);
+  const vsCurrency = /\beur\b|евро/i.test(text) ? "eur" : "usd";
+  return inferMarketSymbols(text)
+    .slice(0, 3)
+    .map((symbol) => ({ symbol, vsCurrency, days }));
+}
+
+function inferMarketSymbols(text: string): string[] {
+  const candidates: Array<[RegExp, string]> = [
+    [/\b(?:btc|bitcoin)\b|биткоин/i, "BTC"],
+    [/\b(?:eth|ether|ethereum)\b|эфир/i, "ETH"],
+    [/\b(?:sol|solana)\b|солан/i, "SOL"],
+    [/\bbnb\b/i, "BNB"],
+    [/\bxrp\b/i, "XRP"],
+    [/\bada\b|cardano/i, "ADA"],
+    [/\bdoge\b|dogecoin/i, "DOGE"],
+    [/\bavax\b|avalanche/i, "AVAX"],
+    [/\bdot\b|polkadot/i, "DOT"],
+    [/\bton\b/i, "TON"],
+  ];
+  const symbols = candidates.filter(([pattern]) => pattern.test(text)).map(([, symbol]) => symbol);
+  return [...new Set(symbols)];
+}
+
+function inferMarketDays(text: string): number {
+  if (/пол\s*года|half\s*(?:a\s*)?year|6\s*months|six\s*months/i.test(text)) return 180;
+  if (/год|year|12\s*months/i.test(text)) return 365;
+  if (/лет[оа]|summer/i.test(text)) return 120;
+  if (/месяц|month|30\s*days/i.test(text)) return 30;
+  if (/недел|week|7\s*days/i.test(text)) return 7;
+  return 30;
 }
 
 function buildSearchQueries(subtask: Subtask): string[] {

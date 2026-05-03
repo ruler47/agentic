@@ -166,6 +166,11 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   context to reject loader/blocker or task-mismatched artifacts before storage.
 - [src/tools/chartGenerateTool.ts](src/tools/chartGenerateTool.ts) - `chart.generate`
   TypeScript tool module for data-agnostic SVG chart artifacts.
+- [src/tools/marketTimeseriesTool.ts](src/tools/marketTimeseriesTool.ts) -
+  `market.timeseries` TypeScript tool module for structured CoinGecko-backed
+  crypto time-series and CSV data artifacts.
+- [docs/modules/market-timeseries.md](docs/modules/market-timeseries.md) - module
+  contract and portability notes for `market.timeseries`.
 - [src/tools/browserOperateTool.ts](src/tools/browserOperateTool.ts) - reusable
   `browser.operate` Playwright command executor for navigation, clicks, form fills,
   selectors/options/checkboxes, waits, assertions, DOM text/link extraction, screenshots,
@@ -444,6 +449,10 @@ For documentation-only changes:
   input and expands it into navigate/extract/screenshot commands. On command failure it
   should return any diagnostic screenshot payloads so the runtime can attach proof of
   blockers instead of losing evidence.
+- Market/crypto price and chart tasks should prefer `market.timeseries` for structured
+  numeric evidence before charting. Web search can still provide narrative context and
+  fallback source discovery, but chart data should not be invented from snippets when a
+  structured tool can provide it.
 - Agents must self-check browser and screenshot evidence before returning it. Blank
   pages, endless loaders, login walls, access-denied screens, bot checks, unrelated pages,
   or screenshots without task-relevant content are weak evidence; the agent should retry

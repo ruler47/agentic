@@ -407,6 +407,11 @@ source/markup, and document/image/chart/screenshot requirements must match their
 MIME/extension class. Inspectable data/source artifacts with empty previews are treated
 as weak evidence and must be regenerated or explicitly reported as impossible.
 
+Market and crypto chart workflows can now collect structured numeric evidence through
+the `market.timeseries` tool before rendering charts. The tool returns normalized
+CoinGecko-backed points plus a CSV data artifact, so final answers can link both the
+chart and the underlying dataset.
+
 ## Information Architecture
 
 The browser UI is a page-based product shell, not a single debug dashboard. Future work

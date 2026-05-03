@@ -25,6 +25,7 @@ import { DurableArtifactStore, FallbackArtifactStore, LocalArtifactStore } from 
 import { PostgresArtifactMetadataStore } from "../artifacts/postgresArtifactMetadataStore.js";
 import { S3ObjectStore, s3ConfigFromEnv } from "../artifacts/s3ObjectStore.js";
 import { ChartGenerateTool } from "../tools/chartGenerateTool.js";
+import { MarketTimeseriesTool } from "../tools/marketTimeseriesTool.js";
 import { BrowserOperateTool } from "../tools/browserOperateTool.js";
 import { InMemoryToolMetadataStore } from "../tools/toolMetadataStore.js";
 import { PostgresToolMetadataStore } from "../tools/postgresToolMetadataStore.js";
@@ -51,6 +52,7 @@ tools.register(new WebSearchTool());
 tools.register(new FileReadTool());
 tools.register(new FileWriteTool());
 tools.register(new ChartGenerateTool());
+tools.register(new MarketTimeseriesTool());
 tools.register(new BrowserOperateTool());
 const toolMetadataStore = pool
   ? new PostgresToolMetadataStore(pool)
