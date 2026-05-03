@@ -274,7 +274,35 @@ pre {
 }
 
 .page-main {
+  min-width: 0;
+  max-width: 100%;
   padding: 24px;
+}
+
+.notice-banner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 18px;
+  border: 1px solid rgba(53, 230, 193, 0.24);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(53, 230, 193, 0.12), rgba(96, 165, 250, 0.06)),
+    var(--surface-glass);
+  box-shadow: var(--shadow);
+  padding: 14px;
+}
+
+.notice-banner strong {
+  display: block;
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.notice-banner p {
+  margin-top: 3px;
+  color: var(--secondary);
 }
 
 .page-transition {
@@ -850,13 +878,19 @@ textarea {
 .command-page {
   display: grid;
   gap: 18px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .run-status-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-glass);
@@ -864,20 +898,33 @@ textarea {
 }
 
 .run-status-bar > div:first-child {
+  flex: 1 1 520px;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .run-status-bar h2 {
-  overflow: hidden;
   font-size: 20px;
   line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .run-status-bar p {
   margin-top: 5px;
   color: var(--secondary);
+  overflow-wrap: anywhere;
+}
+
+.status-cluster {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.status-cluster span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .run-result-layout,
@@ -886,6 +933,8 @@ textarea {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
   gap: 18px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .conversation-detail {
@@ -1439,7 +1488,9 @@ textarea {
   top: 88px;
   min-width: 0;
   min-height: 420px;
-  overflow: hidden;
+  max-height: calc(100vh - 112px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .inspector-meta {
@@ -1450,6 +1501,46 @@ textarea {
 
 .inspector-stack {
   min-width: 0;
+}
+
+.span-request-box {
+  scroll-margin: 16px;
+}
+
+.span-request-box summary {
+  display: grid;
+  place-items: center;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+  cursor: pointer;
+  font-weight: 850;
+  list-style: none;
+}
+
+.span-request-box summary::-webkit-details-marker {
+  display: none;
+}
+
+.span-request-box summary::after {
+  content: "Expand";
+  margin-top: 3px;
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.span-request-box[open] summary {
+  border-color: rgba(53, 230, 193, 0.3);
+  background: rgba(53, 230, 193, 0.08);
+}
+
+.span-request-box[open] summary::after {
+  content: "Ready to submit";
+  color: var(--accent);
 }
 
 .inspector-stack h2,

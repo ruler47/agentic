@@ -75,6 +75,7 @@ const state = {
   selectedSpanId: undefined,
   loading: true,
   error: undefined,
+  notice: undefined,
   stream: undefined,
 };
 
@@ -130,6 +131,10 @@ document.addEventListener("click", (event) => {
   }
   if (actionName === "refresh") {
     void refreshData();
+  }
+  if (actionName === "dismiss-notice") {
+    state.notice = undefined;
+    render();
   }
   if (actionName === "select-run" && runId) {
     navigate(`run/${runId}`);
@@ -306,7 +311,10 @@ function render() {
       ${renderSidebar()}
       <div class="page-shell">
         ${renderTopHeader()}
-        <main class="page-main page-transition">${renderPage()}</main>
+        <main class="page-main page-transition">
+          ${renderNotice()}
+          ${renderPage()}
+        </main>
       </div>
     </div>
   `;
@@ -437,6 +445,20 @@ function renderPage() {
     default:
       return renderDashboard();
   }
+}
+
+function renderNotice() {
+  if (!state.notice) return "";
+  return `
+    <aside class="notice-banner">
+      <div>
+        <strong>${escapeHtml(state.notice.title)}</strong>
+        <p>${escapeHtml(state.notice.body)}</p>
+      </div>
+      ${state.notice.route ? `<button type="button" class="primary-button" data-action="navigate" data-route="${escapeHtml(state.notice.route)}">${escapeHtml(state.notice.actionLabel ?? "Open")}</button>` : ""}
+      <button type="button" class="ghost-button" data-action="dismiss-notice">Dismiss</button>
+    </aside>
+  `;
 }
 
 function renderDashboard() {
@@ -2023,8 +2045,18 @@ async function createToolBuildRequest(form) {
       }),
     });
     state.buildRequests = [data.request, ...state.buildRequests.filter((item) => item.id !== data.request.id)];
+    state.notice = {
+      title: "Tool request created",
+      body: `${data.request.capability} is now in the Tool Builds queue.`,
+      route: "tool-builds",
+      actionLabel: "Open queue",
+    };
     form.reset();
-    render();
+    if (formData.get("sourceSpanId")) {
+      navigate("tool-builds");
+    } else {
+      render();
+    }
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);
     render();

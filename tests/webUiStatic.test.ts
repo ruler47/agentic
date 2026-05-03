@@ -64,8 +64,11 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /Dependency: waits for upstream result/);
   assert.match(app, /Calls a failed span/);
   assert.match(app, /function renderSpanToolRequestForm/);
+  assert.match(app, /function renderNotice/);
   assert.match(app, /function inferCapabilityFromSpan/);
   assert.match(app, /sourceSpanId/);
+  assert.match(app, /Tool request created/);
+  assert.match(app, /navigate\("tool-builds"\)/);
   assert.match(app, /function renderMemoryDetail/);
   assert.match(app, /function renderToolDetail/);
   assert.match(app, /function runToolBuild/);
@@ -109,6 +112,7 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".artifact-preview",
     ".artifact-copy",
     ".legend-line.dashed",
+    ".notice-banner",
     ".inline-artifact-link",
     ".message-artifacts",
     ".memory-layout",
@@ -122,4 +126,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
 
   assert.match(styles, /@keyframes skeleton/);
   assert.match(styles, /@keyframes running-pulse/);
+  assert.match(styles, /\.span-request-box\[open\]/);
+  assert.match(styles, /\.run-status-bar h2\s*{[\s\S]*white-space: normal/);
+  assert.match(styles, /\.inspector-panel\s*{[\s\S]*max-height: calc\(100vh - 112px\)/);
+  assert.match(styles, /\.inspector-panel\s*{[\s\S]*overflow: auto/);
 });
