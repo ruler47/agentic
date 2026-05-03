@@ -144,7 +144,16 @@ document.addEventListener("input", (event) => {
   if (!(target instanceof HTMLInputElement)) return;
   if (target.dataset.action === "search-tools") {
     state.toolSearch = target.value;
+    const selectionStart = target.selectionStart;
+    const selectionEnd = target.selectionEnd;
     render();
+    const nextInput = document.querySelector('input[data-action="search-tools"]');
+    if (nextInput instanceof HTMLInputElement) {
+      nextInput.focus();
+      if (selectionStart !== null && selectionEnd !== null) {
+        nextInput.setSelectionRange(selectionStart, selectionEnd);
+      }
+    }
   }
 });
 
