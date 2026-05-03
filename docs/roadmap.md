@@ -165,7 +165,11 @@ Tasks:
   `scopeId` matches for user/group/thread/run memories, so broad `scope=user` queries no
   longer expose every user's accepted/private memory. Full role/policy rules are still
   pending.
-- Add UI for browsing and editing group/user memory separately.
+- Add UI for browsing and editing group/user memory separately. PARTIAL: the Memory page
+  now separates entries by status and exact scope (`global`, `group`, `user`, `thread`,
+  `run`), shows retrieval impact for accepted/proposed/rejected/archived entries, keeps
+  the review queue visible, and links source runs/threads. Full inline editing of memory
+  content and richer user-specific policy simulation are still pending.
 
 Remaining memory gaps:
 
@@ -178,6 +182,8 @@ Remaining memory gaps:
 - Memory proposals from completed runs are classified into group/user/thread/run scope by
   the learning model, but they are not yet re-reviewed by a separate memory-specialist
   agent before entering the review queue.
+- The Memory page supports status review and scoped inspection, but editing summaries,
+  tags, sensitivity, and scope ids from the UI is still future work.
 
 ## Phase 2: Tool Registry
 

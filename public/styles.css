@@ -697,6 +697,11 @@ textarea {
   -webkit-line-clamp: 3;
 }
 
+.retrieval-note {
+  color: var(--secondary);
+  font-size: 12px;
+}
+
 .progress-line {
   overflow: hidden;
   height: 5px;
@@ -851,6 +856,15 @@ textarea {
 .context-block p {
   white-space: pre-wrap;
   line-height: 1.5;
+}
+
+.context-block a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.context-block a:hover {
+  text-decoration: underline;
 }
 
 .health-grid,
@@ -1170,6 +1184,50 @@ textarea {
   margin-top: 18px;
 }
 
+.memory-tabs {
+  flex-wrap: wrap;
+}
+
+.memory-scope-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.scope-metric {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--border-muted);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.026);
+  padding: 12px 14px;
+}
+
+.scope-metric span {
+  color: var(--secondary);
+  text-transform: capitalize;
+}
+
+.scope-metric strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.memory-scope-section {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.018);
+  padding: 14px;
+}
+
+.memory-card-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
 .review-strip {
   display: grid;
   gap: 10px;
@@ -1200,11 +1258,31 @@ textarea {
   justify-content: flex-start;
 }
 
+.tabs-row button {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  color: #dbe5ef;
+  cursor: pointer;
+  font-weight: 760;
+  padding: 8px 11px;
+}
+
+.tabs-row button small {
+  color: var(--muted);
+  margin-left: 6px;
+}
+
 .tabs-row .active,
+.tabs-row button.active,
 .trace-tabs .active,
 .stepper .active {
   border-color: rgba(53, 230, 193, 0.34);
   background: rgba(53, 230, 193, 0.1);
+  color: var(--accent);
+}
+
+.tabs-row button.active small {
   color: var(--accent);
 }
 

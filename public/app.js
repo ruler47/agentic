@@ -63,6 +63,7 @@ const state = {
   dashboardThreadId: undefined,
   traceMode: "timeline",
   selectedMemoryId: undefined,
+  memoryFilter: "all",
   selectedToolName: undefined,
   hoveredGraphSpanId: undefined,
   traceFilters: {
@@ -125,6 +126,7 @@ document.addEventListener("click", (event) => {
     memoryStatus,
     toolName,
     buildId,
+    memoryFilter,
   } = action.dataset;
   if (actionName === "navigate" && route) {
     navigate(route);
@@ -162,6 +164,11 @@ document.addEventListener("click", (event) => {
   }
   if (actionName === "select-memory" && memoryId) {
     state.selectedMemoryId = memoryId;
+    render();
+  }
+  if (actionName === "set-memory-filter" && memoryFilter) {
+    state.memoryFilter = memoryFilter;
+    state.selectedMemoryId = undefined;
     render();
   }
   if (actionName === "update-memory-status" && memoryId && memoryStatus) {
@@ -562,11 +569,11 @@ function renderContextPreview(thread) {
   `;
 }
 
-function contextBlock(title, body) {
+function contextBlock(title, body, options = {}) {
   return `
     <article class="context-block">
       <span>${title}</span>
-      <p>${escapeHtml(body)}</p>
+      <p>${options.html ? body : escapeHtml(body)}</p>
     </article>
   `;
 }
@@ -1284,10 +1291,15 @@ function renderMiniRun(run) {
 }
 
 function renderMemoryPage() {
-  const selected = state.memories.find((memory) => memory.id === state.selectedMemoryId) ?? state.memories[0];
+  const filtered = filterMemoriesForView(state.memories);
+  const selected =
+    filtered.find((memory) => memory.id === state.selectedMemoryId) ??
+    state.memories.find((memory) => memory.id === state.selectedMemoryId) ??
+    filtered[0];
   const reviewQueue = state.memories.filter((memory) => normalizeMemoryStatus(memory.status) === "proposed");
   const accepted = state.memories.filter((memory) => normalizeMemoryStatus(memory.status) === "accepted");
   const rejected = state.memories.filter((memory) => normalizeMemoryStatus(memory.status) === "rejected");
+  const archived = state.memories.filter((memory) => normalizeMemoryStatus(memory.status) === "archived");
   return `
     <section class="memory-layout">
       <section class="page-stack">
@@ -1299,10 +1311,21 @@ function renderMemoryPage() {
             ${miniInsight("Accepted", String(accepted.length))}
             ${miniInsight("Review queue", String(reviewQueue.length))}
             ${miniInsight("Rejected", String(rejected.length))}
+            ${miniInsight("Archived", String(archived.length))}
           </div>
         </section>
-        <div class="tabs-row"><span class="active">All Memory</span><span>${reviewQueue.length} Proposed</span></div>
-        ${renderFilterBar("Search memory...", ["Global", "Group", "User", "Thread", "Run", "Confidence"])}
+        <div class="tabs-row memory-tabs">
+          ${renderMemoryFilterTab("all", "All Memory", state.memories.length)}
+          ${renderMemoryFilterTab("proposed", "Review Queue", reviewQueue.length)}
+          ${renderMemoryFilterTab("accepted", "Accepted", accepted.length)}
+          ${renderMemoryFilterTab("rejected", "Rejected", rejected.length)}
+          ${renderMemoryFilterTab("archived", "Archived", archived.length)}
+        </div>
+        <section class="memory-scope-summary">
+          ${["global", "group", "user", "thread", "run"]
+            .map((scope) => renderMemoryScopeMetric(scope, state.memories.filter((memory) => memoryScopeOf(memory) === scope).length))
+            .join("")}
+        </section>
         ${
           reviewQueue.length
             ? `<div class="review-strip">
@@ -1311,11 +1334,9 @@ function renderMemoryPage() {
               </div>`
             : ""
         }
-        <div class="card-grid">
-          ${state.memories.length
-            ? state.memories.map(renderMemoryCard).join("")
-            : renderEmptyState("No memory yet", "Approved memories will appear here.", "Memory")}
-        </div>
+        ${filtered.length
+          ? renderMemoryScopeSections(filtered)
+          : renderEmptyState("No memory in this view", "Change the filter or approve proposed memories.", "Memory")}
       </section>
       <aside class="surface-panel inspector-panel">
         ${selected ? renderMemoryDetail(selected) : renderEmptyState("No memory selected", "Stored lessons and facts will appear here.", "Memory")}
@@ -1324,8 +1345,55 @@ function renderMemoryPage() {
   `;
 }
 
+function renderMemoryFilterTab(id, label, count) {
+  return `
+    <button type="button" class="${state.memoryFilter === id ? "active" : ""}" data-action="set-memory-filter" data-memory-filter="${id}">
+      ${escapeHtml(label)}
+      <small>${count}</small>
+    </button>
+  `;
+}
+
+function renderMemoryScopeMetric(scope, count) {
+  return `
+    <div class="scope-metric">
+      <span>${escapeHtml(scope)}</span>
+      <strong>${count}</strong>
+    </div>
+  `;
+}
+
+function renderMemoryScopeSections(memories) {
+  return ["global", "group", "user", "thread", "run"]
+    .map((scope) => {
+      const scoped = memories.filter((memory) => memoryScopeOf(memory) === scope);
+      if (!scoped.length) return "";
+      return `
+        <section class="memory-scope-section">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">${escapeHtml(scope)} scope</span>
+              <h3>${memoryScopeTitle(scope)}</h3>
+            </div>
+            <span class="context-chip">${scoped.length} item${scoped.length === 1 ? "" : "s"}</span>
+          </div>
+          <div class="card-grid memory-card-grid">
+            ${scoped.map(renderMemoryCard).join("")}
+          </div>
+        </section>
+      `;
+    })
+    .join("");
+}
+
 function renderMemoryCard(memory) {
   const status = normalizeMemoryStatus(memory.status);
+  const retrievalImpact =
+    status === "accepted"
+      ? "available to matching runs"
+      : status === "proposed"
+        ? "waiting for review"
+        : "excluded from retrieval";
   return `
     <article class="knowledge-card ${state.selectedMemoryId === memory.id ? "selected" : ""}" data-action="select-memory" data-memory-id="${memory.id}" tabindex="0">
       <div class="card-topline">
@@ -1339,6 +1407,7 @@ function renderMemoryCard(memory) {
         <span>${formatConfidence(memory.confidence)}</span>
         <span>${escapeHtml(memory.sensitivity ?? "normal")}</span>
       </div>
+      <small class="retrieval-note">${escapeHtml(retrievalImpact)}</small>
       <div class="tag-row">${(memory.tags ?? []).map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>
       <button type="button" class="ghost-button" data-action="select-memory" data-memory-id="${memory.id}">Inspect</button>
     </article>
@@ -1355,13 +1424,16 @@ function renderMemoryDetail(memory) {
         <span>${escapeHtml(formatMemoryScope(memory))}</span>
         <span>${escapeHtml(status)}</span>
         <span>${formatConfidence(memory.confidence)}</span>
+        <span>${escapeHtml(memory.sensitivity ?? "normal")}</span>
         <span>${formatRelative(memory.createdAt)}</span>
       </div>
+      ${contextBlock("Retrieval impact", memoryRetrievalImpact(memory))}
       ${contextBlock("Summary", memory.summary || "No summary.")}
       ${contextBlock("Reusable procedure", memory.reusableProcedure || "No procedure recorded.")}
       ${contextBlock("Tags", (memory.tags ?? []).join(", ") || "No tags.")}
       ${contextBlock("Evidence", (memory.evidence ?? []).join("\n") || "No evidence attached.")}
-      ${memory.sourceRunId ? contextBlock("Source run", memory.sourceRunId) : ""}
+      ${memory.sourceRunId ? contextBlock("Source run", `<a href="#/run/${encodeURIComponent(memory.sourceRunId)}">${escapeHtml(memory.sourceRunId)}</a>`, { html: true }) : ""}
+      ${memory.sourceThreadId ? contextBlock("Source thread", `<a href="#/conversation/${encodeURIComponent(memory.sourceThreadId)}">${escapeHtml(memory.sourceThreadId)}</a>`, { html: true }) : ""}
       <div class="card-actions">
         ${status !== "accepted" ? `<button type="button" class="ghost-button" data-action="update-memory-status" data-memory-id="${memory.id}" data-memory-status="accepted">Accept</button>` : ""}
         ${status !== "rejected" ? `<button type="button" class="ghost-button danger-button" data-action="update-memory-status" data-memory-id="${memory.id}" data-memory-status="rejected">Reject</button>` : ""}
@@ -1389,9 +1461,36 @@ function normalizeMemoryStatus(status) {
   return ["proposed", "accepted", "rejected", "archived"].includes(status) ? status : "accepted";
 }
 
+function filterMemoriesForView(memories) {
+  if (state.memoryFilter === "all") return memories;
+  return memories.filter((memory) => normalizeMemoryStatus(memory.status) === state.memoryFilter);
+}
+
+function memoryScopeOf(memory) {
+  return ["global", "group", "user", "thread", "run"].includes(memory.scope) ? memory.scope : "global";
+}
+
+function memoryScopeTitle(scope) {
+  return {
+    global: "Reusable operational lessons",
+    group: "Shared group context",
+    user: "Personal context",
+    thread: "Thread facts",
+    run: "Run-local observations",
+  }[scope] ?? "Memory";
+}
+
 function formatMemoryScope(memory) {
-  const scope = ["global", "group", "user", "thread", "run"].includes(memory.scope) ? memory.scope : "global";
+  const scope = memoryScopeOf(memory);
   return memory.scopeId ? `${scope}:${memory.scopeId}` : scope;
+}
+
+function memoryRetrievalImpact(memory) {
+  const status = normalizeMemoryStatus(memory.status);
+  if (status !== "accepted") return "This memory is not injected into agent prompts until accepted.";
+  const scope = memoryScopeOf(memory);
+  if (scope === "global") return "Accepted global memory can be considered for every matching run.";
+  return `Accepted ${scope} memory is injected only when the active run includes exact scope id ${memory.scopeId ?? "(missing)"}.`;
 }
 
 function formatConfidence(confidence) {
