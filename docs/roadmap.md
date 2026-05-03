@@ -98,9 +98,9 @@ Implementation tasks:
   resolution without a supplied `threadId`.
 - Add audit events for run creation, tool use, artifact creation, memory writes, and
   future outbound actions. PARTIAL: run created/started/completed/failed, input/output
-  artifacts, tool trace events, run cancellation, and tool build requests/registrations
-  are implemented. Memory writes, approvals, outbound actions, Telegram delivery, and
-  policy decisions remain.
+  artifacts, tool trace events, run cancellation, learned-memory writes, and tool build
+  requests/registrations are implemented. Approvals, outbound actions, Telegram
+  delivery, and policy decisions remain.
 - Add operator cancellation for active runs. DONE: `queued`/`running` runs can be marked
   `cancelled` through API/UI, SSE streams close on that terminal status, and late model or
   tool results are ignored instead of overwriting the cancellation.
@@ -198,8 +198,8 @@ Remaining memory gaps:
   deterministic sensitive/private memory policy before prompt injection. It is not yet
   connected to editable role/policy records or persistent policy decisions.
 - Memory proposals from completed runs are classified into group/user/thread/run scope by
-  the learning model, but they are not yet re-reviewed by a separate memory-specialist
-  agent before entering the review queue.
+  the learning model and audited as `memory.created`, but they are not yet re-reviewed by
+  a separate memory-specialist agent before entering the review queue.
 - Memory policy simulation currently uses the selected run context and deterministic
   rules. It is not yet connected to editable role/policy records or audit decisions.
 

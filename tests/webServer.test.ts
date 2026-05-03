@@ -103,6 +103,35 @@ class ThreadAwareFakeAgent {
   }
 }
 
+class MemoryLearningFakeAgent {
+  async run(task: string): Promise<AgentRunResult> {
+    return {
+      finalAnswer: `answer for ${task}`,
+      complexity: { mode: "direct", reason: "fake", domains: ["memory"], riskLevel: "low" },
+      subtasks: [],
+      workerResults: [],
+      reviews: [],
+      learnedSkill: {
+        id: "memory-from-run",
+        title: "Remember cancellation smoke context",
+        tags: ["memory", "audit"],
+        summary: "The run produced an auditable learned memory.",
+        reusableProcedure: "Audit learned memories after the run reaches completed state.",
+        scope: "group",
+        scopeId: "instance-local",
+        status: "proposed",
+        confidence: 0.82,
+        sensitivity: "normal",
+        sourceRunId: "run-memory-audit",
+        sourceThreadId: "thread-memory-audit",
+        evidence: ["fake agent returned learnedSkill"],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    };
+  }
+}
+
 class DelayedFakeAgent {
   private releaseRun!: () => void;
   readonly ready = new Promise<void>((resolve) => {
@@ -247,6 +276,44 @@ test("web server cancels an active run and ignores late completion", async () =>
     assert.equal(audit.events.some((event: { action: string }) => event.action === "run.cancelled"), true);
   } finally {
     agent.release();
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server audits learned memory emitted by a completed run", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>test</title>");
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new MemoryLearningFakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    auditEventStore,
+    publicDir,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "learn something" }),
+    });
+    const created = (await createResponse.json()) as { run: { id: string } };
+    const completed = await waitForRun(baseUrl, created.run.id);
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+    const memoryEvent = audit.events.find(
+      (event: { action: string; targetId: string }) =>
+        event.action === "memory.created" && event.targetId === "memory-from-run",
+    );
+
+    assert.equal(completed.run.status, "completed");
+    assert.equal(completed.run.result.learnedSkill.id, "memory-from-run");
+    assert.equal(memoryEvent.status, "pending");
+    assert.equal(memoryEvent.actorType, "agent");
+    assert.equal(memoryEvent.metadata.memoryStatus, "proposed");
+  } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
   }

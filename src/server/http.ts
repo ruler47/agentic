@@ -20,14 +20,14 @@ import {
   evaluateMemoryRetrieval,
   MemoryRetrievalEvaluationCase,
 } from "../memory/retrievalEvaluation.js";
-import { RunCreateContext, RunStore } from "../runs/types.js";
+import { AgentRunRecord, RunCreateContext, RunStore } from "../runs/types.js";
 import { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
 import { ToolSchema, ToolStartupMode } from "../tools/tool.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { ToolBuildRequestStore } from "../tools/toolBuildRequestStore.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import { ToolMetadataStore, toolToMetadata } from "../tools/toolMetadataStore.js";
-import { AgentArtifact, AgentEvent, ArtifactUploadInput } from "../types.js";
+import { AgentArtifact, AgentEvent, AgentRunResult, ArtifactUploadInput } from "../types.js";
 
 export type WebAppOptions = {
   agent: UniversalAgent;
@@ -1322,6 +1322,7 @@ async function executeRun(
     const current = await options.runStore.get(id);
     if (!current || current.status === "cancelled") return;
     await options.runStore.complete(id, result);
+    await auditLearnedMemory(options, id, result, run);
     await recordAudit(options, {
       instanceId: run?.instanceId,
       actorId: "coordinator",
@@ -1378,6 +1379,37 @@ async function executeRun(
       });
     }
   }
+}
+
+async function auditLearnedMemory(
+  options: WebAppOptions,
+  runId: string,
+  result: AgentRunResult,
+  run: AgentRunRecord | undefined,
+): Promise<void> {
+  if (!result.learnedSkill) return;
+
+  await recordAudit(options, {
+    instanceId: run?.instanceId,
+    actorId: "coordinator",
+    actorType: "agent",
+    action: "memory.created",
+    targetType: "memory",
+    targetId: result.learnedSkill.id,
+    status: result.learnedSkill.status === "proposed" ? "pending" : "success",
+    runId,
+    threadId: run?.threadId ?? result.learnedSkill.sourceThreadId,
+    requesterUserId: run?.requesterUserId,
+    channel: run?.channel,
+    summary: `Memory created from run: ${result.learnedSkill.title}`,
+    metadata: {
+      scope: result.learnedSkill.scope,
+      scopeId: result.learnedSkill.scopeId,
+      confidence: result.learnedSkill.confidence,
+      memoryStatus: result.learnedSkill.status,
+      sensitivity: result.learnedSkill.sensitivity,
+    },
+  });
 }
 
 async function auditTraceEvent(

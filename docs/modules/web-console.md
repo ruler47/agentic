@@ -241,9 +241,10 @@ GET /api/audit-events?limit=100
 ```
 
 The Audit Log page consumes this endpoint. The current server records normalized audit
-events for run creation/start/completion/failure, uploaded and generated artifacts, tool
-trace events, and tool build request/registration lifecycle steps. Audit metadata is
-intended for operational evidence and must not contain raw secrets.
+events for run creation/start/completion/failure/cancellation, uploaded and generated
+artifacts, learned memory proposals, tool trace events, and tool build
+request/registration lifecycle steps. Audit metadata is intended for operational evidence
+and must not contain raw secrets.
 
 Implemented context and conversation endpoints:
 

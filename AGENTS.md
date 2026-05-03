@@ -340,6 +340,8 @@ For documentation-only changes:
   `parentSpanId` to draw direct arrows.
 - Active runs can be stopped through `POST /api/runs/:id/cancel`; `cancelled` is terminal
   and late LLM/tool events or results must not overwrite it.
+- If a completed run returns `result.learnedSkill`, the web server records a compact
+  `memory.created` audit event with scope/status/sensitivity metadata.
 - For DAG dependencies, also preserve `payload.dependencySpanIds` so the UI can draw
   additional upstream arrows.
 - Worker/reviewer LLM failures should emit explicit failed spans before throwing, so a
