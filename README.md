@@ -149,6 +149,8 @@ and the task context or workers return parsable time-series arrays, the runtime 
 this registered TypeScript tool, saves an SVG chart, and shows it in the Answer panel.
 The chart tool is data-agnostic: series names come from the input keys, and values can be
 read from common numeric fields or the first numeric field in each point.
+Text-like input and generated output artifacts also store a short content preview, so the
+UI can show source/text snippets and compact CSV/TSV table previews before download.
 
 Screenshot requests use the same artifact path. If `browser-screenshot` is missing, the
 runtime can create a Tool Build Request, run the provider-backed Tool Builder workflow,

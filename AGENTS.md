@@ -375,6 +375,10 @@ For documentation-only changes:
   even without hover so failure paths remain visible.
 - Artifact cards should render a useful preview whenever possible: image thumbnails,
   text/content previews, or a typed placeholder for binary files.
+- Text-like artifacts, including generated output files, should keep a bounded
+  `contentPreview` so Run Workspace, Conversations, Artifacts, and Trace Lab can render
+  useful previews without downloading the file. CSV/TSV previews render as compact tables
+  in the UI.
 - Future Trace Lab "Create tool request / bug" actions should carry selected span context
   into Tool Builder: run/span IDs, actor, tool name/version/capability, input/output
   summaries, artifacts, QA evidence, and the operator's comment.

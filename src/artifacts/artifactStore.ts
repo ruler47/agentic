@@ -104,7 +104,7 @@ export class LocalArtifactStore implements ArtifactStore {
       sizeBytes: content.byteLength,
       url: `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(id)}`,
       description: input.description,
-      contentPreview: kind === "input" ? previewContent(input.mimeType, content) : undefined,
+      contentPreview: previewContent(input.mimeType, content),
       createdAt: new Date().toISOString(),
     };
     const manifest = await this.readManifest(runId);
@@ -205,7 +205,7 @@ export class DurableArtifactStore implements ArtifactStore {
       sizeBytes: content.byteLength,
       url: `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(id)}`,
       description: input.description,
-      contentPreview: kind === "input" ? previewContent(input.mimeType, content) : undefined,
+      contentPreview: previewContent(input.mimeType, content),
       createdAt: new Date().toISOString(),
     };
 
@@ -324,6 +324,9 @@ function isTextLike(mimeType: string): boolean {
     mimeType === "application/json" ||
     mimeType === "application/xml" ||
     mimeType === "application/javascript" ||
+    mimeType === "image/svg+xml" ||
+    mimeType === "text/csv" ||
+    mimeType === "text/tab-separated-values" ||
     mimeType.endsWith("+json") ||
     mimeType.endsWith("+xml")
   );

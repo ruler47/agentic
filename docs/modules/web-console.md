@@ -397,7 +397,9 @@ The same download endpoint serves both durable objects and older local filesyste
 fallback artifacts.
 
 The Answer panel renders links for `result.artifacts`, including generated output files
-such as SVG charts.
+such as SVG charts. Text-like input and generated output artifacts store a short
+`contentPreview`; the UI renders text/source snippets and compact CSV/TSV table previews
+instead of showing only filenames and storage paths.
 
 ## Information Architecture
 

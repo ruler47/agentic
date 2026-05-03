@@ -60,6 +60,9 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /graph-arrow-head-failed/);
   assert.match(app, /failed-target/);
   assert.match(app, /function artifactPreview/);
+  assert.match(app, /function renderDatasetPreview/);
+  assert.match(app, /function artifactTypeLabel/);
+  assert.match(styles, /\.artifact-table-preview/);
   assert.match(app, /data-default-marker="\$\{markerId\}"/);
   assert.match(app, /Dependency: waits for upstream result/);
   assert.match(app, /Calls a failed span/);

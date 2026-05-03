@@ -597,6 +597,9 @@ Implemented:
 - Runs can return downloadable artifact links in `result.artifacts`.
 - The UI renders image artifact thumbnails in artifact cards and compact conversation
   chips, and turns artifact-link lines in Markdown answers into download links.
+- Text-like input and generated output artifacts now store `contentPreview` in metadata;
+  the UI renders short previews for text/source artifacts and compact table previews for
+  CSV/TSV datasets.
 - The runtime invokes the registered `chart.generate` TypeScript tool when a task asks
   for a graph/chart and task context or worker output contains a parsable time series.
 - Artifact creation emits trace events.
@@ -606,7 +609,9 @@ Implemented:
 
 Remaining:
 
-- Add artifact previews in the UI for PDFs, datasets, and source bundles.
+- Add richer artifact previews in the UI for PDFs and source bundles. PARTIAL: datasets
+  now show compact table previews and source/text artifacts show stored content previews;
+  PDFs still use typed preview tiles and need richer page/thumb extraction.
 - Make reviewers artifact-aware across all file types, not only chart requests.
 - Make planning dependency-aware so a review subtask cannot run before the artifact it is
   supposed to review exists. DONE for subtask-level DAG execution; remaining work is

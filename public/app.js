@@ -850,13 +850,54 @@ function renderArtifactCard(artifact) {
 function artifactPreview(artifact) {
   const preview = typeof artifact.contentPreview === "string" ? artifact.contentPreview.trim() : "";
   if (preview) {
+    if (isDatasetArtifact(artifact)) return renderDatasetPreview(preview);
     return `<pre>${escapeHtml(truncate(preview, 520))}</pre>`;
   }
   if (artifact.mimeType === "application/pdf") return `<span class="artifact-icon">PDF</span>`;
   if (artifact.mimeType?.includes("json")) return `<span class="artifact-icon">JSON</span>`;
+  if (isDatasetArtifact(artifact)) return `<span class="artifact-icon">DATA</span>`;
+  if (isSourceArtifact(artifact)) return `<span class="artifact-icon">CODE</span>`;
   if (artifact.mimeType?.startsWith("text/")) return `<span class="artifact-icon">TEXT</span>`;
   if (artifact.mimeType?.includes("zip") || artifact.mimeType?.includes("tar")) return `<span class="artifact-icon">ZIP</span>`;
   return `<span class="artifact-icon">FILE</span>`;
+}
+
+function renderDatasetPreview(preview) {
+  const lines = preview.split(/\r?\n/).filter(Boolean).slice(0, 5);
+  const rows = lines.map((line) => line.split(line.includes("\t") ? "\t" : ",").slice(0, 5));
+  if (!rows.length) return `<pre>${escapeHtml(truncate(preview, 520))}</pre>`;
+
+  return `
+    <table class="artifact-table-preview">
+      <tbody>
+        ${rows
+          .map(
+            (row, index) => `
+              <tr class="${index === 0 ? "header" : ""}">
+                ${row.map((cell) => `<td>${escapeHtml(truncate(cell.trim(), 36))}</td>`).join("")}
+              </tr>
+            `,
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function isDatasetArtifact(artifact) {
+  const mimeType = artifact.mimeType ?? "";
+  const filename = artifact.filename ?? "";
+  return mimeType === "text/csv" || mimeType === "text/tab-separated-values" || /\.(csv|tsv)$/i.test(filename);
+}
+
+function isSourceArtifact(artifact) {
+  const mimeType = artifact.mimeType ?? "";
+  const filename = artifact.filename ?? "";
+  return (
+    mimeType.includes("javascript") ||
+    mimeType.includes("typescript") ||
+    /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|php|css|html|sql|sh|md|yaml|yml)$/i.test(filename)
+  );
 }
 
 function renderTraceLab(run) {
@@ -1279,15 +1320,26 @@ function renderThreadArtifactSummary(thread) {
 
 function renderCompactArtifactLink(artifact) {
   const isImage = artifact.mimeType?.startsWith("image/");
+  const label = artifactTypeLabel(artifact);
   return `
     <a class="artifact-chip compact" href="${artifact.url}" target="_blank" rel="noreferrer">
-      ${isImage ? `<img src="${artifact.url}" alt="${escapeHtml(artifact.filename)}" loading="lazy" />` : `<span class="artifact-chip-icon">FILE</span>`}
+      ${isImage ? `<img src="${artifact.url}" alt="${escapeHtml(artifact.filename)}" loading="lazy" />` : `<span class="artifact-chip-icon">${escapeHtml(label)}</span>`}
       <span class="artifact-chip-copy">
         <strong>${escapeHtml(artifact.filename)}</strong>
         <span>${escapeHtml(artifact.mimeType)} · ${formatBytes(artifact.sizeBytes ?? 0)}</span>
       </span>
     </a>
   `;
+}
+
+function artifactTypeLabel(artifact) {
+  if (artifact.mimeType === "application/pdf") return "PDF";
+  if (artifact.mimeType?.includes("json")) return "JSON";
+  if (isDatasetArtifact(artifact)) return "DATA";
+  if (isSourceArtifact(artifact)) return "CODE";
+  if (artifact.mimeType?.includes("zip") || artifact.mimeType?.includes("tar")) return "ZIP";
+  if (artifact.mimeType?.startsWith("text/")) return "TEXT";
+  return "FILE";
 }
 
 function renderMiniRun(run) {

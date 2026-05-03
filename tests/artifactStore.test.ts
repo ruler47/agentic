@@ -34,6 +34,7 @@ test("LocalArtifactStore saves uploads and generated artifacts", async () => {
     assert.equal(input.contentPreview, "hello input");
     assert.equal(output.kind, "output");
     assert.equal(output.url, `/api/runs/run-1/artifacts/${output.id}`);
+    assert.equal(output.contentPreview, "<svg></svg>");
     assert.equal(listed.length, 2);
     assert.equal(await readFile(read!.path!, "utf8"), "<svg></svg>");
   } finally {
@@ -52,10 +53,10 @@ test("DurableArtifactStore stores metadata separately from object payloads", asy
     contentBase64: Buffer.from("# hello").toString("base64"),
   });
   const output = await store.saveGenerated("run-2", {
-    filename: "proof.png",
-    mimeType: "image/png",
-    content: Buffer.from([1, 2, 3, 4]),
-    description: "proof",
+    filename: "data.csv",
+    mimeType: "text/csv",
+    content: "city,score\nMalaga,91",
+    description: "dataset",
   });
 
   const listed = await store.list("run-2");
@@ -66,7 +67,8 @@ test("DurableArtifactStore stores metadata separately from object payloads", asy
   assert.equal(listed.length, 2);
   assert.equal(input.contentPreview, "# hello");
   assert.equal(readInput?.content?.toString("utf8"), "# hello");
-  assert.deepEqual([...readOutput!.content!], [1, 2, 3, 4]);
+  assert.equal(output.contentPreview, "city,score\nMalaga,91");
+  assert.equal(readOutput?.content?.toString("utf8"), "city,score\nMalaga,91");
   assert.equal(record?.storageProvider, "memory");
   assert.match(record?.objectKey ?? "", /^run-2\/output\/artifact_/);
   assert.equal(record?.checksumSha256.length, 64);
