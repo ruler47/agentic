@@ -1434,6 +1434,7 @@ function renderMemoryDetail(memory) {
         <span>${formatRelative(memory.createdAt)}</span>
       </div>
       ${contextBlock("Retrieval impact", memoryRetrievalImpact(memory))}
+      ${renderMemoryPolicySimulation(memory)}
       ${contextBlock("Summary", memory.summary || "No summary.")}
       ${contextBlock("Reusable procedure", memory.reusableProcedure || "No procedure recorded.")}
       ${contextBlock("Tags", (memory.tags ?? []).join(", ") || "No tags.")}
@@ -1565,6 +1566,157 @@ function memoryRetrievalImpact(memory) {
   const scope = memoryScopeOf(memory);
   if (scope === "global") return "Accepted global memory can be considered for every matching run.";
   return `Accepted ${scope} memory is injected only when the active run includes exact scope id ${memory.scopeId ?? "(missing)"}.`;
+}
+
+function renderMemoryPolicySimulation(memory) {
+  const decision = memoryPolicyDecision(memory);
+  const runLabel = decision.run
+    ? `${decision.run.task?.slice(0, 80) || decision.run.id} (${decision.run.id})`
+    : "No active run selected; using local default context.";
+  return `
+    <article class="policy-simulation ${decision.status}">
+      <div class="policy-simulation-head">
+        <span class="eyebrow">Policy simulation</span>
+        <strong>${escapeHtml(formatPolicyDecisionStatus(decision.status))}</strong>
+      </div>
+      <p>${escapeHtml(decision.summary)}</p>
+      <dl>
+        <div>
+          <dt>Run context</dt>
+          <dd>${escapeHtml(runLabel)}</dd>
+        </div>
+        <div>
+          <dt>Requester</dt>
+          <dd>${escapeHtml(decision.requesterUserId)}</dd>
+        </div>
+        <div>
+          <dt>Visible scopes</dt>
+          <dd>${escapeHtml(decision.visibleScopes.map(formatScopeFilter).join(", "))}</dd>
+        </div>
+      </dl>
+      <ul>${decision.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>
+    </article>
+  `;
+}
+
+function memoryPolicyDecision(memory) {
+  const context = currentMemoryPolicyContext();
+  const status = normalizeMemoryStatus(memory.status);
+  const scope = memoryScopeOf(memory);
+  const sensitivity = memory.sensitivity === "sensitive" || memory.sensitivity === "private" ? memory.sensitivity : "normal";
+  const matchedScope = context.visibleScopes.find((candidate) => memoryMatchesScope(memory, candidate));
+
+  if (status !== "accepted") {
+    return {
+      ...context,
+      status: "blocked",
+      summary: "This memory will not be injected into a run yet.",
+      reasons: [`Memory status is ${status}; only accepted memories can enter retrieval.`],
+    };
+  }
+
+  if (!matchedScope) {
+    return {
+      ...context,
+      status: "blocked",
+      summary: "The selected run cannot see this exact memory scope.",
+      reasons: [
+        scope === "global"
+          ? "The run context does not include global memory visibility."
+          : `The run context does not include exact ${scope} scope id ${memory.scopeId ?? "(missing)"}.`,
+      ],
+    };
+  }
+
+  const scopeReason =
+    scope === "global"
+      ? "Global scope is visible in this run context."
+      : `Exact ${scope} scope id ${memory.scopeId ?? "(missing)"} is visible in this run context.`;
+
+  if (sensitivity === "private") {
+    if (scope === "user" && memory.scopeId && memory.scopeId === context.requesterUserId) {
+      return {
+        ...context,
+        status: "allowed",
+        summary: "This private memory belongs to the requesting user and matches the run context.",
+        reasons: [scopeReason, "Private user memory matches the requester user id."],
+      };
+    }
+
+    return {
+      ...context,
+      status: "blocked",
+      summary: "Private memory is visible by scope but blocked by strict policy simulation.",
+      reasons: [
+        scopeReason,
+        "Private memory requires the same requester user scope or an explicit private-memory policy grant.",
+      ],
+    };
+  }
+
+  if (sensitivity === "sensitive") {
+    return {
+      ...context,
+      status: "needs_review",
+      summary: "This memory matches the run context, but sensitive data should require an explicit policy grant.",
+      reasons: [scopeReason, "Sensitive memory requires operator policy before broad retrieval."],
+    };
+  }
+
+  return {
+    ...context,
+    status: "allowed",
+    summary: "This accepted memory can be retrieved by the selected run context.",
+    reasons: [scopeReason, "Normal accepted memory passes strict simulation."],
+  };
+}
+
+function currentMemoryPolicyContext() {
+  const run = activeRun();
+  const threadId = run?.threadId ?? state.activeThreadId;
+  const requesterUserId = run?.requesterUserId ?? state.users?.[0]?.id ?? "user-admin";
+  const groupId = run?.instanceId ?? state.instance?.id ?? "group-local";
+  return {
+    run,
+    requesterUserId,
+    visibleScopes: dedupeScopeFilters([
+      { scope: "global" },
+      { scope: "group", scopeId: groupId },
+      { scope: "group", scopeId: "group-local" },
+      { scope: "user", scopeId: requesterUserId },
+      ...(threadId ? [{ scope: "thread", scopeId: threadId }] : []),
+      ...(run?.id ? [{ scope: "run", scopeId: run.id }] : []),
+    ]),
+  };
+}
+
+function dedupeScopeFilters(scopes) {
+  const seen = new Set();
+  return scopes.filter((scope) => {
+    const key = `${scope.scope}:${scope.scopeId ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function memoryMatchesScope(memory, candidate) {
+  const scope = memoryScopeOf(memory);
+  if (candidate.scope !== scope) return false;
+  if (scope === "global") return true;
+  return Boolean(candidate.scopeId) && candidate.scopeId === memory.scopeId;
+}
+
+function formatScopeFilter(scope) {
+  return scope.scopeId ? `${scope.scope}:${scope.scopeId}` : scope.scope;
+}
+
+function formatPolicyDecisionStatus(status) {
+  return {
+    allowed: "Allowed",
+    blocked: "Blocked",
+    needs_review: "Needs review",
+  }[status] ?? "Unknown";
 }
 
 function formatConfidence(confidence) {

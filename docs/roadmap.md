@@ -163,7 +163,9 @@ Tasks:
 - Add permissions so agents cannot read another user's private memory unless policy and
   task context allow it. PARTIAL: runtime visible-scope retrieval now requires exact
   `scopeId` matches for user/group/thread/run memories, so broad `scope=user` queries no
-  longer expose every user's accepted/private memory. Full role/policy rules are still
+  longer expose every user's accepted/private memory. A deterministic memory policy
+  evaluator now simulates accepted/status, exact-scope, private-requester, and sensitive
+  grant decisions for the operator UI. Full runtime role/policy enforcement is still
   pending.
 - Add UI for browsing and editing group/user memory separately. DONE for the current
   operator workflow: the Memory page
@@ -171,7 +173,8 @@ Tasks:
   `run`), shows retrieval impact for accepted/proposed/rejected/archived entries, keeps
   the review queue visible, links source runs/threads, and lets operators edit title,
   summary, reusable procedure, tags, scope, status, confidence, sensitivity, and evidence.
-  Richer user-specific policy simulation is still pending.
+  The inspector also simulates whether the currently selected run context would retrieve
+  the selected memory, including private user memory and sensitive-memory review flags.
 
 Remaining memory gaps:
 
@@ -180,13 +183,12 @@ Remaining memory gaps:
 - The agent only stores a memory when the LLM returns `shouldStore: true`.
 - Stored lessons are generic, so specific repeated requests may not match well.
 - Runtime memory retrieval enforces accepted-only and exact visible-scope filtering, but
-  does not yet evaluate full role/policy rules for sensitive/private memories.
+  does not yet enforce the full role/policy simulation for sensitive/private memories.
 - Memory proposals from completed runs are classified into group/user/thread/run scope by
   the learning model, but they are not yet re-reviewed by a separate memory-specialist
   agent before entering the review queue.
-- The Memory page supports status review, scoped inspection, and inline editing, but it
-  does not yet simulate whether a specific future run would be allowed to retrieve a
-  sensitive/private entry under role and policy rules.
+- Memory policy simulation currently uses the selected run context and deterministic
+  rules. It is not yet connected to editable role/policy records or audit decisions.
 
 ## Phase 2: Tool Registry
 

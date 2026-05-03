@@ -166,6 +166,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   and portability notes for `browser.operate`.
 - [src/llm/client.ts](src/llm/client.ts) - OpenAI-compatible LLM client.
 - [src/memory/skillMemory.ts](src/memory/skillMemory.ts) - shared file-based skill memory.
+- [src/memory/memoryPolicy.ts](src/memory/memoryPolicy.ts) - deterministic memory access
+  policy evaluator used to simulate accepted/status, exact-scope, private requester, and
+  sensitive grant decisions before full runtime role-policy enforcement exists.
 - [src/memory/textEmbedding.ts](src/memory/textEmbedding.ts) - deterministic local
   embedding provider and pgvector payload formatter for memory retrieval plumbing.
 - [src/tools/registry.ts](src/tools/registry.ts) - tool registry skeleton.
@@ -327,6 +330,9 @@ For documentation-only changes:
 - The Memory UI groups entries by status and exact scope, exposes retrieval impact, links
   source runs/threads, and lets operators edit the memory contract fields. Keep it aligned
   with the accepted-only runtime retrieval model when adding richer policy simulation.
+  Its current policy simulation mirrors the selected run context and flags blocked,
+  private, and sensitive retrieval decisions before those rules are backed by editable
+  policy records.
 - Postgres memory search writes `memory_embedding` vectors when pgvector is available.
   The current provider is deterministic text-feature hashing so the contract is portable;
   replace it through the embedding module rather than inlining provider calls.
