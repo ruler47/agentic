@@ -3,11 +3,17 @@ import {
   ToolBuildRequest,
   ToolBuildRequestStore,
 } from "./toolBuildRequestStore.js";
+import { ToolSchema } from "./tool.js";
 
 export type ToolBuildOutput = {
   modulePath: string;
   testPath: string;
   summary: string;
+  capabilities?: string[];
+  inputSchema?: ToolSchema;
+  outputSchema?: ToolSchema;
+  requiredSecretHandles?: string[];
+  docsMarkdown?: string;
 };
 
 export type ToolBuildAttemptContext = {

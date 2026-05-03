@@ -614,6 +614,8 @@ Tool Builds:
 
 - missing capability requests;
 - API-docs onboarding and channel-adapter requests;
+- stable capability ids such as `api.aml.score`, with docs/endpoints/examples in the
+  request description and secret names in `credentialHandles`;
 - builder/QA/registrar lifecycle;
 - generated source/test artifacts;
 - QA reports and retry history.

@@ -43,6 +43,7 @@ import { ToolBuildWorker } from "../tools/toolBuildWorker.js";
 import {
   BrowserScreenshotToolBuildProvider,
   CommandToolQaRunner,
+  GenericApiToolBuildProvider,
   GeneratedToolFileBuilder,
   MetadataToolRegistrar,
 } from "../tools/toolBuildProviders.js";
@@ -87,7 +88,7 @@ const reloadGeneratedTools = async () => {
 };
 const toolBuildWorkflow = new ToolBuildWorkflow(
   toolBuildRequestStore,
-  new GeneratedToolFileBuilder([new BrowserScreenshotToolBuildProvider()]),
+  new GeneratedToolFileBuilder([new BrowserScreenshotToolBuildProvider(), new GenericApiToolBuildProvider()]),
   new CommandToolQaRunner(),
   new MetadataToolRegistrar(toolMetadataStore),
 );

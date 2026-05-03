@@ -208,9 +208,13 @@ attaches the QA report, returns failed QA evidence to the builder for bounded re
 attempts, stops on final `qa_failed`, and only marks `registered` after the Registrar
 returns a generated tool name.
 
-The first concrete Builder implementation is provider-backed rather than open-ended code
+The first concrete Builder implementations are provider-backed rather than open-ended code
 generation. `BrowserScreenshotToolBuildProvider` can satisfy `browser-screenshot` requests
-by writing a Playwright TypeScript tool and generated tests. `CommandToolQaRunner` now uses
+by writing a Playwright TypeScript tool and generated tests. `GenericApiToolBuildProvider`
+can satisfy reusable API capability requests such as `api.aml.score` by writing a
+domain-neutral HTTPS JSON adapter with typed URL/method/query/body inputs, optional
+declared secret handles, generated tests against a local HTTP server, and provider-specific
+registry metadata. `CommandToolQaRunner` now uses
 temporary workspace isolation: it copies project source/tests/config into a disposable QA
 directory, links dependencies, runs the generated-tool test and build there with command
 timeouts, then runs promotion tests/build in the real project only after isolated QA

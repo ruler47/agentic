@@ -2210,18 +2210,19 @@ function renderToolBuildsPage() {
         <div class="section-heading">
           <div>
             <h2>Request a Capability</h2>
-            <p>Use this for APIs, browser skills, files, Telegram/Slack/WhatsApp adapters, and any missing tool.</p>
+            <p>Use this for APIs, browser skills, files, Telegram/Slack/WhatsApp adapters, and any missing tool. Capability is a stable machine name; put docs, endpoints, examples, and acceptance rules in the description.</p>
           </div>
           <span class="context-chip">Builder + QA + registry</span>
         </div>
         <form data-action="create-tool-build-request" class="settings-form">
           <label>
             <span>Capability</span>
-            <input name="capability" placeholder="api.aml.score, channel.telegram.bot, browser.flight-search" required />
+            <input name="capability" placeholder="api.aml.score" required />
+            <small>Good: <code>api.aml.score</code>. Avoid prose like “API AML Score”; the builder routes by this stable capability id.</small>
           </label>
           <label>
             <span>Docs, secret handles, and expected behavior</span>
-            <textarea name="reason" placeholder="Paste docs URL, existing secret handle names, examples, acceptance criteria, and how the agent should use this capability. Do not paste raw tokens." required></textarea>
+            <textarea name="reason" placeholder="Example: Create a reusable HTTP JSON API tool for AML score lookups. Docs: https://provider.example/docs. Expected use: given network + wallet address, call the provider endpoint and return score/risk/reasons/raw response. Secret handle: secret.aml.gl.api. Do not paste raw tokens." required></textarea>
           </label>
           <div class="secret-handle-strip">
             <span>Available secret handles</span>

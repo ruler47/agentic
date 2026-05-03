@@ -514,6 +514,11 @@ For documentation-only changes:
 - Tool Build requests can include `credentialHandles`. Keep these as structured metadata
   and builder instructions; do not require generated tools to scrape handles from the
   free-form reason text.
+- `GenericApiToolBuildProvider` can build reusable HTTPS JSON API adapters for capability
+  names like `api.aml.score`. The capability should be a stable machine id; docs URLs,
+  endpoint examples, expected behavior, QA criteria, and credential handles belong in the
+  request description/structured fields. The generated module must keep credentials behind
+  declared secret handles and return structured HTTP status/json/text evidence.
 - Secret handles are metadata references, not raw secrets. Use `POST /api/secret-handles`
   with provider `env` or `external`, a `secretRef`, and scopes; the API rejects raw
   `token`, `password`, `apiKey`, or `value` payloads. Tools and future model/channel

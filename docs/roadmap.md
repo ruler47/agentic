@@ -502,9 +502,11 @@ Remaining Phase 3 gaps:
   use cases, and a credential secret handle; the builder creates a scoped TypeScript tool
   contract, tests, QA report, and registry metadata. PARTIAL: the UI/API can create
   capability requests, attach structured `credentialHandles` to the Tool Build contract,
-  and register secret handles that point to env vars or external secret-manager refs
-  without exposing raw values; autonomous docs parsing and generated tool runtime
-  credential resolution remain.
+  register secret handles that point to env vars or external secret-manager refs without
+  exposing raw values, and provider-build generic HTTPS JSON API adapters such as
+  `api.aml.score`. Remaining work is autonomous docs parsing into endpoint presets,
+  richer provider-specific schemas, and policy-aware runtime credential resolution for all
+  generated tools.
 - Treat channel adapters as tools, not special one-off screens: Telegram, WhatsApp, Slack,
   email, and custom inbound/outbound adapters should be built through Tool Builds,
   registered in the tool registry, and then monitored on the Channels runtime page.

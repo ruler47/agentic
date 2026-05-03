@@ -15,6 +15,7 @@ import {
   ToolBuildRequest,
 } from "./toolBuildRequestStore.js";
 import { ToolMetadataStore } from "./toolMetadataStore.js";
+import { ToolSchema } from "./tool.js";
 
 type GeneratedFile = {
   path: string;
@@ -25,6 +26,11 @@ type ToolBuildProviderOutput = {
   modulePath: string;
   testPath: string;
   summary: string;
+  capabilities?: string[];
+  inputSchema?: ToolSchema;
+  outputSchema?: ToolSchema;
+  requiredSecretHandles?: string[];
+  docsMarkdown?: string;
   files: GeneratedFile[];
 };
 
@@ -56,6 +62,11 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
       modulePath: output.modulePath,
       testPath: output.testPath,
       summary: output.summary,
+      capabilities: output.capabilities,
+      inputSchema: output.inputSchema,
+      outputSchema: output.outputSchema,
+      requiredSecretHandles: output.requiredSecretHandles,
+      docsMarkdown: output.docsMarkdown,
     };
   }
 }
@@ -138,12 +149,14 @@ export class MetadataToolRegistrar implements ToolRegistrar {
       name: toolName,
       version: "1.0.0",
       description: request.contract.description,
-      capabilities: [request.capability, "browser-screenshot", "artifact-generation"],
+      capabilities: output.capabilities ?? [request.capability],
       startupMode: request.contract.startupMode,
-      inputSchema: request.contract.inputSchema,
-      outputSchema: request.contract.outputSchema,
+      inputSchema: output.inputSchema ?? request.contract.inputSchema,
+      outputSchema: output.outputSchema ?? request.contract.outputSchema,
       modulePath: output.modulePath,
       testPath: output.testPath,
+      requiredSecretHandles: output.requiredSecretHandles ?? request.credentialHandles,
+      docsMarkdown: output.docsMarkdown,
     });
 
     return toolName;
@@ -172,9 +185,47 @@ export class BrowserScreenshotToolBuildProvider implements ToolBuildProvider {
       modulePath,
       testPath,
       summary: `Generated Playwright-based browser screenshot tool ${toolName}.`,
+      capabilities: [request.capability, "browser-screenshot", "artifact-generation"],
       files: [
         { path: modulePath, content: browserScreenshotToolSource(toolName, capability) },
         { path: testPath, content: browserScreenshotToolTestSource(modulePath, toolName) },
+      ],
+    };
+  }
+}
+
+export class GenericApiToolBuildProvider implements ToolBuildProvider {
+  canBuild(request: ToolBuildRequest): boolean {
+    const text = [
+      request.capability,
+      request.contract.capability,
+      request.contract.toolName,
+      request.reason,
+      request.taskSummary,
+    ].join(" ");
+
+    return /\bapi\b|https?:\/\/|openapi|swagger|endpoint|webhook|json api/i.test(text);
+  }
+
+  build(request: ToolBuildRequest): ToolBuildProviderOutput {
+    const modulePath = request.contract.modulePath;
+    const testPath = request.contract.testPath;
+    const toolName = request.contract.toolName;
+    const capability = request.capability;
+    const allowedSecretHandles = request.credentialHandles ?? [];
+
+    return {
+      modulePath,
+      testPath,
+      summary: `Generated reusable HTTP JSON API adapter ${toolName}.`,
+      capabilities: [capability, "api-http-json", "http-api-call"],
+      inputSchema: genericApiInputSchema(),
+      outputSchema: genericApiOutputSchema(),
+      requiredSecretHandles: allowedSecretHandles,
+      docsMarkdown: genericApiDocsMarkdown(capability, allowedSecretHandles),
+      files: [
+        { path: modulePath, content: genericApiToolSource(toolName, capability, allowedSecretHandles) },
+        { path: testPath, content: genericApiToolTestSource(modulePath, toolName, capability, allowedSecretHandles) },
       ],
     };
   }
@@ -261,6 +312,321 @@ function formatCommandCheck(label: string, result: CommandResult): string {
   const status = result.ok ? "passed" : "failed";
   const output = result.output.trim().replace(/\s+/g, " ").slice(0, 500);
   return `${label} ${status} with exit ${result.exitCode ?? "none"}${output ? `: ${output}` : ""}`;
+}
+
+function genericApiDocsMarkdown(capability: string, allowedSecretHandles: string[]): string {
+  const secretText = allowedSecretHandles.length
+    ? `Declared secret handles: ${allowedSecretHandles.map((handle) => `\`${handle}\``).join(", ")}.`
+    : "No secret handles were declared at build time; runtime calls must be unauthenticated.";
+
+  return [
+    `# ${capability}`,
+    "",
+    "Generated reusable HTTP JSON API adapter.",
+    "",
+    secretText,
+    "",
+    "Use this tool for documented HTTPS APIs where the agent can provide endpoint, method, query/body, and an optional declared credential handle.",
+    "Do not paste raw credentials into tool inputs; store them as secret handles first.",
+  ].join("\n");
+}
+
+function genericApiInputSchema(): ToolSchema {
+  return {
+    type: "object",
+    properties: {
+      url: { type: "string", minLength: 1 },
+      method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+      query: { type: "object" },
+      headers: { type: "object" },
+      body: {},
+      secretHandle: { type: "string" },
+      authHeaderName: { type: "string" },
+      authScheme: { type: "string" },
+      timeoutMs: { type: "number" },
+    },
+    required: ["url"],
+  };
+}
+
+function genericApiOutputSchema(): ToolSchema {
+  return {
+    type: "object",
+    properties: {
+      ok: { type: "boolean" },
+      content: { type: "string" },
+      data: {
+        type: "object",
+        properties: {
+          status: { type: "number" },
+          url: { type: "string" },
+          method: { type: "string" },
+          json: {},
+          text: { type: "string" },
+        },
+      },
+    },
+    required: ["ok", "content"],
+  };
+}
+
+function genericApiToolSource(toolName: string, capability: string, allowedSecretHandles: string[]): string {
+  return `import { Tool, ToolExecutionContext, ToolInput, ToolResult } from "../tool.js";
+
+type JsonRecord = Record<string, unknown>;
+
+const allowedSecretHandles = ${JSON.stringify(allowedSecretHandles)};
+
+export const tool: Tool = {
+  name: ${JSON.stringify(toolName)},
+  version: "1.0.0",
+  description: "Calls a documented HTTPS JSON API endpoint with structured input and optional declared secret-handle authentication.",
+  capabilities: [${JSON.stringify(capability)}, "api-http-json", "http-api-call"],
+  startupMode: "on-demand",
+  requiredSecretHandles: allowedSecretHandles,
+  inputSchema: {
+    type: "object",
+    properties: {
+      url: { type: "string", minLength: 1 },
+      method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+      query: { type: "object" },
+      headers: { type: "object" },
+      body: {},
+      secretHandle: { type: "string" },
+      authHeaderName: { type: "string" },
+      authScheme: { type: "string" },
+      timeoutMs: { type: "number" }
+    },
+    required: ["url"]
+  },
+  outputSchema: {
+    type: "object",
+    properties: {
+      ok: { type: "boolean" },
+      content: { type: "string" },
+      data: {
+        type: "object",
+        properties: {
+          status: { type: "number" },
+          url: { type: "string" },
+          method: { type: "string" },
+          json: {},
+          text: { type: "string" }
+        }
+      }
+    },
+    required: ["ok", "content"]
+  },
+  async healthcheck() {
+    return { ok: true, detail: "Generic API adapter module is importable; runtime calls require a documented endpoint." };
+  },
+  async run(input: ToolInput, context?: ToolExecutionContext): Promise<ToolResult> {
+    const parsedUrl = buildUrl(input.url, input.query);
+    if (!parsedUrl.ok) return { ok: false, content: parsedUrl.error };
+
+    const method = normalizeMethod(input.method);
+    const headersResult = await buildHeaders(input, context);
+    if (!headersResult.ok) return { ok: false, content: headersResult.error };
+
+    const timeoutMs = typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs)
+      ? Math.max(100, Math.min(input.timeoutMs, 30000))
+      : 15000;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    if (context?.signal) {
+      context.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+
+    try {
+      const init: RequestInit = {
+        method,
+        headers: headersResult.headers,
+        signal: controller.signal
+      };
+      if (method !== "GET" && method !== "HEAD" && input.body !== undefined) {
+        init.body = typeof input.body === "string" ? input.body : JSON.stringify(input.body);
+        if (!headersResult.hasContentType) headersResult.headers.set("content-type", "application/json");
+      }
+
+      const response = await fetch(parsedUrl.url, init);
+      const text = await response.text();
+      const json = parseJson(text);
+      const data = {
+        status: response.status,
+        url: parsedUrl.url,
+        method,
+        json,
+        text: json === undefined ? text : undefined
+      };
+      const content = response.ok
+        ? "API call succeeded with HTTP " + response.status + "."
+        : "API call failed with HTTP " + response.status + ".";
+
+      return { ok: response.ok, content, data };
+    } catch (error) {
+      return {
+        ok: false,
+        content: error instanceof Error ? "API call failed: " + error.message : "API call failed."
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+};
+
+export default tool;
+
+function normalizeMethod(value: unknown): string {
+  const method = typeof value === "string" ? value.toUpperCase() : "GET";
+  return ["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method) ? method : "GET";
+}
+
+function buildUrl(value: unknown, query: unknown): { ok: true; url: string } | { ok: false; error: string } {
+  if (typeof value !== "string" || value.trim() === "") {
+    return { ok: false, error: "api-http-json requires a url input." };
+  }
+
+  try {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== "https:" && parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
+      return { ok: false, error: "Only https URLs are supported, except localhost for QA smoke tests." };
+    }
+    if (query && typeof query === "object" && !Array.isArray(query)) {
+      for (const [key, raw] of Object.entries(query as JsonRecord)) {
+        if (raw === undefined || raw === null) continue;
+        parsed.searchParams.set(key, String(raw));
+      }
+    }
+    return { ok: true, url: parsed.toString() };
+  } catch {
+    return { ok: false, error: "Invalid API URL." };
+  }
+}
+
+async function buildHeaders(
+  input: ToolInput,
+  context?: ToolExecutionContext,
+): Promise<{ ok: true; headers: Headers; hasContentType: boolean } | { ok: false; error: string }> {
+  const headers = new Headers();
+  headers.set("accept", "application/json");
+  let hasContentType = false;
+
+  if (input.headers && typeof input.headers === "object" && !Array.isArray(input.headers)) {
+    for (const [key, value] of Object.entries(input.headers as JsonRecord)) {
+      if (value === undefined || value === null) continue;
+      if (/authorization|api[-_]?key|token|secret/i.test(key)) {
+        return { ok: false, error: "Raw credential headers are not accepted; use a declared secretHandle." };
+      }
+      headers.set(key, String(value));
+      if (key.toLowerCase() === "content-type") hasContentType = true;
+    }
+  }
+
+  if (typeof input.secretHandle === "string" && input.secretHandle.trim()) {
+    const handle = input.secretHandle.trim();
+    if (!allowedSecretHandles.includes(handle)) {
+      return { ok: false, error: "Secret handle " + handle + " was not declared in the Tool Build request." };
+    }
+    if (!context?.resolveSecret) {
+      return { ok: false, error: "No secret resolver is configured for credentialed API calls." };
+    }
+    const secret = await context.resolveSecret(handle);
+    if (!secret) return { ok: false, error: "Secret handle " + handle + " could not be resolved." };
+    const authHeaderName = typeof input.authHeaderName === "string" && input.authHeaderName.trim()
+      ? input.authHeaderName.trim()
+      : "authorization";
+    const authScheme = typeof input.authScheme === "string" ? input.authScheme.trim() : "Bearer";
+    headers.set(authHeaderName, authScheme ? authScheme + " " + secret : secret);
+  }
+
+  return { ok: true, headers, hasContentType };
+}
+
+function parseJson(text: string): unknown {
+  if (!text.trim()) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+`;
+}
+
+function genericApiToolTestSource(
+  modulePath: string,
+  toolName: string,
+  capability: string,
+  allowedSecretHandles: string[],
+): string {
+  const importPath = relative("tests/generated", modulePath).replace(/\\/g, "/").replace(/\.ts$/, ".js");
+  const secretHandle = allowedSecretHandles[0] ?? "secret.test.api";
+
+  return `import test from "node:test";
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { AddressInfo } from "node:net";
+import { tool } from "${importPath.startsWith(".") ? importPath : `./${importPath}`}";
+
+test("${toolName} exposes a valid generated API tool contract", async () => {
+  const health = await tool.healthcheck?.();
+
+  assert.equal(tool.name, ${JSON.stringify(toolName)});
+  assert.ok(tool.capabilities.includes(${JSON.stringify(capability)}));
+  assert.ok(tool.capabilities.includes("api-http-json"));
+  assert.equal(health?.ok, true);
+});
+
+test("${toolName} rejects invalid and unsafe inputs", async () => {
+  const invalid = await tool.run({ url: "notaurl" });
+  const unsafeHeader = await tool.run({
+    url: "https://example.com/api",
+    headers: { Authorization: "raw-secret" }
+  });
+
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.content, /Invalid API URL/);
+  assert.equal(unsafeHeader.ok, false);
+  assert.match(unsafeHeader.content, /Raw credential headers/);
+});
+
+test("${toolName} calls a JSON API endpoint with query and declared secret handles", async () => {
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      path: url.pathname,
+      address: url.searchParams.get("address"),
+      auth: request.headers.authorization ?? null
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+
+  try {
+    const result = await tool.run(
+      {
+        url: "http://127.0.0.1:" + address.port + "/score",
+        query: { address: "0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2" },
+        secretHandle: ${JSON.stringify(secretHandle)}
+      },
+      {
+        toolName: tool.name,
+        now: new Date("2026-05-03T00:00:00.000Z"),
+        resolveSecret: async (handle) => handle === ${JSON.stringify(secretHandle)} ? "test-token" : undefined
+      }
+    );
+    const data = result.data as { json?: { path?: string; address?: string; auth?: string } } | undefined;
+
+    assert.equal(result.ok, true);
+    assert.equal(data?.json?.path, "/score");
+    assert.equal(data?.json?.address, "0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2");
+    assert.equal(data?.json?.auth, "Bearer test-token");
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+`;
 }
 
 function browserScreenshotToolSource(toolName: string, capability: string): string {
