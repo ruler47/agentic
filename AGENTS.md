@@ -342,7 +342,8 @@ For documentation-only changes:
   with the accepted-only runtime retrieval model when adding richer policy simulation.
   Its current policy simulation mirrors the selected run context and flags blocked,
   private, and sensitive retrieval decisions before those rules are backed by editable
-  policy records.
+  policy records. The Memory page also exposes `POST /api/memories/reembed` for rebuilding
+  Postgres vector embeddings after provider changes.
 - Postgres memory search writes `memory_embedding` vectors when pgvector is available.
   The default provider is deterministic text-feature hashing so the contract is portable.
   Configure `EMBEDDING_MODEL` for OpenAI-compatible semantic embeddings; the provider

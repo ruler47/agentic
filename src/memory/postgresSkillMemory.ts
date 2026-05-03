@@ -252,6 +252,23 @@ export class PostgresSkillMemory implements SkillMemoryStore {
     return mapRow(rows.rows[0]);
   }
 
+  async reembedAll(): Promise<{ updated: number }> {
+    const entries = await this.list({ includeArchived: true, limit: 10000 });
+
+    for (const entry of entries) {
+      await this.pool.query(
+        `
+          update skill_memories
+          set memory_embedding = $2::vector
+          where id = $1
+        `,
+        [entry.id, formatPgVector(await this.embeddingProvider.embed(memoryEmbeddingText(entry)))],
+      );
+    }
+
+    return { updated: entries.length };
+  }
+
   private async semanticSearch(query: string, limit: number, options: MemoryListOptions): Promise<SkillMemoryEntry[]> {
     const filters = ["status = 'accepted'", "memory_embedding is not null"];
     const values: unknown[] = [formatPgVector(await this.embeddingProvider.embed(query))];

@@ -80,6 +80,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /Policy simulation/);
   assert.match(app, /function memoryPolicyDecision/);
   assert.match(app, /function currentMemoryPolicyContext/);
+  assert.match(app, /data-action="rebuild-memory-embeddings"/);
+  assert.match(app, /function rebuildMemoryEmbeddings/);
   assert.match(app, /function renderToolDetail/);
   assert.match(app, /function runToolHealthchecks/);
   assert.match(app, /data-action="run-tool-health"/);

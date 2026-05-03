@@ -293,6 +293,36 @@ async function routeRequest(
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/memories/reembed") {
+    if (!options.skillMemory?.reembedAll) {
+      sendJson(response, 503, { error: "Memory embedding rebuild is not configured" });
+      return;
+    }
+
+    try {
+      const result = await options.skillMemory.reembedAll();
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "memory.embeddings_rebuilt",
+        targetType: "memory",
+        targetId: "all",
+        status: "success",
+        summary: `Memory embeddings rebuilt for ${result.updated} item(s)`,
+        metadata: {
+          updated: result.updated,
+        },
+      });
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendJson(response, 500, {
+        error: error instanceof Error ? error.message : "Memory embedding rebuild failed",
+      });
+    }
+    return;
+  }
+
   const memoryMatch = url.pathname.match(/^\/api\/memories\/([^/]+)$/);
   if (request.method === "PATCH" && memoryMatch) {
     if (!options.skillMemory?.update) {

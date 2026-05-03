@@ -45,6 +45,7 @@ export type SkillMemoryStore = {
   search(query: string, limit?: number, options?: MemoryListOptions): Promise<SkillMemoryEntry[]>;
   add(entry: Omit<SkillMemoryEntry, "id" | "createdAt">): Promise<SkillMemoryEntry>;
   update?(id: string, update: MemoryUpdateInput): Promise<SkillMemoryEntry>;
+  reembedAll?(): Promise<{ updated: number }>;
 };
 
 export class SkillMemory implements SkillMemoryStore {

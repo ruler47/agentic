@@ -698,6 +698,9 @@ test("web server supports scoped memory review lifecycle", async () => {
   const memoryDir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
   const skillMemory = new SkillMemory(join(memoryDir, "skills.json"));
+  (skillMemory as SkillMemory & { reembedAll(): Promise<{ updated: number }> }).reembedAll = async () => ({
+    updated: 3,
+  });
   const auditEventStore = new InMemoryAuditEventStore();
 
   const server = createWebApp({
@@ -750,6 +753,8 @@ test("web server supports scoped memory review lifecycle", async () => {
       }),
     });
     const edited = await editResponse.json();
+    const reembedResponse = await fetch(`${baseUrl}/api/memories/reembed`, { method: "POST" });
+    const reembedded = await reembedResponse.json();
     const groupAccepted = await (await fetch(`${baseUrl}/api/memories?scope=group&scopeId=group-local&status=accepted`)).json();
     const userProposed = await (await fetch(`${baseUrl}/api/memories?scope=user&scopeId=user-admin&status=proposed`)).json();
     const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
@@ -768,10 +773,16 @@ test("web server supports scoped memory review lifecycle", async () => {
     assert.equal(edited.memory.status, "proposed");
     assert.equal(edited.memory.sensitivity, "private");
     assert.deepEqual(edited.memory.tags, ["telegram", "continuity"]);
+    assert.equal(reembedResponse.status, 200);
+    assert.equal(reembedded.updated, 3);
     assert.equal(groupAccepted.memories.length, 0);
     assert.equal(userProposed.memories[0].id, created.memory.id);
     assert.equal(audit.events.some((event: { action: string }) => event.action === "memory.created"), true);
     assert.equal(audit.events.some((event: { action: string }) => event.action === "memory.updated"), true);
+    assert.equal(
+      audit.events.some((event: { action: string }) => event.action === "memory.embeddings_rebuilt"),
+      true,
+    );
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

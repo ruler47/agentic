@@ -177,6 +177,9 @@ document.addEventListener("click", (event) => {
   if (actionName === "update-memory-status" && memoryId && memoryStatus) {
     void updateMemoryStatus(memoryId, memoryStatus);
   }
+  if (actionName === "rebuild-memory-embeddings") {
+    void rebuildMemoryEmbeddings();
+  }
   if (actionName === "select-tool" && toolName) {
     state.selectedToolName = toolName;
     render();
@@ -1310,9 +1313,14 @@ function renderMemoryPage() {
     <section class="memory-layout">
       <section class="page-stack">
         <section class="surface-hero">
-          <span class="eyebrow">Knowledge layer</span>
-          <h2>Scoped memory</h2>
-          <p>Accepted facts are available to agents. Proposed facts wait for review, and rejected facts stay visible for audit without entering retrieval.</p>
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Knowledge layer</span>
+              <h2>Scoped memory</h2>
+              <p>Accepted facts are available to agents. Proposed facts wait for review, and rejected facts stay visible for audit without entering retrieval.</p>
+            </div>
+            <button type="button" class="ghost-button" data-action="rebuild-memory-embeddings">Rebuild embeddings</button>
+          </div>
           <div class="memory-metrics">
             ${miniInsight("Accepted", String(accepted.length))}
             ${miniInsight("Review queue", String(reviewQueue.length))}
@@ -2395,6 +2403,21 @@ async function saveMemory(form) {
     render();
   } finally {
     setComposerBusy(form, false);
+  }
+}
+
+async function rebuildMemoryEmbeddings() {
+  try {
+    const data = await fetchJson("/api/memories/reembed", { method: "POST" });
+    await refreshData();
+    state.notice = {
+      title: "Memory embeddings rebuilt",
+      body: `${data.updated ?? 0} memory item${data.updated === 1 ? "" : "s"} re-embedded for the active provider.`,
+    };
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
   }
 }
 

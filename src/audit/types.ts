@@ -15,7 +15,8 @@ export type AuditAction =
   | "conversation_thread.deleted"
   | "group_profile.updated"
   | "memory.created"
-  | "memory.updated";
+  | "memory.updated"
+  | "memory.embeddings_rebuilt";
 
 export type AuditEventStatus = "success" | "failure" | "pending";
 

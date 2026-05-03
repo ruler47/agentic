@@ -155,6 +155,9 @@ Tasks:
 - Search by semantic similarity plus tags. PARTIAL: Postgres search now merges lexical
   and vector candidates before visibility/status filtering; real semantic quality depends
   on configuring `EMBEDDING_MODEL` and measuring retrieval against representative runs.
+- Add a re-embedding/backfill job for provider changes. DONE for the operator path:
+  `POST /api/memories/reembed` rebuilds stored vectors for the active provider and the
+  Memory page exposes a "Rebuild embeddings" action with audit coverage.
 - Show memory hits in UI with confidence and why they matched. PARTIAL: search results now
   carry match reason/matched tokens for prompt context; richer UI drilldown remains.
 - Add tests proving repeated similar tasks retrieve prior memories. DONE: the universal
@@ -179,8 +182,8 @@ Tasks:
 
 Remaining memory gaps:
 
-- Real semantic retrieval still needs a configured embedding model, quality evaluation,
-  and a re-embedding/backfill job for existing memories when provider settings change.
+- Real semantic retrieval still needs a configured embedding model and quality evaluation
+  against representative runs.
 - The agent only stores a memory when the LLM returns `shouldStore: true`.
 - Stored lessons are generic, so specific repeated requests may not match well.
 - Runtime memory retrieval enforces accepted-only and exact visible-scope filtering, but
