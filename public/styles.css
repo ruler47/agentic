@@ -1652,6 +1652,42 @@ textarea {
   font-weight: 780;
 }
 
+.memory-edit-form {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--border-muted);
+  margin-top: 4px;
+  padding-top: 16px;
+}
+
+.memory-edit-form label {
+  display: grid;
+  gap: 7px;
+}
+
+.memory-edit-form label > span {
+  color: var(--secondary);
+  font-size: 12px;
+  font-weight: 780;
+}
+
+.form-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.form-grid.two {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+.compact-heading {
+  gap: 12px;
+}
+
+.compact-heading h3 {
+  margin: 0;
+}
+
 .tier-editor-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));

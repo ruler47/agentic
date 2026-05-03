@@ -100,6 +100,9 @@ document.addEventListener("submit", (event) => {
   if (form.dataset.action === "save-group-profile") {
     void saveGroupProfile(form);
   }
+  if (form.dataset.action === "save-memory") {
+    void saveMemory(form);
+  }
   if (form.dataset.action === "create-tool-build-request") {
     void createToolBuildRequest(form);
   }
@@ -1439,8 +1442,76 @@ function renderMemoryDetail(memory) {
         ${status !== "rejected" ? `<button type="button" class="ghost-button danger-button" data-action="update-memory-status" data-memory-id="${memory.id}" data-memory-status="rejected">Reject</button>` : ""}
         ${status !== "archived" ? `<button type="button" class="ghost-button" data-action="update-memory-status" data-memory-id="${memory.id}" data-memory-status="archived">Archive</button>` : ""}
       </div>
+      ${renderMemoryEditForm(memory)}
     </div>
   `;
+}
+
+function renderMemoryEditForm(memory) {
+  return `
+    <form data-action="save-memory" class="memory-edit-form">
+      <input type="hidden" name="memoryId" value="${escapeHtml(memory.id)}" />
+      <div class="section-heading compact-heading">
+        <div>
+          <span class="eyebrow">Edit memory</span>
+          <h3>Retrieval contract</h3>
+        </div>
+        <button type="submit" class="ghost-button">Save memory</button>
+      </div>
+      <label>
+        <span>Title</span>
+        <input name="title" value="${escapeHtml(memory.title)}" />
+      </label>
+      <div class="form-grid two">
+        <label>
+          <span>Scope</span>
+          <select name="scope">
+            ${["global", "group", "user", "thread", "run"].map((scope) => renderSelectOption(scope, scope, memoryScopeOf(memory))).join("")}
+          </select>
+        </label>
+        <label>
+          <span>Scope id</span>
+          <input name="scopeId" placeholder="empty for global" value="${escapeHtml(memory.scopeId ?? "")}" />
+        </label>
+        <label>
+          <span>Status</span>
+          <select name="status">
+            ${["proposed", "accepted", "rejected", "archived"].map((status) => renderSelectOption(status, status, normalizeMemoryStatus(memory.status))).join("")}
+          </select>
+        </label>
+        <label>
+          <span>Sensitivity</span>
+          <select name="sensitivity">
+            ${["normal", "sensitive", "private"].map((sensitivity) => renderSelectOption(sensitivity, sensitivity, memory.sensitivity ?? "normal")).join("")}
+          </select>
+        </label>
+      </div>
+      <label>
+        <span>Confidence</span>
+        <input name="confidence" type="number" min="0" max="1" step="0.01" value="${Number.isFinite(Number(memory.confidence)) ? Number(memory.confidence) : 0.75}" />
+      </label>
+      <label>
+        <span>Summary</span>
+        <textarea name="summary" rows="4">${escapeHtml(memory.summary ?? "")}</textarea>
+      </label>
+      <label>
+        <span>Reusable procedure</span>
+        <textarea name="reusableProcedure" rows="4">${escapeHtml(memory.reusableProcedure ?? "")}</textarea>
+      </label>
+      <label>
+        <span>Tags</span>
+        <textarea name="tags" rows="3" placeholder="one tag per line or comma-separated">${escapeHtml((memory.tags ?? []).join("\n"))}</textarea>
+      </label>
+      <label>
+        <span>Evidence</span>
+        <textarea name="evidence" rows="3" placeholder="one evidence item per line">${escapeHtml((memory.evidence ?? []).join("\n"))}</textarea>
+      </label>
+    </form>
+  `;
+}
+
+function renderSelectOption(value, label, selected) {
+  return `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
 }
 
 function renderMemoryReviewItem(memory) {
@@ -2120,6 +2191,52 @@ async function updateMemoryStatus(memoryId, status) {
     state.error = error instanceof Error ? error.message : String(error);
     render();
   }
+}
+
+async function saveMemory(form) {
+  const formData = new FormData(form);
+  const memoryId = String(formData.get("memoryId") ?? "");
+  const payload = {
+    title: String(formData.get("title") ?? ""),
+    summary: String(formData.get("summary") ?? ""),
+    reusableProcedure: String(formData.get("reusableProcedure") ?? ""),
+    tags: parseListInput(formData.get("tags")),
+    scope: String(formData.get("scope") ?? "global"),
+    scopeId: normalizeOptionalInput(formData.get("scopeId")),
+    status: String(formData.get("status") ?? "proposed"),
+    confidence: Number(formData.get("confidence") ?? 0.75),
+    sensitivity: String(formData.get("sensitivity") ?? "normal"),
+    evidence: parseListInput(formData.get("evidence")),
+  };
+  setComposerBusy(form, true);
+  try {
+    const data = await fetchJson(`/api/memories/${encodeURIComponent(memoryId)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    state.memories = [data.memory, ...state.memories.filter((memory) => memory.id !== data.memory.id)];
+    state.selectedMemoryId = data.memory.id;
+    state.notice = { type: "success", message: "Memory updated." };
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  } finally {
+    setComposerBusy(form, false);
+  }
+}
+
+function parseListInput(value) {
+  return String(value ?? "")
+    .split(/\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeOptionalInput(value) {
+  const text = String(value ?? "").trim();
+  return text || undefined;
 }
 
 async function createToolBuildRequest(form) {

@@ -324,9 +324,9 @@ For documentation-only changes:
   thread, and run so unrelated scoped memory does not enter the prompt.
 - Non-global memory visibility requires exact `scopeId` matches. Do not reintroduce
   wildcard user/group/thread/run memory access without a policy-layer check.
-- The Memory UI groups entries by status and exact scope, exposes retrieval impact, and
-  links source runs/threads; keep it aligned with the accepted-only runtime retrieval
-  model when adding edit controls.
+- The Memory UI groups entries by status and exact scope, exposes retrieval impact, links
+  source runs/threads, and lets operators edit the memory contract fields. Keep it aligned
+  with the accepted-only runtime retrieval model when adding richer policy simulation.
 - Postgres memory search writes `memory_embedding` vectors when pgvector is available.
   The current provider is deterministic text-feature hashing so the contract is portable;
   replace it through the embedding module rather than inlining provider calls.

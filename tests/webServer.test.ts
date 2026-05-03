@@ -733,7 +733,25 @@ test("web server supports scoped memory review lifecycle", async () => {
       body: JSON.stringify({ status: "accepted", confidence: 0.95 }),
     });
     const accepted = await acceptResponse.json();
+    const editResponse = await fetch(`${baseUrl}/api/memories/${encodeURIComponent(created.memory.id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Telegram continuity policy",
+        tags: ["telegram", "continuity"],
+        summary: "Whitelisted Telegram messages must resolve to the correct user and active thread.",
+        reusableProcedure: "Resolve channel identity, then use thread resolution before run creation.",
+        scope: "user",
+        scopeId: "user-admin",
+        status: "proposed",
+        confidence: 0.81,
+        sensitivity: "private",
+        evidence: ["operator edited the scoped memory contract"],
+      }),
+    });
+    const edited = await editResponse.json();
     const groupAccepted = await (await fetch(`${baseUrl}/api/memories?scope=group&scopeId=group-local&status=accepted`)).json();
+    const userProposed = await (await fetch(`${baseUrl}/api/memories?scope=user&scopeId=user-admin&status=proposed`)).json();
     const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
 
     assert.equal(createResponse.status, 201);
@@ -743,7 +761,15 @@ test("web server supports scoped memory review lifecycle", async () => {
     assert.equal(acceptResponse.status, 200);
     assert.equal(accepted.memory.status, "accepted");
     assert.equal(accepted.memory.confidence, 0.95);
-    assert.equal(groupAccepted.memories[0].id, created.memory.id);
+    assert.equal(editResponse.status, 200);
+    assert.equal(edited.memory.title, "Telegram continuity policy");
+    assert.equal(edited.memory.scope, "user");
+    assert.equal(edited.memory.scopeId, "user-admin");
+    assert.equal(edited.memory.status, "proposed");
+    assert.equal(edited.memory.sensitivity, "private");
+    assert.deepEqual(edited.memory.tags, ["telegram", "continuity"]);
+    assert.equal(groupAccepted.memories.length, 0);
+    assert.equal(userProposed.memories[0].id, created.memory.id);
     assert.equal(audit.events.some((event: { action: string }) => event.action === "memory.created"), true);
     assert.equal(audit.events.some((event: { action: string }) => event.action === "memory.updated"), true);
   } finally {
