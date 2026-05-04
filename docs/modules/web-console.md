@@ -208,7 +208,15 @@ it resolves the `secret.telegram.bot.token` handle, polls Telegram updates, forw
 messages as normalized inbound events, polls neutral outbox events, sends Telegram
 messages, and acknowledges delivery. To accept a real Telegram user, create a channel
 identity with `provider=channel.telegram.bot`, `providerUserId=<telegram user id>`, and
-`allowStatus=allowed`.
+`allowStatus=allowed`. Operators can do this from the Users page by adding an identity to
+the target user, or from the Channels page by clicking the `Allow as Admin` shortcut on
+an ignored inbound event.
+
+The browser UI keeps list-style pages fresh with a soft background refresh. It polls the
+same JSON endpoints, fingerprints the returned state, and only re-renders when data
+actually changes. If the operator is typing in an input, select, or textarea, the render
+is deferred until focus leaves the field. Live run details still prefer the per-run SSE
+stream, and always-on lifecycle logs still prefer the service-log SSE stream.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as
@@ -281,7 +289,9 @@ and schemas. Generated tool detail panels expose delete, active-version selectio
 with `replacesToolName` and `replacesVersion`, so fixes and behavior changes follow the
 same Builder → QA → Registrar → promotion path as missing capabilities. The same inspector
 shows per-version changelog cards so operators can see what changed before activating or
-rolling back a generated version.
+rolling back a generated version. Tool cards also show the matching always-on service
+runtime when one exists, including running/stopped state and heartbeat age, so the
+operator does not need to open Channels just to see whether a bot/listener is active.
 
 `GET /api/tool-build-requests/:id` and `PATCH /api/tool-build-requests/:id` provide the
 builder lifecycle handoff. Builder, QA, and Registrar agents can mark a request as

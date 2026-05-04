@@ -1029,8 +1029,12 @@ Implementation tasks:
   including whitelist rules and bot-specific behavior.
 - Add `channel_identities` mapping Telegram user IDs to users. PARTIAL: the durable table
   and server-side resolver exist; the Telegram service passes Telegram `from.id` as
-  `sourceUserId`. Admin whitelist UI still needs a smoother "approve denied user" flow.
-- Add whitelist management in the admin UI.
+  `sourceUserId`. Users can now add identities manually, and Channels can approve an
+  ignored inbound event as `user-admin`; remaining work is richer role-aware approval
+  for non-admin users and policy simulation.
+- Add whitelist management in the admin UI. PARTIAL: Users has create/update/delete for
+  members and identities, and Channels has the `Allow as Admin` shortcut for denied
+  runtime events.
 - Reject unknown Telegram users by default. DONE for the generic path: inbound requests
   from unmapped provider identities return `403`, and the Telegram service passes the
   Telegram user id through `sourceUserId`.
@@ -1070,7 +1074,14 @@ UI tasks:
   telemetry. PARTIAL: Channels now lists installed `startupMode=always-on` tools with
   start/stop/restart controls, heartbeat/status cards, and recent lifecycle logs that
   update through SSE while the page is open. It also shows recent provider-neutral
-  runtime events from always-on tools.
+  runtime events from always-on tools, including a shortcut to allow an ignored inbound
+  identity as the local admin.
+- Soft-refresh list pages without forcing the operator to reload. PARTIAL: the UI now
+  polls the JSON endpoints in the background, fingerprints the data, skips unchanged
+  renders, and defers changed renders while an input/select/textarea has focus. Run
+  details and service logs still use SSE where available.
+- Show always-on runtime state on tool cards. DONE: Tools cards now surface matching
+  service status, desired state, and heartbeat age.
 - Run Workspace source panel showing the originating channel message.
 - Admin-visible conversation log for channel-originated runs.
 - Conversation thread inspector with message-to-thread decision confidence and override

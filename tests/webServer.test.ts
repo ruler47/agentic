@@ -204,6 +204,38 @@ test("web server creates a run and exposes completed trace", async () => {
   }
 });
 
+test("web server returns parseable run JSON with escaped control characters", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>test</title>");
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "control chars: line one\nline two\u000bafter tab\tend" }),
+    });
+    const created = (await createResponse.json()) as { run: { id: string } };
+    const completed = await waitForRun(baseUrl, created.run.id);
+    assert.equal(completed.run.status, "completed");
+
+    const rawResponse = await fetch(`${baseUrl}/api/runs/${created.run.id}`);
+    const rawText = await rawResponse.text();
+    const parsed = JSON.parse(rawText);
+    assert.equal(parsed.run.id, created.run.id);
+    assert.match(parsed.run.result.finalAnswer, /line one/);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server streams run snapshots as server-sent events", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>test</title>");

@@ -344,6 +344,22 @@ pre {
   padding: 18px;
 }
 
+.helper-panel {
+  background:
+    linear-gradient(135deg, rgba(96, 165, 250, 0.07), transparent 50%),
+    var(--surface-glass);
+}
+
+.helper-panel p {
+  color: var(--secondary);
+  margin-top: 8px;
+  line-height: 1.55;
+}
+
+.helper-panel strong {
+  color: var(--text);
+}
+
 .surface-hero {
   padding: 22px;
   background:
@@ -2350,6 +2366,35 @@ textarea {
   background: rgba(53, 230, 193, 0.06);
 }
 
+.tool-runtime-strip {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px;
+}
+
+.tool-runtime-strip.running {
+  background: rgba(53, 230, 193, 0.07);
+  border-color: rgba(53, 230, 193, 0.28);
+}
+
+.tool-runtime-strip.failed {
+  background: rgba(251, 113, 133, 0.07);
+  border-color: rgba(251, 113, 133, 0.28);
+}
+
+.tool-runtime-strip strong {
+  font-size: 12px;
+}
+
+.tool-runtime-strip small {
+  color: var(--secondary);
+}
+
 .trace-run-item span:first-child {
   display: grid;
   min-width: 0;
@@ -2780,6 +2825,10 @@ textarea {
   flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
+}
+
+.accent-text {
+  color: var(--accent);
 }
 
 .skeleton-block {

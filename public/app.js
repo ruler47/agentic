@@ -89,6 +89,9 @@ const state = {
   notice: undefined,
   stream: undefined,
   serviceLogStream: undefined,
+  dataFingerprint: undefined,
+  refreshInFlight: false,
+  pendingSoftRender: false,
 };
 
 window.addEventListener("hashchange", () => {
@@ -186,6 +189,7 @@ document.addEventListener("click", (event) => {
     providerId,
     serviceToolName,
     serviceAction,
+    eventId,
   } = action.dataset;
   if (actionName === "navigate" && route) {
     navigate(route);
@@ -281,6 +285,9 @@ document.addEventListener("click", (event) => {
   if (actionName === "delete-channel-identity" && identityId) {
     void deleteChannelIdentity(identityId);
   }
+  if (actionName === "allow-event-identity" && eventId) {
+    void allowEventIdentity(eventId);
+  }
 });
 
 document.addEventListener("pointerover", (event) => {
@@ -303,6 +310,15 @@ window.addEventListener("resize", () => {
   highlightGraphRelations(state.hoveredGraphSpanId ?? state.selectedSpanId);
 });
 
+document.addEventListener("focusout", () => {
+  if (!state.pendingSoftRender) return;
+  window.setTimeout(() => {
+    if (isUserEditing()) return;
+    state.pendingSoftRender = false;
+    render();
+  }, 0);
+});
+
 document.addEventListener("change", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
@@ -323,11 +339,19 @@ document.addEventListener("change", (event) => {
 
 void refreshData();
 window.setInterval(updateLiveTimers, 500);
+window.setInterval(() => {
+  void refreshData({ soft: true });
+}, 5000);
 
-async function refreshData() {
-  state.loading = true;
-  state.error = undefined;
-  render();
+async function refreshData(options = {}) {
+  if (state.refreshInFlight) return;
+  const soft = Boolean(options.soft);
+  state.refreshInFlight = true;
+  if (!soft) {
+    state.loading = true;
+    state.error = undefined;
+    render();
+  }
 
   try {
     const [
@@ -370,7 +394,7 @@ async function refreshData() {
       fetchJson("/api/audit-events").then((data) => data.events ?? []),
     ]);
 
-    Object.assign(state, {
+    const nextData = {
       instance,
       groupProfile,
       runs,
@@ -391,15 +415,32 @@ async function refreshData() {
       auditEvents,
       activeRunId: state.activeRunId ?? runs[0]?.id,
       loading: false,
+    };
+    const nextFingerprint = dataFingerprint(nextData);
+    if (soft && nextFingerprint === state.dataFingerprint) {
+      state.refreshInFlight = false;
+      return;
+    }
+    Object.assign(state, nextData, {
+      dataFingerprint: nextFingerprint,
     });
     syncActiveFromRoute();
     connectRunStream(activeRun()?.id);
     connectServiceLogStream();
   } catch (error) {
+    if (soft) {
+      state.refreshInFlight = false;
+      return;
+    }
     state.error = error instanceof Error ? error.message : String(error);
     state.loading = false;
   }
 
+  state.refreshInFlight = false;
+  if (soft && isUserEditing()) {
+    state.pendingSoftRender = true;
+    return;
+  }
   render();
 }
 
@@ -413,6 +454,35 @@ function parseRoute() {
 function navigate(route) {
   const normalized = route.startsWith("/") ? route : `/${route}`;
   window.location.hash = normalized;
+}
+
+function dataFingerprint(data) {
+  return JSON.stringify({
+    instance: data.instance,
+    groupProfile: data.groupProfile,
+    runs: data.runs,
+    conversations: data.conversations,
+    memories: data.memories,
+    memoryReviews: data.memoryReviews,
+    tools: data.tools,
+    toolMigrations: data.toolMigrations,
+    buildRequests: data.buildRequests,
+    secretHandles: data.secretHandles,
+    toolServices: data.toolServices,
+    toolServiceLogs: data.toolServiceLogs,
+    toolServiceEvents: data.toolServiceEvents,
+    tiers: data.tiers,
+    modelProviders: data.modelProviders,
+    modelCatalog: data.modelCatalog,
+    users: data.users,
+    auditEvents: data.auditEvents,
+  });
+}
+
+function isUserEditing() {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return false;
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName);
 }
 
 function syncActiveFromRoute() {
@@ -2165,15 +2235,22 @@ function renderToolCard(tool) {
   const label = tool.displayName || tool.name;
   const isGenerated = tool.source === "generated";
   const service = serviceForTool(tool.name);
+  const serviceStatus = service ? service.status : undefined;
   return `
     <article class="tool-card ${state.selectedToolName === tool.name ? "selected" : ""}" data-action="select-tool" data-tool-name="${tool.name}" tabindex="0">
       <div class="card-topline">
         <span>${tool.source ?? "builtin"}</span>
         <span>${tool.status ?? "available"}</span>
       </div>
+      ${service ? `
+        <div class="tool-runtime-strip ${escapeHtml(serviceStatus)}">
+          <span class="status-pill ${escapeHtml(serviceStatus)}">${escapeHtml(serviceStatus)}</span>
+          <strong>${escapeHtml(service.desiredState === "running" ? "Always-on active" : "Always-on stopped")}</strong>
+          <small>${escapeHtml(service.lastHeartbeatAt ? formatRelative(service.lastHeartbeatAt) : "no heartbeat")}</small>
+        </div>
+      ` : ""}
       <h3>${escapeHtml(label)} <small>v${escapeHtml(tool.version)}</small></h3>
       <small class="status-note">System name: ${escapeHtml(tool.name)}</small>
-      ${service ? `<small class="status-note">Service: ${escapeHtml(service.status)} · ${escapeHtml(service.desiredState)}</small>` : ""}
       <p>${escapeHtml(tool.description)}</p>
       <div class="tag-row">${(tool.capabilities ?? []).slice(0, 5).map((capability) => `<span>${escapeHtml(capability)}</span>`).join("")}</div>
       <div class="card-actions">
@@ -2794,6 +2871,13 @@ function renderGroupProfilePage() {
 function renderUsersPage() {
   return `
     <section class="page-stack">
+      <section class="surface-panel helper-panel">
+        <div>
+          <span class="eyebrow">Access model</span>
+          <h2>How to add a person</h2>
+          <p>Create a user here, then add one or more channel identities. For this Telegram bot the provider is <strong>channel.telegram.bot</strong>; when an unknown person writes to the bot, the Channels page shows an ignored inbound event with an <strong>Allow as Admin</strong> shortcut.</p>
+        </div>
+      </section>
       <form data-action="create-user" class="surface-panel settings-form">
         <div class="section-heading">
           <div>
@@ -2856,7 +2940,7 @@ function renderUserCard(user) {
         <div class="form-grid two">
           <label>
             <span>Provider</span>
-            <input name="provider" placeholder="telegram" />
+            <input name="provider" placeholder="channel.telegram.bot" />
           </label>
           <label>
             <span>Provider user id</span>
@@ -2987,6 +3071,11 @@ function renderServiceLogPreview(toolName) {
 
 function renderServiceEventRow(event) {
   const source = [event.sourceUserId, event.sourceChatId, event.sourceMessageId].filter(Boolean).join(" / ");
+  const canAllow =
+    event.direction === "inbound" &&
+    event.status === "ignored" &&
+    event.sourceUserId &&
+    event.toolName;
   return `
     <article class="service-event-row">
       <div>
@@ -2997,6 +3086,7 @@ function renderServiceEventRow(event) {
         <small>${escapeHtml(event.toolName)} · ${escapeHtml(event.direction)}${source ? ` · ${escapeHtml(source)}` : ""}</small>
       </div>
       <div class="service-event-links">
+        ${canAllow ? `<button type="button" class="text-button accent-text" data-action="allow-event-identity" data-event-id="${escapeHtml(event.id)}">Allow as Admin</button>` : ""}
         ${event.threadId ? `<button type="button" class="text-button" data-action="select-thread" data-thread-id="${escapeHtml(event.threadId)}">Thread</button>` : ""}
         ${event.runId ? `<button type="button" class="text-button" data-action="select-run" data-run-id="${escapeHtml(event.runId)}">Run</button>` : ""}
         <span>${escapeHtml(formatRelative(event.createdAt))}</span>
@@ -3530,6 +3620,44 @@ async function deleteChannelIdentity(identityId) {
     navigate("users");
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function allowEventIdentity(eventId) {
+  const event = state.toolServiceEvents.find((candidate) => candidate.id === eventId);
+  if (!event?.toolName || !event.sourceUserId) return;
+  try {
+    await fetchJson("/api/users/user-admin/channel-identities", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: event.toolName,
+        providerUserId: event.sourceUserId,
+        allowStatus: "allowed",
+        displayMetadata: {
+          source: "channels-runtime-event",
+          sourceEventId: event.id,
+          sourceChatId: event.sourceChatId,
+          sourceMessageId: event.sourceMessageId,
+        },
+      }),
+    });
+    state.notice = {
+      type: "success",
+      title: "Channel identity allowed",
+      body: `${event.toolName}/${event.sourceUserId} is now mapped to user-admin. New messages from this identity can create runs.`,
+      route: "users",
+      actionLabel: "Open Users",
+    };
+    await refreshData({ soft: true });
+    render();
+  } catch (error) {
+    state.notice = {
+      type: "error",
+      title: "Could not allow identity",
+      body: error instanceof Error ? error.message : String(error),
+    };
     render();
   }
 }
@@ -4150,7 +4278,7 @@ function connectRunStream(id) {
     state.activeRunId = data.run.id;
     if (!["queued", "running"].includes(data.run.status)) {
       stream.close();
-      void refreshData();
+      void refreshData({ soft: true });
     }
     render();
   });

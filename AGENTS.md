@@ -418,6 +418,9 @@ For documentation-only changes:
   updates, forwards text messages to the generic inbound endpoint with provider user/chat
   ids, polls the neutral outbox, sends responses back to Telegram, and records sent/failed
   acknowledgements. Channel identities must use provider `channel.telegram.bot`.
+- Operators can add Telegram users either on the Users page by adding a
+  `channel.telegram.bot` identity, or on the Channels page by approving an ignored
+  inbound event with the `Allow as Admin` shortcut.
 - Outbound actions must be auditable and permission-checked before delivery.
 - Preserve trace parent links when adding orchestration steps; the UI depends on
   `parentSpanId` to draw direct arrows.
@@ -461,6 +464,9 @@ For documentation-only changes:
 - The web console uses `GET /api/runs/:id/events` as an additive SSE stream for live run
   snapshots and falls back to polling; keep `GET /api/runs` and `GET /api/runs/:id`
   backwards compatible.
+- The web console also runs a soft background refresh for list-style pages. It
+  fingerprints fetched data, skips unchanged renders, and defers rendering while the
+  operator is editing an input/select/textarea to avoid focus loss and flicker.
 - The web console uses `GET /api/tool-services/logs/events` as an additive SSE stream for
   live always-on tool lifecycle logs; keep `GET /api/tool-services/logs` as the durable
   history/fallback endpoint.

@@ -137,6 +137,15 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /function renderServiceEventRow/);
   assert.match(app, /function updateToolService/);
   assert.match(app, /function connectServiceLogStream/);
+  assert.match(app, /window\.setInterval\(\(\) => \{\s*void refreshData\(\{ soft: true \}\);/);
+  assert.match(app, /function dataFingerprint/);
+  assert.match(app, /function isUserEditing/);
+  assert.match(app, /state\.pendingSoftRender/);
+  assert.match(app, /tool-runtime-strip/);
+  assert.match(app, /Always-on active/);
+  assert.match(app, /function allowEventIdentity/);
+  assert.match(app, /data-action="allow-event-identity"/);
+  assert.match(app, /channel\.telegram\.bot/);
   assert.match(app, /data-action="tool-service-action"/);
   assert.match(app, /\/api\/tools\/health/);
   assert.match(app, /title: failed\.length \? "Tool healthchecks failed" : "Tool healthchecks passed"/);
@@ -207,6 +216,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".proposal-review",
     ".memory-edit-form",
     ".tools-layout",
+    ".tool-runtime-strip",
+    ".helper-panel",
     ".model-catalog-grid",
     ".model-pill",
     ".kanban-heading",
