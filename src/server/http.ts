@@ -1969,6 +1969,7 @@ async function resolveRunContext(
     channel,
     threadId: thread?.id ?? requestedThreadId,
     parentRunId,
+    sourceUserId,
     sourceMessageId,
     sourceChatId,
     sourceThreadId,
@@ -2346,6 +2347,21 @@ async function executeRun(
         artifacts: result.artifacts,
       });
     }
+    await recordToolServiceOutbound(options, run, {
+      runId: id,
+      status: "completed",
+      summary: `Final answer ready for delivery: ${result.finalAnswer.slice(0, 160)}`,
+      payload: {
+        finalAnswer: result.finalAnswer,
+        artifacts: (result.artifacts ?? []).map((artifact) => ({
+          id: artifact.id,
+          filename: artifact.filename,
+          mimeType: artifact.mimeType,
+          sizeBytes: artifact.sizeBytes,
+          url: artifact.url,
+        })),
+      },
+    });
   } catch (error) {
     const current = await options.runStore.get(id);
     if (!current || current.status === "cancelled") return;
@@ -2374,7 +2390,65 @@ async function executeRun(
         failedError: message,
       });
     }
+    await recordToolServiceOutbound(options, run, {
+      runId: id,
+      status: "failed",
+      summary: `Run failed; error ready for delivery: ${message.slice(0, 160)}`,
+      payload: { error: message },
+    });
   }
+}
+
+async function recordToolServiceOutbound(
+  options: WebAppOptions,
+  run: AgentRunRecord | undefined,
+  delivery: {
+    runId: string;
+    status: "completed" | "failed";
+    summary: string;
+    payload: Record<string, unknown>;
+  },
+): Promise<void> {
+  if (!run?.channel || !options.toolServiceSupervisor || !options.toolServiceEventStore) return;
+  if (!run.sourceChatId && !run.sourceUserId) return;
+  const service = (await options.toolServiceSupervisor.list()).find((candidate) => candidate.toolName === run.channel);
+  if (!service) return;
+
+  const event = await options.toolServiceEventStore.record({
+    toolName: run.channel,
+    direction: "outbound",
+    status: "queued",
+    summary: delivery.summary,
+    sourceUserId: run.sourceUserId,
+    sourceChatId: run.sourceChatId,
+    sourceMessageId: run.sourceMessageId,
+    threadId: run.threadId,
+    runId: delivery.runId,
+    payload: {
+      ...delivery.payload,
+      runStatus: delivery.status,
+      requesterUserId: run.requesterUserId,
+    },
+  });
+
+  await recordAudit(options, {
+    instanceId: run.instanceId,
+    actorId: run.channel,
+    actorType: "tool",
+    action: "tool_service.event_recorded",
+    targetType: "tool",
+    targetId: run.channel,
+    status: delivery.status === "completed" ? "pending" : "failure",
+    runId: delivery.runId,
+    threadId: run.threadId,
+    requesterUserId: run.requesterUserId,
+    channel: run.channel,
+    summary: `Outbound event queued for ${run.channel}: ${delivery.summary.slice(0, 160)}`,
+    metadata: {
+      serviceEventId: event.id,
+      runStatus: delivery.status,
+    },
+  });
 }
 
 async function auditLearnedMemory(

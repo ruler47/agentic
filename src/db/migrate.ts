@@ -150,6 +150,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         channel text,
         thread_id text,
         parent_run_id text,
+        source_user_id text,
         source_message_id text,
         source_chat_id text,
         source_thread_id text,
@@ -165,6 +166,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table runs add column if not exists channel text;`);
     await pool.query(`alter table runs add column if not exists thread_id text;`);
     await pool.query(`alter table runs add column if not exists parent_run_id text;`);
+    await pool.query(`alter table runs add column if not exists source_user_id text;`);
     await pool.query(`alter table runs add column if not exists source_message_id text;`);
     await pool.query(`alter table runs add column if not exists source_chat_id text;`);
     await pool.query(`alter table runs add column if not exists source_thread_id text;`);

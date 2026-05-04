@@ -15,6 +15,7 @@ export class InMemoryRunStore implements RunStore {
       channel: context.channel,
       threadId: context.threadId,
       parentRunId: context.parentRunId,
+      sourceUserId: context.sourceUserId,
       sourceMessageId: context.sourceMessageId,
       sourceChatId: context.sourceChatId,
       sourceThreadId: context.sourceThreadId,

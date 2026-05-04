@@ -187,6 +187,10 @@ messages, and system events without adding Telegram/Slack/provider branches to t
 tool that already received a provider event. It accepts `task`, `text`, or `message`,
 optional source identity fields, writes a redacted inbound event, resolves the requester
 through channel identities, creates a normal run, and writes a linked queued event.
+When that run completes or fails, the server also writes an `outbound/queued` service
+event with the final answer or error payload. Provider-specific always-on tools can use
+that event stream as a neutral outbox, deliver the response externally, and then record a
+`sent` or `failed` delivery event.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as

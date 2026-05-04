@@ -11,6 +11,7 @@ type RunRow = {
   channel: string | null;
   thread_id: string | null;
   parent_run_id: string | null;
+  source_user_id: string | null;
   source_message_id: string | null;
   source_chat_id: string | null;
   source_thread_id: string | null;
@@ -47,10 +48,10 @@ export class PostgresRunStore implements RunStore {
       `
         insert into runs (
           id, task, status, instance_id, requester_user_id, channel, thread_id,
-          parent_run_id, source_message_id, source_chat_id, source_thread_id,
+          parent_run_id, source_user_id, source_message_id, source_chat_id, source_thread_id,
           created_at, updated_at
         )
-        values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+        values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
       `,
       [
         id,
@@ -60,6 +61,7 @@ export class PostgresRunStore implements RunStore {
         context.channel ?? null,
         context.threadId ?? null,
         context.parentRunId ?? null,
+        context.sourceUserId ?? null,
         context.sourceMessageId ?? null,
         context.sourceChatId ?? null,
         context.sourceThreadId ?? null,
@@ -76,7 +78,7 @@ export class PostgresRunStore implements RunStore {
     const rows = await this.pool.query<RunRow>(`
       select id, task, status, created_at, updated_at, result, error
            , instance_id, requester_user_id, channel, thread_id, parent_run_id
-           , source_message_id, source_chat_id, source_thread_id
+           , source_user_id, source_message_id, source_chat_id, source_thread_id
       from runs
       order by created_at desc
       limit 100
@@ -90,7 +92,7 @@ export class PostgresRunStore implements RunStore {
       `
         select id, task, status, created_at, updated_at, result, error
              , instance_id, requester_user_id, channel, thread_id, parent_run_id
-             , source_message_id, source_chat_id, source_thread_id
+             , source_user_id, source_message_id, source_chat_id, source_thread_id
         from runs
         where id = $1
       `,
@@ -235,6 +237,7 @@ export class PostgresRunStore implements RunStore {
       channel: row.channel ?? undefined,
       threadId: row.thread_id ?? undefined,
       parentRunId: row.parent_run_id ?? undefined,
+      sourceUserId: row.source_user_id ?? undefined,
       sourceMessageId: row.source_message_id ?? undefined,
       sourceChatId: row.source_chat_id ?? undefined,
       sourceThreadId: row.source_thread_id ?? undefined,

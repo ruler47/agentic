@@ -230,6 +230,10 @@ The generic `POST /api/tool-services/:name/inbound` endpoint is the first intake
 contract: a provider-specific module receives a message, forwards a normalized event to
 the core, and the core records the event, resolves channel identity, applies thread
 resolution, and creates a regular run.
+The matching response contract is an `outbound/queued` `tool_service_events` record
+written by the server after that run completes or fails. Generated provider runners can
+deliver from this neutral outbox and then append provider evidence with `sent` or
+`failed` events.
 
 Missing tool capabilities can be persisted into `tool_build_requests`. These records are
 the durable handoff from runtime failure detection to the Tool Builder/Tool QA/Tool

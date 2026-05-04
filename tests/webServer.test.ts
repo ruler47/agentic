@@ -1016,17 +1016,21 @@ test("web server accepts generic always-on inbound events and creates runs", asy
     assert.equal(response.status, 202);
     assert.equal(created.run.channel, "generated.bot.demo");
     assert.equal(created.run.requesterUserId, "user-channel");
+    assert.equal(created.run.sourceUserId, "external-1");
     assert.equal(created.run.sourceChatId, "chat-1");
     assert.equal(created.event.payload.apiKey, "[redacted]");
     assert.equal(completed.run.status, "completed");
     assert.deepEqual(
-      events.events.map((event: { status: string }) => event.status).sort(),
-      ["queued", "received"],
+      events.events.map((event: { direction: string; status: string }) => `${event.direction}:${event.status}`).sort(),
+      ["inbound:received", "outbound:queued", "system:queued"],
     );
     assert.equal(
-      events.events.find((event: { status: string }) => event.status === "queued")?.runId,
+      events.events.find((event: { direction: string }) => event.direction === "system")?.runId,
       created.run.id,
     );
+    const outbound = events.events.find((event: { direction: string }) => event.direction === "outbound");
+    assert.equal(outbound?.runId, created.run.id);
+    assert.match(outbound?.payload.finalAnswer, /answer for Create a short answer/);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

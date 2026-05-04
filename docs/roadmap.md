@@ -1036,6 +1036,12 @@ Implementation tasks:
 - Support `/new`, `/continue`, reply-to, and low-confidence clarification behavior.
 - Store compact thread summaries and update them after each run.
 - Send final answers back to the requester through the originating always-on tool.
+  PARTIAL through the provider-neutral outbox: when a run created by an always-on tool
+  completes or fails, the server records an `outbound/queued` `tool_service_events`
+  record linked to the run/thread/source identity with the final answer or error payload.
+  Remaining work is generated provider runners that poll/subscribe to those queued
+  outbound events, deliver them to the external provider, and mark delivery as sent or
+  failed.
 - Store inbound/outbound messages/events in an auditable table.
   DONE for the provider-neutral foundation: `tool_service_events` stores
   inbound/outbound/system records with source identity, thread/run links, sanitized

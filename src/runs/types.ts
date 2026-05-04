@@ -11,6 +11,7 @@ export type AgentRunRecord = {
   channel?: string;
   threadId?: string;
   parentRunId?: string;
+  sourceUserId?: string;
   sourceMessageId?: string;
   sourceChatId?: string;
   sourceThreadId?: string;
@@ -31,6 +32,7 @@ export type RunCreateContext = {
   channel?: string;
   threadId?: string;
   parentRunId?: string;
+  sourceUserId?: string;
   sourceMessageId?: string;
   sourceChatId?: string;
   sourceThreadId?: string;

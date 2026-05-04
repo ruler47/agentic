@@ -366,6 +366,12 @@ uses the normal conversation-thread resolver, creates a standard run, and record
 linked queued event. This is the provider-neutral bridge for future Telegram/Slack/webhook
 tools.
 
+The response path is provider-neutral as well. When a run that originated from an
+always-on tool reaches a terminal success or failure, the server records an
+`outbound/queued` `tool_service_events` record containing the final answer or error
+payload plus source identity links. Provider-specific generated services own the actual
+delivery step and can later append `sent` or `failed` events with provider evidence.
+
 Thread resolution should prefer provider metadata such as reply-to messages, chat/thread
 IDs, forum topics, or webhook thread IDs, then use a bounded classifier over recent
 compact thread summaries. The
