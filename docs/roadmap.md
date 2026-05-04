@@ -1012,9 +1012,9 @@ Implementation tasks:
 - Add a service supervisor that can start, stop, restart, and healthcheck always-on
   generated modules without hardcoding provider-specific branches. PARTIAL:
   `ToolServiceSupervisor` exposes generic in-process lifecycle state, heartbeat detail,
-  restart counts, audit events, `/api/tool-services`, and Channels/Tool Detail controls.
-  Remaining work is persistent supervisor state, actual background process/webhook
-  runners for generated modules, and streaming service logs.
+  restart counts, audit events, Postgres-backed `tool_service_statuses`,
+  `/api/tool-services`, and Channels/Tool Detail controls. Remaining work is actual
+  background process/webhook runners for generated modules and streaming service logs.
 - Let Tool Builds create a Telegram bot when an operator provides bot-token secret handle,
   desired behavior, whitelist policy, thread routing rules, and provider docs.
 - Add `channel_identities` mapping Telegram user IDs to users. PARTIAL: the durable table

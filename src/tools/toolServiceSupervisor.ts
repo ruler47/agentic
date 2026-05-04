@@ -1,30 +1,18 @@
 import { ToolRegistry } from "./registry.js";
 import { ToolHealth } from "./tool.js";
-
-export type ToolServiceRuntimeStatus = "stopped" | "starting" | "running" | "failed";
-export type ToolServiceDesiredState = "stopped" | "running";
-
-export type ToolServiceStatus = {
-  toolName: string;
-  displayName?: string;
-  description: string;
-  status: ToolServiceRuntimeStatus;
-  desiredState: ToolServiceDesiredState;
-  detail: string;
-  lastHealthOk?: boolean;
-  lastHeartbeatAt?: string;
-  startedAt?: string;
-  stoppedAt?: string;
-  updatedAt: string;
-  restartCount: number;
-};
-
-type StoredToolServiceStatus = Omit<ToolServiceStatus, "displayName" | "description">;
+import {
+  InMemoryToolServiceStatusStore,
+  StoredToolServiceStatus,
+  ToolServiceStatus,
+  ToolServiceStatusStore,
+  defaultToolServiceStatus,
+} from "./toolServiceStatusStore.js";
 
 export class ToolServiceSupervisor {
-  private readonly statuses = new Map<string, StoredToolServiceStatus>();
-
-  constructor(private readonly registry: Pick<ToolRegistry, "get" | "list">) {}
+  constructor(
+    private readonly registry: Pick<ToolRegistry, "get" | "list">,
+    private readonly statusStore: ToolServiceStatusStore = new InMemoryToolServiceStatusStore(),
+  ) {}
 
   async list(): Promise<ToolServiceStatus[]> {
     const tools = this.registry
@@ -32,18 +20,18 @@ export class ToolServiceSupervisor {
       .filter((tool) => tool.startupMode === "always-on")
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    return tools.map((tool) => ({
-      ...this.statusFor(tool.name),
+    return Promise.all(tools.map(async (tool) => ({
+      ...(await this.statusFor(tool.name)),
       displayName: tool.displayName,
       description: tool.description,
-    }));
+    })));
   }
 
   async start(toolName: string): Promise<ToolServiceStatus> {
     const tool = this.requiredAlwaysOnTool(toolName);
     const now = new Date();
-    const starting = this.write(toolName, {
-      ...this.statusFor(toolName),
+    const starting = await this.write({
+      ...(await this.statusFor(toolName)),
       status: "starting",
       desiredState: "running",
       detail: "Starting service and checking health.",
@@ -51,7 +39,7 @@ export class ToolServiceSupervisor {
     });
     const health = await this.runHealthcheck(toolName);
     const nextNow = new Date().toISOString();
-    const next = this.write(toolName, {
+    const next = await this.write({
       ...starting,
       status: health.ok ? "running" : "failed",
       desiredState: "running",
@@ -67,8 +55,8 @@ export class ToolServiceSupervisor {
   async stop(toolName: string): Promise<ToolServiceStatus> {
     const tool = this.requiredAlwaysOnTool(toolName);
     const now = new Date().toISOString();
-    const next = this.write(toolName, {
-      ...this.statusFor(toolName),
+    const next = await this.write({
+      ...(await this.statusFor(toolName)),
       status: "stopped",
       desiredState: "stopped",
       detail: "Stopped by operator.",
@@ -79,8 +67,8 @@ export class ToolServiceSupervisor {
   }
 
   async restart(toolName: string): Promise<ToolServiceStatus> {
-    const existing = this.statusFor(toolName);
-    this.write(toolName, {
+    const existing = await this.statusFor(toolName);
+    await this.write({
       ...existing,
       restartCount: existing.restartCount + 1,
       status: "stopped",
@@ -94,14 +82,14 @@ export class ToolServiceSupervisor {
 
   async heartbeat(toolName: string): Promise<ToolServiceStatus> {
     const tool = this.requiredAlwaysOnTool(toolName);
-    const existing = this.statusFor(toolName);
+    const existing = await this.statusFor(toolName);
     if (existing.desiredState !== "running") {
       return { ...existing, displayName: tool.displayName, description: tool.description };
     }
 
     const health = await this.runHealthcheck(toolName);
     const now = new Date().toISOString();
-    const next = this.write(toolName, {
+    const next = await this.write({
       ...existing,
       status: health.ok ? "running" : "failed",
       detail: health.detail,
@@ -136,22 +124,11 @@ export class ToolServiceSupervisor {
     return tool;
   }
 
-  private statusFor(toolName: string): StoredToolServiceStatus {
-    const existing = this.statuses.get(toolName);
-    if (existing) return { ...existing };
-    const now = new Date().toISOString();
-    return {
-      toolName,
-      status: "stopped",
-      desiredState: "stopped",
-      detail: "Service is installed but not started by the supervisor.",
-      updatedAt: now,
-      restartCount: 0,
-    };
+  private async statusFor(toolName: string): Promise<StoredToolServiceStatus> {
+    return (await this.statusStore.get(toolName)) ?? defaultToolServiceStatus(toolName);
   }
 
-  private write(toolName: string, status: StoredToolServiceStatus): StoredToolServiceStatus {
-    this.statuses.set(toolName, { ...status });
-    return { ...status };
+  private async write(status: StoredToolServiceStatus): Promise<StoredToolServiceStatus> {
+    return this.statusStore.set(status);
   }
 }

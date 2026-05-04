@@ -164,9 +164,8 @@ keeps the stable system name visible as metadata.
 `startupMode` is `always-on`. The matching `start`, `stop`, `restart`, and `heartbeat`
 actions are provider-neutral: they call the tool healthcheck, update runtime service
 state, and write audit events without hardcoding Telegram, Slack, webhooks, or any other
-channel type. This is the first supervisor slice. State is currently in-process; durable
-service state, process runners, webhook workers, and streaming service logs remain on the
-roadmap.
+channel type. State persists through `tool_service_statuses` when Postgres is configured;
+process runners, webhook workers, and streaming service logs remain on the roadmap.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as

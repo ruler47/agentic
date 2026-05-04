@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { Tool } from "../src/tools/tool.js";
 import { ToolServiceSupervisor } from "../src/tools/toolServiceSupervisor.js";
+import { InMemoryToolServiceStatusStore } from "../src/tools/toolServiceStatusStore.js";
 
 function serviceTool(overrides: Partial<Tool> = {}): Tool {
   return {
@@ -60,4 +61,21 @@ test("ToolServiceSupervisor rejects non-service tools and marks failed healthche
   assert.equal(failed.desiredState, "running");
   assert.equal(failed.lastHealthOk, false);
   assert.equal(failed.detail, "missing token");
+});
+
+test("ToolServiceSupervisor preserves lifecycle state through the status store", async () => {
+  const registry = new ToolRegistry();
+  registry.register(serviceTool());
+  const statusStore = new InMemoryToolServiceStatusStore();
+  const firstSupervisor = new ToolServiceSupervisor(registry, statusStore);
+
+  await firstSupervisor.start("service.echo");
+
+  const secondSupervisor = new ToolServiceSupervisor(registry, statusStore);
+  const services = await secondSupervisor.list();
+
+  assert.equal(services[0]?.toolName, "service.echo");
+  assert.equal(services[0]?.status, "running");
+  assert.equal(services[0]?.desiredState, "running");
+  assert.equal(services[0]?.detail, "service healthy");
 });

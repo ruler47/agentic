@@ -41,6 +41,8 @@ import { loadGeneratedTools } from "../tools/generatedToolLoader.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import { ToolBuildWorker } from "../tools/toolBuildWorker.js";
 import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
+import { InMemoryToolServiceStatusStore } from "../tools/toolServiceStatusStore.js";
+import { PostgresToolServiceStatusStore } from "../tools/postgresToolServiceStatusStore.js";
 import {
   BrowserScreenshotToolBuildProvider,
   CommandToolQaRunner,
@@ -87,7 +89,10 @@ const reloadGeneratedTools = async () => {
     console.log(`Reloaded ${loaded.length} generated tool(s).`);
   }
 };
-const toolServiceSupervisor = new ToolServiceSupervisor(tools);
+const toolServiceStatusStore = pool
+  ? new PostgresToolServiceStatusStore(pool)
+  : new InMemoryToolServiceStatusStore();
+const toolServiceSupervisor = new ToolServiceSupervisor(tools, toolServiceStatusStore);
 const toolBuildWorkflow = new ToolBuildWorkflow(
   toolBuildRequestStore,
   new GeneratedToolFileBuilder([new BrowserScreenshotToolBuildProvider(), new GenericApiToolBuildProvider()]),
