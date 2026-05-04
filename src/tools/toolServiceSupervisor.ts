@@ -100,6 +100,21 @@ export class ToolServiceSupervisor {
     return { ...next, displayName: tool.displayName, description: tool.description };
   }
 
+  async reconcileDesiredServices(): Promise<ToolServiceStatus[]> {
+    const tools = this.registry
+      .list()
+      .filter((tool) => tool.startupMode === "always-on")
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const reconciled: ToolServiceStatus[] = [];
+    for (const tool of tools) {
+      const existing = await this.statusFor(tool.name);
+      if (existing.desiredState === "running") {
+        reconciled.push(await this.heartbeat(tool.name));
+      }
+    }
+    return reconciled;
+  }
+
   private async runHealthcheck(toolName: string): Promise<ToolHealth> {
     const tool = this.requiredAlwaysOnTool(toolName);
     if (!tool.healthcheck) {

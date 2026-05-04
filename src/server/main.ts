@@ -93,6 +93,10 @@ const toolServiceStatusStore = pool
   ? new PostgresToolServiceStatusStore(pool)
   : new InMemoryToolServiceStatusStore();
 const toolServiceSupervisor = new ToolServiceSupervisor(tools, toolServiceStatusStore);
+const reconciledToolServices = await toolServiceSupervisor.reconcileDesiredServices();
+if (reconciledToolServices.length > 0) {
+  console.log(`Reconciled ${reconciledToolServices.length} desired always-on tool service(s).`);
+}
 const toolBuildWorkflow = new ToolBuildWorkflow(
   toolBuildRequestStore,
   new GeneratedToolFileBuilder([new BrowserScreenshotToolBuildProvider(), new GenericApiToolBuildProvider()]),

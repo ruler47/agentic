@@ -212,10 +212,11 @@ are protected.
 Tools with `startupMode=always-on` are exposed through a generic service supervisor. The
 current supervisor persists lifecycle state in `tool_service_statuses` when Postgres is
 configured, calls each tool's healthcheck, and exposes start/stop/restart/heartbeat
-controls through `/api/tool-services`. This is enough for UI and lifecycle state across
-app restarts, but it is not a durable process manager yet. The next infrastructure step is
-to move long-running generated modules to queue-backed or process-backed workers that can
-survive app restarts and stream service logs.
+controls through `/api/tool-services`. On app startup it reconciles services whose
+desired state is `running` by refreshing their health status. This is enough for UI and
+lifecycle state across app restarts, but it is not a durable process manager yet. The next
+infrastructure step is to move long-running generated modules to queue-backed or
+process-backed workers that can survive app restarts and stream service logs.
 
 Missing tool capabilities can be persisted into `tool_build_requests`. These records are
 the durable handoff from runtime failure detection to the Tool Builder/Tool QA/Tool

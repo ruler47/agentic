@@ -79,3 +79,25 @@ test("ToolServiceSupervisor preserves lifecycle state through the status store",
   assert.equal(services[0]?.desiredState, "running");
   assert.equal(services[0]?.detail, "service healthy");
 });
+
+test("ToolServiceSupervisor reconciles desired running services on startup", async () => {
+  const registry = new ToolRegistry();
+  let healthDetail = "initial health";
+  registry.register(serviceTool({
+    async healthcheck() {
+      return { ok: true, detail: healthDetail };
+    },
+  }));
+  const statusStore = new InMemoryToolServiceStatusStore();
+  const firstSupervisor = new ToolServiceSupervisor(registry, statusStore);
+
+  await firstSupervisor.start("service.echo");
+  healthDetail = "reconciled health";
+
+  const secondSupervisor = new ToolServiceSupervisor(registry, statusStore);
+  const reconciled = await secondSupervisor.reconcileDesiredServices();
+
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0]?.status, "running");
+  assert.equal(reconciled[0]?.detail, "reconciled health");
+});

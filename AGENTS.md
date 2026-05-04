@@ -381,6 +381,9 @@ For documentation-only changes:
 - Telegram and other always-on generated tools should translate provider events into run
   requests; they should not embed agent orchestration logic or become special runtime
   branches.
+- The generic service supervisor persists always-on lifecycle state and reconciles
+  desired-running services on app startup; durable process/webhook runners are still a
+  roadmap item.
 - Outbound actions must be auditable and permission-checked before delivery.
 - Preserve trace parent links when adding orchestration steps; the UI depends on
   `parentSpanId` to draw direct arrows.
