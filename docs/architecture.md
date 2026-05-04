@@ -359,6 +359,13 @@ system notices with optional source identity, thread, run, and sanitized payload
 This keeps Telegram, Slack, WhatsApp, email, queue listeners, and custom webhooks on the
 same event model.
 
+The generic service intake endpoint, `POST /api/tool-services/:name/inbound`, lets an
+always-on module hand a normalized inbound event to the core. The core redacts payload
+metadata, records the inbound event, resolves the requester through `channel_identities`,
+uses the normal conversation-thread resolver, creates a standard run, and records a
+linked queued event. This is the provider-neutral bridge for future Telegram/Slack/webhook
+tools.
+
 Thread resolution should prefer provider metadata such as reply-to messages, chat/thread
 IDs, forum topics, or webhook thread IDs, then use a bounded classifier over recent
 compact thread summaries. The

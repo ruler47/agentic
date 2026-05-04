@@ -140,6 +140,7 @@ GET /api/tool-service-events?toolName=optional&direction=optional&limit=100
 POST /api/tool-service-events
 GET /api/tool-services/logs?toolName=optional&limit=100
 GET /api/tool-services/logs/events?toolName=optional
+POST /api/tool-services/:name/inbound
 POST /api/tool-services/:name/start
 POST /api/tool-services/:name/stop
 POST /api/tool-services/:name/restart
@@ -182,6 +183,10 @@ always-on generated tools. Events use `direction=inbound|outbound|system` and
 and sanitized payload metadata. `POST /api/tool-service-events` is the durable handoff
 for service tools to record inbound messages, outbound deliveries, ignored/denied
 messages, and system events without adding Telegram/Slack/provider branches to the core.
+`POST /api/tool-services/:name/inbound` is the generic intake handoff for an always-on
+tool that already received a provider event. It accepts `task`, `text`, or `message`,
+optional source identity fields, writes a redacted inbound event, resolves the requester
+through channel identities, creates a normal run, and writes a linked queued event.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as

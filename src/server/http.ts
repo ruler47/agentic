@@ -808,6 +808,121 @@ async function routeRequest(
     return;
   }
 
+  const toolServiceInboundMatch = url.pathname.match(/^\/api\/tool-services\/([^/]+)\/inbound$/);
+  if (request.method === "POST" && toolServiceInboundMatch) {
+    if (!options.toolServiceSupervisor || !options.toolServiceEventStore) {
+      sendJson(response, 503, { error: "Tool service runtime is not configured" });
+      return;
+    }
+
+    const toolName = decodeURIComponent(toolServiceInboundMatch[1] ?? "");
+    const service = (await options.toolServiceSupervisor.list()).find((candidate) => candidate.toolName === toolName);
+    if (!service) {
+      sendJson(response, 404, { error: `Tool service was not found: ${toolName}` });
+      return;
+    }
+
+    const body = await readJsonBody<unknown>(request);
+    try {
+      const inbound = parseToolServiceInboundInput(body, toolName);
+      const receivedEvent = await options.toolServiceEventStore.record({
+        toolName,
+        direction: "inbound",
+        status: "received",
+        summary: inbound.task.slice(0, 240),
+        sourceUserId: inbound.sourceUserId,
+        sourceChatId: inbound.sourceChatId,
+        sourceMessageId: inbound.sourceMessageId,
+        payload: isRecord(body) ? sanitizeObject(body) : undefined,
+      });
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: toolName,
+        actorType: "tool",
+        action: "tool_service.event_recorded",
+        targetType: "tool",
+        targetId: toolName,
+        status: "success",
+        requesterUserId: inbound.sourceUserId,
+        channel: inbound.channel,
+        summary: `Inbound event received: ${inbound.task.slice(0, 160)}`,
+        metadata: {
+          sourceEventId: receivedEvent.id,
+          sourceChatId: inbound.sourceChatId,
+          sourceMessageId: inbound.sourceMessageId,
+        },
+      });
+
+      const created = await createAndStartRun(
+        {
+          ...inbound.originalBody,
+          task: inbound.task,
+          channel: inbound.channel,
+          sourceUserId: inbound.sourceUserId,
+          sourceChatId: inbound.sourceChatId,
+          sourceThreadId: inbound.sourceThreadId,
+          sourceMessageId: inbound.sourceMessageId,
+        },
+        options,
+      );
+      const run = created.run;
+      const queuedEvent = await options.toolServiceEventStore.record({
+        toolName,
+        direction: "system",
+        status: "queued",
+        summary: `Run created from inbound event: ${inbound.task.slice(0, 160)}`,
+        sourceUserId: inbound.sourceUserId,
+        sourceChatId: inbound.sourceChatId,
+        sourceMessageId: inbound.sourceMessageId,
+        threadId: run?.threadId ?? created.threadResolution?.threadId,
+        runId: run?.id,
+        payload: {
+          sourceEventId: receivedEvent.id,
+          threadResolution: created.threadResolution,
+        },
+      });
+      await recordAudit(options, {
+        instanceId: run?.instanceId ?? "instance-local",
+        actorId: toolName,
+        actorType: "tool",
+        action: "tool_service.event_recorded",
+        targetType: "tool",
+        targetId: toolName,
+        status: "success",
+        runId: run?.id,
+        threadId: run?.threadId,
+        requesterUserId: run?.requesterUserId,
+        channel: run?.channel,
+        summary: `Inbound event queued run: ${run?.id ?? "unknown"}`,
+        metadata: {
+          sourceEventId: receivedEvent.id,
+          queuedEventId: queuedEvent.id,
+        },
+      });
+      sendJson(response, 202, {
+        event: receivedEvent,
+        queuedEvent,
+        ...created,
+      });
+    } catch (error) {
+      const input = isRecord(body) ? parseLooseToolServiceInboundInput(body, toolName) : undefined;
+      await options.toolServiceEventStore.record({
+        toolName,
+        direction: "inbound",
+        status: "ignored",
+        summary: error instanceof Error ? error.message : "Inbound event could not create a run",
+        sourceUserId: input?.sourceUserId,
+        sourceChatId: input?.sourceChatId,
+        sourceMessageId: input?.sourceMessageId,
+        payload: isRecord(body) ? sanitizeObject(body) : undefined,
+      });
+      sendJson(response, error instanceof RunContextError ? error.statusCode : 400, {
+        error: error instanceof Error ? error.message : "Invalid inbound tool service event",
+      });
+    }
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/tool-services/logs/events") {
     await streamToolServiceLogs(request, response, options, url.searchParams.get("toolName") ?? undefined);
     return;
@@ -1526,11 +1641,27 @@ async function createRunFromRequest(
   response: ServerResponse,
   options: WebAppOptions,
 ): Promise<void> {
+  try {
+    sendJson(response, 202, await createAndStartRun(body, options));
+  } catch (error) {
+    sendJson(response, error instanceof RunContextError ? error.statusCode : 400, {
+      error: error instanceof Error ? error.message : "Invalid run request",
+    });
+  }
+}
+
+async function createAndStartRun(
+  body: Record<string, unknown>,
+  options: WebAppOptions,
+): Promise<{
+  run: AgentRunRecord | undefined;
+  thread?: ConversationThreadRecord;
+  threadResolution?: { decision: string; reason: string; threadId?: string };
+}> {
   const task = typeof body.task === "string" ? body.task.trim() : "";
 
   if (!task) {
-    sendJson(response, 400, { error: "Task is required" });
-    return;
+    throw new RunContextError(400, "Task is required");
   }
 
   let context: RunCreateContext;
@@ -1545,10 +1676,8 @@ async function createRunFromRequest(
     threadContext = resolved.threadContext;
     threadResolution = resolved.threadResolution;
   } catch (error) {
-    sendJson(response, error instanceof RunContextError ? error.statusCode : 400, {
-      error: error instanceof Error ? error.message : "Invalid run context",
-    });
-    return;
+    if (error instanceof RunContextError) throw error;
+    throw new RunContextError(400, error instanceof Error ? error.message : "Invalid run context");
   }
 
   const run = await options.runStore.create(task, context);
@@ -1611,10 +1740,7 @@ async function createRunFromRequest(
       run.id,
       error instanceof Error ? error.message : "Failed to save attachments",
     );
-    sendJson(response, 400, {
-      error: error instanceof Error ? error.message : "Failed to save attachments",
-    });
-    return;
+    throw new RunContextError(400, error instanceof Error ? error.message : "Failed to save attachments");
   }
 
   await options.conversationStore?.appendMessage({
@@ -1630,7 +1756,7 @@ async function createRunFromRequest(
     threadId: context.threadId,
     threadContext,
   });
-  sendJson(response, 202, {
+  return {
     run: await options.runStore.get(run.id),
     thread,
     threadResolution: threadResolution
@@ -1640,7 +1766,7 @@ async function createRunFromRequest(
           threadId: threadResolution.thread?.id,
         }
       : undefined,
-  });
+  };
 }
 
 async function createToolBuildRootRun(
@@ -2353,7 +2479,14 @@ function sanitizeObject(value: Record<string, unknown>): Record<string, unknown>
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
     const lowerKey = key.toLowerCase();
-    if (lowerKey.includes("secret") || lowerKey.includes("token") || lowerKey.includes("password")) {
+    if (
+      lowerKey.includes("secret") ||
+      lowerKey.includes("token") ||
+      lowerKey.includes("password") ||
+      lowerKey.includes("apikey") ||
+      lowerKey.includes("api_key") ||
+      lowerKey.includes("credential")
+    ) {
       result[key] = "[redacted]";
       continue;
     }
@@ -2628,6 +2761,31 @@ function parseToolServiceEventInput(value: unknown): ToolServiceEventInput {
     threadId: parseOptionalText(value.threadId),
     runId: parseOptionalText(value.runId),
     payload: isRecord(value.payload) ? sanitizeObject(value.payload) : undefined,
+  };
+}
+
+function parseToolServiceInboundInput(value: unknown, toolName: string) {
+  if (!isRecord(value)) throw new Error("inbound service event must be an object");
+  const task = parseOptionalText(value.task) ?? parseOptionalText(value.text) ?? parseOptionalText(value.message);
+  if (!task) throw new Error("task, text, or message is required");
+  return {
+    originalBody: sanitizeObject(value),
+    task,
+    channel: parseOptionalText(value.channel) ?? toolName,
+    sourceUserId: parseOptionalText(value.sourceUserId),
+    sourceChatId: parseOptionalText(value.sourceChatId),
+    sourceThreadId: parseOptionalText(value.sourceThreadId),
+    sourceMessageId: parseOptionalText(value.sourceMessageId),
+  };
+}
+
+function parseLooseToolServiceInboundInput(value: Record<string, unknown>, toolName: string) {
+  return {
+    channel: parseOptionalText(value.channel) ?? toolName,
+    sourceUserId: parseOptionalText(value.sourceUserId),
+    sourceChatId: parseOptionalText(value.sourceChatId),
+    sourceThreadId: parseOptionalText(value.sourceThreadId),
+    sourceMessageId: parseOptionalText(value.sourceMessageId),
   };
 }
 

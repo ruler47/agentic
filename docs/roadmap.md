@@ -1028,6 +1028,11 @@ Implementation tasks:
   PARTIAL: HTTP run creation accepts channel/source metadata and resolves requester from
   allowed identities.
 - Resolve each Telegram message to a conversation thread or create a new thread.
+  PARTIAL through the generic intake path: `POST /api/tool-services/:name/inbound` accepts
+  normalized always-on events, resolves channel identity, runs the normal
+  conversation-thread resolver, creates a run, and records linked provider-neutral
+  service events. Remaining work is generated provider runners that call this endpoint
+  from real bot/webhook/listener processes.
 - Support `/new`, `/continue`, reply-to, and low-confidence clarification behavior.
 - Store compact thread summaries and update them after each run.
 - Send final answers back to the requester through the originating always-on tool.
@@ -1035,7 +1040,8 @@ Implementation tasks:
   DONE for the provider-neutral foundation: `tool_service_events` stores
   inbound/outbound/system records with source identity, thread/run links, sanitized
   payload metadata, API access, audit events, and Channels visibility. Remaining work is
-  generated service runners that write real provider events automatically.
+  generated service runners that write real provider events automatically. The generic
+  inbound endpoint now links received events to created runs.
 - Add tests for allowed user, denied user, run context mapping, continuation detection,
   and forced new-thread commands.
 

@@ -395,6 +395,9 @@ For documentation-only changes:
 - Generated always-on tools should record inbound, outbound, ignored, and system events
   through `tool_service_events` so Channels, Audit, Runs, and Conversations can link
   provider activity without provider-specific core tables.
+- Always-on tools that receive external provider messages should forward normalized
+  events to `POST /api/tool-services/:name/inbound`; that path records the inbound event,
+  resolves channel identity, creates a normal run, and records the linked queued event.
 - The generic service supervisor persists always-on lifecycle state and reconciles
   desired-running services on app startup. It also writes lifecycle logs for
   start/stop/restart/heartbeat/reconcile events and streams new log records to active UI

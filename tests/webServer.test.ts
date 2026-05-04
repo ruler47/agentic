@@ -938,6 +938,101 @@ test("web server records provider-neutral tool service events", async () => {
   }
 });
 
+test("web server accepts generic always-on inbound events and creates runs", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const serviceTool = {
+    name: "generated.bot.demo",
+    version: "1.0.0",
+    description: "Demo bot service.",
+    capabilities: ["inbound-message"],
+    startupMode: "always-on" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+    outputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+    async healthcheck() {
+      return { ok: true, detail: "healthy" };
+    },
+    async run() {
+      return { ok: true, content: "ok" };
+    },
+  };
+  const serviceRegistry = {
+    list() {
+      return [serviceTool];
+    },
+    get(name: string) {
+      return name === serviceTool.name ? serviceTool : undefined;
+    },
+  };
+  const runStore = new InMemoryRunStore();
+  const eventStore = new InMemoryToolServiceEventStore();
+  const userStore = new InMemoryUserStore({
+    users: [{ id: "user-channel", displayName: "Channel User" }],
+    identities: [
+      {
+        provider: "generated.bot.demo",
+        providerUserId: "external-1",
+        userId: "user-channel",
+        allowStatus: "allowed",
+      },
+    ],
+  });
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    conversationStore: new InMemoryConversationThreadStore(),
+    userStore,
+    toolRegistry: serviceRegistry,
+    toolServiceSupervisor: new ToolServiceSupervisor(serviceRegistry),
+    toolServiceEventStore: eventStore,
+    auditEventStore: new InMemoryAuditEventStore(),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/api/tool-services/generated.bot.demo/inbound`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: "Create a short answer from a generic service event",
+        sourceUserId: "external-1",
+        sourceChatId: "chat-1",
+        sourceMessageId: "msg-1",
+        apiKey: "must-not-leak",
+      }),
+    });
+    const created = await response.json();
+    const completed = await waitForRun(baseUrl, created.run.id);
+    const events = await (await fetch(`${baseUrl}/api/tool-service-events?toolName=generated.bot.demo`)).json();
+
+    assert.equal(response.status, 202);
+    assert.equal(created.run.channel, "generated.bot.demo");
+    assert.equal(created.run.requesterUserId, "user-channel");
+    assert.equal(created.run.sourceChatId, "chat-1");
+    assert.equal(created.event.payload.apiKey, "[redacted]");
+    assert.equal(completed.run.status, "completed");
+    assert.deepEqual(
+      events.events.map((event: { status: string }) => event.status).sort(),
+      ["queued", "received"],
+    );
+    assert.equal(
+      events.events.find((event: { status: string }) => event.status === "queued")?.runId,
+      created.run.id,
+    );
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server supports scoped memory review lifecycle", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   const memoryDir = await mkdtemp(join(tmpdir(), "agentic-memory-"));

@@ -226,6 +226,10 @@ runtime log streams.
 Provider-neutral service activity is stored in `tool_service_events`. Generated
 always-on tools should write inbound, outbound, and system events there with source
 identity, thread, and run links instead of creating provider-specific tables in the core.
+The generic `POST /api/tool-services/:name/inbound` endpoint is the first intake runner
+contract: a provider-specific module receives a message, forwards a normalized event to
+the core, and the core records the event, resolves channel identity, applies thread
+resolution, and creates a regular run.
 
 Missing tool capabilities can be persisted into `tool_build_requests`. These records are
 the durable handoff from runtime failure detection to the Tool Builder/Tool QA/Tool
