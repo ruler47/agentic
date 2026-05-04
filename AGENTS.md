@@ -242,6 +242,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   neutral always-on runtime event contract and in-memory store.
 - [src/tools/postgresToolServiceEventStore.ts](src/tools/postgresToolServiceEventStore.ts)
   - Postgres-backed `tool_service_events` runtime event store.
+- [src/tools/telegramBotServiceTool.ts](src/tools/telegramBotServiceTool.ts) - reference
+  provider module for the generic always-on runtime: polls Telegram, forwards normalized
+  inbound events, delivers neutral outbox events, and acknowledges provider delivery.
 - [src/tools/toolBuildProviders.ts](src/tools/toolBuildProviders.ts) - provider-backed
   generated tool source writer, isolated command QA runner, and metadata registrar.
 - [src/tools/fileTools.ts](src/tools/fileTools.ts) - sandboxed workspace file tools.
@@ -405,7 +408,16 @@ For documentation-only changes:
 - The generic service supervisor persists always-on lifecycle state and reconciles
   desired-running services on app startup. It also writes lifecycle logs for
   start/stop/restart/heartbeat/reconcile events and streams new log records to active UI
-  subscribers; durable process/webhook runners are still a roadmap item.
+  subscribers. Tools can optionally implement `startService(context)` to run an
+  in-process service loop under that supervisor; the app injects a base URL and secret
+  resolver and stops active service handles on shutdown without clearing the persisted
+  desired running state. Durable external process/webhook runners are still a roadmap
+  item.
+- The built-in `channel.telegram.bot` module is a reference always-on provider tool. It
+  resolves `secret.telegram.bot.token` (or `TELEGRAM_BOT_SECRET_HANDLE`), polls Telegram
+  updates, forwards text messages to the generic inbound endpoint with provider user/chat
+  ids, polls the neutral outbox, sends responses back to Telegram, and records sent/failed
+  acknowledgements. Channel identities must use provider `channel.telegram.bot`.
 - Outbound actions must be auditable and permission-checked before delivery.
 - Preserve trace parent links when adding orchestration steps; the UI depends on
   `parentSpanId` to draw direct arrows.

@@ -350,8 +350,12 @@ lifecycle state in `tool_service_statuses` when Postgres is configured, writes l
 logs to `tool_service_logs`, reconciles services whose desired state is `running` on app
 startup, streams new lifecycle records over `/api/tool-services/logs/events`, and exposes
 the lifecycle through `/api/tool-services` plus the Channels and Tool Detail pages. It
-does not yet spawn durable background processes or own webhook
-routing; those must be added as generic runners behind the same tool contract.
+can also run tools that implement `startService(context)`: the supervisor injects the
+internal API base URL, secret resolver, abort signal, and logger, then keeps the returned
+service handle for healthchecks and shutdown. Shutdown stops active handles without
+clearing the persisted desired running state, so app startup can reconcile services that
+should still be running. It does not yet spawn durable background processes or own
+webhook routing; those must be added as generic runners behind the same tool contract.
 
 Always-on tools can record provider-neutral runtime events in `tool_service_events`.
 Those events cover inbound messages, outbound deliveries, ignored/denied events, and
@@ -373,6 +377,13 @@ payload plus source identity links. Provider-specific generated services own the
 delivery step: they poll `GET /api/tool-services/:name/outbox`, send the response through
 their provider, then call `POST /api/tool-services/:name/outbox/:eventId/ack` to append a
 `sent` or `failed` evidence event and keep the queued outbox from being delivered again.
+
+`channel.telegram.bot` is the first built-in reference implementation of this contract.
+It is still an ordinary tool: it resolves a token through the secret-handle registry,
+polls Telegram, forwards source user/chat/message ids to the generic inbound endpoint,
+delivers neutral outbox events back through Telegram, and records sent/failed
+acknowledgements. A generated Telegram replacement should follow the same contract rather
+than adding Telegram-specific branches to the core runtime.
 
 Thread resolution should prefer provider metadata such as reply-to messages, chat/thread
 IDs, forum topics, or webhook thread IDs, then use a bounded classifier over recent

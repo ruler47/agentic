@@ -25,6 +25,7 @@ import { createWebApp } from "./http.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { FileReadTool, FileWriteTool } from "../tools/fileTools.js";
 import { WebSearchTool } from "../tools/webSearchTool.js";
+import { TelegramBotServiceTool } from "../tools/telegramBotServiceTool.js";
 import { DurableArtifactStore, FallbackArtifactStore, LocalArtifactStore } from "../artifacts/artifactStore.js";
 import { PostgresArtifactMetadataStore } from "../artifacts/postgresArtifactMetadataStore.js";
 import { S3ObjectStore, s3ConfigFromEnv } from "../artifacts/s3ObjectStore.js";
@@ -63,6 +64,7 @@ const skillMemory = pool ? new PostgresSkillMemory(pool, textEmbeddingProvider) 
 console.log(`Memory embedding provider: ${textEmbeddingProvider.name} (${textEmbeddingProvider.dimensions}d).`);
 const tools = new ToolRegistry();
 tools.register(new WebSearchTool());
+tools.register(new TelegramBotServiceTool());
 tools.register(new FileReadTool());
 tools.register(new FileWriteTool());
 tools.register(new ChartGenerateTool());
@@ -102,7 +104,11 @@ const toolServiceLogStore = pool
 const toolServiceEventStore = pool
   ? new PostgresToolServiceEventStore(pool)
   : new InMemoryToolServiceEventStore();
-const toolServiceSupervisor = new ToolServiceSupervisor(tools, toolServiceStatusStore, toolServiceLogStore);
+const secretHandleStore = pool ? new PostgresSecretHandleStore(pool) : new InMemorySecretHandleStore();
+const toolServiceSupervisor = new ToolServiceSupervisor(tools, toolServiceStatusStore, toolServiceLogStore, {
+  baseUrl: process.env.AGENTIC_INTERNAL_BASE_URL ?? `http://127.0.0.1:${port}`,
+  resolveSecret: secretHandleStore.resolve ? (handle) => secretHandleStore.resolve!(handle) : undefined,
+});
 const reconciledToolServices = await toolServiceSupervisor.reconcileDesiredServices();
 if (reconciledToolServices.length > 0) {
   console.log(`Reconciled ${reconciledToolServices.length} desired always-on tool service(s).`);
@@ -146,7 +152,6 @@ const modelProviderStore = pool
 const auditEventStore = pool ? new PostgresAuditEventStore(pool) : new InMemoryAuditEventStore();
 const groupProfileStore = pool ? new PostgresGroupProfileStore(pool) : new InMemoryGroupProfileStore();
 const userStore = pool ? new PostgresUserStore(pool) : new InMemoryUserStore();
-const secretHandleStore = pool ? new PostgresSecretHandleStore(pool) : new InMemorySecretHandleStore();
 const localArtifactStore = new LocalArtifactStore();
 const s3Config = s3ConfigFromEnv();
 const artifactStore =
@@ -201,4 +206,5 @@ server.listen(port, () => {
 
 server.on("close", () => {
   toolBuildWorker.stop();
+  void toolServiceSupervisor.stopAll();
 });

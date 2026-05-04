@@ -44,6 +44,96 @@ test("ToolServiceSupervisor starts, heartbeats, restarts, and stops always-on to
   assert.match((await supervisor.listLogs("service.echo")).map((log) => log.message).join("\n"), /Service stopped/);
 });
 
+test("ToolServiceSupervisor starts and stops generic service runtimes", async () => {
+  const registry = new ToolRegistry();
+  let started = 0;
+  let stopped = 0;
+  let aborted = false;
+  registry.register(serviceTool({
+    async startService(context) {
+      started += 1;
+      context.signal.addEventListener("abort", () => {
+        aborted = true;
+      });
+      return {
+        stop() {
+          stopped += 1;
+        },
+        async healthcheck() {
+          return { ok: true, detail: "runtime healthy" };
+        },
+      };
+    },
+  }));
+  const supervisor = new ToolServiceSupervisor(registry);
+
+  const service = await supervisor.start("service.echo");
+  const heartbeat = await supervisor.heartbeat("service.echo");
+  await supervisor.stop("service.echo");
+
+  assert.equal(started, 1);
+  assert.equal(stopped, 1);
+  assert.equal(aborted, true);
+  assert.equal(service.status, "running");
+  assert.equal(service.detail, "runtime healthy");
+  assert.equal(heartbeat.detail, "runtime healthy");
+});
+
+test("ToolServiceSupervisor stops runtime when start healthcheck fails", async () => {
+  const registry = new ToolRegistry();
+  let stopped = 0;
+  let aborted = false;
+  registry.register(serviceTool({
+    async startService(context) {
+      context.signal.addEventListener("abort", () => {
+        aborted = true;
+      });
+      return {
+        stop() {
+          stopped += 1;
+        },
+        async healthcheck() {
+          return { ok: false, detail: "runtime missing credential" };
+        },
+      };
+    },
+  }));
+  const supervisor = new ToolServiceSupervisor(registry);
+
+  const service = await supervisor.start("service.echo");
+
+  assert.equal(service.status, "failed");
+  assert.equal(service.detail, "runtime missing credential");
+  assert.equal(aborted, true);
+  assert.equal(stopped, 1);
+});
+
+test("ToolServiceSupervisor stops all active service runtimes", async () => {
+  const registry = new ToolRegistry();
+  let stopped = 0;
+  registry.register(serviceTool({
+    async startService() {
+      return {
+        stop() {
+          stopped += 1;
+        },
+        async healthcheck() {
+          return { ok: true, detail: "runtime healthy" };
+        },
+      };
+    },
+  }));
+  const supervisor = new ToolServiceSupervisor(registry);
+
+  await supervisor.start("service.echo");
+  await supervisor.stopAll();
+
+  const listed = await supervisor.list();
+  assert.equal(stopped, 1);
+  assert.equal(listed[0]?.status, "stopped");
+  assert.equal(listed[0]?.desiredState, "running");
+});
+
 test("ToolServiceSupervisor rejects non-service tools and marks failed healthchecks", async () => {
   const registry = new ToolRegistry();
   registry.register(serviceTool({
@@ -84,7 +174,16 @@ test("ToolServiceSupervisor preserves lifecycle state through the status store",
 test("ToolServiceSupervisor reconciles desired running services on startup", async () => {
   const registry = new ToolRegistry();
   let healthDetail = "initial health";
+  let started = 0;
   registry.register(serviceTool({
+    async startService() {
+      started += 1;
+      return {
+        async healthcheck() {
+          return { ok: true, detail: healthDetail };
+        },
+      };
+    },
     async healthcheck() {
       return { ok: true, detail: healthDetail };
     },
@@ -101,4 +200,5 @@ test("ToolServiceSupervisor reconciles desired running services on startup", asy
   assert.equal(reconciled.length, 1);
   assert.equal(reconciled[0]?.status, "running");
   assert.equal(reconciled[0]?.detail, "reconciled health");
+  assert.equal(started, 2);
 });

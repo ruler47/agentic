@@ -50,6 +50,25 @@ export type ToolExecutionContext = {
   };
 };
 
+export type ToolServiceContext = {
+  toolName: string;
+  now: Date;
+  signal: AbortSignal;
+  baseUrl?: string;
+  fetch?: typeof fetch;
+  resolveSecret?: (handle: string) => Promise<string | undefined>;
+  logger?: {
+    info(message: string, metadata?: Record<string, unknown>): void;
+    warn(message: string, metadata?: Record<string, unknown>): void;
+    error(message: string, metadata?: Record<string, unknown>): void;
+  };
+};
+
+export type ToolServiceHandle = {
+  stop?(): Promise<void> | void;
+  healthcheck?(): Promise<ToolHealth>;
+};
+
 export type ToolStorageContract = {
   schema?: string;
   tables?: string[];
@@ -81,5 +100,6 @@ export type Tool = {
   docsMarkdown?: string;
   examples?: ToolExample[];
   healthcheck?(): Promise<ToolHealth>;
+  startService?(context: ToolServiceContext): Promise<ToolServiceHandle>;
   run(input: ToolInput, context?: ToolExecutionContext): Promise<ToolResult>;
 };

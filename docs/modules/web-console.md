@@ -176,8 +176,12 @@ the app reconciles desired-running services on startup by refreshing their healt
 `GET /api/tool-services/logs` returns recent lifecycle log records written by the
 supervisor for starts, stops, restarts, heartbeats, and startup reconciliation.
 `GET /api/tool-services/logs/events` is an SSE stream that emits `service-log` events for
-new lifecycle records, filtered by `toolName` when provided. Process runners and webhook
-workers remain on the roadmap.
+new lifecycle records, filtered by `toolName` when provided. Tools can implement
+`startService(context)` to run an in-process loop under the same lifecycle controls; the
+supervisor injects the internal base URL and secret resolver, stores the returned handle,
+prefers handle healthchecks, and stops active handles during shutdown without clearing the
+persisted desired running state. Durable external process runners and webhook workers
+remain on the roadmap.
 
 `GET /api/tool-service-events` returns provider-neutral runtime events written by
 always-on generated tools. Events use `direction=inbound|outbound|system` and
@@ -198,6 +202,13 @@ for a service. `POST /api/tool-services/:name/outbox/:eventId/ack` accepts
 `status=sent|failed`, optional provider message evidence, and a sanitized payload; it
 records a linked outbound delivery event and removes the queued source event from future
 outbox polling.
+
+The built-in reference provider module `channel.telegram.bot` uses this exact contract:
+it resolves the `secret.telegram.bot.token` handle, polls Telegram updates, forwards text
+messages as normalized inbound events, polls neutral outbox events, sends Telegram
+messages, and acknowledges delivery. To accept a real Telegram user, create a channel
+identity with `provider=channel.telegram.bot`, `providerUserId=<telegram user id>`, and
+`allowStatus=allowed`.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as
@@ -742,8 +753,9 @@ secret handles, and the Builder creates a reusable TypeScript module with tests,
 registry metadata. The generic lifecycle UI should then show status, heartbeat, logs,
 last inbound/outbound events, and start/stop/restart controls.
 
-Telegram is the first expected always-on tool. It should be visible from the admin
-console, not hidden in logs.
+Telegram is the first reference always-on tool. The built-in `channel.telegram.bot`
+module is visible in the same lifecycle UI as any future generated bot/listener, not
+hidden in logs.
 
 Admin needs:
 

@@ -215,10 +215,15 @@ Tools with `startupMode=always-on` are exposed through a generic service supervi
 current supervisor persists lifecycle state in `tool_service_statuses` when Postgres is
 configured, calls each tool's healthcheck, and exposes start/stop/restart/heartbeat
 controls through `/api/tool-services`. On app startup it reconciles services whose
-desired state is `running` by refreshing their health status. This is enough for UI and
-lifecycle state across app restarts. Lifecycle events are stored in `tool_service_logs`
-for starts, stops, restarts, heartbeats, and startup reconciliation, and new lifecycle
-records are streamed through an in-process SSE channel. This is not a durable process
+desired state is `running` by refreshing their health status. Lifecycle events are stored
+in `tool_service_logs` for starts, stops, restarts, heartbeats, and startup
+reconciliation, and new lifecycle records are streamed through an in-process SSE channel.
+Tools may also implement `startService(context)` to run an in-process service loop under
+the supervisor. The context provides the tool name, abort signal, internal base URL,
+optional fetch implementation, secret resolver, and lifecycle logger. The supervisor
+keeps the returned service handle, prefers the handle healthcheck while the service is
+active, and stops active handles during shutdown without clearing the desired running
+state. This is useful for local/reference providers, but it is not a durable process
 manager yet. The next infrastructure step is to move long-running generated modules to
 queue-backed or process-backed workers that can survive app restarts and attach their own
 runtime log streams.
@@ -261,21 +266,26 @@ survive container recreation.
 
 ### Telegram
 
-Telegram is the first planned external user channel.
+Telegram is the first reference external user channel, implemented as a normal
+`startupMode=always-on` tool named `channel.telegram.bot`.
 
-Infrastructure needs:
+The tool:
 
-- bot token stored as a secret;
-- webhook endpoint or polling worker;
-- channel identity mapping from Telegram user ID to internal user;
-- whitelist enforcement before run creation;
-- inbound message persistence;
-- outbound message and reminder delivery records;
-- retry/error handling for provider failures;
-- admin-visible audit log.
+- resolves `secret.telegram.bot.token` or the handle named by `TELEGRAM_BOT_SECRET_HANDLE`;
+- polls Telegram Bot API updates;
+- forwards text messages to `POST /api/tool-services/channel.telegram.bot/inbound`;
+- passes Telegram user id, chat id, optional thread id, and message id as source
+  metadata;
+- relies on `channel_identities.provider=channel.telegram.bot` to whitelist and map
+  Telegram users before run creation;
+- polls `GET /api/tool-services/channel.telegram.bot/outbox`;
+- sends final answers or errors back to Telegram with `sendMessage`;
+- acknowledges delivery through `POST /api/tool-services/:name/outbox/:eventId/ack`.
 
-Telegram-originated runs should use the same run/event/artifact system as web-originated
-runs, with extra provenance fields such as chat ID and message ID.
+Telegram-originated runs use the same run/event/artifact system as web-originated runs,
+with extra provenance fields such as chat ID and message ID. Remaining production work is
+webhook mode, richer retry/backoff, operator-friendly whitelist management, and durable
+worker/process supervision outside the app process.
 
 ### Instance Isolation
 

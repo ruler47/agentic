@@ -124,7 +124,7 @@ hardcoded Bitcoin or market-analysis path:
 
 This is a product/architecture estimate, not a ticket counter.
 
-- Overall target platform: about 52-57% complete. The core run orchestration, traces,
+- Overall target platform: about 54-59% complete. The core run orchestration, traces,
   artifacts, memory lifecycle, tool registry, and model tier plumbing exist; autonomous
   recursive agents, broad generated tool families, always-on tool supervision, and policy
   enforcement still remain.
@@ -985,7 +985,7 @@ Implementation tasks:
 
 ## Phase 9: Always-On Tool Runtime
 
-Status: started.
+Status: partially implemented.
 
 Goal: let generated tools run not only as one-off calls, but also as durable services,
 listeners, bots, webhooks, and short-lived jobs. Telegram is the first expected
@@ -1008,31 +1008,41 @@ Always-on/generated service tools are normal tools with:
 Implementation tasks:
 
 - Add a generic service/listener tool contract and register all versions in
-  `tool_modules` with `startupMode=always-on`.
+  `tool_modules` with `startupMode=always-on`. DONE for the core contract:
+  `Tool.startService(context)` lets a TypeScript tool become an in-process service with
+  lifecycle health, abort handling, internal API access, secret resolution, and logs.
 - Add a service supervisor that can start, stop, restart, and healthcheck always-on
   generated modules without hardcoding provider-specific branches. PARTIAL:
   `ToolServiceSupervisor` exposes generic in-process lifecycle state, heartbeat detail,
   restart counts, audit events, Postgres-backed `tool_service_statuses`,
   Postgres-backed lifecycle logs, startup reconciliation for desired-running services,
-  `/api/tool-services`, lifecycle-log SSE streaming, and Channels/Tool Detail controls.
-  Remaining work is actual background process/webhook runners for generated modules.
+  `/api/tool-services`, lifecycle-log SSE streaming, Channels/Tool Detail controls, and
+  `startService` handle management. Remaining work is durable background process/webhook
+  runners for generated modules that should survive app restarts independently of the web
+  process.
 - Let Tool Builds create a Telegram bot when an operator provides bot-token secret handle,
-  desired behavior, whitelist policy, thread routing rules, and provider docs.
+  desired behavior, whitelist policy, thread routing rules, and provider docs. PARTIAL:
+  a built-in reference module `channel.telegram.bot` now demonstrates the exact generic
+  service contract. It polls Telegram, forwards normalized inbound messages to the core,
+  polls neutral outbox events, sends responses, and acknowledges delivery. Remaining work
+  is letting Tool Builder generate/customize this class from a plain operator request,
+  including whitelist rules and bot-specific behavior.
 - Add `channel_identities` mapping Telegram user IDs to users. PARTIAL: the durable table
-  and server-side resolver exist; the Telegram adapter/admin whitelist UI still needs to
-  write and maintain those rows.
+  and server-side resolver exist; the Telegram service passes Telegram `from.id` as
+  `sourceUserId`. Admin whitelist UI still needs a smoother "approve denied user" flow.
 - Add whitelist management in the admin UI.
-- Reject unknown Telegram users by default. PARTIAL: generic channel identity resolution
-  rejects unmapped `sourceUserId`; the Telegram adapter still needs to pass that field.
+- Reject unknown Telegram users by default. DONE for the generic path: inbound requests
+  from unmapped provider identities return `403`, and the Telegram service passes the
+  Telegram user id through `sourceUserId`.
 - Create runs with `channel=telegram`, `sourceChatId`, `sourceMessageId`, and requester.
   PARTIAL: HTTP run creation accepts channel/source metadata and resolves requester from
   allowed identities.
 - Resolve each Telegram message to a conversation thread or create a new thread.
-  PARTIAL through the generic intake path: `POST /api/tool-services/:name/inbound` accepts
-  normalized always-on events, resolves channel identity, runs the normal
-  conversation-thread resolver, creates a run, and records linked provider-neutral
-  service events. Remaining work is generated provider runners that call this endpoint
-  from real bot/webhook/listener processes.
+  PARTIAL through the generic intake path and reference Telegram service:
+  `POST /api/tool-services/:name/inbound` accepts normalized always-on events, resolves
+  channel identity, runs the normal conversation-thread resolver, creates a run, and
+  records linked provider-neutral service events. Remaining work is richer reply-to and
+  button-driven continuation behavior.
 - Support `/new`, `/continue`, reply-to, and low-confidence clarification behavior.
 - Store compact thread summaries and update them after each run.
 - Send final answers back to the requester through the originating always-on tool.
@@ -1041,8 +1051,9 @@ Implementation tasks:
   record linked to the run/thread/source identity with the final answer or error payload.
   `GET /api/tool-services/:name/outbox` now exposes undelivered queued responses, and
   `POST /api/tool-services/:name/outbox/:eventId/ack` records sent/failed delivery
-  evidence. Remaining work is generated provider runners that use those APIs
-  automatically.
+  evidence. The reference Telegram service now uses those APIs automatically. Remaining
+  work is retry/backoff policy, delivery failure UI, and generalized generated provider
+  runner templates.
 - Store inbound/outbound messages/events in an auditable table.
   DONE for the provider-neutral foundation: `tool_service_events` stores
   inbound/outbound/system records with source identity, thread/run links, sanitized

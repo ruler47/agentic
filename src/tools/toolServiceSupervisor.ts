@@ -1,5 +1,5 @@
 import { ToolRegistry } from "./registry.js";
-import { ToolHealth } from "./tool.js";
+import { ToolHealth, ToolServiceContext, ToolServiceHandle } from "./tool.js";
 import {
   InMemoryToolServiceLogStore,
   ToolServiceLogRecord,
@@ -15,11 +15,16 @@ import {
 
 export class ToolServiceSupervisor {
   private readonly logListeners = new Set<(record: ToolServiceLogRecord) => void>();
+  private readonly activeServices = new Map<string, {
+    controller: AbortController;
+    handle?: ToolServiceHandle;
+  }>();
 
   constructor(
     private readonly registry: Pick<ToolRegistry, "get" | "list">,
     private readonly statusStore: ToolServiceStatusStore = new InMemoryToolServiceStatusStore(),
     private readonly logStore: ToolServiceLogStore = new InMemoryToolServiceLogStore(),
+    private readonly serviceContext: Omit<ToolServiceContext, "toolName" | "now" | "signal" | "logger"> = {},
   ) {}
 
   async list(): Promise<ToolServiceStatus[]> {
@@ -45,6 +50,34 @@ export class ToolServiceSupervisor {
       detail: "Starting service and checking health.",
       updatedAt: now.toISOString(),
     });
+    let active = this.activeServices.get(toolName);
+    if (!active && tool.startService) {
+      const controller = new AbortController();
+      try {
+        const handle = await tool.startService({
+          ...this.serviceContext,
+          toolName,
+          now: new Date(),
+          signal: controller.signal,
+          logger: this.loggerFor(toolName),
+        });
+        active = { controller, handle };
+        this.activeServices.set(toolName, active);
+        await this.logLifecycle(toolName, "info", "Service runtime started.", starting);
+      } catch (error) {
+        controller.abort();
+        const failed = await this.write({
+          ...starting,
+          status: "failed",
+          detail: error instanceof Error ? error.message : "Service runtime failed to start.",
+          lastHealthOk: false,
+          updatedAt: new Date().toISOString(),
+        });
+        await this.logLifecycle(toolName, "error", "Service runtime failed to start.", failed);
+        return { ...failed, displayName: tool.displayName, description: tool.description };
+      }
+    }
+
     const health = await this.runHealthcheck(toolName);
     const nextNow = new Date().toISOString();
     const next = await this.write({
@@ -57,12 +90,16 @@ export class ToolServiceSupervisor {
       startedAt: health.ok ? (starting.startedAt ?? nextNow) : starting.startedAt,
       updatedAt: nextNow,
     });
+    if (!health.ok) {
+      await this.stopRuntime(toolName, "Service runtime stopped after failed start healthcheck.");
+    }
     await this.logLifecycle(toolName, health.ok ? "info" : "error", "Service start healthcheck completed.", next);
     return { ...next, displayName: tool.displayName, description: tool.description };
   }
 
   async stop(toolName: string): Promise<ToolServiceStatus> {
     const tool = this.requiredAlwaysOnTool(toolName);
+    await this.stopRuntime(toolName, "Service runtime stopped by operator.");
     const now = new Date().toISOString();
     const next = await this.write({
       ...(await this.statusFor(toolName)),
@@ -74,6 +111,23 @@ export class ToolServiceSupervisor {
     });
     await this.logLifecycle(toolName, "info", "Service stopped by operator.", next);
     return { ...next, displayName: tool.displayName, description: tool.description };
+  }
+
+  async stopAll(): Promise<void> {
+    const toolNames = Array.from(this.activeServices.keys());
+    for (const toolName of toolNames) {
+      await this.stopRuntime(toolName, "Service runtime stopped during supervisor shutdown.");
+      const existing = await this.statusFor(toolName);
+      const now = new Date().toISOString();
+      const next = await this.write({
+        ...existing,
+        status: "stopped",
+        detail: "Stopped during supervisor shutdown.",
+        stoppedAt: now,
+        updatedAt: now,
+      });
+      await this.logLifecycle(toolName, "info", "Service stopped during supervisor shutdown.", next);
+    }
   }
 
   async restart(toolName: string): Promise<ToolServiceStatus> {
@@ -121,7 +175,7 @@ export class ToolServiceSupervisor {
     for (const tool of tools) {
       const existing = await this.statusFor(tool.name);
       if (existing.desiredState === "running") {
-        const service = await this.heartbeat(tool.name);
+        const service = await this.start(tool.name);
         await this.logLifecycle(tool.name, "info", "Service reconciled on app startup.", service);
         reconciled.push(service);
       }
@@ -142,6 +196,17 @@ export class ToolServiceSupervisor {
 
   private async runHealthcheck(toolName: string): Promise<ToolHealth> {
     const tool = this.requiredAlwaysOnTool(toolName);
+    const active = this.activeServices.get(toolName);
+    if (active?.handle?.healthcheck) {
+      try {
+        return await active.handle.healthcheck();
+      } catch (error) {
+        return {
+          ok: false,
+          detail: error instanceof Error ? error.message : "Tool service runtime healthcheck failed.",
+        };
+      }
+    }
     if (!tool.healthcheck) {
       return { ok: true, detail: "No healthcheck registered; service lifecycle marked running." };
     }
@@ -152,6 +217,25 @@ export class ToolServiceSupervisor {
         ok: false,
         detail: error instanceof Error ? error.message : "Tool service healthcheck failed.",
       };
+    }
+  }
+
+  private async stopRuntime(toolName: string, message: string): Promise<void> {
+    const active = this.activeServices.get(toolName);
+    if (!active) return;
+    active.controller.abort();
+    try {
+      await active.handle?.stop?.();
+      await this.logLifecycle(toolName, "info", message, await this.statusFor(toolName));
+    } catch (error) {
+      await this.logLifecycle(
+        toolName,
+        "warn",
+        error instanceof Error ? `Service runtime stop reported: ${error.message}` : "Service runtime stop reported an error.",
+        await this.statusFor(toolName),
+      );
+    } finally {
+      this.activeServices.delete(toolName);
     }
   }
 
@@ -186,5 +270,40 @@ export class ToolServiceSupervisor {
       detail: status.detail,
     });
     for (const listener of this.logListeners) listener(record);
+  }
+
+  private loggerFor(toolName: string): ToolServiceContext["logger"] {
+    return {
+      info: (message, metadata) => {
+        void this.logStore.append({
+          toolName,
+          level: "info",
+          message,
+          detail: metadata ? JSON.stringify(metadata) : undefined,
+        }).then((record) => {
+          for (const listener of this.logListeners) listener(record);
+        });
+      },
+      warn: (message, metadata) => {
+        void this.logStore.append({
+          toolName,
+          level: "warn",
+          message,
+          detail: metadata ? JSON.stringify(metadata) : undefined,
+        }).then((record) => {
+          for (const listener of this.logListeners) listener(record);
+        });
+      },
+      error: (message, metadata) => {
+        void this.logStore.append({
+          toolName,
+          level: "error",
+          message,
+          detail: metadata ? JSON.stringify(metadata) : undefined,
+        }).then((record) => {
+          for (const listener of this.logListeners) listener(record);
+        });
+      },
+    };
   }
 }
