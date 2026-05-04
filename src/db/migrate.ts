@@ -446,6 +446,23 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     `);
 
     await pool.query(`
+      create table if not exists tool_service_logs (
+        id text primary key,
+        tool_name text not null,
+        level text not null check (level in ('info', 'warn', 'error')),
+        message text not null,
+        status text,
+        detail text,
+        created_at timestamptz not null
+      );
+    `);
+
+    await pool.query(`
+      create index if not exists tool_service_logs_tool_created_at_idx
+      on tool_service_logs(tool_name, created_at desc);
+    `);
+
+    await pool.query(`
       create table if not exists tool_module_versions (
         name text not null,
         version text not null,

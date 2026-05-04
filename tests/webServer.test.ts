@@ -814,6 +814,7 @@ test("web server exposes memory and tool registries", async () => {
     const stopped = await (
       await fetch(`${baseUrl}/api/tool-services/${encodeURIComponent("web.search")}/stop`, { method: "POST" })
     ).json();
+    const serviceLogs = await (await fetch(`${baseUrl}/api/tool-services/logs?toolName=web.search`)).json();
 
     assert.equal(memories.memories[0].title, "Reusable research funnel");
     assert.equal(tools.tools[0].name, "web.search");
@@ -822,6 +823,8 @@ test("web server exposes memory and tool registries", async () => {
     assert.equal(services.services[0].status, "stopped");
     assert.equal(started.service.status, "running");
     assert.equal(stopped.service.status, "stopped");
+    assert.equal(serviceLogs.logs[0].toolName, "web.search");
+    assert.match(serviceLogs.logs.map((log: { message: string }) => log.message).join("\n"), /Service stopped/);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

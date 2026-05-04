@@ -346,11 +346,11 @@ creation, conversation threading, audit events, and tool lifecycle status.
 The current implementation includes a generic in-process `ToolServiceSupervisor` for
 `startupMode=always-on` tools. It lists service tools, starts/stops/restarts them,
 refreshes health through their registered healthcheck, records audit events, persists
-lifecycle state in `tool_service_statuses` when Postgres is configured, reconciles
-services whose desired state is `running` on app startup, and exposes the lifecycle
-through `/api/tool-services` plus the Channels and Tool Detail pages. It does not yet
-spawn durable background processes or own webhook routing; those must be added as generic
-runners behind the same tool contract.
+lifecycle state in `tool_service_statuses` when Postgres is configured, writes lifecycle
+logs to `tool_service_logs`, reconciles services whose desired state is `running` on app
+startup, and exposes the lifecycle through `/api/tool-services` plus the Channels and
+Tool Detail pages. It does not yet spawn durable background processes or own webhook
+routing; those must be added as generic runners behind the same tool contract.
 
 Thread resolution should prefer provider metadata such as reply-to messages, chat/thread
 IDs, forum topics, or webhook thread IDs, then use a bounded classifier over recent

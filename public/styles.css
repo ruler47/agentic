@@ -2703,6 +2703,46 @@ textarea {
   background: rgba(148, 163, 184, 0.08);
 }
 
+.service-log-preview {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+}
+
+.service-log-preview.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.service-log-line {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.service-log-line span,
+.service-log-line small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.service-log-line strong {
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.service-log-line.error strong {
+  color: #fca5a5;
+}
+
+.service-log-line.warn strong {
+  color: #fbbf24;
+}
+
 .skeleton-block {
   min-height: 220px;
   border-radius: var(--radius-lg);

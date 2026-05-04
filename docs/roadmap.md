@@ -1013,9 +1013,9 @@ Implementation tasks:
   generated modules without hardcoding provider-specific branches. PARTIAL:
   `ToolServiceSupervisor` exposes generic in-process lifecycle state, heartbeat detail,
   restart counts, audit events, Postgres-backed `tool_service_statuses`,
-  startup reconciliation for desired-running services, `/api/tool-services`, and
-  Channels/Tool Detail controls. Remaining work is actual background process/webhook
-  runners for generated modules and streaming service logs.
+  Postgres-backed lifecycle logs, startup reconciliation for desired-running services,
+  `/api/tool-services`, and Channels/Tool Detail controls. Remaining work is actual
+  background process/webhook runners for generated modules and live log streaming.
 - Let Tool Builds create a Telegram bot when an operator provides bot-token secret handle,
   desired behavior, whitelist policy, thread routing rules, and provider docs.
 - Add `channel_identities` mapping Telegram user IDs to users. PARTIAL: the durable table
@@ -1040,7 +1040,7 @@ UI tasks:
 - Channels page, or a generic always-on tools page, with installed service versions,
   health, settings, whitelist mappings, inbound/outbound message history, and tool
   telemetry. PARTIAL: Channels now lists installed `startupMode=always-on` tools with
-  start/stop/restart controls and heartbeat/status cards.
+  start/stop/restart controls, heartbeat/status cards, and recent lifecycle logs.
 - Run Workspace source panel showing the originating channel message.
 - Admin-visible conversation log for channel-originated runs.
 - Conversation thread inspector with message-to-thread decision confidence and override

@@ -751,6 +751,18 @@ async function routeRequest(
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/tool-services/logs") {
+    sendJson(response, 200, {
+      logs: options.toolServiceSupervisor
+        ? await options.toolServiceSupervisor.listLogs(
+            url.searchParams.get("toolName") ?? undefined,
+            Number(url.searchParams.get("limit") ?? "100"),
+          )
+        : [],
+    });
+    return;
+  }
+
   const toolServiceActionMatch = url.pathname.match(/^\/api\/tool-services\/([^/]+)\/(start|stop|restart|heartbeat)$/);
   if (request.method === "POST" && toolServiceActionMatch) {
     if (!options.toolServiceSupervisor) {

@@ -56,6 +56,7 @@ const state = {
   memoryReviews: [],
   tools: [],
   toolServices: [],
+  toolServiceLogs: [],
   toolMigrations: [],
   buildRequests: [],
   secretHandles: [],
@@ -338,6 +339,7 @@ async function refreshData() {
       buildRequests,
       secretHandles,
       toolServices,
+      toolServiceLogs,
       tiers,
       modelProviders,
       modelCatalog,
@@ -355,6 +357,7 @@ async function refreshData() {
       fetchJson("/api/tool-build-requests").then((data) => data.requests ?? []),
       fetchJson("/api/secret-handles").then((data) => data.secretHandles ?? []),
       fetchJson("/api/tool-services").then((data) => data.services ?? []),
+      fetchJson("/api/tool-services/logs?limit=80").then((data) => data.logs ?? []),
       fetchJson("/api/settings/model-tiers").then((data) => data.tiers ?? []),
       fetchJson("/api/model-providers").then((data) => data.providers ?? []),
       fetchJson("/api/models/catalog").catch(() => undefined),
@@ -374,6 +377,7 @@ async function refreshData() {
       buildRequests,
       secretHandles,
       toolServices,
+      toolServiceLogs,
       tiers,
       modelProviders,
       modelCatalog,
@@ -2932,12 +2936,33 @@ function renderServiceCard(service) {
         <span>${escapeHtml(`${service.restartCount ?? 0} restarts`)}</span>
       </div>
       <small class="status-note">${escapeHtml(service.detail || "No service detail.")}</small>
+      ${renderServiceLogPreview(service.toolName)}
       <div class="card-actions">
         <button type="button" class="ghost-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="start">Start</button>
         <button type="button" class="ghost-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="restart">Restart</button>
         <button type="button" class="ghost-button danger-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="stop">Stop</button>
       </div>
     </article>
+  `;
+}
+
+function renderServiceLogPreview(toolName) {
+  const logs = state.toolServiceLogs
+    .filter((log) => log.toolName === toolName)
+    .slice(0, 4);
+  if (!logs.length) {
+    return `<div class="service-log-preview muted">No lifecycle logs yet.</div>`;
+  }
+  return `
+    <div class="service-log-preview">
+      ${logs.map((log) => `
+        <div class="service-log-line ${escapeHtml(log.level)}">
+          <span>${escapeHtml(formatRelative(log.createdAt))}</span>
+          <strong>${escapeHtml(log.message)}</strong>
+          <small>${escapeHtml(log.detail || log.status || "")}</small>
+        </div>
+      `).join("")}
+    </div>
   `;
 }
 
@@ -3566,6 +3591,7 @@ async function updateToolService(toolName, action) {
       data.service,
       ...state.toolServices.filter((service) => service.toolName !== data.service.toolName),
     ].sort((a, b) => a.toolName.localeCompare(b.toolName));
+    state.toolServiceLogs = await fetchJson("/api/tool-services/logs?limit=80").then((logsData) => logsData.logs ?? []);
     state.notice = {
       title: `Service ${action}`,
       body: `${data.service.displayName || data.service.toolName}: ${data.service.status}. ${data.service.detail}`,

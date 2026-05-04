@@ -1,5 +1,6 @@
 import { ToolRegistry } from "./registry.js";
 import { ToolHealth } from "./tool.js";
+import { InMemoryToolServiceLogStore, ToolServiceLogStore } from "./toolServiceLogStore.js";
 import {
   InMemoryToolServiceStatusStore,
   StoredToolServiceStatus,
@@ -12,6 +13,7 @@ export class ToolServiceSupervisor {
   constructor(
     private readonly registry: Pick<ToolRegistry, "get" | "list">,
     private readonly statusStore: ToolServiceStatusStore = new InMemoryToolServiceStatusStore(),
+    private readonly logStore: ToolServiceLogStore = new InMemoryToolServiceLogStore(),
   ) {}
 
   async list(): Promise<ToolServiceStatus[]> {
@@ -49,6 +51,7 @@ export class ToolServiceSupervisor {
       startedAt: health.ok ? (starting.startedAt ?? nextNow) : starting.startedAt,
       updatedAt: nextNow,
     });
+    await this.logLifecycle(toolName, health.ok ? "info" : "error", "Service start healthcheck completed.", next);
     return { ...next, displayName: tool.displayName, description: tool.description };
   }
 
@@ -63,6 +66,7 @@ export class ToolServiceSupervisor {
       stoppedAt: now,
       updatedAt: now,
     });
+    await this.logLifecycle(toolName, "info", "Service stopped by operator.", next);
     return { ...next, displayName: tool.displayName, description: tool.description };
   }
 
@@ -77,6 +81,7 @@ export class ToolServiceSupervisor {
       stoppedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
+    await this.logLifecycle(toolName, "info", "Service restart requested.", await this.statusFor(toolName));
     return this.start(toolName);
   }
 
@@ -97,6 +102,7 @@ export class ToolServiceSupervisor {
       lastHeartbeatAt: now,
       updatedAt: now,
     });
+    await this.logLifecycle(toolName, health.ok ? "info" : "error", "Service heartbeat completed.", next);
     return { ...next, displayName: tool.displayName, description: tool.description };
   }
 
@@ -109,10 +115,16 @@ export class ToolServiceSupervisor {
     for (const tool of tools) {
       const existing = await this.statusFor(tool.name);
       if (existing.desiredState === "running") {
-        reconciled.push(await this.heartbeat(tool.name));
+        const service = await this.heartbeat(tool.name);
+        await this.logLifecycle(tool.name, "info", "Service reconciled on app startup.", service);
+        reconciled.push(service);
       }
     }
     return reconciled;
+  }
+
+  async listLogs(toolName?: string, limit = 100) {
+    return this.logStore.list({ toolName, limit });
   }
 
   private async runHealthcheck(toolName: string): Promise<ToolHealth> {
@@ -145,5 +157,20 @@ export class ToolServiceSupervisor {
 
   private async write(status: StoredToolServiceStatus): Promise<StoredToolServiceStatus> {
     return this.statusStore.set(status);
+  }
+
+  private async logLifecycle(
+    toolName: string,
+    level: "info" | "warn" | "error",
+    message: string,
+    status: StoredToolServiceStatus,
+  ): Promise<void> {
+    await this.logStore.append({
+      toolName,
+      level,
+      message,
+      status: status.status,
+      detail: status.detail,
+    });
   }
 }

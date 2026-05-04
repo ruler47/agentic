@@ -234,6 +234,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   status store contract and in-memory lifecycle state.
 - [src/tools/postgresToolServiceStatusStore.ts](src/tools/postgresToolServiceStatusStore.ts)
   - Postgres-backed `tool_service_statuses` lifecycle state.
+- [src/tools/toolServiceLogStore.ts](src/tools/toolServiceLogStore.ts) - service
+  lifecycle log store contract and in-memory implementation.
+- [src/tools/postgresToolServiceLogStore.ts](src/tools/postgresToolServiceLogStore.ts) -
+  Postgres-backed `tool_service_logs` lifecycle log store.
 - [src/tools/toolBuildProviders.ts](src/tools/toolBuildProviders.ts) - provider-backed
   generated tool source writer, isolated command QA runner, and metadata registrar.
 - [src/tools/fileTools.ts](src/tools/fileTools.ts) - sandboxed workspace file tools.
@@ -345,8 +349,9 @@ For documentation-only changes:
 - `tests/generatedToolLoader.test.ts` covers compiled generated tool loading and contract
   rejection.
 - `tests/toolMetadataStore.test.ts` covers tool metadata and Tool Build Queue lifecycle.
-- `tests/toolServiceSupervisor.test.ts` covers generic always-on tool lifecycle state and
-  status-store persistence across supervisor instances.
+- `tests/toolServiceSupervisor.test.ts` covers generic always-on tool lifecycle state,
+  status-store persistence across supervisor instances, reconciliation, and lifecycle
+  logs.
 - `tests/toolMigrationStore.test.ts` covers tool-owned migration metadata lifecycle.
 - `tests/toolBuildWorkflow.test.ts` covers Builder/QA/Registrar orchestration and failed
   QA registration blocking.
@@ -382,8 +387,9 @@ For documentation-only changes:
   requests; they should not embed agent orchestration logic or become special runtime
   branches.
 - The generic service supervisor persists always-on lifecycle state and reconciles
-  desired-running services on app startup; durable process/webhook runners are still a
-  roadmap item.
+  desired-running services on app startup. It also writes lifecycle logs for
+  start/stop/restart/heartbeat/reconcile events; durable process/webhook runners are
+  still a roadmap item.
 - Outbound actions must be auditable and permission-checked before delivery.
 - Preserve trace parent links when adding orchestration steps; the UI depends on
   `parentSpanId` to draw direct arrows.

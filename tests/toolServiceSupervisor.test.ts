@@ -41,6 +41,7 @@ test("ToolServiceSupervisor starts, heartbeats, restarts, and stops always-on to
   assert.equal(restarted.restartCount, 1);
   assert.equal(stopped.status, "stopped");
   assert.equal(stopped.desiredState, "stopped");
+  assert.match((await supervisor.listLogs("service.echo")).map((log) => log.message).join("\n"), /Service stopped/);
 });
 
 test("ToolServiceSupervisor rejects non-service tools and marks failed healthchecks", async () => {

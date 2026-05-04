@@ -43,6 +43,8 @@ import { ToolBuildWorker } from "../tools/toolBuildWorker.js";
 import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
 import { InMemoryToolServiceStatusStore } from "../tools/toolServiceStatusStore.js";
 import { PostgresToolServiceStatusStore } from "../tools/postgresToolServiceStatusStore.js";
+import { InMemoryToolServiceLogStore } from "../tools/toolServiceLogStore.js";
+import { PostgresToolServiceLogStore } from "../tools/postgresToolServiceLogStore.js";
 import {
   BrowserScreenshotToolBuildProvider,
   CommandToolQaRunner,
@@ -92,7 +94,10 @@ const reloadGeneratedTools = async () => {
 const toolServiceStatusStore = pool
   ? new PostgresToolServiceStatusStore(pool)
   : new InMemoryToolServiceStatusStore();
-const toolServiceSupervisor = new ToolServiceSupervisor(tools, toolServiceStatusStore);
+const toolServiceLogStore = pool
+  ? new PostgresToolServiceLogStore(pool)
+  : new InMemoryToolServiceLogStore();
+const toolServiceSupervisor = new ToolServiceSupervisor(tools, toolServiceStatusStore, toolServiceLogStore);
 const reconciledToolServices = await toolServiceSupervisor.reconcileDesiredServices();
 if (reconciledToolServices.length > 0) {
   console.log(`Reconciled ${reconciledToolServices.length} desired always-on tool service(s).`);

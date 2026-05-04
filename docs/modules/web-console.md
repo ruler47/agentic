@@ -136,6 +136,7 @@ POST /api/tools/generated-modules
 DELETE /api/tools/generated-modules/:name
 GET /api/tools/health
 GET /api/tool-services
+GET /api/tool-services/logs?toolName=optional&limit=100
 POST /api/tool-services/:name/start
 POST /api/tool-services/:name/stop
 POST /api/tool-services/:name/restart
@@ -166,7 +167,9 @@ actions are provider-neutral: they call the tool healthcheck, update runtime ser
 state, and write audit events without hardcoding Telegram, Slack, webhooks, or any other
 channel type. State persists through `tool_service_statuses` when Postgres is configured;
 the app reconciles desired-running services on startup by refreshing their health status.
-Process runners, webhook workers, and streaming service logs remain on the roadmap.
+`GET /api/tool-services/logs` returns recent lifecycle log records written by the
+supervisor for starts, stops, restarts, heartbeats, and startup reconciliation. Process
+runners, webhook workers, and live log streaming remain on the roadmap.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as

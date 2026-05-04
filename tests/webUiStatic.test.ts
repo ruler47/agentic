@@ -129,7 +129,9 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /function runToolHealthchecks/);
   assert.match(app, /data-action="run-tool-health"/);
   assert.match(app, /\/api\/tool-services/);
+  assert.match(app, /\/api\/tool-services\/logs/);
   assert.match(app, /function renderServiceCard/);
+  assert.match(app, /function renderServiceLogPreview/);
   assert.match(app, /function updateToolService/);
   assert.match(app, /data-action="tool-service-action"/);
   assert.match(app, /\/api\/tools\/health/);
