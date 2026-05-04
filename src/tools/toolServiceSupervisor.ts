@@ -1,6 +1,10 @@
 import { ToolRegistry } from "./registry.js";
 import { ToolHealth } from "./tool.js";
-import { InMemoryToolServiceLogStore, ToolServiceLogStore } from "./toolServiceLogStore.js";
+import {
+  InMemoryToolServiceLogStore,
+  ToolServiceLogRecord,
+  ToolServiceLogStore,
+} from "./toolServiceLogStore.js";
 import {
   InMemoryToolServiceStatusStore,
   StoredToolServiceStatus,
@@ -10,6 +14,8 @@ import {
 } from "./toolServiceStatusStore.js";
 
 export class ToolServiceSupervisor {
+  private readonly logListeners = new Set<(record: ToolServiceLogRecord) => void>();
+
   constructor(
     private readonly registry: Pick<ToolRegistry, "get" | "list">,
     private readonly statusStore: ToolServiceStatusStore = new InMemoryToolServiceStatusStore(),
@@ -127,6 +133,13 @@ export class ToolServiceSupervisor {
     return this.logStore.list({ toolName, limit });
   }
 
+  onLog(listener: (record: ToolServiceLogRecord) => void): () => void {
+    this.logListeners.add(listener);
+    return () => {
+      this.logListeners.delete(listener);
+    };
+  }
+
   private async runHealthcheck(toolName: string): Promise<ToolHealth> {
     const tool = this.requiredAlwaysOnTool(toolName);
     if (!tool.healthcheck) {
@@ -165,12 +178,13 @@ export class ToolServiceSupervisor {
     message: string,
     status: StoredToolServiceStatus,
   ): Promise<void> {
-    await this.logStore.append({
+    const record = await this.logStore.append({
       toolName,
       level,
       message,
       status: status.status,
       detail: status.detail,
     });
+    for (const listener of this.logListeners) listener(record);
   }
 }

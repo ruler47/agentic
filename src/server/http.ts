@@ -751,6 +751,11 @@ async function routeRequest(
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/tool-services/logs/events") {
+    await streamToolServiceLogs(request, response, options, url.searchParams.get("toolName") ?? undefined);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/tool-services/logs") {
     sendJson(response, 200, {
       logs: options.toolServiceSupervisor
@@ -1923,6 +1928,43 @@ async function streamRunEvents(
 
   request.on("close", close);
   await writeRun();
+}
+
+async function streamToolServiceLogs(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: WebAppOptions,
+  toolName?: string,
+): Promise<void> {
+  if (!options.toolServiceSupervisor) {
+    sendJson(response, 503, { error: "Tool service supervisor is not configured" });
+    return;
+  }
+
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-store, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+
+  let closed = false;
+  const heartbeatTimer = setInterval(() => {
+    if (!closed) response.write(": heartbeat\n\n");
+  }, 15000);
+  const unsubscribe = options.toolServiceSupervisor.onLog((log) => {
+    if (closed || (toolName && log.toolName !== toolName)) return;
+    response.write(`event: service-log\ndata: ${JSON.stringify({ log })}\n\n`);
+  });
+
+  const close = () => {
+    closed = true;
+    clearInterval(heartbeatTimer);
+    unsubscribe();
+  };
+
+  request.on("close", close);
+  response.write(": connected\n\n");
 }
 
 function runStreamSignature(run: {

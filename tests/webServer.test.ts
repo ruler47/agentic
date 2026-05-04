@@ -831,6 +831,65 @@ test("web server exposes memory and tool registries", async () => {
   }
 });
 
+test("web server streams tool service lifecycle logs as server-sent events", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const serviceTool = {
+    name: "web.search",
+    version: "1.0.0",
+    description: "Searches the web.",
+    capabilities: ["web-search"],
+    startupMode: "always-on" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+    outputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+    async healthcheck() {
+      return { ok: true, detail: "healthy" };
+    },
+    async run() {
+      return { ok: true, content: "ok" };
+    },
+  };
+  const serviceRegistry = {
+    list() {
+      return [serviceTool];
+    },
+    get(name: string) {
+      return name === serviceTool.name ? serviceTool : undefined;
+    },
+  };
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolRegistry: serviceRegistry,
+    toolServiceSupervisor: new ToolServiceSupervisor(serviceRegistry),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const streamResponse = await fetch(`${baseUrl}/api/tool-services/logs/events?toolName=web.search`);
+    const eventPromise = readFirstSseEvent(streamResponse);
+    await fetch(`${baseUrl}/api/tool-services/${encodeURIComponent("web.search")}/start`, { method: "POST" });
+    const event = await eventPromise;
+
+    assert.equal(streamResponse.status, 200);
+    assert.match(streamResponse.headers.get("content-type") ?? "", /text\/event-stream/);
+    assert.equal(event.event, "service-log");
+    assert.equal(event.data.log.toolName, "web.search");
+    assert.equal(event.data.log.message, "Service start healthcheck completed.");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server supports scoped memory review lifecycle", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   const memoryDir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
@@ -1746,9 +1805,10 @@ async function readFirstSseEvent(response: Response): Promise<{ event: string; d
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const boundary = buffer.indexOf("\n\n");
-      if (boundary >= 0) {
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
         const chunk = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
         const event =
           chunk
             .split("\n")
@@ -1759,6 +1819,10 @@ async function readFirstSseEvent(response: Response): Promise<{ event: string; d
           .filter((line) => line.startsWith("data: "))
           .map((line) => line.slice("data: ".length))
           .join("\n");
+        if (!data) {
+          boundary = buffer.indexOf("\n\n");
+          continue;
+        }
 
         return { event, data: JSON.parse(data) };
       }

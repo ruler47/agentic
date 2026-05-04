@@ -87,12 +87,14 @@ const state = {
   error: undefined,
   notice: undefined,
   stream: undefined,
+  serviceLogStream: undefined,
 };
 
 window.addEventListener("hashchange", () => {
   state.route = parseRoute();
   syncActiveFromRoute();
   connectRunStream(activeRun()?.id);
+  connectServiceLogStream();
   render();
 });
 
@@ -388,6 +390,7 @@ async function refreshData() {
     });
     syncActiveFromRoute();
     connectRunStream(activeRun()?.id);
+    connectServiceLogStream();
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);
     state.loading = false;
@@ -4117,6 +4120,33 @@ function connectRunStream(id) {
   });
   stream.addEventListener("error", () => stream.close());
   state.stream = stream;
+}
+
+function connectServiceLogStream() {
+  if (state.serviceLogStream || !window.EventSource) return;
+
+  const stream = new EventSource("/api/tool-services/logs/events");
+  stream.addEventListener("service-log", (event) => {
+    const data = JSON.parse(event.data);
+    if (data.log) {
+      upsertServiceLog(data.log);
+      render();
+    }
+  });
+  stream.addEventListener("error", () => {
+    stream.close();
+    state.serviceLogStream = undefined;
+  });
+  state.serviceLogStream = stream;
+}
+
+function upsertServiceLog(log) {
+  state.toolServiceLogs = [
+    log,
+    ...state.toolServiceLogs.filter((candidate) => candidate.id !== log.id),
+  ]
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, 80);
 }
 
 function buildTraceNodes(events) {

@@ -388,8 +388,8 @@ For documentation-only changes:
   branches.
 - The generic service supervisor persists always-on lifecycle state and reconciles
   desired-running services on app startup. It also writes lifecycle logs for
-  start/stop/restart/heartbeat/reconcile events; durable process/webhook runners are
-  still a roadmap item.
+  start/stop/restart/heartbeat/reconcile events and streams new log records to active UI
+  subscribers; durable process/webhook runners are still a roadmap item.
 - Outbound actions must be auditable and permission-checked before delivery.
 - Preserve trace parent links when adding orchestration steps; the UI depends on
   `parentSpanId` to draw direct arrows.
@@ -433,6 +433,9 @@ For documentation-only changes:
 - The web console uses `GET /api/runs/:id/events` as an additive SSE stream for live run
   snapshots and falls back to polling; keep `GET /api/runs` and `GET /api/runs/:id`
   backwards compatible.
+- The web console uses `GET /api/tool-services/logs/events` as an additive SSE stream for
+  live always-on tool lifecycle logs; keep `GET /api/tool-services/logs` as the durable
+  history/fallback endpoint.
 - Inbound channel messages without an explicit `threadId` must pass through
   `resolveConversationThread()`. This keeps Telegram/Slack-style follow-ups in the
   matching source chat/thread while allowing explicit `/new` and independent tasks to

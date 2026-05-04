@@ -216,10 +216,11 @@ configured, calls each tool's healthcheck, and exposes start/stop/restart/heartb
 controls through `/api/tool-services`. On app startup it reconciles services whose
 desired state is `running` by refreshing their health status. This is enough for UI and
 lifecycle state across app restarts. Lifecycle events are stored in `tool_service_logs`
-for starts, stops, restarts, heartbeats, and startup reconciliation, but this is not a
-durable process manager yet. The next infrastructure step is to move long-running
-generated modules to queue-backed or process-backed workers that can survive app restarts
-and stream live service logs.
+for starts, stops, restarts, heartbeats, and startup reconciliation, and new lifecycle
+records are streamed through an in-process SSE channel. This is not a durable process
+manager yet. The next infrastructure step is to move long-running generated modules to
+queue-backed or process-backed workers that can survive app restarts and attach their own
+runtime log streams.
 
 Missing tool capabilities can be persisted into `tool_build_requests`. These records are
 the durable handoff from runtime failure detection to the Tool Builder/Tool QA/Tool
