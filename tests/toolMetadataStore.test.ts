@@ -115,6 +115,7 @@ test("InMemoryToolMetadataStore registers generated modules with conflict checks
     description: "Captures browser screenshots.",
     capabilities: ["browser-screenshot"],
     modulePath: "src/tools/generated/browser-screenshotTool.ts",
+    changeSummary: "Initial generated browser screenshot module.",
   });
 
   assert.equal(generated.source, "generated");
@@ -200,6 +201,7 @@ test("InMemoryToolMetadataStore promotes generated replacements only after versi
     capabilities: ["browser-screenshot", "artifact-generation"],
     modulePath: "src/tools/generated/browser-screenshotTool.ts",
     testPath: "tests/generated/browser-screenshotTool.test.ts",
+    changeSummary: "Adds stricter artifact QA and screenshot test coverage.",
   });
   const [stored] = await store.list();
 
@@ -208,6 +210,8 @@ test("InMemoryToolMetadataStore promotes generated replacements only after versi
   assert.equal(stored?.version, "1.1.0");
   assert.equal(stored?.versions?.[0]?.version, "1.1.0");
   assert.equal(stored?.versions?.[0]?.active, true);
+  assert.match(stored?.versions?.[0]?.changeSummary ?? "", /stricter artifact QA/);
+  assert.deepEqual(stored?.versions?.[0]?.capabilities, ["browser-screenshot", "artifact-generation"]);
   assert.deepEqual(await store.listVersions("generated.browser.screenshot"), stored?.versions);
   assert.equal((await store.activateVersion("generated.browser.screenshot", "1.1.0")).version, "1.1.0");
   assert.deepEqual(stored?.capabilities, ["browser-screenshot", "artifact-generation"]);

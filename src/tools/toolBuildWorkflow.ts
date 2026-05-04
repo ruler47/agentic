@@ -15,6 +15,7 @@ export type ToolBuildOutput = {
   outputSchema?: ToolSchema;
   requiredSecretHandles?: string[];
   docsMarkdown?: string;
+  changeSummary?: string;
 };
 
 export type ToolBuildAttemptContext = {

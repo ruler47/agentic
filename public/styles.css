@@ -883,6 +883,44 @@ textarea {
   font-size: 13px;
 }
 
+.version-history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.version-history-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.022);
+  padding: 12px;
+}
+
+.version-history-card.active {
+  border-color: rgba(53, 230, 193, 0.34);
+  background: rgba(53, 230, 193, 0.055);
+}
+
+.version-history-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.version-history-header span {
+  border: 1px solid var(--border-muted);
+  border-radius: 999px;
+  color: var(--accent);
+  padding: 3px 8px;
+}
+
+.version-history-card small,
+.version-history-card p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .context-block a {
   color: var(--accent);
   text-decoration: none;

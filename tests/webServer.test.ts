@@ -1136,7 +1136,8 @@ test("web server infers tool build capability from human request fields", async 
     assert.equal(body.request.displayName, "Wallet Risk Lookup");
     assert.equal(body.request.capability, "api.wallet-risk-lookup");
     assert.equal(body.request.contract.toolName, "generated.api.wallet.risk.lookup");
-    assert.equal(body.request.credentialNotes, "api key 12312");
+    assert.match(body.request.credentialNotes, /raw operator notes were redacted/);
+    assert.doesNotMatch(body.request.credentialNotes, /12312/);
     assert.deepEqual(body.request.credentialHandles, ["secret.api.wallet-risk-lookup"]);
     assert.equal(await secretHandleStore.resolve?.("secret.api.wallet-risk-lookup"), "12312");
   } finally {
@@ -1173,6 +1174,8 @@ test("web server stores only extracted credential material from tool build notes
 
     assert.equal(response.status, 201);
     assert.deepEqual(body.request.credentialHandles, ["secret.api.gl-aml"]);
+    assert.match(body.request.credentialNotes, /raw operator notes were redacted/);
+    assert.doesNotMatch(body.request.credentialNotes, /ZS60A6F/);
     assert.equal(await secretHandleStore.resolve?.("secret.api.gl-aml"), "ZS60A6F-BBDMF51-HJ6P1EK-G7PEM0C");
   } finally {
     await close(server);
@@ -1206,6 +1209,7 @@ test("web server registers generated tool metadata with conflict checks", async 
         startupMode: "on-demand",
         modulePath: "src/tools/generated/browser-screenshotTool.ts",
         testPath: "tests/generated/browser-screenshotTool.test.ts",
+        changeSummary: "Initial generated screenshot module.",
       }),
     });
     const createBody = await createResponse.json();
@@ -1221,6 +1225,9 @@ test("web server registers generated tool metadata with conflict checks", async 
       }),
     });
     const tools = await (await fetch(`${baseUrl}/api/tools`)).json();
+    const versions = await (
+      await fetch(`${baseUrl}/api/tools/generated-modules/${encodeURIComponent("generated.browser.screenshot")}/versions`)
+    ).json();
     const deleteResponse = await fetch(
       `${baseUrl}/api/tools/generated-modules/${encodeURIComponent("generated.browser.screenshot")}`,
       { method: "DELETE" },
@@ -1232,6 +1239,8 @@ test("web server registers generated tool metadata with conflict checks", async 
     assert.equal(createBody.tool.displayName, "Browser Screenshot");
     assert.equal(conflictResponse.status, 400);
     assert.equal(tools.tools[0].source, "generated");
+    assert.equal(versions.versions[0].version, "1.0.0");
+    assert.match(versions.versions[0].changeSummary, /Initial generated screenshot/);
     assert.equal(deleteResponse.status, 200);
     assert.equal(afterDelete.tools.length, 0);
   } finally {

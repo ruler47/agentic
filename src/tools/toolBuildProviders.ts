@@ -32,6 +32,7 @@ type ToolBuildProviderOutput = {
   outputSchema?: ToolSchema;
   requiredSecretHandles?: string[];
   docsMarkdown?: string;
+  changeSummary?: string;
   files: GeneratedFile[];
 };
 
@@ -69,6 +70,7 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
       outputSchema: output.outputSchema,
       requiredSecretHandles: output.requiredSecretHandles,
       docsMarkdown: output.docsMarkdown,
+      changeSummary: output.changeSummary,
     };
   }
 }
@@ -160,6 +162,7 @@ export class MetadataToolRegistrar implements ToolRegistrar {
       testPath: output.testPath,
       requiredSecretHandles: output.requiredSecretHandles ?? request.credentialHandles,
       docsMarkdown: output.docsMarkdown,
+      changeSummary: output.changeSummary ?? formatToolVersionChangeSummary(request, output),
     };
 
     if (request.replacesVersion) {
@@ -173,6 +176,24 @@ export class MetadataToolRegistrar implements ToolRegistrar {
 
     return toolName;
   }
+}
+
+function formatToolVersionChangeSummary(request: ToolBuildRequest, output: ToolBuildOutput): string {
+  const header = request.replacesVersion
+    ? `Version ${request.contract.version} replaces ${request.replacesVersion}.`
+    : `Initial generated version ${request.contract.version}.`;
+  const feedback = request.feedback?.trim()
+    ? `\n\nOperator feedback:\n${request.feedback.trim()}`
+    : "";
+  return [
+    header,
+    `Build request: ${request.id}.`,
+    output.summary,
+    request.reason.trim() ? `Request context:\n${request.reason.trim()}` : undefined,
+    feedback || undefined,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export class BrowserScreenshotToolBuildProvider implements ToolBuildProvider {

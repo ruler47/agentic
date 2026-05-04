@@ -159,7 +159,13 @@ keeps the stable system name visible as metadata.
 durable catalog with name/version conflict checks. Generated modules are stored as
 `disabled` until executable loading and final health checks promote them. The loader only
 imports compiled project-local modules whose exported Tool contract matches the registered
-metadata.
+metadata. Metadata may include a `changeSummary`/changelog explaining why the version was
+created, what changed, and which request or feedback drove it.
+
+`GET /api/tools/generated-modules/:name/versions` returns the version history for a
+generated tool, including active status, module/test paths, capabilities, required secret
+handles, changelog, health detail, and per-version usage counters. The Tools inspector
+uses this to show a compact version history below the active-version selector.
 
 `DELETE /api/tools/generated-modules/:name` removes a generated tool from the durable
 catalog and unregisters it from the active runtime when loaded. Built-in tools are
@@ -187,10 +193,13 @@ same durable contract the runtime uses after `tool-missing`. If `capability` is 
 the server infers a stable internal capability from the name/description, then generates a
 system name such as `generated.api.aml.score` while avoiding already-used names where
 possible. Trace Lab's span inspector uses this endpoint for contextual "Create tool
-request / bug" forms, preserving the selected run/span context in the build request.
-Credential notes are stored as sensitive operator setup context; UI cards only show that
-credentials were provided and builder instructions forbid leaking raw credential material
-into source, tests, prompts, traces, memory, or artifacts.
+request / bug" forms, preserving the selected run/span context in the build request. If
+the span belongs to an installed tool, the form also includes the tool name and active
+version so the request becomes a versioned rework candidate instead of a disconnected
+bug card. Free-form credential notes are converted to a scoped secret handle when
+possible; after extraction the queued request keeps only a redacted note pointing to the
+handle, and builder instructions forbid leaking raw credential material into source,
+tests, prompts, traces, memory, or artifacts.
 
 The Tool Builds UI intentionally keeps the form simple:
 
@@ -199,8 +208,8 @@ The Tool Builds UI intentionally keeps the form simple:
   and acceptance notes.
 - **Credentials**: optional operator notes such as an API key, bot token, or secret
   reference. The request API extracts the actual key-like value into a scoped secret
-  handle when possible, keeps the operator prose as request context, and the builder must
-  not expose raw material in generated outputs.
+  handle when possible, redacts raw operator notes from the durable queue, and the builder
+  must not expose raw material in generated outputs.
 - **QA criteria**: prefilled universal requirements for TypeScript, tests, manual smoke,
   schemas, and credential non-leakage. Operators can append case-specific checks.
 
@@ -209,7 +218,9 @@ description, capabilities/tags, source/status, declared settings/secrets, docs/e
 and schemas. Generated tool detail panels expose delete, active-version selection, and a
 "Request change / new version" form. That rework form creates a normal Tool Build request
 with `replacesToolName` and `replacesVersion`, so fixes and behavior changes follow the
-same Builder → QA → Registrar → promotion path as missing capabilities.
+same Builder → QA → Registrar → promotion path as missing capabilities. The same inspector
+shows per-version changelog cards so operators can see what changed before activating or
+rolling back a generated version.
 
 `GET /api/tool-build-requests/:id` and `PATCH /api/tool-build-requests/:id` provide the
 builder lifecycle handoff. Builder, QA, and Registrar agents can mark a request as

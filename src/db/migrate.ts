@@ -390,6 +390,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         settings_schema jsonb,
         storage_contract jsonb,
         docs_markdown text,
+        change_summary text,
         examples jsonb not null default '[]',
         success_count integer not null default 0 check (success_count >= 0),
         failure_count integer not null default 0 check (failure_count >= 0),
@@ -412,6 +413,12 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table tool_modules add column if not exists settings_schema jsonb;`);
     await pool.query(`alter table tool_modules add column if not exists storage_contract jsonb;`);
     await pool.query(`alter table tool_modules add column if not exists docs_markdown text;`);
+    await pool.query(`alter table tool_modules add column if not exists change_summary text;`);
+    await pool.query(`
+      update tool_modules
+      set change_summary = 'Generated tool metadata existed before changelog tracking; inspect docs, tests, and linked Tool Build requests for the original change context.'
+      where source = 'generated' and change_summary is null;
+    `);
     await pool.query(`alter table tool_modules add column if not exists examples jsonb not null default '[]';`);
     await pool.query(`alter table tool_modules add column if not exists success_count integer not null default 0;`);
     await pool.query(`alter table tool_modules add column if not exists failure_count integer not null default 0;`);
@@ -440,6 +447,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         settings_schema jsonb,
         storage_contract jsonb,
         docs_markdown text,
+        change_summary text,
         examples jsonb not null default '[]',
         success_count integer not null default 0 check (success_count >= 0),
         failure_count integer not null default 0 check (failure_count >= 0),
@@ -449,6 +457,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         primary key (name, version)
       );
     `);
+    await pool.query(`alter table tool_module_versions add column if not exists change_summary text;`);
 
     await pool.query(`
       insert into tool_module_versions (
@@ -456,16 +465,24 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         input_schema, output_schema, module_path, test_path, source, status,
         last_health_ok, last_health_detail, required_configuration_keys,
         required_secret_handles, settings_schema, storage_contract, docs_markdown,
-        examples, success_count, failure_count, last_success_at, last_failure_at, updated_at
+        change_summary, examples, success_count, failure_count, last_success_at, last_failure_at, updated_at
       )
       select name, version, true, display_name, description, capabilities, startup_mode,
              input_schema, output_schema, module_path, test_path, source, status,
              last_health_ok, last_health_detail, required_configuration_keys,
              required_secret_handles, settings_schema, storage_contract, docs_markdown,
-             examples, success_count, failure_count, last_success_at, last_failure_at, updated_at
+             change_summary, examples, success_count, failure_count, last_success_at, last_failure_at, updated_at
       from tool_modules
       where source = 'generated'
       on conflict (name, version) do nothing;
+    `);
+    await pool.query(`
+      update tool_module_versions
+      set change_summary = case
+        when active then 'Active generated version existed before changelog tracking; inspect docs, tests, and linked Tool Build requests for the original change context.'
+        else 'Historical generated version existed before changelog tracking; retained for rollback and comparison.'
+      end
+      where change_summary is null;
     `);
 
     await pool.query(`

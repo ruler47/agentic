@@ -621,6 +621,24 @@ async function routeRequest(
     return;
   }
 
+  const generatedToolVersionsMatch = url.pathname.match(/^\/api\/tools\/generated-modules\/([^/]+)\/versions$/);
+  if (request.method === "GET" && generatedToolVersionsMatch) {
+    if (!options.toolMetadataStore) {
+      sendJson(response, 503, { error: "Tool metadata store is not configured" });
+      return;
+    }
+
+    try {
+      const name = decodeURIComponent(generatedToolVersionsMatch[1] ?? "");
+      sendJson(response, 200, { versions: await options.toolMetadataStore.listVersions(name) });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid generated tool version request",
+      });
+    }
+    return;
+  }
+
   const generatedToolDeleteMatch = url.pathname.match(/^\/api\/tools\/generated-modules\/([^/]+)$/);
   if (request.method === "DELETE" && generatedToolDeleteMatch) {
     if (!options.toolMetadataStore) {
@@ -2414,6 +2432,9 @@ async function attachInlineCredentialHandle<TInput extends ReturnType<typeof par
   return {
     ...input,
     credentialHandles: handle ? [handle] : input.credentialHandles,
+    credentialNotes: handle
+      ? `Credential material was stored in ${handle}; raw operator notes were redacted before queueing.`
+      : input.credentialNotes,
   };
 }
 
@@ -2686,6 +2707,7 @@ function parseGeneratedToolModuleInput(value: unknown) {
     settingsSchema: parseOptionalToolSchema(candidate.settingsSchema, "settingsSchema"),
     storage: parseOptionalStorageContract(candidate.storage),
     docsMarkdown: parseOptionalText(candidate.docsMarkdown),
+    changeSummary: parseOptionalText(candidate.changeSummary),
     examples: parseOptionalToolExamples(candidate.examples),
   };
 }

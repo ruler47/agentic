@@ -522,17 +522,21 @@ Remaining Phase 3 gaps:
   buttons, full-text-ish Tools-page search across labels/system ids/descriptions/tags/docs
   and schemas, `DELETE /api/tools/generated-modules/:name`, built-in protection,
   versioned rework requests from the Tools page, generated replacement promotion, and
-  active-version selection through `POST /api/tools/generated-modules/:name/activate-version`.
-  Remaining work is richer version history/changelog, operator tickets linked directly to
-  generated tool versions, and visual diffs between replacement versions.
+  active-version selection through `POST /api/tools/generated-modules/:name/activate-version`,
+  `GET /api/tools/generated-modules/:name/versions`, and Tools-page version-history
+  changelog cards with paths, health detail, required secret handles, and usage counters.
+  Remaining work is visual diffs between replacement versions and approval gates for
+  sensitive promotions.
 - Treat channel adapters as tools, not special one-off screens: Telegram, WhatsApp, Slack,
   email, and custom inbound/outbound adapters should be built through Tool Builds,
   registered in the tool registry, and then monitored on the Channels runtime page.
 - Store credentials as secret handles, never in prompts, memory, artifacts, or source.
   DONE for the metadata/API/UI layer: `secret_handles` stores provider, label, scopes, and
   `secretRef`, rejects raw token/password/apiKey/value payloads, and audits create/delete.
-  Remaining work is wiring generated tools/model providers to request handles through a
-  policy-aware resolver.
+  DONE for Tool Build forms that extract inline key-like values into scoped secret handles
+  and redact raw credential notes before queueing. Remaining work is encrypted or external
+  secret-manager-backed storage for inline material and policy-aware runtime resolution
+  for every generated tool/model/channel adapter.
 - Add instance/user tool policy so a tool can be installed globally but enabled only for
   this instance, specific roles, or specific users.
 - Move generated-tool QA from temporary workspace isolation to a stricter worker service
@@ -578,10 +582,16 @@ Remaining Phase 3 gaps:
   failures, and the operator comment.
 - Add span-context bug/rework creation from Trace Lab. PARTIAL: the selected span inspector
   now opens a prefilled Tool Build request form with run id, span id, task summary, actor,
-  activity, status, caller, and output/error context. Remaining work: classify the issue
-  with a local LLM before build creation, target the exact tool contract/version for tool
-  spans, include rejected artifact QA evidence automatically, and route site limitations to
-  failure memory instead of tool rebuilds.
+  activity, status, caller, output/error context, and the exact installed tool/version when
+  the span actor maps to a registered tool. Remaining work: classify the issue with a
+  local LLM before build creation, include rejected artifact QA evidence automatically, and
+  route site limitations to failure memory instead of tool rebuilds.
+- Let agents request a versioned tool improvement, wait for the QA-approved promoted
+  replacement, reload the registry, and retry the tool call once when a current tool is
+  close but insufficient. PARTIAL: prompts now require workers to identify reusable tool
+  improvement needs with tool name/current behavior/desired behavior/acceptance test; the
+  runtime already does this for missing capabilities. Remaining work is automatic
+  insufficient-tool rework execution and bounded retry.
 - Next roadmap focus after the background worker: scoped semantic memory with group,
   user, and thread facts; review queue; confidence; accepted/rejected fact lifecycle.
 

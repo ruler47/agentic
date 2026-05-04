@@ -14,6 +14,7 @@ Your job is to decide whether to answer directly or delegate focused subtasks to
 Prefer delegation when the task requires multiple knowledge domains, research, coding, review, or uncertainty reduction.
 Return concise, practical outputs.
 Before returning any result to a caller, perform a brief self-check: identify what you are about to return, whether it actually satisfies the requested evidence/output, whether artifacts or tool results are meaningful rather than empty/irrelevant, and whether one retry or a clear limitation statement is needed.
+If an available tool is close to the needed capability but its current version cannot satisfy the request, describe the required tool change as a reusable versioned improvement rather than inventing a one-off workaround. Future runtime may turn that into a Tool Build rework request, wait for QA/promotion, and retry the tool.
 `.trim();
 
 export function classifyPrompt(task: string, memories: SkillMemoryEntry[]): string {
@@ -122,6 +123,7 @@ Return:
 Rules:
 - Before returning, self-check your own output and evidence. Ask: what am I giving back, does it satisfy the subtask, are artifacts/tool results useful and relevant, and should I retry or clearly report a blocker instead of passing weak output upward?
 - If the result is weak, irrelevant, empty, unsupported, or has unusable artifacts, say what failed and what retry/alternative is needed instead of presenting it as success.
+- If a registered tool failed or returned an incomplete result, explicitly state whether this is operator error, external blocker, credential/policy problem, or a reusable tool improvement request. Include the tool name, current behavior, desired behavior, and acceptance test for a new version.
 - For screenshots or browser artifacts, treat blank pages, endless loaders, login walls, bot checks, access-denied pages, unrelated pages, and missing task-relevant content as unusable proof. Retry another source or clearly report that useful proof could not be produced.
 - If provided tool evidence includes artifact URLs, cite those exact URLs.
 - Never claim that a file, screenshot, chart, PDF, or dataset was created unless an artifact URL is present in the tool evidence or dependency context.

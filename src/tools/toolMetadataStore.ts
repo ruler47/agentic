@@ -7,8 +7,16 @@ export type ToolModuleVersionSummary = {
   version: string;
   active: boolean;
   status: ToolModuleStatus;
+  displayName?: string;
+  description?: string;
+  capabilities?: string[];
   modulePath?: string;
   testPath?: string;
+  requiredSecretHandles?: string[];
+  changeSummary?: string;
+  lastHealthDetail?: string;
+  successCount?: number;
+  failureCount?: number;
   updatedAt: string;
 };
 
@@ -32,6 +40,7 @@ export type ToolModuleMetadata = {
   settingsSchema?: ToolSchema;
   storage?: ToolStorageContract;
   docsMarkdown?: string;
+  changeSummary?: string;
   examples: ToolExample[];
   successCount: number;
   failureCount: number;
@@ -57,6 +66,7 @@ export type GeneratedToolModuleInput = {
   settingsSchema?: ToolSchema;
   storage?: ToolStorageContract;
   docsMarkdown?: string;
+  changeSummary?: string;
   examples?: ToolExample[];
 };
 
@@ -186,6 +196,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       settingsSchema: input.settingsSchema ?? existing?.settingsSchema,
       storage: input.storage ?? existing?.storage,
       docsMarkdown: input.docsMarkdown ?? existing?.docsMarkdown,
+      changeSummary: input.changeSummary ?? existing?.changeSummary,
       examples: input.examples ?? existing?.examples ?? [],
       successCount: existing?.successCount ?? 0,
       failureCount: existing?.failureCount ?? 0,
@@ -225,6 +236,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       settingsSchema: input.settingsSchema,
       storage: input.storage,
       docsMarkdown: input.docsMarkdown,
+      changeSummary: input.changeSummary,
       examples: input.examples ?? [],
       successCount: existing.successCount,
       failureCount: existing.failureCount,
@@ -268,8 +280,16 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
         version: module.version,
         active: module.version === activeVersion,
         status: module.status,
+        displayName: module.displayName,
+        description: module.description,
+        capabilities: [...module.capabilities],
         modulePath: module.modulePath,
         testPath: module.testPath,
+        requiredSecretHandles: [...(module.requiredSecretHandles ?? [])],
+        changeSummary: module.changeSummary,
+        lastHealthDetail: module.lastHealthDetail,
+        successCount: module.successCount,
+        failureCount: module.failureCount,
         updatedAt: module.updatedAt,
       },
     ];
@@ -291,6 +311,7 @@ export function toolToMetadata(tool: Tool, updatedAt = new Date().toISOString())
     settingsSchema: tool.settingsSchema,
     storage: tool.storage,
     docsMarkdown: tool.docsMarkdown,
+    changeSummary: "Builtin tool synced from source.",
     examples: tool.examples ?? [],
     successCount: 0,
     failureCount: 0,

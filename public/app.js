@@ -1379,7 +1379,11 @@ function selfCheckFromPayload(payload) {
 }
 
 function renderSpanToolRequestForm(node) {
-  const capability = inferCapabilityFromSpan(node);
+  const relatedTool = findToolForSpan(node);
+  const capability = relatedTool?.capabilities?.[0] ?? inferCapabilityFromSpan(node);
+  const activeVersion = relatedTool
+    ? normalizeToolVersions(relatedTool).find((version) => version.active)?.version ?? relatedTool.version
+    : "";
   const reason = [
     `Trace span needs operator review or tool improvement.`,
     `Run: ${activeRun()?.id ?? "unknown"}`,
@@ -1403,6 +1407,11 @@ function renderSpanToolRequestForm(node) {
         <input type="hidden" name="sourceSpanId" value="${escapeHtml(node.spanId)}" />
         <input type="hidden" name="taskSummary" value="${escapeHtml(activeRun()?.task ?? "")}" />
         <input type="hidden" name="capability" value="${escapeHtml(capability)}" />
+        <input type="hidden" name="displayName" value="${escapeHtml(relatedTool?.displayName || relatedTool?.name || "")}" />
+        <input type="hidden" name="desiredToolName" value="${escapeHtml(relatedTool?.name || "")}" />
+        <input type="hidden" name="replacesToolName" value="${escapeHtml(relatedTool?.name || "")}" />
+        <input type="hidden" name="replacesVersion" value="${escapeHtml(activeVersion || "")}" />
+        <input type="hidden" name="feedback" value="${escapeHtml(reason)}" />
         <label>
           <span>Context and requested fix</span>
           <textarea name="reason" required>${escapeHtml(reason)}</textarea>
@@ -1417,6 +1426,17 @@ Prove the produced result is useful evidence and does not leak credentials.</tex
       </form>
     </details>
   `;
+}
+
+function findToolForSpan(node) {
+  const candidates = [
+    node.actor,
+    node.payload?.tool,
+    node.payload?.toolName,
+  ]
+    .filter(Boolean)
+    .map(String);
+  return state.tools.find((tool) => candidates.includes(tool.name));
 }
 
 function renderConversationsList() {
@@ -2166,6 +2186,7 @@ function renderToolDetail(tool) {
       ${contextBlock("Examples", formatToolExamples(tool))}
       ${contextBlock("Schema", formatToolSchemas(tool))}
       ${renderToolVersionPicker(tool)}
+      ${renderToolVersionHistory(tool)}
       ${renderToolReworkForm(tool, failureProblem)}
       ${tool.source === "generated" ? `<button type="button" class="ghost-button danger-button" data-action="delete-tool" data-tool-name="${tool.name}">Delete generated tool</button>` : ""}
     </div>
@@ -2194,6 +2215,39 @@ function renderToolVersionPicker(tool) {
         <button type="submit" class="ghost-button">Activate</button>
       </form>
       <p class="context-note">Change requests create a new version; the highest generated version is promoted by default after QA.</p>
+    </section>
+  `;
+}
+
+function renderToolVersionHistory(tool) {
+  if (tool.source !== "generated") return "";
+  const versions = normalizeToolVersions(tool);
+  return `
+    <section class="context-block version-history-block">
+      <h4>Version history</h4>
+      <div class="version-history-list">
+        ${versions
+          .map((version) => {
+            const telemetry = [
+              `${version.successCount ?? 0} ok`,
+              `${version.failureCount ?? 0} failed`,
+              version.requiredSecretHandles?.length ? `secrets: ${version.requiredSecretHandles.join(", ")}` : "no secrets",
+            ].join(" · ");
+            return `
+              <article class="version-history-card ${version.active ? "active" : ""}">
+                <div class="version-history-header">
+                  <strong>v${escapeHtml(version.version)}</strong>
+                  <span>${version.active ? "active" : escapeHtml(version.status ?? "available")}</span>
+                </div>
+                <p>${escapeHtml(version.changeSummary || version.description || "No changelog recorded for this version.")}</p>
+                <small>${escapeHtml(telemetry)}</small>
+                <small>${escapeHtml(version.modulePath || "No module path")}${version.testPath ? ` · ${escapeHtml(version.testPath)}` : ""}</small>
+                ${version.lastHealthDetail ? `<small>${escapeHtml(version.lastHealthDetail)}</small>` : ""}
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
     </section>
   `;
 }
@@ -3435,6 +3489,10 @@ async function createToolBuildRequest(form) {
         sourceRunId: String(formData.get("sourceRunId") ?? "") || undefined,
         sourceSpanId: String(formData.get("sourceSpanId") ?? "") || undefined,
         taskSummary: String(formData.get("taskSummary") ?? "") || undefined,
+        desiredToolName: String(formData.get("desiredToolName") ?? "") || undefined,
+        replacesToolName: String(formData.get("replacesToolName") ?? "") || undefined,
+        replacesVersion: String(formData.get("replacesVersion") ?? "") || undefined,
+        feedback: String(formData.get("feedback") ?? "") || undefined,
         qaCriteria,
         credentialHandles: parseListInput(formData.get("credentialHandles")),
         credentialNotes: String(formData.get("credentialNotes") ?? "") || undefined,

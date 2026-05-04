@@ -549,6 +549,21 @@ For documentation-only changes:
   capabilities, status/source, docs/examples, settings/secrets, and schemas. Generated
   tool detail cards expose active-version selection and "Request change / new version",
   which creates a Tool Build request with `replacesToolName` and `replacesVersion`.
+  Generated tool versions carry `changeSummary` changelog metadata and are exposed through
+  `GET /api/tools/generated-modules/:name/versions`; the Tools UI shows version history
+  cards with changelog, paths, required secret handles, health detail, and usage counters.
+- Trace Lab contextual "Create tool request / bug" forms should preserve run/span/task
+  context. When the selected span actor is an installed tool, include the current tool
+  name and active version so the request can become a versioned rework rather than a
+  disconnected bug report.
+- Tool Build forms may accept free-form credential notes, but after extracting a key-like
+  value into a scoped secret handle the durable request must redact the raw note. Do not
+  log or document raw keys in generated source, tests, traces, memory, artifacts, or final
+  responses.
+- Agent prompts now tell workers to identify reusable tool improvement requests when a
+  current tool is close but insufficient. Runtime support for automatically waiting on the
+  new version and retrying is still roadmap work; missing-capability builds can already be
+  run synchronously by the HTTP runtime when a Tool Build workflow is configured.
 - The generated Global Ledger AML adapter treats root `totalFunds` as the final AML Score.
   `sources[].funds` is source-level evidence; expose unique source names with
   top-level `sources[].share` percentages instead of using nested `funds.score` as the
