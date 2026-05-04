@@ -990,6 +990,7 @@ test("web server exposes tool build requests", async () => {
         capability: "pdf-report",
         displayName: "PDF Report",
         reason: "Need PDF report artifacts.",
+        startupMode: "always-on",
         requiredInputs: ["markdown"],
         requiredOutputs: ["artifact"],
         credentialHandles: ["secret.pdf.vendor"],
@@ -998,6 +999,8 @@ test("web server exposes tool build requests", async () => {
     });
     const response = await fetch(`${baseUrl}/api/tool-build-requests`);
     const created = await createdResponse.json();
+    const sourceRunResponse = await fetch(`${baseUrl}/api/runs/${encodeURIComponent(created.request.sourceRunId)}`);
+    const sourceRun = await sourceRunResponse.json();
     const updateResponse = await fetch(
       `${baseUrl}/api/tool-build-requests/${encodeURIComponent(created.request.id)}`,
       {
@@ -1057,6 +1060,14 @@ test("web server exposes tool build requests", async () => {
     assert.equal(created.request.displayName, "PDF Report");
     assert.equal(created.request.contract.displayName, "PDF Report");
     assert.equal(created.request.contract.toolName, "generated.pdf.report");
+    assert.equal(created.request.contract.startupMode, "always-on");
+    assert.equal(sourceRunResponse.status, 200);
+    assert.equal(sourceRun.run.status, "completed");
+    assert.match(sourceRun.run.result.finalAnswer, /Tool Build request/);
+    assert.equal(
+      sourceRun.run.events.some((event: { type: string }) => event.type === "tool-build-requested"),
+      true,
+    );
     assert.deepEqual(created.request.credentialHandles, ["secret.pdf.vendor"]);
     assert.equal(created.request.credentialNotes, "api key 12312, secret 8978");
     assert.ok(

@@ -136,9 +136,11 @@ The web console is the administrative and operator interface. It should support:
 - managing tools and credentials;
 - reviewing outbound messages and broadcast history.
 
-### Telegram Bot
+### Always-On Bot Example: Telegram
 
-Telegram is a first target channel for real user requests.
+Telegram is a first target always-on tool for real user requests. It should not require a
+separate hardcoded Telegram subsystem: an operator should be able to request a generated
+tool with a bot token, whitelist rule, thread behavior, and `startupMode=always-on`.
 
 Target behavior:
 
@@ -158,7 +160,7 @@ Outbound Telegram actions must be explicit and auditable. The runtime should dis
 between answering the requester and sending a message to another person or to the group.
 
 Telegram thread resolution should use deterministic metadata first and LLM classification
-second:
+second inside the generated always-on module before it creates a normal run:
 
 ```text
 reply-to message / forum topic / explicit command
@@ -213,13 +215,14 @@ This should be treated like an external integration, not like shared internal me
 
 The tool registry should support user-assisted integration creation through Tool Builds,
 not through a separate API onboarding product area. API integrations, Telegram/WhatsApp/
-Slack adapters, browser capabilities, and other missing skills all enter the same
+Slack bots, webhooks, browser capabilities, and other missing skills all enter the same
 Builder -> QA -> Registrar lifecycle.
 
 Target workflow:
 
 ```text
 admin provides a tool name, docs/instructions, optional credentials, and desired use cases
+  -> operator chooses startup mode: on-demand, always-on, or ephemeral
   -> agent reads docs and proposes a TypeScript tool contract
   -> Tool Builder creates module and tests
   -> Tool QA verifies behavior against docs and smoke calls
@@ -238,6 +241,7 @@ Tool metadata should include:
 - safety classification;
 - examples;
 - health status;
+- startup mode and lifecycle expectations;
 - owner/admin;
 - audit settings.
 

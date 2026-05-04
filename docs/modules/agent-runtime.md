@@ -58,9 +58,9 @@ const result = await agent.run(task, {
 
 The runtime does not know about HTTP, browsers, databases, or queues. That separation is
 intentional: another project can import the runtime and provide its own interface.
-The same rule should apply to Telegram and future channels: channel adapters resolve
-identity and permissions before calling the runtime, instead of embedding provider logic
-inside agent execution.
+The same rule should apply to Telegram and future channels: always-on generated tools
+resolve identity and permissions before calling the runtime, instead of embedding provider
+logic inside agent execution.
 
 ## Future Context Contract
 

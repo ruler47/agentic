@@ -369,3 +369,18 @@ test("createToolBuildContract derives safe generic paths from arbitrary capabili
   assert.equal(contract.startupMode, "on-demand");
   assert.ok(contract.acceptanceCriteria.every((criterion) => criterion.length > 0));
 });
+
+test("createToolBuildContract preserves requested always-on startup mode", () => {
+  const contract = createToolBuildContract({
+    capability: "messaging.telegram.bot",
+    reason: "Create a persistent Telegram bot listener.",
+    startupMode: "always-on",
+  });
+
+  assert.equal(contract.startupMode, "always-on");
+  assert.ok(
+    contract.builderInstructions.some((instruction) =>
+      instruction.includes('Use startupMode "always-on"'),
+    ),
+  );
+});

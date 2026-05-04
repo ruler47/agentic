@@ -804,9 +804,18 @@ async function routeRequest(
         parseToolBuildRequestInput(await readJsonBody<unknown>(request)),
         options,
       );
-      const buildRequest = await options.toolBuildRequestStore.create(
-        await attachInlineCredentialHandle(requestInput, options),
-      );
+      let sanitizedRequestInput = await attachInlineCredentialHandle(requestInput, options);
+      const rootRun = sanitizedRequestInput.sourceRunId
+        ? undefined
+        : await createToolBuildRootRun(sanitizedRequestInput, options);
+      sanitizedRequestInput = {
+        ...sanitizedRequestInput,
+        sourceRunId: sanitizedRequestInput.sourceRunId ?? rootRun?.id,
+      };
+      const buildRequest = await options.toolBuildRequestStore.create(sanitizedRequestInput);
+      if (rootRun) {
+        await completeToolBuildRootRun(rootRun.id, buildRequest, options);
+      }
       await recordAudit(options, {
         instanceId: "instance-local",
         actorId: "user-admin",
@@ -984,6 +993,7 @@ async function routeRequest(
         feedback,
         replacesToolName: original.replacesToolName,
         replacesVersion: original.replacesVersion,
+        startupMode: original.contract.startupMode,
       }, options);
       const reworkRequest = await options.toolBuildRequestStore.create(reworkRequestInput);
 
@@ -1499,6 +1509,94 @@ async function createRunFromRequest(
         }
       : undefined,
   });
+}
+
+async function createToolBuildRootRun(
+  input: ReturnType<typeof parseToolBuildRequestInput>,
+  options: WebAppOptions,
+): Promise<AgentRunRecord | undefined> {
+  const task = [
+    input.replacesToolName
+      ? `Create a versioned tool change request for ${input.replacesToolName}`
+      : `Create a tool build request for ${input.displayName ?? input.capability}`,
+    `Capability: ${input.capability}`,
+    `Startup mode: ${input.startupMode ?? "on-demand"}`,
+    input.feedback ? `Operator feedback: ${input.feedback}` : undefined,
+    input.reason ? `Request summary: ${input.reason}` : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const run = await options.runStore.create(task, {
+    instanceId: "instance-local",
+    requesterUserId: "user-admin",
+    channel: "web",
+  });
+  await options.runStore.markRunning(run.id);
+  await options.runStore.appendEvent(run.id, createRunEvent({
+    spanId: "tool-build-root",
+    type: "run-started",
+    actor: "tool-builder",
+    activity: "coordination",
+    status: "started",
+    title: "Tool change root run",
+    detail: `Queued a root operator run for ${input.displayName ?? input.capability}.`,
+    payload: {
+      capability: input.capability,
+      displayName: input.displayName,
+      desiredToolName: input.desiredToolName,
+      replacesToolName: input.replacesToolName,
+      replacesVersion: input.replacesVersion,
+      startupMode: input.startupMode ?? "on-demand",
+    },
+  }));
+  return options.runStore.get(run.id);
+}
+
+async function completeToolBuildRootRun(
+  runId: string,
+  buildRequest: Awaited<ReturnType<ToolBuildRequestStore["create"]>>,
+  options: WebAppOptions,
+): Promise<void> {
+  await options.runStore.appendEvent(runId, createRunEvent({
+    spanId: "tool-build-request",
+    parentSpanId: "tool-build-root",
+    type: "tool-build-requested",
+    actor: "tool-builder",
+    activity: "tool",
+    status: "completed",
+    title: "Tool Build request created",
+    detail: `${buildRequest.displayName ?? buildRequest.capability} is waiting for Builder/QA/Registrar lifecycle.`,
+    payload: {
+      requestId: buildRequest.id,
+      capability: buildRequest.capability,
+      desiredToolName: buildRequest.desiredToolName,
+      replacesToolName: buildRequest.replacesToolName,
+      replacesVersion: buildRequest.replacesVersion,
+      startupMode: buildRequest.contract.startupMode,
+      modulePath: buildRequest.contract.modulePath,
+      testPath: buildRequest.contract.testPath,
+    },
+  }));
+  await options.runStore.complete(runId, {
+    finalAnswer: `Tool Build request ${buildRequest.id} was created for ${buildRequest.displayName ?? buildRequest.capability}. The Builder/QA/Registrar lifecycle will continue from the Tool Builds queue.`,
+    complexity: {
+      mode: "direct",
+      reason: "Operator tool build/change requests are root runs that hand off to the Tool Builder lifecycle.",
+      domains: ["tool-builder"],
+      riskLevel: buildRequest.contract.startupMode === "always-on" ? "medium" : "low",
+    },
+    subtasks: [],
+    workerResults: [],
+    reviews: [],
+  });
+}
+
+function createRunEvent(input: Omit<AgentEvent, "id" | "timestamp">): AgentEvent {
+  return {
+    ...input,
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    timestamp: new Date().toISOString(),
+  };
 }
 
 async function resolveRunContext(
@@ -2408,6 +2506,7 @@ function parseToolBuildRequestInput(value: unknown) {
     feedback: typeof candidate.feedback === "string" ? candidate.feedback : undefined,
     replacesToolName: typeof candidate.replacesToolName === "string" ? candidate.replacesToolName : undefined,
     replacesVersion: typeof candidate.replacesVersion === "string" ? candidate.replacesVersion : undefined,
+    startupMode: parseStartupMode(candidate.startupMode),
   };
 }
 

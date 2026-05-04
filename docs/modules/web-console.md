@@ -187,9 +187,10 @@ contracts. The System Inventory panel shows the latest build queue items next to
 memories.
 
 `POST /api/tool-build-requests` accepts a human tool request payload (`displayName`,
-`reason`, optional credential notes, optional source run/span IDs, task summary,
-inputs/outputs/QA criteria, and optional low-level `credentialHandles`) and creates the
-same durable contract the runtime uses after `tool-missing`. If `capability` is omitted,
+`reason`, optional `startupMode`, optional credential notes, optional source run/span IDs,
+task summary, inputs/outputs/QA criteria, and optional low-level `credentialHandles`) and
+creates the same durable contract the runtime uses after `tool-missing`. If `capability`
+is omitted,
 the server infers a stable internal capability from the name/description, then generates a
 system name such as `generated.api.aml.score` while avoiding already-used names where
 possible. Trace Lab's span inspector uses this endpoint for contextual "Create tool
@@ -199,7 +200,9 @@ version so the request becomes a versioned rework candidate instead of a disconn
 bug card. Free-form credential notes are converted to a scoped secret handle when
 possible; after extraction the queued request keeps only a redacted note pointing to the
 handle, and builder instructions forbid leaking raw credential material into source,
-tests, prompts, traces, memory, or artifacts.
+tests, prompts, traces, memory, or artifacts. When a direct operator request has no
+`sourceRunId`, the server creates a root run and links it back through `sourceRunId` so
+the build/change request is visible in Runs and Trace Lab.
 
 The Tool Builds UI intentionally keeps the form simple:
 
@@ -210,6 +213,9 @@ The Tool Builds UI intentionally keeps the form simple:
   reference. The request API extracts the actual key-like value into a scoped secret
   handle when possible, redacts raw operator notes from the durable queue, and the builder
   must not expose raw material in generated outputs.
+- **Run mode**: `on-demand` for normal call-time tools, `always-on` for bots/webhooks/
+  listeners/services that should stay alive and expose health/lifecycle, or `ephemeral`
+  for short-lived jobs.
 - **QA criteria**: prefilled universal requirements for TypeScript, tests, manual smoke,
   schemas, and credential non-leakage. Operators can append case-specific checks.
 
@@ -244,7 +250,7 @@ generated tools into the active registry. Failed QA reports can be returned to t
 for bounded retry attempts before a request becomes `qa_failed`.
 
 `GET /api/secret-handles` and `POST /api/secret-handles` expose the credential reference
-registry used by Tool Builds, generated tools, channel adapters, and future remote model
+registry used by Tool Builds, generated tools, always-on modules, and future remote model
 providers. A secret handle stores a provider (`env`, `external`, or UI-created `inline`),
 label, scopes, and `secretRef` such as `TELEGRAM_BOT_TOKEN`, a vault path, or the scoped
 inline credential material created from a Tool Build form. Raw values (`token`,
@@ -620,11 +626,11 @@ Users:
 
 Channels:
 
-- installed channel adapter health;
-- whitelist and mapped users for adapters that support them;
+- installed always-on tool health;
+- whitelist and mapped users for integrations that support them;
 - incoming/outgoing message history;
 - denied inbound attempts;
-- future channel adapters created through Tool Builds.
+- future bots/listeners/webhooks created through Tool Builds.
 
 Conversations:
 
@@ -665,7 +671,7 @@ Models:
 Tool Builds:
 
 - missing capability requests;
-- API-docs onboarding and channel-adapter requests;
+- API-docs onboarding and always-on integration requests;
 - human tool requests where the server infers stable capability ids such as
   `api.aml.score` from the display name and description;
 - docs/endpoints/examples in the request description and optional sensitive credential
@@ -683,9 +689,17 @@ Policies:
 - Telegram whitelist rules;
 - inter-instance federation policies.
 
-## Telegram Channel UX
+## Always-On Tool UX
 
-The Telegram integration should be visible from the admin console, not hidden in logs.
+External intake such as Telegram should be modeled as an always-on generated tool module,
+not as a special channel branch. The operator describes the desired bot/listener/webhook
+behavior in Tool Builds, selects `startupMode=always-on`, provides credentials through
+secret handles, and the Builder creates a reusable TypeScript module with tests, QA, and
+registry metadata. The generic lifecycle UI should then show status, heartbeat, logs,
+last inbound/outbound events, and start/stop/restart controls.
+
+Telegram is the first expected always-on tool. It should be visible from the admin
+console, not hidden in logs.
 
 Admin needs:
 
@@ -701,7 +715,7 @@ Admin needs:
 Run pages should show whether a run came from Telegram, which user sent it, which chat it
 came from, and whether any response or outbound action was delivered.
 
-Telegram adapter behavior:
+Telegram bot behavior:
 
 - replies to the bot's previous answer should continue that thread by default;
 - explicit commands such as `/new` should force a new thread;

@@ -73,9 +73,9 @@ universal agent runtime with reusable building blocks:
 - credentials, environment variables, provider URLs, and tunable tool settings are stored
   as registry metadata and secret handles, so operators can configure tools without
   editing prompts or source code;
-- domain tools such as charts, browser automation, API clients, channel adapters, file
-  processors, or data fetchers are examples of reusable capability families. They are not
-  special runtime branches.
+- domain tools such as charts, browser automation, API clients, long-running bots,
+  webhook receivers, file processors, or data fetchers are examples of reusable capability
+  families. They are not special runtime branches.
 
 Whenever a concrete run fails, the fix should be classified as one of:
 
@@ -124,9 +124,9 @@ hardcoded Bitcoin or market-analysis path:
 
 This is a product/architecture estimate, not a ticket counter.
 
-- Overall target platform: about 50-55% complete. The core run orchestration, traces,
+- Overall target platform: about 52-57% complete. The core run orchestration, traces,
   artifacts, memory lifecycle, tool registry, and model tier plumbing exist; autonomous
-  recursive agents, broad generated tool families, mature channel adapters, and policy
+  recursive agents, broad generated tool families, always-on tool supervision, and policy
   enforcement still remain.
 - Current coordinator prototype: about 72% complete. It can delegate, review, synthesize,
   call tools, create artifacts, and persist runs, but it is still centrally planned rather
@@ -385,8 +385,8 @@ Allow agents to create or activate tools when the registry lacks a needed capabi
 Tool Builds are not domain-specific feature work. They are a generic factory for
 versioned TypeScript capabilities. If a user asks for a chart, the agent asks for a
 generic data-visualization/artifact-rendering capability. If a user asks to use a channel
-such as Telegram, the agent asks for a generic inbound/outbound channel-adapter
-capability configured with a secret handle. If a user provides API docs and credentials,
+such as Telegram, the agent asks for a generic inbound/outbound always-on tool capability
+configured with a secret handle and startup mode. If a user provides API docs and credentials,
 the agent asks for a generic API-client tool generated from the contract.
 
 Flow:
@@ -527,16 +527,23 @@ Remaining Phase 3 gaps:
   changelog cards with paths, health detail, required secret handles, and usage counters.
   Remaining work is visual diffs between replacement versions and approval gates for
   sensitive promotions.
-- Treat channel adapters as tools, not special one-off screens: Telegram, WhatsApp, Slack,
-  email, and custom inbound/outbound adapters should be built through Tool Builds,
-  registered in the tool registry, and then monitored on the Channels runtime page.
+- Treat external channels as regular generated tools with `startupMode`, not special
+  one-off screens: Telegram, WhatsApp, Slack, email, webhooks, and custom inbound/outbound
+  listeners should be built through Tool Builds, registered in the tool registry, and then
+  monitored through generic tool lifecycle/status UI. `on-demand` tools are invoked by an
+  agent only when needed; `always-on` tools act as services/listeners and must expose
+  health, start/stop/restart controls, logs, and event-to-run routing; `ephemeral` tools
+  run as short-lived jobs and shut down after completion. PARTIAL: Tool Build requests now
+  preserve `startupMode` in the generated contract and the UI lets operators choose it.
+  Remaining work is a generic service supervisor that can start/stop/restart always-on
+  generated modules and surface their heartbeats/errors.
 - Store credentials as secret handles, never in prompts, memory, artifacts, or source.
   DONE for the metadata/API/UI layer: `secret_handles` stores provider, label, scopes, and
   `secretRef`, rejects raw token/password/apiKey/value payloads, and audits create/delete.
   DONE for Tool Build forms that extract inline key-like values into scoped secret handles
   and redact raw credential notes before queueing. Remaining work is encrypted or external
   secret-manager-backed storage for inline material and policy-aware runtime resolution
-  for every generated tool/model/channel adapter.
+  for every generated tool/model/always-on module.
 - Add instance/user tool policy so a tool can be installed globally but enabled only for
   this instance, specific roles, or specific users.
 - Move generated-tool QA from temporary workspace isolation to a stricter worker service
@@ -555,6 +562,12 @@ Remaining Phase 3 gaps:
   version adds compared with the previous version and why the previous version failed.
 - Add tool-level settings UI for required env variables, secret handles, provider URLs,
   rate limits, and feature flags declared by each tool contract.
+- Represent operator-created Tool Build/Rework requests as root runs. DONE for direct
+  Tool Build requests: when a request is created without an existing `sourceRunId`, the
+  server creates a completed root run with `tool-build-requested` trace context and links
+  the request through `sourceRunId`. Remaining work is to stream Builder/QA/Registrar
+  progress back into that same run instead of only showing lifecycle status on Tool
+  Builds.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,
@@ -851,16 +864,17 @@ Admin pages:
   remain.
 - Users: identities, memberships, personal memory, notification preferences, allowed
   tools, recent requests.
-- Channels: installed channel adapter health, chat mappings, incoming/outgoing message
-  history. New adapters are requested and built through Tool Builds.
+- Channels: installed always-on tool health, chat mappings, incoming/outgoing message
+  history. New bots/listeners/webhooks are requested and built through Tool Builds.
 - Conversations: thread summaries, linked runs, Telegram/web source messages, split/merge
   controls, continuation composer, and destructive delete with associated runs/traces.
 - Memory: global/group/user/run scopes with match reasons and edit controls.
 - Tools: registry, credentials, capabilities, health, examples.
-- Tool Builds: human tool requests for APIs, browser/file capabilities, and channel
-  adapters; inferred internal capabilities; builder/QA lifecycle; generated source/test
-  bundles. Current UI explains requested/building/QA/registered states, shows real queue
-  counts, and lets operators trigger the builder workflow for a queued request.
+- Tool Builds: human tool requests for APIs, browser/file capabilities, bots, webhooks,
+  and services; inferred internal capabilities; builder/QA lifecycle; generated
+  source/test bundles. Current UI explains requested/building/QA/registered states, shows
+  real queue counts, preserves startup mode, and lets operators trigger the builder
+  workflow for a queued request.
 - Policies: permissions for memory access, tool use, outbound messages, and federation.
 
 ## Phase 7: Durable Artifacts
@@ -969,16 +983,17 @@ Implementation tasks:
 - Allow the recursive universal-agent flow to delegate missing capability creation to
   Tool Builder, Tool QA, and Tool Registrar agents.
 
-## Phase 9: Channel Adapter Tool Family
+## Phase 9: Always-On Tool Runtime
 
 Status: planned.
 
-Goal: let external channels submit tasks and receive answers through reusable channel
-adapter tools. Telegram is the first expected adapter, but it must be built through the
-same registry, Tool Build, versioning, QA, and secret-handle path as any other channel
-such as WhatsApp, Slack, email, or a custom webhook.
+Goal: let generated tools run not only as one-off calls, but also as durable services,
+listeners, bots, webhooks, and short-lived jobs. Telegram is the first expected
+always-on tool, but it must be built through the same registry, Tool Build, versioning,
+QA, startup-mode, and secret-handle path as any other integration such as WhatsApp,
+Slack, email, or a custom webhook.
 
-Channel adapters are tools with:
+Always-on/generated service tools are normal tools with:
 
 - inbound event schema;
 - outbound message schema;
@@ -992,10 +1007,12 @@ Channel adapters are tools with:
 
 Implementation tasks:
 
-- Add a generic channel-adapter tool contract and register adapter versions in
-  `tool_modules`.
-- Let Tool Builds create a Telegram adapter when an operator provides bot-token secret
-  handle, desired behavior, and provider docs.
+- Add a generic service/listener tool contract and register all versions in
+  `tool_modules` with `startupMode=always-on`.
+- Add a service supervisor that can start, stop, restart, and healthcheck always-on
+  generated modules without hardcoding provider-specific branches.
+- Let Tool Builds create a Telegram bot when an operator provides bot-token secret handle,
+  desired behavior, whitelist policy, thread routing rules, and provider docs.
 - Add `channel_identities` mapping Telegram user IDs to users. PARTIAL: the durable table
   and server-side resolver exist; the Telegram adapter/admin whitelist UI still needs to
   write and maintain those rows.
@@ -1008,15 +1025,16 @@ Implementation tasks:
 - Resolve each Telegram message to a conversation thread or create a new thread.
 - Support `/new`, `/continue`, reply-to, and low-confidence clarification behavior.
 - Store compact thread summaries and update them after each run.
-- Send final answers back to the requester through the originating channel adapter.
-- Store inbound/outbound channel messages in an auditable table.
+- Send final answers back to the requester through the originating always-on tool.
+- Store inbound/outbound messages/events in an auditable table.
 - Add tests for allowed user, denied user, run context mapping, continuation detection,
   and forced new-thread commands.
 
 UI tasks:
 
-- Channels page with installed adapter versions, health, settings, whitelist mappings,
-  inbound/outbound message history, and tool telemetry.
+- Channels page, or a generic always-on tools page, with installed service versions,
+  health, settings, whitelist mappings, inbound/outbound message history, and tool
+  telemetry.
 - Run Workspace source panel showing the originating channel message.
 - Admin-visible conversation log for channel-originated runs.
 - Conversation thread inspector with message-to-thread decision confidence and override
@@ -1033,7 +1051,7 @@ Implementation tasks:
 - Define outbound action contracts: direct message, group broadcast, scheduled reminder.
 - Add `outbound_actions` table with requester, target, body, policy, status, provider
   response, and audit metadata.
-- Add outbound channel adapter tool with dry-run mode first.
+- Add outbound messaging tool with dry-run mode first.
 - Add permission checks for who can message whom.
 - Add optional approval queue for sensitive or broad broadcasts.
 - Add delivery status and retry handling.

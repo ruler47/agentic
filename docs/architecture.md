@@ -34,8 +34,8 @@ this one-instance/one-group provenance model in mind.
 ## Capability Principle
 
 The system should grow through reusable capabilities, not private case patches. A run may
-need a chart, a PDF, a browser proof, an API client, or a channel adapter, but the core
-runtime should not hardcode a special pipeline for that domain. Instead:
+need a chart, a PDF, a browser proof, an API client, or an always-on bot/webhook/listener,
+but the core runtime should not hardcode a special pipeline for that domain. Instead:
 
 - agents inspect the tool registry for existing capability contracts;
 - agents call a tool through its schema when the capability exists;
@@ -270,7 +270,7 @@ families, but the durable lifecycle and QA/registration boundaries are in place.
 The target flow also supports admin-provided API documentation and credentials. The agent
 should read the docs, propose a reusable TypeScript module contract, build tests, run QA,
 register the tool, and store credentials through secret handles rather than prompt text.
-This same flow should be used for API clients, channel adapters, artifact renderers,
+This same flow should be used for API clients, bots, webhooks, artifact renderers,
 browser helpers, data acquisition modules, and any other capability family.
 
 ### Model Tiers
@@ -312,15 +312,22 @@ Agents should retrieve the minimum useful memory for the current requester and c
 group.
 They must not read another user's private memory unless the task and policy allow it.
 
-### Channel Adapters
+### Long-Running Tool Modules
 
-The web console is the current built-in channel. External channels such as Telegram,
-WhatsApp, Slack, email, or custom webhooks should be implemented as reusable channel
-adapter tools, not as one-off runtime branches. Telegram is the first expected adapter,
-but it should use the same Tool Build, registry, versioning, credential, QA, and policy
-workflow as any other tool.
+The web console is the current built-in request surface. External surfaces such as
+Telegram, WhatsApp, Slack, email, or custom webhooks should be implemented as ordinary
+generated tool modules with a startup mode, not as special runtime branches. Telegram is
+the first expected always-on module, but it should use the same Tool Build, registry,
+versioning, credential, QA, and policy workflow as any other tool.
 
-Channel adapter behavior:
+Startup modes:
+
+- `on-demand`: the agent invokes the tool only for one call.
+- `always-on`: the module is a service/listener/bot/webhook receiver with health status,
+  logs, and start/stop/restart lifecycle.
+- `ephemeral`: the module runs a short-lived job and shuts down after completion.
+
+Always-on request intake behavior:
 
 - accept requests only from whitelisted provider identities;
 - map provider user IDs to instance users;
@@ -330,6 +337,11 @@ Channel adapter behavior:
 - show channel-originated runs in the admin console;
 - send answers back to the requester;
 - support auditable outbound messages to a person or group when permitted.
+
+A user request like "create a Telegram bot with this token, accept only this account, and
+keep it running" should become an always-on tool build request. The generated module owns
+the provider-specific bot/webhook behavior while the core system only sees normal run
+creation, conversation threading, audit events, and tool lifecycle status.
 
 Thread resolution should prefer provider metadata such as reply-to messages, chat/thread
 IDs, forum topics, or webhook thread IDs, then use a bounded classifier over recent

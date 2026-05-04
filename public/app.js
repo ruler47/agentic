@@ -21,7 +21,7 @@ const routes = [
     group: "Build",
     items: [
       { id: "tools", label: "Tools", description: "Registry, schemas, health, and credentials." },
-      { id: "tool-builds", label: "Tool Builds", description: "Build API, browser, file, and channel adapter tools." },
+      { id: "tool-builds", label: "Tool Builds", description: "Build API, browser, file, bot, webhook, and service tools." },
       { id: "models", label: "Models", description: "Providers, tiers, fallbacks, and health." },
     ],
   },
@@ -30,7 +30,7 @@ const routes = [
     items: [
       { id: "group-profile", label: "Group Profile", description: "Shared context, preferences, rules, and goals." },
       { id: "users", label: "Users", description: "Members, identities, roles, and access." },
-      { id: "channels", label: "Channels", description: "Installed channel adapters and message routing." },
+      { id: "channels", label: "Channels", description: "Runtime view for always-on intake tools and message routing." },
       { id: "policies", label: "Policies", description: "Memory, tools, outbound, and federation rules." },
       { id: "approvals", label: "Approvals", description: "Human decisions before sensitive actions." },
       { id: "scheduler", label: "Scheduler", description: "Reminders, recurring jobs, and alerts." },
@@ -1411,6 +1411,7 @@ function renderSpanToolRequestForm(node) {
         <input type="hidden" name="desiredToolName" value="${escapeHtml(relatedTool?.name || "")}" />
         <input type="hidden" name="replacesToolName" value="${escapeHtml(relatedTool?.name || "")}" />
         <input type="hidden" name="replacesVersion" value="${escapeHtml(activeVersion || "")}" />
+        <input type="hidden" name="startupMode" value="${escapeHtml(relatedTool?.startupMode || "on-demand")}" />
         <input type="hidden" name="feedback" value="${escapeHtml(reason)}" />
         <label>
           <span>Context and requested fix</span>
@@ -2352,6 +2353,7 @@ function renderToolReworkForm(tool, failureProblem) {
         <input type="hidden" name="displayName" value="${escapeHtml(tool.displayName || tool.name)}" />
         <input type="hidden" name="capability" value="${escapeHtml((tool.capabilities ?? [tool.name])[0] ?? tool.name)}" />
         <input type="hidden" name="replacesVersion" value="${escapeHtml(activeVersion)}" />
+        <input type="hidden" name="startupMode" value="${escapeHtml(tool.startupMode ?? "on-demand")}" />
         <label>
           <span>Change request</span>
           <textarea name="feedback" required>${escapeHtml(defaultFeedback)}</textarea>
@@ -2422,6 +2424,15 @@ function renderToolBuildsPage() {
             <textarea name="reason" placeholder="Describe what the tool should do, where the documentation is, what inputs it should accept, what result it should return, and how an agent should know when to use it." required></textarea>
           </label>
           <label>
+            <span>Run mode</span>
+            <select name="startupMode">
+              <option value="on-demand">On demand: agent calls it only when needed</option>
+              <option value="always-on">Always running: service/listener with health status</option>
+              <option value="ephemeral">Ephemeral: short-lived job, then shuts down</option>
+            </select>
+            <small>Use “always running” for bots, webhooks, queue listeners, or other modules that should stay alive and report health.</small>
+          </label>
+          <label>
             <span>Credentials</span>
             <textarea name="credentialNotes" rows="3" placeholder="Paste credentials or references only if this tool needs access. Example: API key, bot token, client id/secret. The builder will infer how to store and use them."></textarea>
             <small>The builder treats this as sensitive setup context and must not leak it into generated code, traces, tests, memory, or artifacts.</small>
@@ -2466,6 +2477,7 @@ function renderBuildCard(request) {
       </div>
       <strong>${escapeHtml(request.displayName || request.capability)}</strong>
       <small class="status-note">System capability: ${escapeHtml(request.capability)}</small>
+      <small class="status-note">Run mode: ${escapeHtml(request.contract?.startupMode ?? "on-demand")}</small>
       <small class="status-note">${escapeHtml(toolBuildCardComment(request))}</small>
       <p>${escapeHtml(request.reason)}</p>
       <small>${escapeHtml(request.contract?.toolName ?? "tool contract pending")}</small>
@@ -2478,6 +2490,7 @@ function renderBuildCard(request) {
       <details class="build-preview">
         <summary>Preview</summary>
         ${contextBlock("Tool contract", `${request.contract?.toolName ?? "pending"}\n${request.contract?.modulePath ?? "module pending"}\n${request.contract?.testPath ?? "test pending"}`)}
+        ${contextBlock("Run mode", request.contract?.startupMode ?? "on-demand")}
         ${contextBlock("QA criteria", (request.contract?.qaCriteria ?? request.qaCriteria ?? []).join("\n") || "No QA criteria.")}
       </details>
       <div class="card-actions">
@@ -2836,10 +2849,10 @@ function renderChannelIdentityRow(identity) {
 }
 
 function renderChannelsPage() {
-  return renderPlaceholderPage("Channels", "Runtime view for installed channel adapters. New adapters are created through Tool Builds, not a separate onboarding screen.", [
+  return renderPlaceholderPage("Channels", "Runtime view for always-on tools that receive or send external messages. New bots/webhooks are created through Tool Builds, not a separate onboarding screen.", [
     "Web console ready",
     "API endpoint ready",
-    "Telegram, WhatsApp, Slack, email, and custom adapters should be generated and QA-tested as tools.",
+    "Telegram, WhatsApp, Slack, email, and custom listeners should be generated and QA-tested as tools with startupMode=always-on.",
   ]);
 }
 
@@ -2906,7 +2919,7 @@ function renderSettingsPage() {
       <section class="surface-hero">
         <span class="eyebrow">Instance configuration</span>
         <h2>Settings</h2>
-        <p>Local instance settings and secret handles used by generated tools, model providers, and future channel adapters.</p>
+        <p>Local instance settings and secret handles used by generated tools, model providers, and future always-on modules.</p>
         <div class="metric-card-grid">
           ${metricCard("Instance", state.instance?.id ?? "instance-local", state.instance?.name ?? "Local Agentic Assistant")}
           ${metricCard("Timezone", state.instance?.timeZone ?? "Europe/Madrid", state.instance?.locale ?? "ru-RU")}
@@ -3493,6 +3506,7 @@ async function createToolBuildRequest(form) {
         replacesToolName: String(formData.get("replacesToolName") ?? "") || undefined,
         replacesVersion: String(formData.get("replacesVersion") ?? "") || undefined,
         feedback: String(formData.get("feedback") ?? "") || undefined,
+        startupMode: String(formData.get("startupMode") ?? "") || undefined,
         qaCriteria,
         credentialHandles: parseListInput(formData.get("credentialHandles")),
         credentialNotes: String(formData.get("credentialNotes") ?? "") || undefined,
@@ -3691,6 +3705,7 @@ async function reworkTool(form) {
   const capability = String(formData.get("capability") ?? toolName).trim();
   const feedback = String(formData.get("feedback") ?? "").trim();
   const replacesVersion = String(formData.get("replacesVersion") ?? "").trim();
+  const startupMode = String(formData.get("startupMode") ?? "").trim();
   setComposerBusy(form, true);
   try {
     const data = await fetchJson("/api/tool-build-requests", {
@@ -3704,6 +3719,7 @@ async function reworkTool(form) {
         feedback,
         replacesToolName: toolName,
         replacesVersion: replacesVersion || undefined,
+        startupMode: startupMode || undefined,
         qaCriteria: [
           "The new version preserves the tool name and creates a higher semantic version.",
           "Requested behavior is covered by a focused regression test and a manual smoke test.",

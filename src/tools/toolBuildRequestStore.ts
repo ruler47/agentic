@@ -25,6 +25,7 @@ export type ToolBuildRequestInput = {
   feedback?: string;
   replacesToolName?: string;
   replacesVersion?: string;
+  startupMode?: ToolStartupMode;
 };
 
 export type ToolBuildContract = {
@@ -168,7 +169,7 @@ export function createToolBuildContract(input: ToolBuildRequestInput): ToolBuild
     testPath: `tests/generated/${pathSlug}Tool.test.ts`,
     capability: input.capability,
     description: `Generated tool module for capability: ${input.capability}.`,
-    startupMode: "on-demand",
+    startupMode: input.startupMode ?? "on-demand",
     inputSchema: {
       type: "object",
       properties: Object.fromEntries(requiredInputs.map((name) => [name, { type: "string" }])),
@@ -195,6 +196,7 @@ export function createToolBuildContract(input: ToolBuildRequestInput): ToolBuild
     builderInstructions: [
       "Create a TypeScript module implementing the Tool interface.",
       "Keep dependencies explicit and minimal; prefer existing project utilities.",
+      `Use startupMode "${input.startupMode ?? "on-demand"}". For always-on/service-style tools, expose a healthcheck and make lifecycle behavior observable without requiring a special runtime branch.`,
       ...(input.credentialHandles?.length
         ? [
             `Use only these credential handles when credentials are needed: ${input.credentialHandles.join(", ")}.`,

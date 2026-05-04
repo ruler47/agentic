@@ -39,10 +39,10 @@ policies without leaking context.
   calls for artifacts such as charts, screenshots, reports, datasets, or source bundles.
 - The user wants the system to eventually run for a family or enterprise, with separate
   memory for the whole group and for each member.
-- External channels such as Telegram should be channel-adapter tools built through the
-  same registry/versioning/QA/secret-handle flow as other capabilities. Only whitelisted
-  provider users should be able to submit requests, and those requests must be visible in
-  the admin UI.
+- External channels such as Telegram should be ordinary generated tool modules with a
+  startup mode such as `always-on`, not special runtime branches. They use the same
+  registry/versioning/QA/secret-handle flow as other capabilities, expose health/lifecycle
+  status, and translate provider events into normal runs.
 - Channel and web requests need conversation-thread continuity: the system must
   distinguish a new task from a clarification, correction, or follow-up to a previous run.
 - Agents will eventually send auditable outbound messages/reminders to a group or
@@ -370,8 +370,9 @@ For documentation-only changes:
   continuation support. Do not replay full transcripts into agent prompts by default.
 - Scope memory by default. Agents should not read another user's private memory unless the
   task and policy allow it.
-- Telegram and other channel adapters should translate provider events into run requests;
-  they should not embed agent orchestration logic.
+- Telegram and other always-on generated tools should translate provider events into run
+  requests; they should not embed agent orchestration logic or become special runtime
+  branches.
 - Outbound actions must be auditable and permission-checked before delivery.
 - Preserve trace parent links when adding orchestration steps; the UI depends on
   `parentSpanId` to draw direct arrows.
@@ -463,6 +464,9 @@ For documentation-only changes:
 - New capabilities must be implemented as TypeScript tool modules with schemas,
   capabilities, healthchecks, tests, and registry wiring. Runtime code should request a
   capability from `ToolRegistry` rather than embedding one-off tool logic.
+- Tool Build requests created directly by an operator are represented as root runs and
+  linked through `sourceRunId`; requests created from an existing run/span keep that
+  original run context.
 - Runtime memory injection must pass through the deterministic memory policy evaluator
   when visible scopes are available: only accepted exact-scope memories are eligible,
   sensitive memories require an explicit runtime grant, and private memories require the
@@ -500,6 +504,9 @@ For documentation-only changes:
 - Tool Build Queue consumers should update durable lifecycle state through the store/API:
   `requested`, `building`, `qa_failed`, `qa_passed`, `registered`, or `blocked`, with QA
   evidence attached before registration.
+- Tool Build contracts preserve the requested `startupMode`. Use `on-demand` for normal
+  call-time tools, `always-on` for bots/webhooks/listeners/services with health and
+  start/stop lifecycle, and `ephemeral` for short-lived jobs.
 - Operators can stop a Tool Build request from any lifecycle state, which marks it
   `blocked` with a status detail, or delete it from the queue. Rework of an installed
   failed tool should create a new Tool Build request from the Tools page with the failure
@@ -537,7 +544,7 @@ For documentation-only changes:
   with provider `env`, `external`, or UI-created `inline`, a `secretRef`, and scopes. The
   public API rejects raw `token`, `password`, `apiKey`, or `value` payloads; the simplified
   Tool Builds form may accept free-form credential notes and convert them into a scoped
-  inline secret handle for the generated tool. Tools and future model/channel adapters
+  inline secret handle for the generated tool. Tools and future model/always-on modules
   should refer to handles, then resolve them at runtime through the store/policy layer.
 - Generated tool metadata registration must reject builtin name collisions and version
   conflicts. Generated modules are loaded only from compiled project-local paths, after
