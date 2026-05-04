@@ -141,6 +141,8 @@ POST /api/tool-service-events
 GET /api/tool-services/logs?toolName=optional&limit=100
 GET /api/tool-services/logs/events?toolName=optional
 POST /api/tool-services/:name/inbound
+GET /api/tool-services/:name/outbox
+POST /api/tool-services/:name/outbox/:eventId/ack
 POST /api/tool-services/:name/start
 POST /api/tool-services/:name/stop
 POST /api/tool-services/:name/restart
@@ -191,6 +193,11 @@ When that run completes or fails, the server also writes an `outbound/queued` se
 event with the final answer or error payload. Provider-specific always-on tools can use
 that event stream as a neutral outbox, deliver the response externally, and then record a
 `sent` or `failed` delivery event.
+`GET /api/tool-services/:name/outbox` returns still-undelivered `outbound/queued` events
+for a service. `POST /api/tool-services/:name/outbox/:eventId/ack` accepts
+`status=sent|failed`, optional provider message evidence, and a sanitized payload; it
+records a linked outbound delivery event and removes the queued source event from future
+outbox polling.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as

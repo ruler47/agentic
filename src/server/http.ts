@@ -47,6 +47,7 @@ import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
 import {
   ToolServiceEventDirection,
   ToolServiceEventInput,
+  ToolServiceEventRecord,
   ToolServiceEventStatus,
   ToolServiceEventStore,
 } from "../tools/toolServiceEventStore.js";
@@ -755,6 +756,89 @@ async function routeRequest(
     sendJson(response, 200, {
       services: options.toolServiceSupervisor ? await options.toolServiceSupervisor.list() : [],
     });
+    return;
+  }
+
+  const toolServiceOutboxMatch = url.pathname.match(/^\/api\/tool-services\/([^/]+)\/outbox$/);
+  if (request.method === "GET" && toolServiceOutboxMatch) {
+    if (!options.toolServiceSupervisor || !options.toolServiceEventStore) {
+      sendJson(response, 503, { error: "Tool service runtime is not configured" });
+      return;
+    }
+    const toolName = decodeURIComponent(toolServiceOutboxMatch[1] ?? "");
+    const service = (await options.toolServiceSupervisor.list()).find((candidate) => candidate.toolName === toolName);
+    if (!service) {
+      sendJson(response, 404, { error: `Tool service was not found: ${toolName}` });
+      return;
+    }
+    const events = await listPendingToolServiceOutbox(options, toolName, parseLimit(url.searchParams.get("limit"), 50));
+    sendJson(response, 200, { events });
+    return;
+  }
+
+  const toolServiceOutboxAckMatch = url.pathname.match(/^\/api\/tool-services\/([^/]+)\/outbox\/([^/]+)\/ack$/);
+  if (request.method === "POST" && toolServiceOutboxAckMatch) {
+    if (!options.toolServiceSupervisor || !options.toolServiceEventStore) {
+      sendJson(response, 503, { error: "Tool service runtime is not configured" });
+      return;
+    }
+    const toolName = decodeURIComponent(toolServiceOutboxAckMatch[1] ?? "");
+    const eventId = decodeURIComponent(toolServiceOutboxAckMatch[2] ?? "");
+    const service = (await options.toolServiceSupervisor.list()).find((candidate) => candidate.toolName === toolName);
+    if (!service) {
+      sendJson(response, 404, { error: `Tool service was not found: ${toolName}` });
+      return;
+    }
+    const body = await readJsonBody<unknown>(request);
+    try {
+      const input = parseToolServiceOutboxAckInput(body);
+      const queued = await findToolServiceEvent(options, toolName, eventId);
+      if (!queued || queued.direction !== "outbound" || queued.status !== "queued") {
+        sendJson(response, 404, { error: `Queued outbound event was not found: ${eventId}` });
+        return;
+      }
+      const event = await options.toolServiceEventStore.record({
+        toolName,
+        direction: "outbound",
+        status: input.status,
+        summary: input.summary ?? `${input.status === "sent" ? "Outbound delivered" : "Outbound delivery failed"}: ${queued.summary.slice(0, 160)}`,
+        sourceUserId: queued.sourceUserId,
+        sourceChatId: queued.sourceChatId,
+        sourceMessageId: queued.sourceMessageId,
+        threadId: queued.threadId,
+        runId: queued.runId,
+        payload: {
+          sourceEventId: queued.id,
+          providerMessageId: input.providerMessageId,
+          detail: input.detail,
+          ...(input.payload ?? {}),
+        },
+      });
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: toolName,
+        actorType: "tool",
+        action: "tool_service.event_recorded",
+        targetType: "tool",
+        targetId: toolName,
+        status: input.status === "sent" ? "success" : "failure",
+        runId: queued.runId,
+        threadId: queued.threadId,
+        requesterUserId: undefined,
+        channel: toolName,
+        summary: `Outbound ${input.status}: ${queued.summary.slice(0, 160)}`,
+        metadata: {
+          sourceEventId: queued.id,
+          deliveryEventId: event.id,
+          providerMessageId: input.providerMessageId,
+        },
+      });
+      sendJson(response, 201, { event });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid outbound ack",
+      });
+    }
     return;
   }
 
@@ -2834,6 +2918,63 @@ function parseToolServiceEventInput(value: unknown): ToolServiceEventInput {
     sourceMessageId: parseOptionalText(value.sourceMessageId),
     threadId: parseOptionalText(value.threadId),
     runId: parseOptionalText(value.runId),
+    payload: isRecord(value.payload) ? sanitizeObject(value.payload) : undefined,
+  };
+}
+
+async function listPendingToolServiceOutbox(
+  options: WebAppOptions,
+  toolName: string,
+  limit: number,
+): Promise<ToolServiceEventRecord[]> {
+  if (!options.toolServiceEventStore) return [];
+  const events = await options.toolServiceEventStore.list({ toolName, direction: "outbound", limit: 200 });
+  const completedSourceIds = new Set(
+    events
+      .filter((event) => event.status === "sent" || event.status === "failed")
+      .map((event) => parseOptionalText(event.payload?.sourceEventId))
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  return events
+    .filter((event) => event.status === "queued")
+    .filter((event) => !completedSourceIds.has(event.id))
+    .slice(0, limit);
+}
+
+async function findToolServiceEvent(
+  options: WebAppOptions,
+  toolName: string,
+  eventId: string,
+): Promise<ToolServiceEventRecord | undefined> {
+  if (!options.toolServiceEventStore) return undefined;
+  const events = await options.toolServiceEventStore.list({ toolName, limit: 200 });
+  return events.find((event) => event.id === eventId);
+}
+
+function parseLimit(value: string | null, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(200, parsed));
+}
+
+function parseToolServiceOutboxAckInput(value: unknown): {
+  status: "sent" | "failed";
+  summary?: string;
+  providerMessageId?: string;
+  detail?: string;
+  payload?: Record<string, unknown>;
+} {
+  if (!isRecord(value)) throw new Error("outbox ack input must be an object");
+  if (value.status !== "sent" && value.status !== "failed") {
+    throw new Error("status must be sent or failed");
+  }
+  return {
+    status: value.status,
+    summary: parseOptionalText(value.summary),
+    providerMessageId: parseOptionalText(value.providerMessageId),
+    detail: parseOptionalText(value.detail),
     payload: isRecord(value.payload) ? sanitizeObject(value.payload) : undefined,
   };
 }

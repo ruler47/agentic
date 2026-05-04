@@ -370,7 +370,9 @@ The response path is provider-neutral as well. When a run that originated from a
 always-on tool reaches a terminal success or failure, the server records an
 `outbound/queued` `tool_service_events` record containing the final answer or error
 payload plus source identity links. Provider-specific generated services own the actual
-delivery step and can later append `sent` or `failed` events with provider evidence.
+delivery step: they poll `GET /api/tool-services/:name/outbox`, send the response through
+their provider, then call `POST /api/tool-services/:name/outbox/:eventId/ack` to append a
+`sent` or `failed` evidence event and keep the queued outbox from being delivered again.
 
 Thread resolution should prefer provider metadata such as reply-to messages, chat/thread
 IDs, forum topics, or webhook thread IDs, then use a bounded classifier over recent

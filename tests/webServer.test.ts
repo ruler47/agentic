@@ -1012,6 +1012,7 @@ test("web server accepts generic always-on inbound events and creates runs", asy
     const created = await response.json();
     const completed = await waitForRun(baseUrl, created.run.id);
     const events = await (await fetch(`${baseUrl}/api/tool-service-events?toolName=generated.bot.demo`)).json();
+    const outbox = await (await fetch(`${baseUrl}/api/tool-services/generated.bot.demo/outbox`)).json();
 
     assert.equal(response.status, 202);
     assert.equal(created.run.channel, "generated.bot.demo");
@@ -1031,6 +1032,28 @@ test("web server accepts generic always-on inbound events and creates runs", asy
     const outbound = events.events.find((event: { direction: string }) => event.direction === "outbound");
     assert.equal(outbound?.runId, created.run.id);
     assert.match(outbound?.payload.finalAnswer, /answer for Create a short answer/);
+    assert.equal(outbox.events.length, 1);
+    assert.equal(outbox.events[0].id, outbound.id);
+
+    const ackResponse = await fetch(`${baseUrl}/api/tool-services/generated.bot.demo/outbox/${outbound.id}/ack`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        status: "sent",
+        providerMessageId: "provider-msg-1",
+        detail: "Delivered by demo adapter.",
+        payload: { deliveryToken: "must-not-leak" },
+      }),
+    });
+    const ack = await ackResponse.json();
+    const emptyOutbox = await (await fetch(`${baseUrl}/api/tool-services/generated.bot.demo/outbox`)).json();
+
+    assert.equal(ackResponse.status, 201);
+    assert.equal(ack.event.status, "sent");
+    assert.equal(ack.event.payload.sourceEventId, outbound.id);
+    assert.equal(ack.event.payload.providerMessageId, "provider-msg-1");
+    assert.equal(ack.event.payload.deliveryToken, "[redacted]");
+    assert.deepEqual(emptyOutbox.events, []);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

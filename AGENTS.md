@@ -400,8 +400,8 @@ For documentation-only changes:
   resolves channel identity, creates a normal run, and records the linked queued event.
 - Runs created from always-on tool inbound events write an `outbound/queued`
   `tool_service_events` record with final answer/error payload when they finish. Provider
-  modules should deliver from that neutral outbox and then append `sent` or `failed`
-  evidence events.
+  modules should poll `GET /api/tool-services/:name/outbox`, deliver from that neutral
+  outbox, and acknowledge with `POST /api/tool-services/:name/outbox/:eventId/ack`.
 - The generic service supervisor persists always-on lifecycle state and reconciles
   desired-running services on app startup. It also writes lifecycle logs for
   start/stop/restart/heartbeat/reconcile events and streams new log records to active UI
