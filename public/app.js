@@ -57,6 +57,7 @@ const state = {
   tools: [],
   toolServices: [],
   toolServiceLogs: [],
+  toolServiceEvents: [],
   toolMigrations: [],
   buildRequests: [],
   secretHandles: [],
@@ -342,6 +343,7 @@ async function refreshData() {
       secretHandles,
       toolServices,
       toolServiceLogs,
+      toolServiceEvents,
       tiers,
       modelProviders,
       modelCatalog,
@@ -360,6 +362,7 @@ async function refreshData() {
       fetchJson("/api/secret-handles").then((data) => data.secretHandles ?? []),
       fetchJson("/api/tool-services").then((data) => data.services ?? []),
       fetchJson("/api/tool-services/logs?limit=80").then((data) => data.logs ?? []),
+      fetchJson("/api/tool-service-events?limit=80").then((data) => data.events ?? []),
       fetchJson("/api/settings/model-tiers").then((data) => data.tiers ?? []),
       fetchJson("/api/model-providers").then((data) => data.providers ?? []),
       fetchJson("/api/models/catalog").catch(() => undefined),
@@ -380,6 +383,7 @@ async function refreshData() {
       secretHandles,
       toolServices,
       toolServiceLogs,
+      toolServiceEvents,
       tiers,
       modelProviders,
       modelCatalog,
@@ -2919,6 +2923,18 @@ function renderChannelsPage() {
           ${services.length ? services.map(renderServiceCard).join("") : renderEmptyState("No always-on tools", "Create a Tool Build request and choose Run mode: Always running.", "Tool Builds")}
         </div>
       </section>
+      <section class="surface-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Runtime Events</h2>
+            <p>Provider-neutral inbound, outbound, and system events written by always-on tools.</p>
+          </div>
+          <span class="context-chip">${state.toolServiceEvents.length} recent</span>
+        </div>
+        <div class="service-event-list">
+          ${state.toolServiceEvents.length ? state.toolServiceEvents.slice(0, 12).map(renderServiceEventRow).join("") : renderEmptyState("No service events", "Bots, webhooks, and listeners will record inbound/outbound events here.", "Events")}
+        </div>
+      </section>
     </section>
   `;
 }
@@ -2966,6 +2982,26 @@ function renderServiceLogPreview(toolName) {
         </div>
       `).join("")}
     </div>
+  `;
+}
+
+function renderServiceEventRow(event) {
+  const source = [event.sourceUserId, event.sourceChatId, event.sourceMessageId].filter(Boolean).join(" / ");
+  return `
+    <article class="service-event-row">
+      <div>
+        <div class="event-row-title">
+          <span class="status-pill ${escapeHtml(event.status)}">${escapeHtml(event.status)}</span>
+          <strong>${escapeHtml(event.summary)}</strong>
+        </div>
+        <small>${escapeHtml(event.toolName)} · ${escapeHtml(event.direction)}${source ? ` · ${escapeHtml(source)}` : ""}</small>
+      </div>
+      <div class="service-event-links">
+        ${event.threadId ? `<button type="button" class="text-button" data-action="select-thread" data-thread-id="${escapeHtml(event.threadId)}">Thread</button>` : ""}
+        ${event.runId ? `<button type="button" class="text-button" data-action="select-run" data-run-id="${escapeHtml(event.runId)}">Run</button>` : ""}
+        <span>${escapeHtml(formatRelative(event.createdAt))}</span>
+      </div>
+    </article>
   `;
 }
 

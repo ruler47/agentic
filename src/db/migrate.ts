@@ -463,6 +463,33 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     `);
 
     await pool.query(`
+      create table if not exists tool_service_events (
+        id text primary key,
+        tool_name text not null,
+        direction text not null check (direction in ('inbound', 'outbound', 'system')),
+        status text not null check (status in ('received', 'queued', 'sent', 'failed', 'ignored')),
+        summary text not null,
+        source_user_id text,
+        source_chat_id text,
+        source_message_id text,
+        thread_id text,
+        run_id text,
+        payload_json jsonb,
+        created_at timestamptz not null
+      );
+    `);
+
+    await pool.query(`
+      create index if not exists tool_service_events_tool_created_at_idx
+      on tool_service_events(tool_name, created_at desc);
+    `);
+
+    await pool.query(`
+      create index if not exists tool_service_events_thread_created_at_idx
+      on tool_service_events(thread_id, created_at desc);
+    `);
+
+    await pool.query(`
       create table if not exists tool_module_versions (
         name text not null,
         version text not null,

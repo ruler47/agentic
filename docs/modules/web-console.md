@@ -136,6 +136,8 @@ POST /api/tools/generated-modules
 DELETE /api/tools/generated-modules/:name
 GET /api/tools/health
 GET /api/tool-services
+GET /api/tool-service-events?toolName=optional&direction=optional&limit=100
+POST /api/tool-service-events
 GET /api/tool-services/logs?toolName=optional&limit=100
 GET /api/tool-services/logs/events?toolName=optional
 POST /api/tool-services/:name/start
@@ -173,6 +175,13 @@ supervisor for starts, stops, restarts, heartbeats, and startup reconciliation.
 `GET /api/tool-services/logs/events` is an SSE stream that emits `service-log` events for
 new lifecycle records, filtered by `toolName` when provided. Process runners and webhook
 workers remain on the roadmap.
+
+`GET /api/tool-service-events` returns provider-neutral runtime events written by
+always-on generated tools. Events use `direction=inbound|outbound|system` and
+`status=received|queued|sent|failed|ignored`, with optional source identity, thread, run,
+and sanitized payload metadata. `POST /api/tool-service-events` is the durable handoff
+for service tools to record inbound messages, outbound deliveries, ignored/denied
+messages, and system events without adding Telegram/Slack/provider branches to the core.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as

@@ -1032,6 +1032,10 @@ Implementation tasks:
 - Store compact thread summaries and update them after each run.
 - Send final answers back to the requester through the originating always-on tool.
 - Store inbound/outbound messages/events in an auditable table.
+  DONE for the provider-neutral foundation: `tool_service_events` stores
+  inbound/outbound/system records with source identity, thread/run links, sanitized
+  payload metadata, API access, audit events, and Channels visibility. Remaining work is
+  generated service runners that write real provider events automatically.
 - Add tests for allowed user, denied user, run context mapping, continuation detection,
   and forced new-thread commands.
 
@@ -1041,7 +1045,8 @@ UI tasks:
   health, settings, whitelist mappings, inbound/outbound message history, and tool
   telemetry. PARTIAL: Channels now lists installed `startupMode=always-on` tools with
   start/stop/restart controls, heartbeat/status cards, and recent lifecycle logs that
-  update through SSE while the page is open.
+  update through SSE while the page is open. It also shows recent provider-neutral
+  runtime events from always-on tools.
 - Run Workspace source panel showing the originating channel message.
 - Admin-visible conversation log for channel-originated runs.
 - Conversation thread inspector with message-to-thread decision confidence and override

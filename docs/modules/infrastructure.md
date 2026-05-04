@@ -69,6 +69,7 @@ Current tables:
 - `tool_migrations`
 - `tool_service_statuses`
 - `tool_service_logs`
+- `tool_service_events`
 - `secret_handles`
 
 Current filesystem-backed stores:
@@ -221,6 +222,10 @@ records are streamed through an in-process SSE channel. This is not a durable pr
 manager yet. The next infrastructure step is to move long-running generated modules to
 queue-backed or process-backed workers that can survive app restarts and attach their own
 runtime log streams.
+
+Provider-neutral service activity is stored in `tool_service_events`. Generated
+always-on tools should write inbound, outbound, and system events there with source
+identity, thread, and run links instead of creating provider-specific tables in the core.
 
 Missing tool capabilities can be persisted into `tool_build_requests`. These records are
 the durable handoff from runtime failure detection to the Tool Builder/Tool QA/Tool

@@ -2743,6 +2743,45 @@ textarea {
   color: #fbbf24;
 }
 
+.service-event-list {
+  display: grid;
+  gap: 10px;
+}
+
+.service-event-row {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 14px;
+}
+
+.event-row-title {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+
+.event-row-title strong {
+  overflow-wrap: anywhere;
+}
+
+.service-event-row small,
+.service-event-links {
+  color: var(--muted);
+}
+
+.service-event-links {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .skeleton-block {
   min-height: 220px;
   border-radius: var(--radius-lg);

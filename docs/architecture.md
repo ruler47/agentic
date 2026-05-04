@@ -353,6 +353,12 @@ the lifecycle through `/api/tool-services` plus the Channels and Tool Detail pag
 does not yet spawn durable background processes or own webhook
 routing; those must be added as generic runners behind the same tool contract.
 
+Always-on tools can record provider-neutral runtime events in `tool_service_events`.
+Those events cover inbound messages, outbound deliveries, ignored/denied events, and
+system notices with optional source identity, thread, run, and sanitized payload metadata.
+This keeps Telegram, Slack, WhatsApp, email, queue listeners, and custom webhooks on the
+same event model.
+
 Thread resolution should prefer provider metadata such as reply-to messages, chat/thread
 IDs, forum topics, or webhook thread IDs, then use a bounded classifier over recent
 compact thread summaries. The

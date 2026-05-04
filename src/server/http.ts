@@ -45,6 +45,12 @@ import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import { ToolMetadataStore, toolToMetadata } from "../tools/toolMetadataStore.js";
 import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
 import {
+  ToolServiceEventDirection,
+  ToolServiceEventInput,
+  ToolServiceEventStatus,
+  ToolServiceEventStore,
+} from "../tools/toolServiceEventStore.js";
+import {
   ToolMigrationCreateInput,
   ToolMigrationStore,
   validateToolMigrationStatus,
@@ -62,6 +68,7 @@ export type WebAppOptions = {
   toolBuildRequestStore?: ToolBuildRequestStore;
   toolBuildWorkflow?: ToolBuildWorkflow;
   toolServiceSupervisor?: ToolServiceSupervisor;
+  toolServiceEventStore?: ToolServiceEventStore;
   reloadGeneratedTools?: () => Promise<void>;
   modelTierSettings?: ModelTierSettingsStore;
   modelProviderStore?: ModelProviderStore;
@@ -748,6 +755,56 @@ async function routeRequest(
     sendJson(response, 200, {
       services: options.toolServiceSupervisor ? await options.toolServiceSupervisor.list() : [],
     });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/tool-service-events") {
+    sendJson(response, 200, {
+      events: options.toolServiceEventStore
+        ? await options.toolServiceEventStore.list({
+            toolName: url.searchParams.get("toolName") ?? undefined,
+            direction: parseOptionalToolServiceEventDirection(url.searchParams.get("direction")),
+            limit: Number(url.searchParams.get("limit") ?? "100"),
+          })
+        : [],
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/tool-service-events") {
+    if (!options.toolServiceEventStore) {
+      sendJson(response, 503, { error: "Tool service event store is not configured" });
+      return;
+    }
+
+    try {
+      const input = parseToolServiceEventInput(await readJsonBody<unknown>(request));
+      const event = await options.toolServiceEventStore.record(input);
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool_service.event_recorded",
+        targetType: "tool",
+        targetId: event.toolName,
+        status: event.status === "failed" ? "failure" : "success",
+        runId: event.runId,
+        threadId: event.threadId,
+        requesterUserId: event.sourceUserId,
+        summary: `${event.direction} service event: ${event.summary.slice(0, 160)}`,
+        metadata: {
+          direction: event.direction,
+          status: event.status,
+          sourceChatId: event.sourceChatId,
+          sourceMessageId: event.sourceMessageId,
+        },
+      });
+      sendJson(response, 201, { event });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid tool service event",
+      });
+    }
     return;
   }
 
@@ -2556,6 +2613,45 @@ function parseRequiredText(value: unknown, field: string): string {
     throw new Error(`${field} is required`);
   }
   return value.trim();
+}
+
+function parseToolServiceEventInput(value: unknown): ToolServiceEventInput {
+  if (!isRecord(value)) throw new Error("tool service event must be an object");
+  return {
+    toolName: parseRequiredText(value.toolName, "toolName"),
+    direction: parseToolServiceEventDirection(value.direction),
+    status: parseToolServiceEventStatus(value.status),
+    summary: parseRequiredText(value.summary, "summary"),
+    sourceUserId: parseOptionalText(value.sourceUserId),
+    sourceChatId: parseOptionalText(value.sourceChatId),
+    sourceMessageId: parseOptionalText(value.sourceMessageId),
+    threadId: parseOptionalText(value.threadId),
+    runId: parseOptionalText(value.runId),
+    payload: isRecord(value.payload) ? sanitizeObject(value.payload) : undefined,
+  };
+}
+
+function parseOptionalToolServiceEventDirection(value: unknown): ToolServiceEventDirection | undefined {
+  if (value === null || value === undefined || value === "") return undefined;
+  return parseToolServiceEventDirection(value);
+}
+
+function parseToolServiceEventDirection(value: unknown): ToolServiceEventDirection {
+  if (value === "inbound" || value === "outbound" || value === "system") return value;
+  throw new Error("direction must be inbound, outbound, or system");
+}
+
+function parseToolServiceEventStatus(value: unknown): ToolServiceEventStatus {
+  if (
+    value === "received" ||
+    value === "queued" ||
+    value === "sent" ||
+    value === "failed" ||
+    value === "ignored"
+  ) {
+    return value;
+  }
+  throw new Error("status must be received, queued, sent, failed, or ignored");
 }
 
 function parseMemoryScope(value: unknown): "global" | "group" | "user" | "thread" | "run" {

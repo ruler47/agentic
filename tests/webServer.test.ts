@@ -22,6 +22,7 @@ import { InMemoryUserStore } from "../src/instance/userStore.js";
 import { SkillMemory } from "../src/memory/skillMemory.js";
 import { InMemorySecretHandleStore } from "../src/secrets/secretHandleStore.js";
 import { ToolServiceSupervisor } from "../src/tools/toolServiceSupervisor.js";
+import { InMemoryToolServiceEventStore } from "../src/tools/toolServiceEventStore.js";
 
 class FakeAgent {
   async run(task: string, options?: {
@@ -884,6 +885,53 @@ test("web server streams tool service lifecycle logs as server-sent events", asy
     assert.equal(event.event, "service-log");
     assert.equal(event.data.log.toolName, "web.search");
     assert.equal(event.data.log.message, "Service start healthcheck completed.");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server records provider-neutral tool service events", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolServiceEventStore: new InMemoryToolServiceEventStore(),
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const created = await (
+      await fetch(`${baseUrl}/api/tool-service-events`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          toolName: "generated.bot.demo",
+          direction: "inbound",
+          status: "received",
+          summary: "Demo provider message received",
+          sourceUserId: "telegram:42",
+          sourceChatId: "chat-1",
+          sourceMessageId: "msg-1",
+          payload: {
+            text: "hello",
+            token: "must-not-leak",
+          },
+        }),
+      })
+    ).json();
+    const listed = await (await fetch(`${baseUrl}/api/tool-service-events?toolName=generated.bot.demo`)).json();
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+
+    assert.equal(created.event.toolName, "generated.bot.demo");
+    assert.equal(created.event.payload.token, "[redacted]");
+    assert.equal(listed.events[0].summary, "Demo provider message received");
+    assert.equal(audit.events[0].action, "tool_service.event_recorded");
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

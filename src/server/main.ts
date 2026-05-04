@@ -45,6 +45,8 @@ import { InMemoryToolServiceStatusStore } from "../tools/toolServiceStatusStore.
 import { PostgresToolServiceStatusStore } from "../tools/postgresToolServiceStatusStore.js";
 import { InMemoryToolServiceLogStore } from "../tools/toolServiceLogStore.js";
 import { PostgresToolServiceLogStore } from "../tools/postgresToolServiceLogStore.js";
+import { InMemoryToolServiceEventStore } from "../tools/toolServiceEventStore.js";
+import { PostgresToolServiceEventStore } from "../tools/postgresToolServiceEventStore.js";
 import {
   BrowserScreenshotToolBuildProvider,
   CommandToolQaRunner,
@@ -97,6 +99,9 @@ const toolServiceStatusStore = pool
 const toolServiceLogStore = pool
   ? new PostgresToolServiceLogStore(pool)
   : new InMemoryToolServiceLogStore();
+const toolServiceEventStore = pool
+  ? new PostgresToolServiceEventStore(pool)
+  : new InMemoryToolServiceEventStore();
 const toolServiceSupervisor = new ToolServiceSupervisor(tools, toolServiceStatusStore, toolServiceLogStore);
 const reconciledToolServices = await toolServiceSupervisor.reconcileDesiredServices();
 if (reconciledToolServices.length > 0) {
@@ -168,6 +173,7 @@ const server = createWebApp({
   toolBuildRequestStore,
   toolBuildWorkflow,
   toolServiceSupervisor,
+  toolServiceEventStore,
   reloadGeneratedTools,
   modelTierSettings,
   modelProviderStore,

@@ -238,6 +238,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   lifecycle log store contract and in-memory implementation.
 - [src/tools/postgresToolServiceLogStore.ts](src/tools/postgresToolServiceLogStore.ts) -
   Postgres-backed `tool_service_logs` lifecycle log store.
+- [src/tools/toolServiceEventStore.ts](src/tools/toolServiceEventStore.ts) - provider-
+  neutral always-on runtime event contract and in-memory store.
+- [src/tools/postgresToolServiceEventStore.ts](src/tools/postgresToolServiceEventStore.ts)
+  - Postgres-backed `tool_service_events` runtime event store.
 - [src/tools/toolBuildProviders.ts](src/tools/toolBuildProviders.ts) - provider-backed
   generated tool source writer, isolated command QA runner, and metadata registrar.
 - [src/tools/fileTools.ts](src/tools/fileTools.ts) - sandboxed workspace file tools.
@@ -352,6 +356,8 @@ For documentation-only changes:
 - `tests/toolServiceSupervisor.test.ts` covers generic always-on tool lifecycle state,
   status-store persistence across supervisor instances, reconciliation, and lifecycle
   logs.
+- `tests/webServer.test.ts` covers provider-neutral always-on tool service event
+  recording, API listing, payload redaction, and audit emission.
 - `tests/toolMigrationStore.test.ts` covers tool-owned migration metadata lifecycle.
 - `tests/toolBuildWorkflow.test.ts` covers Builder/QA/Registrar orchestration and failed
   QA registration blocking.
@@ -386,6 +392,9 @@ For documentation-only changes:
 - Telegram and other always-on generated tools should translate provider events into run
   requests; they should not embed agent orchestration logic or become special runtime
   branches.
+- Generated always-on tools should record inbound, outbound, ignored, and system events
+  through `tool_service_events` so Channels, Audit, Runs, and Conversations can link
+  provider activity without provider-specific core tables.
 - The generic service supervisor persists always-on lifecycle state and reconciles
   desired-running services on app startup. It also writes lifecycle logs for
   start/stop/restart/heartbeat/reconcile events and streams new log records to active UI
