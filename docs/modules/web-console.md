@@ -135,6 +135,11 @@ GET /api/tools
 POST /api/tools/generated-modules
 DELETE /api/tools/generated-modules/:name
 GET /api/tools/health
+GET /api/tool-services
+POST /api/tool-services/:name/start
+POST /api/tool-services/:name/stop
+POST /api/tool-services/:name/restart
+POST /api/tool-services/:name/heartbeat
 GET /api/tool-migrations
 POST /api/tool-migrations
 GET /api/tool-build-requests
@@ -154,6 +159,14 @@ source, status, health summary, required configuration keys, required secret han
 settings schema, storage contract, agent-readable docs/examples, success/failure
 counters, and updated timestamp. The UI shows `displayName` as the primary label and
 keeps the stable system name visible as metadata.
+
+`GET /api/tool-services` returns lifecycle state for installed tools whose
+`startupMode` is `always-on`. The matching `start`, `stop`, `restart`, and `heartbeat`
+actions are provider-neutral: they call the tool healthcheck, update runtime service
+state, and write audit events without hardcoding Telegram, Slack, webhooks, or any other
+channel type. This is the first supervisor slice. State is currently in-process; durable
+service state, process runners, webhook workers, and streaming service logs remain on the
+roadmap.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as

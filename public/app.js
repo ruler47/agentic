@@ -55,6 +55,7 @@ const state = {
   memories: [],
   memoryReviews: [],
   tools: [],
+  toolServices: [],
   toolMigrations: [],
   buildRequests: [],
   secretHandles: [],
@@ -179,6 +180,8 @@ document.addEventListener("click", (event) => {
     identityId,
     allowStatus,
     providerId,
+    serviceToolName,
+    serviceAction,
   } = action.dataset;
   if (actionName === "navigate" && route) {
     navigate(route);
@@ -246,6 +249,9 @@ document.addEventListener("click", (event) => {
   }
   if (actionName === "run-tool-health") {
     void runToolHealthchecks();
+  }
+  if (actionName === "tool-service-action" && serviceToolName && serviceAction) {
+    void updateToolService(serviceToolName, serviceAction);
   }
   if (actionName === "run-tool-build" && buildId) {
     void runToolBuild(buildId);
@@ -331,6 +337,7 @@ async function refreshData() {
       toolMigrations,
       buildRequests,
       secretHandles,
+      toolServices,
       tiers,
       modelProviders,
       modelCatalog,
@@ -347,6 +354,7 @@ async function refreshData() {
       fetchJson("/api/tool-migrations").then((data) => data.migrations ?? []),
       fetchJson("/api/tool-build-requests").then((data) => data.requests ?? []),
       fetchJson("/api/secret-handles").then((data) => data.secretHandles ?? []),
+      fetchJson("/api/tool-services").then((data) => data.services ?? []),
       fetchJson("/api/settings/model-tiers").then((data) => data.tiers ?? []),
       fetchJson("/api/model-providers").then((data) => data.providers ?? []),
       fetchJson("/api/models/catalog").catch(() => undefined),
@@ -365,6 +373,7 @@ async function refreshData() {
       toolMigrations,
       buildRequests,
       secretHandles,
+      toolServices,
       tiers,
       modelProviders,
       modelCatalog,
@@ -2144,6 +2153,7 @@ function toolMatchesSearch(tool, query) {
 function renderToolCard(tool) {
   const label = tool.displayName || tool.name;
   const isGenerated = tool.source === "generated";
+  const service = serviceForTool(tool.name);
   return `
     <article class="tool-card ${state.selectedToolName === tool.name ? "selected" : ""}" data-action="select-tool" data-tool-name="${tool.name}" tabindex="0">
       <div class="card-topline">
@@ -2152,6 +2162,7 @@ function renderToolCard(tool) {
       </div>
       <h3>${escapeHtml(label)} <small>v${escapeHtml(tool.version)}</small></h3>
       <small class="status-note">System name: ${escapeHtml(tool.name)}</small>
+      ${service ? `<small class="status-note">Service: ${escapeHtml(service.status)} · ${escapeHtml(service.desiredState)}</small>` : ""}
       <p>${escapeHtml(tool.description)}</p>
       <div class="tag-row">${(tool.capabilities ?? []).slice(0, 5).map((capability) => `<span>${escapeHtml(capability)}</span>`).join("")}</div>
       <div class="card-actions">
@@ -2165,6 +2176,7 @@ function renderToolCard(tool) {
 function renderToolDetail(tool) {
   const failureProblem = toolFailureProblem(tool);
   const label = tool.displayName || tool.name;
+  const service = serviceForTool(tool.name);
   return `
     <div class="inspector-stack">
       <span class="eyebrow">Tool detail</span>
@@ -2179,6 +2191,7 @@ function renderToolDetail(tool) {
       ${contextBlock("Purpose", tool.description || "No description.")}
       ${contextBlock("Capabilities", (tool.capabilities ?? []).join("\n") || "No capabilities.")}
       ${contextBlock("Startup mode", tool.startupMode ?? "default")}
+      ${service ? renderToolServiceControls(service) : ""}
       ${contextBlock("Health", formatToolHealth(tool))}
       ${contextBlock("Settings", formatToolSettings(tool))}
       ${contextBlock("Storage", formatToolStorage(tool))}
@@ -2191,6 +2204,29 @@ function renderToolDetail(tool) {
       ${renderToolReworkForm(tool, failureProblem)}
       ${tool.source === "generated" ? `<button type="button" class="ghost-button danger-button" data-action="delete-tool" data-tool-name="${tool.name}">Delete generated tool</button>` : ""}
     </div>
+  `;
+}
+
+function serviceForTool(toolName) {
+  return state.toolServices.find((service) => service.toolName === toolName);
+}
+
+function renderToolServiceControls(service) {
+  return `
+    <section class="context-block service-control-block">
+      <h4>Service lifecycle</h4>
+      <div class="service-status-row">
+        <span class="status-pill ${escapeHtml(service.status)}">${escapeHtml(service.status)}</span>
+        <span>${escapeHtml(service.desiredState)}</span>
+        <span>${escapeHtml(service.lastHeartbeatAt ? formatRelative(service.lastHeartbeatAt) : "no heartbeat")}</span>
+      </div>
+      <p>${escapeHtml(service.detail || "No service detail.")}</p>
+      <div class="action-row compact">
+        <button type="button" class="ghost-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="start">Start</button>
+        <button type="button" class="ghost-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="restart">Restart</button>
+        <button type="button" class="ghost-button danger-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="stop">Stop</button>
+      </div>
+    </section>
   `;
 }
 
@@ -2849,11 +2885,60 @@ function renderChannelIdentityRow(identity) {
 }
 
 function renderChannelsPage() {
-  return renderPlaceholderPage("Channels", "Runtime view for always-on tools that receive or send external messages. New bots/webhooks are created through Tool Builds, not a separate onboarding screen.", [
-    "Web console ready",
-    "API endpoint ready",
-    "Telegram, WhatsApp, Slack, email, and custom listeners should be generated and QA-tested as tools with startupMode=always-on.",
-  ]);
+  const services = [...state.toolServices].sort((a, b) => a.toolName.localeCompare(b.toolName));
+  const running = services.filter((service) => service.status === "running").length;
+  const failed = services.filter((service) => service.status === "failed").length;
+  return `
+    <section class="page-stack">
+      <section class="surface-hero">
+        <span class="eyebrow">Always-on runtime</span>
+        <h2>Channels</h2>
+        <p>External intake is modeled as generated always-on tools: bots, webhooks, queue listeners, and outbound senders. This page monitors lifecycle state without hardcoding Telegram or any provider into the core.</p>
+        <div class="metric-card-grid">
+          ${metricCard("Services", String(services.length), "startupMode=always-on")}
+          ${metricCard("Running", String(running), "healthy heartbeat")}
+          ${metricCard("Failed", String(failed), "needs rework or credentials")}
+        </div>
+      </section>
+      <section class="surface-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Service Tools</h2>
+            <p>Start, stop, restart, and heartbeat-check installed always-on modules. New bots/listeners are created from Tool Builds.</p>
+          </div>
+          <button type="button" class="ghost-button" data-action="navigate" data-route="tool-builds">Create always-on tool</button>
+        </div>
+        <div class="service-grid">
+          ${services.length ? services.map(renderServiceCard).join("") : renderEmptyState("No always-on tools", "Create a Tool Build request and choose Run mode: Always running.", "Tool Builds")}
+        </div>
+      </section>
+    </section>
+  `;
+}
+
+function renderServiceCard(service) {
+  return `
+    <article class="tool-card service-card">
+      <div class="card-topline">
+        <span>${escapeHtml(service.status)}</span>
+        <span>${escapeHtml(service.desiredState)}</span>
+      </div>
+      <h3>${escapeHtml(service.displayName || service.toolName)}</h3>
+      <small class="status-note">${escapeHtml(service.toolName)}</small>
+      <p>${escapeHtml(service.description || "No description.")}</p>
+      <div class="service-status-row">
+        <span class="status-pill ${escapeHtml(service.status)}">${escapeHtml(service.status)}</span>
+        <span>${escapeHtml(service.lastHeartbeatAt ? `heartbeat ${formatRelative(service.lastHeartbeatAt)}` : "no heartbeat")}</span>
+        <span>${escapeHtml(`${service.restartCount ?? 0} restarts`)}</span>
+      </div>
+      <small class="status-note">${escapeHtml(service.detail || "No service detail.")}</small>
+      <div class="card-actions">
+        <button type="button" class="ghost-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="start">Start</button>
+        <button type="button" class="ghost-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="restart">Restart</button>
+        <button type="button" class="ghost-button danger-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="stop">Stop</button>
+      </div>
+    </article>
+  `;
 }
 
 function renderPoliciesPage() {
@@ -3463,6 +3548,27 @@ async function runToolHealthchecks() {
       body: failed.length
         ? `${failed.length} tool healthcheck${failed.length === 1 ? "" : "s"} failed.`
         : `Healthchecks passed for ${(result.tools ?? []).length} tool${(result.tools ?? []).length === 1 ? "" : "s"}.`,
+    };
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function updateToolService(toolName, action) {
+  try {
+    const data = await fetchJson(
+      `/api/tool-services/${encodeURIComponent(toolName)}/${encodeURIComponent(action)}`,
+      { method: "POST" },
+    );
+    state.toolServices = [
+      data.service,
+      ...state.toolServices.filter((service) => service.toolName !== data.service.toolName),
+    ].sort((a, b) => a.toolName.localeCompare(b.toolName));
+    state.notice = {
+      title: `Service ${action}`,
+      body: `${data.service.displayName || data.service.toolName}: ${data.service.status}. ${data.service.detail}`,
     };
     render();
   } catch (error) {

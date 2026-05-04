@@ -43,6 +43,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import { ToolBuildRequestStore } from "../tools/toolBuildRequestStore.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import { ToolMetadataStore, toolToMetadata } from "../tools/toolMetadataStore.js";
+import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
 import {
   ToolMigrationCreateInput,
   ToolMigrationStore,
@@ -60,6 +61,7 @@ export type WebAppOptions = {
   toolMigrationStore?: ToolMigrationStore;
   toolBuildRequestStore?: ToolBuildRequestStore;
   toolBuildWorkflow?: ToolBuildWorkflow;
+  toolServiceSupervisor?: ToolServiceSupervisor;
   reloadGeneratedTools?: () => Promise<void>;
   modelTierSettings?: ModelTierSettingsStore;
   modelProviderStore?: ModelProviderStore;
@@ -739,6 +741,62 @@ async function routeRequest(
     );
 
     sendJson(response, 200, { tools: health });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/tool-services") {
+    sendJson(response, 200, {
+      services: options.toolServiceSupervisor ? await options.toolServiceSupervisor.list() : [],
+    });
+    return;
+  }
+
+  const toolServiceActionMatch = url.pathname.match(/^\/api\/tool-services\/([^/]+)\/(start|stop|restart|heartbeat)$/);
+  if (request.method === "POST" && toolServiceActionMatch) {
+    if (!options.toolServiceSupervisor) {
+      sendJson(response, 503, { error: "Tool service supervisor is not configured" });
+      return;
+    }
+
+    const toolName = decodeURIComponent(toolServiceActionMatch[1] ?? "");
+    const action = toolServiceActionMatch[2] ?? "";
+    try {
+      const auditAction =
+        action === "start"
+          ? "tool_service.start"
+          : action === "stop"
+            ? "tool_service.stop"
+            : action === "restart"
+              ? "tool_service.restart"
+              : "tool_service.heartbeat";
+      const service =
+        action === "start"
+          ? await options.toolServiceSupervisor.start(toolName)
+          : action === "stop"
+            ? await options.toolServiceSupervisor.stop(toolName)
+            : action === "restart"
+              ? await options.toolServiceSupervisor.restart(toolName)
+              : await options.toolServiceSupervisor.heartbeat(toolName);
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: auditAction,
+        targetType: "tool",
+        targetId: toolName,
+        status: service.status === "failed" ? "failure" : "success",
+        summary: `Tool service ${action}: ${toolName}`,
+        metadata: {
+          status: service.status,
+          desiredState: service.desiredState,
+          detail: service.detail,
+        },
+      });
+      sendJson(response, 200, { service });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid tool service action";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
     return;
   }
 

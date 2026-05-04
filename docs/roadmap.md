@@ -985,7 +985,7 @@ Implementation tasks:
 
 ## Phase 9: Always-On Tool Runtime
 
-Status: planned.
+Status: started.
 
 Goal: let generated tools run not only as one-off calls, but also as durable services,
 listeners, bots, webhooks, and short-lived jobs. Telegram is the first expected
@@ -1010,7 +1010,11 @@ Implementation tasks:
 - Add a generic service/listener tool contract and register all versions in
   `tool_modules` with `startupMode=always-on`.
 - Add a service supervisor that can start, stop, restart, and healthcheck always-on
-  generated modules without hardcoding provider-specific branches.
+  generated modules without hardcoding provider-specific branches. PARTIAL:
+  `ToolServiceSupervisor` exposes generic in-process lifecycle state, heartbeat detail,
+  restart counts, audit events, `/api/tool-services`, and Channels/Tool Detail controls.
+  Remaining work is persistent supervisor state, actual background process/webhook
+  runners for generated modules, and streaming service logs.
 - Let Tool Builds create a Telegram bot when an operator provides bot-token secret handle,
   desired behavior, whitelist policy, thread routing rules, and provider docs.
 - Add `channel_identities` mapping Telegram user IDs to users. PARTIAL: the durable table
@@ -1034,7 +1038,8 @@ UI tasks:
 
 - Channels page, or a generic always-on tools page, with installed service versions,
   health, settings, whitelist mappings, inbound/outbound message history, and tool
-  telemetry.
+  telemetry. PARTIAL: Channels now lists installed `startupMode=always-on` tools with
+  start/stop/restart controls and heartbeat/status cards.
 - Run Workspace source panel showing the originating channel message.
 - Admin-visible conversation log for channel-originated runs.
 - Conversation thread inspector with message-to-thread decision confidence and override

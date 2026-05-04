@@ -228,6 +228,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   Registrar orchestration flow for missing tool capabilities.
 - [src/tools/toolBuildWorker.ts](src/tools/toolBuildWorker.ts) - background worker that
   claims `requested` Tool Build Queue items and runs the Builder/QA/Registrar workflow.
+- [src/tools/toolServiceSupervisor.ts](src/tools/toolServiceSupervisor.ts) - generic
+  lifecycle supervisor for `always-on` tools with start/stop/restart/heartbeat status.
 - [src/tools/toolBuildProviders.ts](src/tools/toolBuildProviders.ts) - provider-backed
   generated tool source writer, isolated command QA runner, and metadata registrar.
 - [src/tools/fileTools.ts](src/tools/fileTools.ts) - sandboxed workspace file tools.
@@ -339,6 +341,7 @@ For documentation-only changes:
 - `tests/generatedToolLoader.test.ts` covers compiled generated tool loading and contract
   rejection.
 - `tests/toolMetadataStore.test.ts` covers tool metadata and Tool Build Queue lifecycle.
+- `tests/toolServiceSupervisor.test.ts` covers generic always-on tool lifecycle state.
 - `tests/toolMigrationStore.test.ts` covers tool-owned migration metadata lifecycle.
 - `tests/toolBuildWorkflow.test.ts` covers Builder/QA/Registrar orchestration and failed
   QA registration blocking.

@@ -40,6 +40,7 @@ import { PostgresToolMigrationStore } from "../tools/postgresToolMigrationStore.
 import { loadGeneratedTools } from "../tools/generatedToolLoader.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import { ToolBuildWorker } from "../tools/toolBuildWorker.js";
+import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
 import {
   BrowserScreenshotToolBuildProvider,
   CommandToolQaRunner,
@@ -86,6 +87,7 @@ const reloadGeneratedTools = async () => {
     console.log(`Reloaded ${loaded.length} generated tool(s).`);
   }
 };
+const toolServiceSupervisor = new ToolServiceSupervisor(tools);
 const toolBuildWorkflow = new ToolBuildWorkflow(
   toolBuildRequestStore,
   new GeneratedToolFileBuilder([new BrowserScreenshotToolBuildProvider(), new GenericApiToolBuildProvider()]),
@@ -151,6 +153,7 @@ const server = createWebApp({
   toolMigrationStore,
   toolBuildRequestStore,
   toolBuildWorkflow,
+  toolServiceSupervisor,
   reloadGeneratedTools,
   modelTierSettings,
   modelProviderStore,

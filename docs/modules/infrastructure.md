@@ -208,6 +208,14 @@ configuration/secret requirements, storage contracts, docs/examples, usage count
 the latest health result. Generated tools can be deleted from the catalog; built-in tools
 are protected.
 
+Tools with `startupMode=always-on` are exposed through a generic service supervisor. The
+current supervisor keeps lifecycle state in the app process, calls each tool's
+healthcheck, and exposes start/stop/restart/heartbeat controls through
+`/api/tool-services`. This is enough for UI and contract testing, but it is not a durable
+process manager yet. The next infrastructure step is to persist service state and move
+long-running generated modules to queue-backed or process-backed workers that can survive
+app restarts.
+
 Missing tool capabilities can be persisted into `tool_build_requests`. These records are
 the durable handoff from runtime failure detection to the Tool Builder/Tool QA/Tool
 Registrar flow. The queue stores lifecycle state, human display name, generated system

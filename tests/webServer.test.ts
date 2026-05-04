@@ -21,6 +21,7 @@ import { InMemoryGroupProfileStore } from "../src/instance/groupProfileStore.js"
 import { InMemoryUserStore } from "../src/instance/userStore.js";
 import { SkillMemory } from "../src/memory/skillMemory.js";
 import { InMemorySecretHandleStore } from "../src/secrets/secretHandleStore.js";
+import { ToolServiceSupervisor } from "../src/tools/toolServiceSupervisor.js";
 
 class FakeAgent {
   async run(task: string, options?: {
@@ -743,6 +744,35 @@ test("web server validates required task and serves static UI", async () => {
 test("web server exposes memory and tool registries", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const serviceTool = {
+    name: "web.search",
+    version: "1.0.0",
+    description: "Searches the web.",
+    capabilities: ["web-search"],
+    startupMode: "always-on" as const,
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+    outputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+    async healthcheck() {
+      return { ok: true, detail: "healthy" };
+    },
+    async run() {
+      return { ok: true, content: "ok" };
+    },
+  };
+  const serviceRegistry = {
+    list() {
+      return [serviceTool];
+    },
+    get(name: string) {
+      return name === serviceTool.name ? serviceTool : undefined;
+    },
+  };
 
   const server = createWebApp({
     agent: new FakeAgent() as unknown as UniversalAgent,
@@ -768,33 +798,8 @@ test("web server exposes memory and tool registries", async () => {
         return { ...entry, id: "memory-2", createdAt: new Date().toISOString() };
       },
     },
-    toolRegistry: {
-      list() {
-        return [
-          {
-            name: "web.search",
-            version: "1.0.0",
-            description: "Searches the web.",
-            capabilities: ["web-search"],
-            startupMode: "always-on",
-            inputSchema: {
-              type: "object",
-              properties: {},
-            },
-            outputSchema: {
-              type: "object",
-              properties: {},
-            },
-            async healthcheck() {
-              return { ok: true, detail: "healthy" };
-            },
-            async run() {
-              return { ok: true, content: "ok" };
-            },
-          },
-        ];
-      },
-    },
+    toolRegistry: serviceRegistry,
+    toolServiceSupervisor: new ToolServiceSupervisor(serviceRegistry),
   });
 
   try {
@@ -802,11 +807,21 @@ test("web server exposes memory and tool registries", async () => {
     const memories = await (await fetch(`${baseUrl}/api/memories`)).json();
     const tools = await (await fetch(`${baseUrl}/api/tools`)).json();
     const health = await (await fetch(`${baseUrl}/api/tools/health`)).json();
+    const services = await (await fetch(`${baseUrl}/api/tool-services`)).json();
+    const started = await (
+      await fetch(`${baseUrl}/api/tool-services/${encodeURIComponent("web.search")}/start`, { method: "POST" })
+    ).json();
+    const stopped = await (
+      await fetch(`${baseUrl}/api/tool-services/${encodeURIComponent("web.search")}/stop`, { method: "POST" })
+    ).json();
 
     assert.equal(memories.memories[0].title, "Reusable research funnel");
     assert.equal(tools.tools[0].name, "web.search");
     assert.equal(tools.tools[0].version, "1.0.0");
     assert.equal(health.tools[0].ok, true);
+    assert.equal(services.services[0].status, "stopped");
+    assert.equal(started.service.status, "running");
+    assert.equal(stopped.service.status, "stopped");
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

@@ -343,6 +343,13 @@ keep it running" should become an always-on tool build request. The generated mo
 the provider-specific bot/webhook behavior while the core system only sees normal run
 creation, conversation threading, audit events, and tool lifecycle status.
 
+The current implementation includes a generic in-process `ToolServiceSupervisor` for
+`startupMode=always-on` tools. It lists service tools, starts/stops/restarts them,
+refreshes health through their registered healthcheck, records audit events, and exposes
+the lifecycle through `/api/tool-services` plus the Channels and Tool Detail pages. It
+does not yet spawn durable background processes or own webhook routing; those must be
+added as generic runners behind the same tool contract.
+
 Thread resolution should prefer provider metadata such as reply-to messages, chat/thread
 IDs, forum topics, or webhook thread IDs, then use a bounded classifier over recent
 compact thread summaries. The
