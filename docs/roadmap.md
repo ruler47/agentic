@@ -415,9 +415,9 @@ Remaining registry persistence:
   fail before the external runtime is called.
   Runner inventory is visible through the API and Diagnostics page, and operators can
   explicitly reload generated tools after updating a source-bundle on disk. Remaining
-  work is moving the Builder output from `src/tools/generated` into the gitignored package
-  workspace by default, running package-local QA before promotion, building package
-  folders into OCI/external HTTP runtimes, npm/external package install/sandboxing,
+  work is making the package workspace the active generated source of truth instead of a
+  sidecar beside `src/tools/generated`, running package-local QA before promotion,
+  building package folders into OCI/external HTTP runtimes, npm/external package install/sandboxing,
   production resource/log supervision for containers, redacted runtime logging,
   container-level config/secret injection policies, and richer runner UI controls. DONE
   for API/UI package import/export, package workspace writing, and first OCI HTTP proxy
@@ -681,10 +681,11 @@ Remaining Phase 3 gaps:
   multiple workers/containers. The first implementation can use a local runner process and
   generated bundle directory, but the contract must also support OCI/container execution.
   PARTIAL: the app can now write source-bundle package workspaces outside the main repo
-  under gitignored `tools/<name>/<version>` folders, reload pre-built source-bundles from
-  that workspace, proxy external HTTP packages, and optionally run OCI HTTP packages. The
-  next step is to make Tool Builder emit package workspaces instead of app-local generated
-  source, then promote them through package-local QA and runner activation.
+  under gitignored `tools/<name>/<version>` folders, mirror Tool Builder output into that
+  workspace by default, reload pre-built source-bundles from that workspace, proxy
+  external HTTP packages, and optionally run OCI HTTP packages. The next step is to make
+  package workspaces the active generated source of truth instead of sidecar snapshots,
+  then promote them through package-local QA and runner activation.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,

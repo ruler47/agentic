@@ -22,6 +22,11 @@ export type ToolBuildOutput = {
   docsMarkdown?: string;
   examples?: ToolExample[];
   packageManifest?: ToolPackageManifest;
+  packageWorkspace?: {
+    packageRef: string;
+    manifestPath: string;
+    files: string[];
+  };
   changeSummary?: string;
 };
 

@@ -281,6 +281,13 @@ target for generated TypeScript packages; later the same folder can be built int
 image, uploaded to object storage, exported, imported into another Agentic instance, or
 run as an external HTTP service.
 
+`GeneratedToolFileBuilder` can mirror every provider-produced module/test pair into that
+workspace while still returning the current local-path output for promotion. This sidecar
+is enabled in the server by default and can be disabled with
+`TOOL_BUILD_PACKAGE_WORKSPACE=disabled`. The sidecar is not yet the active source of
+truth; package-local QA and runner promotion are the next step before generated code can
+leave `src/tools/generated` entirely.
+
 Local-path loading is deliberately constrained:
 
 - metadata must include a project-relative `modulePath`;

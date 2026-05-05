@@ -68,6 +68,7 @@ import {
   GeneratedToolFileBuilder,
   MetadataToolRegistrar,
 } from "../tools/toolBuildProviders.js";
+import { ToolPackageWorkspaceStore } from "../tools/toolPackageWorkspaceStore.js";
 import { LlmToolBuildProvider } from "../tools/llmToolBuildProvider.js";
 
 const port = Number(process.env.PORT ?? "3000");
@@ -139,15 +140,22 @@ if (reconciledToolServices.length > 0) {
 }
 const toolBuildWorkflow = new ToolBuildWorkflow(
   toolBuildRequestStore,
-  new GeneratedToolFileBuilder([
-    new BrowserScreenshotToolBuildProvider(),
-    new DocumentArtifactToolBuildProvider(),
-    new GenericServiceToolBuildProvider(),
-    new GenericApiToolBuildProvider(),
-    ...(process.env.TOOL_BUILD_LLM_PROVIDER === "disabled"
-      ? []
-      : [new LlmToolBuildProvider(new LlmClient(readLlmConfigFromEnv(), modelTierSettings))]),
-  ]),
+  new GeneratedToolFileBuilder(
+    [
+      new BrowserScreenshotToolBuildProvider(),
+      new DocumentArtifactToolBuildProvider(),
+      new GenericServiceToolBuildProvider(),
+      new GenericApiToolBuildProvider(),
+      ...(process.env.TOOL_BUILD_LLM_PROVIDER === "disabled"
+        ? []
+        : [new LlmToolBuildProvider(new LlmClient(readLlmConfigFromEnv(), modelTierSettings))]),
+    ],
+    process.cwd(),
+    {
+      packageWorkspaceStore: new ToolPackageWorkspaceStore(),
+      writePackageWorkspace: process.env.TOOL_BUILD_PACKAGE_WORKSPACE !== "disabled",
+    },
+  ),
   new CommandToolQaRunner(),
   new MetadataToolRegistrar(toolMetadataStore),
   {

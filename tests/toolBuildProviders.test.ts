@@ -14,6 +14,7 @@ import {
 import { LlmToolBuildProvider } from "../src/tools/llmToolBuildProvider.js";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
+import { ToolPackageWorkspaceStore } from "../src/tools/toolPackageWorkspaceStore.js";
 
 class FakeToolBuilderLlm {
   public calls: Array<{ messages: unknown[]; options: unknown }> = [];
@@ -48,6 +49,41 @@ test("GeneratedToolFileBuilder writes provider-owned TypeScript module and tests
     assert.match(moduleSource, /chromium/);
     assert.match(moduleSource, /browser-screenshot/);
     assert.match(testSource, /captures a local page screenshot artifact/);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("GeneratedToolFileBuilder can mirror generated output into an out-of-tree package workspace", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agentic-builder-"));
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const request = await requestStore.create({
+    capability: "browser-screenshot",
+    reason: "Need screenshots as artifacts.",
+    requiredInputs: ["url"],
+    requiredOutputs: ["artifact"],
+  });
+  const builder = new GeneratedToolFileBuilder(
+    [new BrowserScreenshotToolBuildProvider()],
+    projectRoot,
+    { packageWorkspaceStore: new ToolPackageWorkspaceStore(projectRoot, "tools") },
+  );
+
+  try {
+    const output = await builder.build(request);
+    const packageManifestPath = output.packageWorkspace?.manifestPath;
+    assert.ok(packageManifestPath);
+    assert.equal(packageManifestPath, "tools/generated.browser.screenshot/1.0.0/tool.package.json");
+    assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/tsconfig.json"));
+    assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/src/tools/generated/browser-screenshotTool.ts"));
+
+    const packageManifest = JSON.parse(await readFile(join(projectRoot, packageManifestPath), "utf8"));
+    const packageReadme = await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/README.md"), "utf8");
+    assert.equal(packageManifest.package.type, "source-bundle");
+    assert.equal(packageManifest.package.ref, "generated.browser.screenshot/1.0.0");
+    assert.equal(packageManifest.name, "generated.browser.screenshot");
+    assert.match(packageReadme, /Source Snapshot/);
+    assert.equal(output.modulePath, "src/tools/generated/browser-screenshotTool.ts");
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }

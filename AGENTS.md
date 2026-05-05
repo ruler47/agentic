@@ -125,6 +125,8 @@ Generated tool package workspace:
 
 - `TOOL_PACKAGE_WORKSPACE_ROOT` defaults to `tools`.
 - `TOOL_PACKAGE_ROOT` can point at a specific legacy/custom source-bundle package root.
+- `TOOL_BUILD_PACKAGE_WORKSPACE=disabled` disables Builder sidecar package workspace
+  writing while keeping the legacy local-path generated module flow.
 - `SourceBundleToolPackageRunner` searches `TOOL_PACKAGE_ROOT`,
   `TOOL_PACKAGE_WORKSPACE_ROOT`, default `tools`, and legacy `tool-packages`.
 - The top-level `tools/` directory is intentionally gitignored; package source should be
@@ -619,6 +621,11 @@ For documentation-only changes:
   `tools/<system-name>/<version>` with manifest, README, Dockerfile, package metadata,
   TypeScript build config, source, and tests. It is the preferred next target for Tool
   Builder output before containerization.
+- Server-side `GeneratedToolFileBuilder` mirrors generated module/test output into the
+  package workspace by default while retaining the legacy local-path promotion output.
+  This bridge can be disabled with `TOOL_BUILD_PACKAGE_WORKSPACE=disabled`; package-local
+  QA and active source-bundle promotion remain the next step before generated code leaves
+  `src/tools/generated` entirely.
 - Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
   needs database access, it must declare storage requirements/migrations and receive a
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,

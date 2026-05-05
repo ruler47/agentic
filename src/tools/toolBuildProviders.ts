@@ -22,6 +22,7 @@ import {
   ToolIntegrationSpec,
 } from "./toolIntegrationSpec.js";
 import type { ToolPackageManifest } from "./toolPackage.js";
+import { ToolPackageWorkspaceStore } from "./toolPackageWorkspaceStore.js";
 
 type GeneratedFile = {
   path: string;
@@ -101,6 +102,10 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
   constructor(
     private readonly providers: ToolBuildProvider[],
     private readonly projectRoot = process.cwd(),
+    private readonly options: {
+      packageWorkspaceStore?: ToolPackageWorkspaceStore;
+      writePackageWorkspace?: boolean;
+    } = {},
   ) {}
 
   async build(request: ToolBuildRequest, context?: ToolBuildAttemptContext): Promise<ToolBuildOutput> {
@@ -115,6 +120,8 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
       await mkdir(dirname(absolutePath), { recursive: true });
       await writeFile(absolutePath, file.content, "utf8");
     }
+
+    const packageWorkspace = await this.writePackageWorkspace(request, output);
 
     return {
       modulePath: output.modulePath,
@@ -131,9 +138,73 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
       docsMarkdown: output.docsMarkdown,
       examples: output.examples,
       packageManifest: output.packageManifest,
+      packageWorkspace,
       changeSummary: output.changeSummary,
     };
   }
+
+  private async writePackageWorkspace(
+    request: ToolBuildRequest,
+    output: ToolBuildProviderOutput,
+  ): Promise<ToolBuildOutput["packageWorkspace"]> {
+    if (!this.options.packageWorkspaceStore || this.options.writePackageWorkspace === false) {
+      return undefined;
+    }
+
+    const record = await this.options.packageWorkspaceStore.writeSourceBundlePackage({
+      manifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: request.contract.toolName,
+        displayName: output.displayName ?? request.displayName ?? request.contract.displayName,
+        version: request.contract.version,
+        description: request.contract.description,
+        capabilities: output.capabilities ?? [request.capability],
+        startupMode: request.contract.startupMode,
+        inputSchema: output.inputSchema ?? request.contract.inputSchema,
+        outputSchema: output.outputSchema ?? request.contract.outputSchema,
+        requiredConfigurationKeys: output.requiredConfigurationKeys,
+        requiredSecretHandles: output.requiredSecretHandles ?? request.credentialHandles,
+        settingsSchema: output.settingsSchema,
+        storage: output.storage,
+        docsMarkdown: output.docsMarkdown,
+        examples: output.examples,
+      },
+      readmeMarkdown: packageWorkspaceReadme(request, output),
+      files: output.files.map((file) => ({
+        path: file.path,
+        content: file.content,
+      })),
+    });
+
+    return {
+      packageRef: record.packageRef,
+      manifestPath: record.manifestPath,
+      files: record.files,
+    };
+  }
+}
+
+function packageWorkspaceReadme(request: ToolBuildRequest, output: ToolBuildProviderOutput): string {
+  return [
+    `# ${output.displayName ?? request.displayName ?? request.contract.displayName ?? request.contract.toolName}`,
+    "",
+    request.contract.description,
+    "",
+    "## Runtime Contract",
+    "",
+    "- `GET /health` returns `{ ok, detail }`.",
+    "- `POST /run` accepts `{ input, context }` and returns `{ ok, content, data? }`.",
+    "- Always-on tools may also expose `POST /service/start` and `POST /service/stop`.",
+    "",
+    "## Source Snapshot",
+    "",
+    "This package workspace is generated outside the Agentic application source tree.",
+    "The current active runtime may still use the local-path module until package-local QA",
+    "and runner promotion are enabled for this tool version.",
+    "",
+    output.docsMarkdown ? "## Tool Docs" : undefined,
+    output.docsMarkdown,
+  ].filter(Boolean).join("\n");
 }
 
 export class IsolatedCommandToolQaRunner implements ToolQaRunner {
