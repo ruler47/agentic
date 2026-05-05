@@ -338,6 +338,42 @@ test("ToolServiceSupervisor applies multiplier and cap to restart backoff", asyn
   assert.ok(scheduled.nextRestartAt);
 });
 
+test("ToolServiceSupervisor applies jitter to restart backoff schedules", async () => {
+  const registry = new ToolRegistry();
+  const statusStore = new InMemoryToolServiceStatusStore();
+  registry.register(serviceTool({
+    async startService() {
+      let healthchecks = 0;
+      return {
+        async healthcheck() {
+          healthchecks += 1;
+          return healthchecks > 1
+            ? { ok: false, detail: "runtime failed with jitter policy" }
+            : { ok: true, detail: "runtime healthy" };
+        },
+      };
+    },
+  }));
+  const supervisor = new ToolServiceSupervisor(registry, statusStore, undefined, {}, {
+    maxAutoRestartsPerService: 5,
+    random: () => 0.5,
+  });
+
+  const policy = await supervisor.updateRestartPolicy("service.echo", {
+    restartBackoffMs: 1000,
+    restartBackoffJitterRatio: 0.4,
+  });
+  await supervisor.start("service.echo");
+  const before = Date.now();
+  const scheduled = await supervisor.heartbeat("service.echo");
+  const delayMs = Date.parse(scheduled.nextRestartAt ?? "") - before;
+
+  assert.equal(policy.restartBackoffJitterRatio, 0.4);
+  assert.equal(scheduled.status, "failed");
+  assert.match(scheduled.detail, /1200 ms backoff/);
+  assert.ok(delayMs >= 1150 && delayMs <= 1300);
+});
+
 test("ToolServiceSupervisor can hold failed heartbeat restarts for operator approval", async () => {
   const registry = new ToolRegistry();
   let started = 0;

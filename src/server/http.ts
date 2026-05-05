@@ -1165,6 +1165,7 @@ async function routeRequest(
           restartBackoffMs: service.restartBackoffMs,
           restartBackoffMultiplier: service.restartBackoffMultiplier,
           restartBackoffMaxMs: service.restartBackoffMaxMs,
+          restartBackoffJitterRatio: service.restartBackoffJitterRatio,
           restartRequiresApproval: service.restartRequiresApproval,
         },
       });
@@ -3190,6 +3191,7 @@ function parseToolServiceRestartPolicyInput(value: unknown): {
   restartBackoffMs?: number;
   restartBackoffMultiplier?: number;
   restartBackoffMaxMs?: number;
+  restartBackoffJitterRatio?: number;
   restartRequiresApproval?: boolean;
 } {
   if (!isRecord(value)) throw new Error("restart policy input must be an object");
@@ -3209,14 +3211,34 @@ function parseToolServiceRestartPolicyInput(value: unknown): {
     1,
   );
   const restartBackoffMaxMs = parseOptionalNonNegativeInteger(value.restartBackoffMaxMs, "restartBackoffMaxMs");
+  const restartBackoffJitterRatio = parseOptionalNumberInRange(
+    value.restartBackoffJitterRatio,
+    "restartBackoffJitterRatio",
+    0,
+    1,
+  );
   return {
     autoRestartEnabled,
     maxAutoRestarts,
     restartBackoffMs,
     restartBackoffMultiplier,
     restartBackoffMaxMs,
+    restartBackoffJitterRatio,
     restartRequiresApproval,
   };
+}
+
+function parseOptionalNumberInRange(
+  value: unknown,
+  fieldName: string,
+  min: number,
+  max: number,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+    throw new Error(`${fieldName} must be a number between ${min} and ${max}`);
+  }
+  return value;
 }
 
 function parseOptionalNonNegativeInteger(value: unknown, fieldName: string): number | undefined {

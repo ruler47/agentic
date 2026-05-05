@@ -2391,12 +2391,14 @@ function renderServiceRestartPolicyForm(service) {
   const restartBackoffMs = service.restartBackoffMs ?? 0;
   const restartBackoffMultiplier = service.restartBackoffMultiplier ?? 1;
   const restartBackoffMaxMs = service.restartBackoffMaxMs ?? 0;
+  const restartBackoffJitterRatio = service.restartBackoffJitterRatio ?? 0;
   const restartRequiresApproval = Boolean(service.restartRequiresApproval);
   const policyParts = [
     autoRestartEnabled ? "auto" : "manual",
     `max ${maxAutoRestarts}`,
     restartBackoffMs > 0 ? `backoff ${formatDuration(restartBackoffMs)} ×${restartBackoffMultiplier}` : "no backoff",
     restartBackoffMaxMs > 0 ? `cap ${formatDuration(restartBackoffMaxMs)}` : "no cap",
+    restartBackoffJitterRatio > 0 ? `jitter ${Math.round(restartBackoffJitterRatio * 100)}%` : "no jitter",
     restartRequiresApproval ? "approval" : "no approval",
   ];
   return `
@@ -2427,6 +2429,10 @@ function renderServiceRestartPolicyForm(service) {
         <label>
           Backoff cap, ms
           <input type="number" name="restartBackoffMaxMs" min="0" step="1000" value="${escapeHtml(String(restartBackoffMaxMs))}" />
+        </label>
+        <label>
+          Backoff jitter ratio
+          <input type="number" name="restartBackoffJitterRatio" min="0" max="1" step="0.05" value="${escapeHtml(String(restartBackoffJitterRatio))}" />
         </label>
         <button type="submit" class="ghost-button">Save policy</button>
       </form>
@@ -4053,6 +4059,7 @@ async function updateToolServiceRestartPolicy(form) {
   const restartBackoffMs = Number.parseInt(String(data.get("restartBackoffMs") ?? "0"), 10);
   const restartBackoffMultiplier = Number.parseFloat(String(data.get("restartBackoffMultiplier") ?? "1"));
   const restartBackoffMaxMs = Number.parseInt(String(data.get("restartBackoffMaxMs") ?? "0"), 10);
+  const restartBackoffJitterRatio = Number.parseFloat(String(data.get("restartBackoffJitterRatio") ?? "0"));
   try {
     const result = await fetchJson(`/api/tool-services/${encodeURIComponent(toolName)}/restart-policy`, {
       method: "PATCH",
@@ -4064,6 +4071,9 @@ async function updateToolServiceRestartPolicy(form) {
           ? Math.max(1, restartBackoffMultiplier)
           : 1,
         restartBackoffMaxMs: Number.isFinite(restartBackoffMaxMs) ? Math.max(0, restartBackoffMaxMs) : 0,
+        restartBackoffJitterRatio: Number.isFinite(restartBackoffJitterRatio)
+          ? Math.min(1, Math.max(0, restartBackoffJitterRatio))
+          : 0,
         restartRequiresApproval: data.get("restartRequiresApproval") === "on",
       }),
     });

@@ -144,9 +144,10 @@ Generated tool package workspace:
 - Service-specific restart policy overrides are stored through
   `PATCH /api/tool-services/:name/restart-policy` and shown in the Channels/Tool Detail UI.
   The same policy can set `restartBackoffMs` for delayed recovery and
-  `restartBackoffMultiplier`/`restartBackoffMaxMs` for capped progressive recovery, plus
-  `restartRequiresApproval` so sensitive services stop in `pendingRestartApproval` until
-  an operator explicitly restarts them.
+  `restartBackoffMultiplier`/`restartBackoffMaxMs` for capped progressive recovery,
+  `restartBackoffJitterRatio` for staggered recovery, plus `restartRequiresApproval` so
+  sensitive services stop in `pendingRestartApproval` until an operator explicitly
+  restarts them.
 - Source-bundle HTTP process runtimes forward child stdout/stderr into the same tool
   service lifecycle logs/SSE stream as built-in always-on tools.
 - The top-level `tools/` directory is intentionally gitignored; package source should be

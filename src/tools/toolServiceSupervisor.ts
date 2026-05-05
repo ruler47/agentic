@@ -16,6 +16,7 @@ import {
 export type ToolServiceSupervisorOptions = {
   restartOnFailedHeartbeat?: boolean;
   maxAutoRestartsPerService?: number;
+  random?: () => number;
 };
 
 export type ToolServiceRestartPolicyInput = {
@@ -24,6 +25,7 @@ export type ToolServiceRestartPolicyInput = {
   restartBackoffMs?: number;
   restartBackoffMultiplier?: number;
   restartBackoffMaxMs?: number;
+  restartBackoffJitterRatio?: number;
   restartRequiresApproval?: boolean;
 };
 
@@ -49,6 +51,10 @@ export class ToolServiceSupervisor {
   private get maxAutoRestartsPerService(): number {
     const configured = this.supervisorOptions.maxAutoRestartsPerService ?? 3;
     return normalizeMaxAutoRestarts(configured, 3);
+  }
+
+  private get random(): () => number {
+    return this.supervisorOptions.random ?? Math.random;
   }
 
   async list(): Promise<ToolServiceStatus[]> {
@@ -201,6 +207,9 @@ export class ToolServiceSupervisor {
       restartBackoffMaxMs: input.restartBackoffMaxMs === undefined
         ? undefined
         : normalizeNonNegativeInteger(input.restartBackoffMaxMs, 0),
+      restartBackoffJitterRatio: input.restartBackoffJitterRatio === undefined
+        ? undefined
+        : normalizeRestartBackoffJitterRatio(input.restartBackoffJitterRatio),
       restartRequiresApproval: input.restartRequiresApproval,
       updatedAt: now,
     });
@@ -357,7 +366,7 @@ export class ToolServiceSupervisor {
       await this.logLifecycle(toolName, "warn", "Service auto-restart is waiting for operator approval.", pending);
       return { ...pending, displayName, description };
     }
-    const backoffMs = restartBackoffDelayMs(failed);
+    const backoffMs = restartBackoffDelayMs(failed, this.random);
     if (backoffMs > 0) {
       const nowMs = Date.now();
       const scheduled = await this.write({
@@ -486,14 +495,22 @@ function normalizeRestartBackoffMultiplier(value: number | undefined): number {
   return Math.min(100, value);
 }
 
-function restartBackoffDelayMs(status: StoredToolServiceStatus): number {
+function normalizeRestartBackoffJitterRatio(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(1, value);
+}
+
+function restartBackoffDelayMs(status: StoredToolServiceStatus, random: () => number = Math.random): number {
   const baseMs = normalizeNonNegativeInteger(status.restartBackoffMs, 0);
   if (baseMs <= 0) return 0;
   const multiplier = normalizeRestartBackoffMultiplier(status.restartBackoffMultiplier);
   const exponent = Math.max(0, status.restartCount);
   const uncapped = baseMs * multiplier ** exponent;
-  const capMs = status.restartBackoffMaxMs === undefined
-    ? uncapped
-    : normalizeNonNegativeInteger(status.restartBackoffMaxMs, baseMs);
-  return Math.floor(Math.min(uncapped, capMs, Number.MAX_SAFE_INTEGER));
+  const jitterRatio = normalizeRestartBackoffJitterRatio(status.restartBackoffJitterRatio);
+  const jittered = uncapped + Math.max(0, Math.min(1, random())) * uncapped * jitterRatio;
+  const configuredCapMs = status.restartBackoffMaxMs === undefined
+    ? 0
+    : normalizeNonNegativeInteger(status.restartBackoffMaxMs, 0);
+  const capMs = configuredCapMs > 0 ? configuredCapMs : jittered;
+  return Math.floor(Math.min(jittered, capMs, Number.MAX_SAFE_INTEGER));
 }

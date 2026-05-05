@@ -24,6 +24,7 @@ type ToolServiceStatusRow = {
   restart_backoff_ms: number | null;
   restart_backoff_multiplier: number | null;
   restart_backoff_max_ms: number | null;
+  restart_backoff_jitter_ratio: number | null;
   restart_requires_approval: boolean | null;
   next_restart_at: Date | null;
   pending_restart_approval: boolean | null;
@@ -42,7 +43,7 @@ export class PostgresToolServiceStatusStore implements ToolServiceStatusStore {
                last_heartbeat_at, started_at, stopped_at, updated_at, restart_count,
                consecutive_failure_count, auto_restart_enabled, max_auto_restarts,
                restart_backoff_ms, restart_backoff_multiplier, restart_backoff_max_ms,
-               restart_requires_approval, next_restart_at, pending_restart_approval,
+               restart_backoff_jitter_ratio, restart_requires_approval, next_restart_at, pending_restart_approval,
                last_failure_at, last_restart_at, last_restart_reason
         from tool_service_statuses
         where tool_name = $1
@@ -61,10 +62,10 @@ export class PostgresToolServiceStatusStore implements ToolServiceStatusStore {
           last_heartbeat_at, started_at, stopped_at, updated_at, restart_count,
           consecutive_failure_count, auto_restart_enabled, max_auto_restarts,
           restart_backoff_ms, restart_backoff_multiplier, restart_backoff_max_ms,
-          restart_requires_approval, next_restart_at, pending_restart_approval,
+          restart_backoff_jitter_ratio, restart_requires_approval, next_restart_at, pending_restart_approval,
           last_failure_at, last_restart_at, last_restart_reason
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
         on conflict (tool_name) do update
         set status = excluded.status,
             desired_state = excluded.desired_state,
@@ -81,6 +82,7 @@ export class PostgresToolServiceStatusStore implements ToolServiceStatusStore {
             restart_backoff_ms = excluded.restart_backoff_ms,
             restart_backoff_multiplier = excluded.restart_backoff_multiplier,
             restart_backoff_max_ms = excluded.restart_backoff_max_ms,
+            restart_backoff_jitter_ratio = excluded.restart_backoff_jitter_ratio,
             restart_requires_approval = excluded.restart_requires_approval,
             next_restart_at = excluded.next_restart_at,
             pending_restart_approval = excluded.pending_restart_approval,
@@ -91,7 +93,7 @@ export class PostgresToolServiceStatusStore implements ToolServiceStatusStore {
                   last_heartbeat_at, started_at, stopped_at, updated_at, restart_count,
                   consecutive_failure_count, auto_restart_enabled, max_auto_restarts,
                   restart_backoff_ms, restart_backoff_multiplier, restart_backoff_max_ms,
-                  restart_requires_approval, next_restart_at, pending_restart_approval,
+                  restart_backoff_jitter_ratio, restart_requires_approval, next_restart_at, pending_restart_approval,
                   last_failure_at, last_restart_at, last_restart_reason
       `,
       [
@@ -111,6 +113,7 @@ export class PostgresToolServiceStatusStore implements ToolServiceStatusStore {
         status.restartBackoffMs ?? null,
         status.restartBackoffMultiplier ?? null,
         status.restartBackoffMaxMs ?? null,
+        status.restartBackoffJitterRatio ?? null,
         status.restartRequiresApproval ?? null,
         status.nextRestartAt ?? null,
         status.pendingRestartApproval ?? null,
@@ -141,6 +144,7 @@ function mapRow(row: ToolServiceStatusRow): StoredToolServiceStatus {
     restartBackoffMs: row.restart_backoff_ms ?? undefined,
     restartBackoffMultiplier: row.restart_backoff_multiplier ?? undefined,
     restartBackoffMaxMs: row.restart_backoff_max_ms ?? undefined,
+    restartBackoffJitterRatio: row.restart_backoff_jitter_ratio ?? undefined,
     restartRequiresApproval: row.restart_requires_approval ?? undefined,
     nextRestartAt: row.next_restart_at?.toISOString(),
     pendingRestartApproval: row.pending_restart_approval ?? undefined,
