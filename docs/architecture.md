@@ -251,7 +251,9 @@ The target contract is:
 - migrations are generated as TypeScript/SQL assets linked to the tool version, not hidden
   inside `run(input)`;
 - Tool QA runs those migrations in an isolated database, proves they are idempotent, and
-  tests rollback/repair behavior where practical;
+  tests rollback/repair behavior where practical. The current planner can execute
+  generated service runtime migration plans twice inside a rollback transaction when an
+  isolated QA Postgres pool is provided;
 - the Tool Registrar applies migrations only after QA/review passes and records the
   applied migration version in `tool_migrations`; DONE for the metadata/API/audit
   contract, and generated registrations now record pending migration manifests with

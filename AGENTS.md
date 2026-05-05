@@ -681,6 +681,8 @@ For documentation-only changes:
   checksum, QA evidence, and rollback/repair notes in persistent metadata.
   Current generated registrations record pending migration manifests with deterministic
   checksums and QA evidence; isolated database execution remains the next migration gap.
+  `toolStorageMigrationPlanner.ts` can plan generated service-runtime migrations and run
+  them twice inside a rollback transaction when QA is given an isolated Postgres pool.
 - Destructive database operations requested through a tool bug/rework flow must become
   explicit auditable capabilities with exact scope, dry-run preview, policy/approval
   checks, and audit events. Do not satisfy them by running arbitrary one-off SQL.

@@ -25,6 +25,10 @@ import type { ToolPackageManifest } from "./toolPackage.js";
 import { ToolPackageWorkspaceStore } from "./toolPackageWorkspaceStore.js";
 import { validateAndBuildToolPackageWorkspace } from "./toolPackageWorkspaceQa.js";
 import { createToolMigrationChecksum, ToolMigrationStore } from "./toolMigrationStore.js";
+import {
+  runToolStorageMigrationPlanQa,
+  type ToolStorageMigrationQueryExecutor,
+} from "./toolStorageMigrationPlanner.js";
 
 type GeneratedFile = {
   path: string;
@@ -424,7 +428,10 @@ function packageWorkspaceReadme(request: ToolBuildRequest, output: ToolBuildProv
 }
 
 export class IsolatedCommandToolQaRunner implements ToolQaRunner {
-  constructor(private readonly projectRoot = process.cwd()) {}
+  constructor(
+    private readonly projectRoot = process.cwd(),
+    private readonly options: { migrationQaPool?: ToolStorageMigrationQueryExecutor } = {},
+  ) {}
 
   async run(request: ToolBuildRequest, output: ToolBuildOutput): Promise<ToolBuildQaReport> {
     const checks: string[] = [];
@@ -436,6 +443,17 @@ export class IsolatedCommandToolQaRunner implements ToolQaRunner {
         summary: storageContractQa.summary,
         checks,
       };
+    }
+    if (this.options.migrationQaPool && output.storage?.migrations?.length) {
+      const migrationExecutionQa = await runToolStorageMigrationPlanQa(this.options.migrationQaPool, output.storage);
+      checks.push(...migrationExecutionQa.checks);
+      if (!migrationExecutionQa.ok) {
+        return {
+          ok: false,
+          summary: `Isolated storage migration execution failed for ${request.contract.toolName}: ${migrationExecutionQa.summary}`,
+          checks,
+        };
+      }
     }
 
     const isolatedRoot = await createIsolatedQaWorkspace(this.projectRoot);

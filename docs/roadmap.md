@@ -732,7 +732,10 @@ Remaining Phase 3 gaps:
   promotion, and registration records idempotent pending migration manifests with
   checksum/QA evidence; full generated migration execution is still next.
 - Run generated tool migrations in an isolated Postgres database during QA, including
-  idempotency checks and fixture-based behavior tests.
+  idempotency checks and fixture-based behavior tests. PARTIAL: service-runtime
+  migrations now have a SQL planner and QA executor that runs plans twice inside a
+  rollback transaction when an isolated pool is provided; wiring an actual disposable
+  Postgres container/pool into the default builder remains.
 - Promote tool versions transactionally: migration metadata, tool metadata, generated
   source bundle, QA evidence, and registry activation should move together.
 - Add safe database maintenance actions from Trace Lab/Tool Detail/Tool Builds: the agent
