@@ -51,6 +51,9 @@ policies without leaking context.
   Agentic app source. The core should know a tool's manifest, schemas, docs, versions,
   settings, secret handles, QA evidence, storage migrations, health, and runner/container
   location, while the implementation stays independent of Agentic internals.
+- The default out-of-tree generated package workspace is top-level `tools/`, which is
+  gitignored. Generated packages should live under `tools/<system-name>/<version>` with
+  their own `tool.package.json`, README, Dockerfile, package metadata, source, and tests.
 - Telegram identities can be mapped by numeric Telegram id or by username handle
   (`username`/`@username`) when Telegram exposes `from.username`; the bot forwards both
   aliases through `sourceUserAliases`.
@@ -116,6 +119,16 @@ Durable artifact storage in Docker uses:
 When those variables and `DATABASE_URL` are present, new artifact metadata is stored in
 Postgres and payloads are stored in MinIO/S3. Local artifact files under `ARTIFACT_ROOT`
 remain a fallback.
+
+Generated tool package workspace:
+
+- `TOOL_PACKAGE_WORKSPACE_ROOT` defaults to `tools`.
+- `TOOL_PACKAGE_ROOT` can point at a specific legacy/custom source-bundle package root.
+- `SourceBundleToolPackageRunner` searches `TOOL_PACKAGE_ROOT`,
+  `TOOL_PACKAGE_WORKSPACE_ROOT`, default `tools`, and legacy `tool-packages`.
+- The top-level `tools/` directory is intentionally gitignored; package source should be
+  exported/imported through manifests or promoted into OCI/external runtimes, not committed
+  as Agentic app code.
 
 ## Commands
 
@@ -232,6 +245,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/tools/toolPackage.ts](src/tools/toolPackage.ts) - portable out-of-tree tool
   package manifest contract for source bundles, OCI images, external packages, and
   local-path development tools.
+- [src/tools/toolPackageWorkspaceStore.ts](src/tools/toolPackageWorkspaceStore.ts) -
+  gitignored source-bundle package workspace writer for generated tools outside app
+  source.
 - [src/tools/toolIntegrationSpec.ts](src/tools/toolIntegrationSpec.ts) - provider-neutral
   Tool Build integration spec inferred from requests for API clients, bots, listeners,
   webhooks, inbound/outbound services, credentials, settings, lifecycle, and QA.
@@ -590,13 +606,18 @@ For documentation-only changes:
   source-bundle, external-package, or OCI-image execution. Postgres now persists the
   active manifest and version-history manifests; API/UI export/import exists, and
   `ToolPackageRunner` is the loader extension point. Local-path modules load from the
-  compiled app; pre-built source-bundle packages load from `TOOL_PACKAGE_ROOT`; HTTP(S)
+  compiled app; pre-built source-bundle packages load from `TOOL_PACKAGE_ROOT`,
+  `TOOL_PACKAGE_WORKSPACE_ROOT`, default `tools`, or legacy `tool-packages`; HTTP(S)
   external-package refs load through an external runtime proxy; OCI-image refs can load
   through the Docker runner when `TOOL_OCI_RUNNER=enabled` and the container exposes
   `/health` and `/run`; HTTP/OCI runtimes receive only declared
   `requiredConfigurationKeys` and `requiredSecretHandles` through scoped runtime
   envelopes; missing required runtime values fail before calling the external runtime;
   npm-style external packages remain roadmap work.
+- `ToolPackageWorkspaceStore` can write source-bundle packages under gitignored
+  `tools/<system-name>/<version>` with manifest, README, Dockerfile, package metadata,
+  source, and tests. It is the preferred next target for Tool Builder output before
+  containerization.
 - Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
   needs database access, it must declare storage requirements/migrations and receive a
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,

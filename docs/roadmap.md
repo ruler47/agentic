@@ -397,8 +397,13 @@ Remaining registry persistence:
   build output, and the registry persists package manifests through the active Postgres
   row plus version history. `ToolPackageRunner` now gives the loader a pluggable execution
   boundary: local-path packages load through the first runner, and pre-built
-  source-bundle packages can load from `TOOL_PACKAGE_ROOT` without living in the main
-  committed generated-tools directory. External-package manifests whose `package.ref` is
+  source-bundle packages can load from the out-of-tree package workspace
+  `TOOL_PACKAGE_WORKSPACE_ROOT` (default `tools`, gitignored), explicit
+  `TOOL_PACKAGE_ROOT`, or the legacy `tool-packages` directory without living in the main
+  committed generated-tools directory. `ToolPackageWorkspaceStore` can now write
+  portable package folders with `tool.package.json`, README, Dockerfile, package metadata,
+  source, and tests under that workspace while rejecting path traversal and non
+  source-bundle manifests. External-package manifests whose `package.ref` is
   an HTTP(S) runtime URL now load through a proxy runner that calls `/health`, `/run`, and
   optional service lifecycle routes. OCI-image manifests can now be executed by an
   explicitly enabled Docker runner (`TOOL_OCI_RUNNER=enabled`) when the container exposes
@@ -409,10 +414,13 @@ Remaining registry persistence:
   fail before the external runtime is called.
   Runner inventory is visible through the API and Diagnostics page, and operators can
   explicitly reload generated tools after updating a source-bundle on disk. Remaining
-  work is npm/external package install/sandboxing, production resource/log supervision for
-  containers, redacted runtime logging, container-level config/secret injection policies,
-  and richer runner UI controls. DONE for API/UI package import/export and first OCI HTTP
-  proxy runner.
+  work is moving the Builder output from `src/tools/generated` into the gitignored package
+  workspace by default, running package-local QA before promotion, building package
+  folders into OCI/external HTTP runtimes, npm/external package install/sandboxing,
+  production resource/log supervision for containers, redacted runtime logging,
+  container-level config/secret injection policies, and richer runner UI controls. DONE
+  for API/UI package import/export, package workspace writing, and first OCI HTTP proxy
+  runner.
   The API/UI can now import portable `agentic.tool-package.v1` manifests into the
   registry and export existing generated package manifests. Non-local package references
   are intentionally registered as disabled metadata until the runner/supervisor layer can
@@ -671,6 +679,11 @@ Remaining Phase 3 gaps:
   bounded jobs; always-on tools run as supervised services; high-load tools can scale to
   multiple workers/containers. The first implementation can use a local runner process and
   generated bundle directory, but the contract must also support OCI/container execution.
+  PARTIAL: the app can now write source-bundle package workspaces outside the main repo
+  under gitignored `tools/<name>/<version>` folders, reload pre-built source-bundles from
+  that workspace, proxy external HTTP packages, and optionally run OCI HTTP packages. The
+  next step is to make Tool Builder emit package workspaces instead of app-local generated
+  source, then promote them through package-local QA and runner activation.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,

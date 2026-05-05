@@ -255,8 +255,11 @@ runners are:
 
 - `LocalPathToolPackageRunner`, which preserves the current compiled TypeScript path;
 - `SourceBundleToolPackageRunner`, which loads pre-built out-of-tree packages from
-  `TOOL_PACKAGE_ROOT` (default `tool-packages`) when a manifest declares
-  `package.type="source-bundle"` and `package.ref` stays inside that package root.
+  `TOOL_PACKAGE_ROOT`, `TOOL_PACKAGE_WORKSPACE_ROOT`, or the default workspace roots
+  `tools` and legacy `tool-packages` when a manifest declares
+  `package.type="source-bundle"` and `package.ref` stays inside one of those package
+  roots. The default `tools` workspace is gitignored so generated package folders do not
+  become permanent Agentic app source.
 - `ExternalHttpToolPackageRunner`, which loads `external-package` manifests whose
   `package.ref` is an HTTP(S) runtime URL. It proxies `GET /health`, `POST /run`, and
   optional service lifecycle calls through `POST /service/start` and
@@ -268,6 +271,14 @@ runners are:
 
 Future package runners can use the same extension point for npm packages, sandboxed
 process pools, or remote execution platforms.
+
+`ToolPackageWorkspaceStore` is the first package-workspace writer. It creates portable
+source-bundle directories under `tools/<system-name>/<version>` by default and writes the
+manifest, README, Dockerfile, package metadata, source files, and tests. It rejects path
+traversal and non-source-bundle manifests. This is a transition layer: today it gives the
+Builder a safe out-of-repo target for generated TypeScript packages; later the same folder
+can be built into an OCI image, uploaded to object storage, exported, imported into
+another Agentic instance, or run as an external HTTP service.
 
 Local-path loading is deliberately constrained:
 

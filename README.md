@@ -230,8 +230,12 @@ Portable package manifests can be exported from
 `POST /api/tools/package-manifests` or the Tools page. Imported non-local packages are
 registered as disabled metadata until a runner can execute their package reference.
 Generated package execution goes through `ToolPackageRunner`: local-path packages use the
-compiled TypeScript runner, and pre-built `source-bundle` packages can be loaded from
-`TOOL_PACKAGE_ROOT` (default `tool-packages`) via `dist/index.js` or `index.js`.
+compiled TypeScript runner, and pre-built `source-bundle` packages can be loaded from the
+out-of-tree tool package workspace `TOOL_PACKAGE_WORKSPACE_ROOT` (default `tools`, which
+is gitignored) or legacy `TOOL_PACKAGE_ROOT`/`tool-packages`, via `dist/index.js` or
+`index.js`. `ToolPackageWorkspaceStore` writes portable package folders with
+`tool.package.json`, README, Dockerfile, package metadata, source, and tests outside the
+main application source so generated capabilities can move toward independent services.
 `external-package` manifests whose `package.ref` is an HTTP(S) URL load through the
 external HTTP package runner. That runtime must expose `GET /health`, `POST /run`, and
 optional `POST /service/start` / `POST /service/stop` for always-on tools. `oci-image`

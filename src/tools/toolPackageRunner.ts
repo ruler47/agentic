@@ -84,8 +84,11 @@ export class LocalPathToolPackageRunner implements ToolPackageRunner {
 
 export class SourceBundleToolPackageRunner implements ToolPackageRunner {
   readonly type = "source-bundle";
+  private readonly packageRoots: string[];
 
-  constructor(private readonly packageRoot = process.env.TOOL_PACKAGE_ROOT ?? "tool-packages") {}
+  constructor(packageRoot: string | string[] = defaultSourceBundleRoots()) {
+    this.packageRoots = Array.isArray(packageRoot) ? packageRoot : [packageRoot];
+  }
 
   canLoad(metadata: ToolModuleMetadata): boolean {
     return metadata.packageManifest?.package.type === "source-bundle";
@@ -98,17 +101,23 @@ export class SourceBundleToolPackageRunner implements ToolPackageRunner {
       return { loaded: false, detail, health: { ok: false, detail } };
     }
 
-    const packageDir = safePackagePath(resolve(projectRoot, this.packageRoot), ref);
-    const moduleFile = firstExisting([
-      join(packageDir, "dist/index.js"),
-      join(packageDir, "index.js"),
-    ]);
-    if (!moduleFile) {
-      const detail = `Source-bundle package has no loadable dist/index.js or index.js: ${packageDir}`;
+    const candidates = this.packageRoots.map((root) => {
+      const packageDir = safePackagePath(resolve(projectRoot, root), ref);
+      return {
+        packageDir,
+        moduleFile: firstExisting([
+          join(packageDir, "dist/index.js"),
+          join(packageDir, "index.js"),
+        ]),
+      };
+    });
+    const found = candidates.find((candidate) => candidate.moduleFile);
+    if (!found?.moduleFile) {
+      const detail = `Source-bundle package has no loadable dist/index.js or index.js under: ${this.packageRoots.join(", ")}`;
       return { loaded: false, detail, health: { ok: false, detail } };
     }
 
-    const imported = await import(pathToFileURL(moduleFile).href);
+    const imported = await import(pathToFileURL(found.moduleFile).href);
     const tool = exportedTool(imported);
     validateToolAgainstMetadata(tool, metadata);
     const health = tool.healthcheck ? await tool.healthcheck() : { ok: true, detail: "No healthcheck registered." };
@@ -117,18 +126,24 @@ export class SourceBundleToolPackageRunner implements ToolPackageRunner {
       return { loaded: false, detail: health.detail, health };
     }
 
-    return { loaded: true, detail: `Loaded ${metadata.name} from source bundle ${moduleFile}`, tool, health };
+    return { loaded: true, detail: `Loaded ${metadata.name} from source bundle ${found.moduleFile}`, tool, health };
   }
 
   describe(): ToolPackageRunnerInfo {
     return {
       type: this.type,
       status: "available",
-      detail: "Loads pre-built source-bundle packages from TOOL_PACKAGE_ROOT. It does not install dependencies or execute build commands.",
+      detail: "Loads pre-built source-bundle packages from the tool package workspace. It does not install dependencies or execute build commands.",
       supportedPackageTypes: ["source-bundle"],
-      root: this.packageRoot,
+      root: this.packageRoots.join(","),
     };
   }
+}
+
+function defaultSourceBundleRoots(): string[] {
+  if (process.env.TOOL_PACKAGE_ROOT) return [process.env.TOOL_PACKAGE_ROOT];
+  if (process.env.TOOL_PACKAGE_WORKSPACE_ROOT) return [process.env.TOOL_PACKAGE_WORKSPACE_ROOT];
+  return ["tools", "tool-packages"];
 }
 
 export class ExternalHttpToolPackageRunner implements ToolPackageRunner {
