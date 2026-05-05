@@ -289,6 +289,9 @@ truth; package-local QA and runner promotion are the next step before generated 
 leave `src/tools/generated` entirely. Mirrored packages include a minimal local
 `src/tools/tool.ts` contract so generated modules can compile against a package-local
 interface instead of importing Agentic internals for basic Tool types.
+When a package workspace is present, the QA report lists its `tool.package.json` alongside
+the legacy generated module and test artifacts, so later promotion stages can trace which
+portable package snapshot was reviewed.
 
 Local-path loading is deliberately constrained:
 

@@ -338,7 +338,11 @@ export class IsolatedCommandToolQaRunner implements ToolQaRunner {
       ok: true,
       summary: `Generated tool ${request.contract.toolName} passed isolated QA and promotion build.`,
       checks,
-      artifacts: [output.modulePath, output.testPath],
+      artifacts: [
+        output.modulePath,
+        output.testPath,
+        output.packageWorkspace?.manifestPath,
+      ].filter((item): item is string => Boolean(item)),
     };
   }
 }
