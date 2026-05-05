@@ -626,14 +626,15 @@ For documentation-only changes:
   Builder output before containerization.
 - Server-side `GeneratedToolFileBuilder` mirrors generated module/test output into the
   package workspace by default while retaining the legacy local-path promotion output.
-  This bridge can be disabled with `TOOL_BUILD_PACKAGE_WORKSPACE=disabled`; package-local
-  promotion remains the next step before generated code leaves `src/tools/generated`
-  entirely. Mirrored packages include a minimal package-local
+  This bridge can be disabled with `TOOL_BUILD_PACKAGE_WORKSPACE=disabled`. Mirrored
+  packages include a package-local `index.ts` entrypoint and minimal package-local
   `src/tools/tool.ts` contract so generated source can compile against portable Tool
   types instead of reading Agentic internals. QA reports include the sidecar
   `tool.package.json` path when one was written, and `IsolatedCommandToolQaRunner`
   performs package-workspace QA before returning a passing report: manifest/scaffold
-  checks, package-local TypeScript build, and package-local tests.
+  checks, package-local TypeScript build, and package-local tests. When a package
+  workspace is present, `MetadataToolRegistrar` persists the active version as a
+  `source-bundle` package manifest so reloads use the out-of-tree bundle.
 - Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
   needs database access, it must declare storage requirements/migrations and receive a
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,

@@ -42,6 +42,7 @@ export async function validateToolPackageWorkspace(
 
     const packageDir = manifestPath.slice(0, -"/tool.package.json".length);
     const requiredFiles = [
+      "index.ts",
       "package.json",
       "tsconfig.json",
       "Dockerfile",

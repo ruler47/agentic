@@ -174,6 +174,10 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
       packageJson: packageWorkspacePackageJson(request, output),
       files: [
         {
+          path: "index.ts",
+          content: packageWorkspaceEntrypointSource(output.modulePath),
+        },
+        {
           path: "src/tools/tool.ts",
           content: packageToolContractSource(),
         },
@@ -190,6 +194,13 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
       files: record.files,
     };
   }
+}
+
+function packageWorkspaceEntrypointSource(modulePath: string): string {
+  const importPath = modulePath
+    .replace(/\.ts$/, ".js")
+    .replace(/^src\//, "./src/");
+  return `export { tool } from "${importPath}";\n`;
 }
 
 function packageWorkspacePackageJson(request: ToolBuildRequest, output: ToolBuildProviderOutput): Record<string, unknown> {
@@ -420,7 +431,9 @@ export class MetadataToolRegistrar implements ToolRegistrar {
       storage: output.storage,
       docsMarkdown: output.docsMarkdown,
       examples: output.examples,
-      packageManifest: output.packageManifest,
+      packageManifest: output.packageWorkspace
+        ? packageWorkspaceManifest(request, output, output.packageWorkspace.packageRef)
+        : output.packageManifest,
       changeSummary: output.changeSummary ?? formatToolVersionChangeSummary(request, output),
     };
 
@@ -435,6 +448,34 @@ export class MetadataToolRegistrar implements ToolRegistrar {
 
     return toolName;
   }
+}
+
+function packageWorkspaceManifest(
+  request: ToolBuildRequest,
+  output: ToolBuildOutput,
+  packageRef: string,
+): ToolPackageManifest {
+  return {
+    schemaVersion: "agentic.tool-package.v1",
+    name: request.contract.toolName,
+    displayName: output.displayName ?? request.displayName ?? request.contract.displayName,
+    version: request.contract.version,
+    description: request.contract.description,
+    capabilities: output.capabilities ?? [request.capability],
+    startupMode: request.contract.startupMode,
+    package: {
+      type: "source-bundle",
+      ref: packageRef,
+    },
+    inputSchema: output.inputSchema ?? request.contract.inputSchema,
+    outputSchema: output.outputSchema ?? request.contract.outputSchema,
+    requiredConfigurationKeys: output.requiredConfigurationKeys,
+    requiredSecretHandles: output.requiredSecretHandles ?? request.credentialHandles,
+    settingsSchema: output.settingsSchema,
+    storage: output.storage,
+    docsMarkdown: output.docsMarkdown,
+    examples: output.examples,
+  };
 }
 
 function formatToolVersionChangeSummary(request: ToolBuildRequest, output: ToolBuildOutput): string {

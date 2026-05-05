@@ -284,11 +284,13 @@ run as an external HTTP service.
 `GeneratedToolFileBuilder` can mirror every provider-produced module/test pair into that
 workspace while still returning the current local-path output for promotion. This sidecar
 is enabled in the server by default and can be disabled with
-`TOOL_BUILD_PACKAGE_WORKSPACE=disabled`. The sidecar is not yet the active source of
-truth; runner promotion is the next step before generated code can leave
-`src/tools/generated` entirely. Mirrored packages include a minimal local
-`src/tools/tool.ts` contract so generated modules can compile against a package-local
-interface instead of importing Agentic internals for basic Tool types.
+`TOOL_BUILD_PACKAGE_WORKSPACE=disabled`. Mirrored packages include a package-local
+`index.ts` entrypoint and minimal local `src/tools/tool.ts` contract so generated modules
+can compile against a package-local interface instead of importing Agentic internals for
+basic Tool types. When a package workspace exists, `MetadataToolRegistrar` persists the
+active generated version as a `source-bundle` package manifest. Reloading generated tools
+then goes through `SourceBundleToolPackageRunner` and imports the package-built
+`dist/index.js` entrypoint.
 When a package workspace is present, the QA report lists its `tool.package.json` alongside
 the legacy generated module and test artifacts, so later promotion stages can trace which
 portable package snapshot was reviewed. `validateToolPackageWorkspace` also runs as part

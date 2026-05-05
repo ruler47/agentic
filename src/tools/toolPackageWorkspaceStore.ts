@@ -200,6 +200,6 @@ function defaultTsconfigJson(): Record<string, unknown> {
       outDir: "dist",
       rootDir: ".",
     },
-    include: ["src/**/*.ts", "tests/**/*.ts"],
+    include: ["index.ts", "src/**/*.ts", "tests/**/*.ts"],
   };
 }

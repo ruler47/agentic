@@ -241,7 +241,10 @@ default; set `TOOL_BUILD_PACKAGE_WORKSPACE=disabled` to keep only the legacy loc
 generated module output. Mirrored packages include a minimal package-local Tool contract
 for generated TypeScript modules, and command QA performs package checks before returning
 a passing report: manifest/scaffold validation, package-local TypeScript build, and
-package-local tests.
+package-local tests. When a verified package workspace exists, the registrar now records
+the active generated version as a `source-bundle` package manifest, so reloads use the
+out-of-tree package entrypoint instead of treating `src/tools/generated` as the only
+runtime source.
 `external-package` manifests whose `package.ref` is an HTTP(S) URL load through the
 external HTTP package runner. That runtime must expose `GET /health`, `POST /run`, and
 optional `POST /service/start` / `POST /service/stop` for always-on tools. `oci-image`

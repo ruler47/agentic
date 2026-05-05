@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:http";
+import { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -14,6 +16,9 @@ import {
 import { LlmToolBuildProvider } from "../src/tools/llmToolBuildProvider.js";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
+import { ToolRegistry } from "../src/tools/registry.js";
+import { loadGeneratedTools } from "../src/tools/generatedToolLoader.js";
+import { validateAndBuildToolPackageWorkspace } from "../src/tools/toolPackageWorkspaceQa.js";
 import { ToolPackageWorkspaceStore } from "../src/tools/toolPackageWorkspaceStore.js";
 
 class FakeToolBuilderLlm {
@@ -75,6 +80,7 @@ test("GeneratedToolFileBuilder can mirror generated output into an out-of-tree p
     assert.ok(packageManifestPath);
     assert.equal(packageManifestPath, "tools/generated.browser.screenshot/1.0.0/tool.package.json");
     assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/tsconfig.json"));
+    assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/index.ts"));
     assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/src/tools/tool.ts"));
     assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/src/tools/generated/browser-screenshotTool.ts"));
 
@@ -87,6 +93,7 @@ test("GeneratedToolFileBuilder can mirror generated output into an out-of-tree p
     assert.equal(packageManifest.name, "generated.browser.screenshot");
     assert.equal(packageJson.scripts.build, "tsc -p tsconfig.json");
     assert.equal(packageJson.dependencies["@playwright/test"], "^1.59.1");
+    assert.match(await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/index.ts"), "utf8"), /browser-screenshotTool\.js/);
     assert.match(packageReadme, /Source Snapshot/);
     assert.match(packageToolContract, /export type Tool =/);
     assert.equal(output.modulePath, "src/tools/generated/browser-screenshotTool.ts");
@@ -469,6 +476,92 @@ test("MetadataToolRegistrar registers generated provider output", async () => {
   assert.ok(metadata?.capabilities.includes("browser-screenshot"));
   assert.ok(!metadata?.capabilities.includes("api-http-json"));
   assert.equal(metadata?.modulePath, request.contract.modulePath);
+});
+
+test("MetadataToolRegistrar promotes package workspace manifests when available", async () => {
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const metadataStore = new InMemoryToolMetadataStore();
+  const request = await requestStore.create({
+    capability: "api.aml.score",
+    displayName: "AML Score",
+    reason: "Create an API adapter.",
+    desiredToolName: "generated.api.amlScore",
+    credentialHandles: ["secret.aml.gl.api"],
+  });
+  const registrar = new MetadataToolRegistrar(metadataStore);
+
+  await registrar.register(request, {
+    modulePath: request.contract.modulePath,
+    testPath: request.contract.testPath,
+    summary: "Generated API module.",
+    capabilities: ["api.aml.score", "api-http-json"],
+    packageWorkspace: {
+      packageRef: "generated.api.amlscore/1.0.0",
+      manifestPath: "tools/generated.api.amlscore/1.0.0/tool.package.json",
+      files: ["tools/generated.api.amlscore/1.0.0/tool.package.json"],
+    },
+  });
+  const [metadata] = await metadataStore.list();
+
+  assert.equal(metadata?.packageManifest?.package.type, "source-bundle");
+  assert.equal(metadata?.packageManifest?.package.ref, "generated.api.amlscore/1.0.0");
+  assert.equal(metadata?.packageManifest?.name, "generated.api.amlScore");
+  assert.deepEqual(metadata?.packageManifest?.requiredSecretHandles, ["secret.aml.gl.api"]);
+});
+
+test("package workspace promotion loads generated tools through source-bundle runner", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agentic-builder-source-bundle-"));
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const metadataStore = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+  const request = await requestStore.create({
+    capability: "api.demo.lookup",
+    displayName: "Demo Lookup",
+    reason: "Create a reusable HTTP JSON API client.",
+    desiredToolName: "generated.api.demolookup",
+    requiredInputs: ["url"],
+    requiredOutputs: ["status", "json"],
+  });
+  const builder = new GeneratedToolFileBuilder(
+    [new GenericApiToolBuildProvider()],
+    projectRoot,
+    { packageWorkspaceStore: new ToolPackageWorkspaceStore(projectRoot, "tools") },
+  );
+  const server = createServer((_, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ value: "source-bundle-ok" }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+
+  try {
+    const output = await builder.build(request);
+    assert.ok(output.packageWorkspace);
+    const qa = await validateAndBuildToolPackageWorkspace(
+      projectRoot,
+      output.packageWorkspace,
+      { linkNodeModulesFrom: process.cwd() },
+    );
+    assert.equal(qa.ok, true, JSON.stringify(qa, null, 2));
+
+    const registrar = new MetadataToolRegistrar(metadataStore);
+    await registrar.register(request, output);
+
+    const results = await loadGeneratedTools(registry, metadataStore, projectRoot);
+    const stored = (await metadataStore.list())[0];
+    const result = await registry.get("generated.api.demolookup")?.run({
+      url: `http://127.0.0.1:${address.port}/lookup`,
+    });
+
+    assert.equal(stored?.packageManifest?.package.type, "source-bundle");
+    assert.equal(results[0]?.loaded, true, JSON.stringify(results[0], null, 2));
+    assert.match(results[0]?.detail ?? "", /source bundle/);
+    assert.equal(result?.ok, true);
+    assert.match(result?.content ?? "", /200/);
+  } finally {
+    server.close();
+    await rm(projectRoot, { recursive: true, force: true });
+  }
 });
 
 test("MetadataToolRegistrar preserves provider-specific capabilities and secret handles", async () => {

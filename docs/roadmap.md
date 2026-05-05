@@ -415,12 +415,11 @@ Remaining registry persistence:
   fail before the external runtime is called.
   Runner inventory is visible through the API and Diagnostics page, and operators can
   explicitly reload generated tools after updating a source-bundle on disk. Remaining
-  work is making the package workspace the active generated source of truth instead of a
-  sidecar beside `src/tools/generated`, building package folders into OCI/external HTTP
-  runtimes, npm/external package install/sandboxing, production resource/log supervision
-  for containers, redacted runtime logging, container-level config/secret injection
-  policies, and richer runner UI controls. DONE for API/UI package import/export,
-  package workspace writing, package-local build/test QA, and first OCI HTTP proxy
+  work is building package folders into OCI/external HTTP runtimes, npm/external package
+  install/sandboxing, production resource/log supervision for containers, redacted runtime
+  logging, container-level config/secret injection policies, and richer runner UI
+  controls. DONE for API/UI package import/export, package workspace writing,
+  package-local build/test QA, active source-bundle promotion, and first OCI HTTP proxy
   runner.
   The API/UI can now import portable `agentic.tool-package.v1` manifests into the
   registry and export existing generated package manifests. Non-local package references
@@ -684,10 +683,11 @@ Remaining Phase 3 gaps:
   under gitignored `tools/<name>/<version>` folders, mirror Tool Builder output into that
   workspace by default, include a package-local minimal Tool contract for generated
   TypeScript modules, include the sidecar package manifest in QA evidence, run structural
-  package-workspace QA plus package-local build/test during command QA, reload pre-built
+  package-workspace QA plus package-local build/test during command QA, persist verified
+  package workspaces as the active `source-bundle` manifest, reload pre-built
   source-bundles from that workspace, proxy external HTTP packages, and optionally run OCI
-  HTTP packages. The next step is to make package workspaces the active generated source
-  of truth instead of sidecar snapshots and promote them through runner activation.
+  HTTP packages. The next step is to package/run those source-bundles as supervised
+  external services or OCI runtimes instead of in-process imports.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,

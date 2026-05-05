@@ -24,6 +24,7 @@ test("validateToolPackageWorkspace accepts a complete generated package snapshot
         startupMode: "on-demand",
       },
       files: [
+        { path: "index.ts", content: "export { ok } from './src/tools/generated/qa-echoTool.js';\n" },
         { path: "src/tools/tool.ts", content: "export type Tool = { name: string };\n" },
         { path: "src/tools/generated/qa-echoTool.ts", content: "export const ok = true;\n" },
         { path: "tests/generated/qa-echoTool.test.ts", content: "import test from 'node:test';\n" },
@@ -59,6 +60,10 @@ test("validateAndBuildToolPackageWorkspace builds and tests the package-local pr
         startupMode: "on-demand",
       },
       files: [
+        {
+          path: "index.ts",
+          content: "export { tool } from './src/tools/generated/qa-echoTool.js';\n",
+        },
         {
           path: "src/tools/tool.ts",
           content: [
