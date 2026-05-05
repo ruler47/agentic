@@ -218,6 +218,10 @@ Set `TOOL_BUILD_LLM_REVIEW=enabled` to add strict LLM code and behavior reviewer
 of the deterministic gates. These reviewers read the request contract, QA report, and
 generated module/test previews, and their structured findings are also returned to the
 builder for bounded repair.
+Generated storage contracts are checked before promotion. If
+`TOOL_BUILD_MIGRATION_QA_DATABASE_URL` points at a disposable Postgres database, the Tool
+Builder also executes generated storage migration plans twice inside a rollback
+transaction to prove basic idempotency before registration continues.
 
 Tool contracts are also persisted in Postgres when the Docker stack is running. The
 `tool_modules` catalog stores version, capabilities, schemas, source, status, required

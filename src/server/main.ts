@@ -76,6 +76,9 @@ import { createToolScopedDbContextProvider } from "../tools/toolScopedDb.js";
 const port = Number(process.env.PORT ?? "3000");
 const publicDir = resolve("public");
 const pool = process.env.DATABASE_URL ? createPool() : undefined;
+const toolBuildMigrationQaPool = process.env.TOOL_BUILD_MIGRATION_QA_DATABASE_URL
+  ? createPool(process.env.TOOL_BUILD_MIGRATION_QA_DATABASE_URL)
+  : undefined;
 const textEmbeddingProvider = createTextEmbeddingProviderFromEnv();
 const skillMemory = pool ? new PostgresSkillMemory(pool, textEmbeddingProvider) : new SkillMemory();
 console.log(`Memory embedding provider: ${textEmbeddingProvider.name} (${textEmbeddingProvider.dimensions}d).`);
@@ -165,7 +168,7 @@ const toolBuildWorkflow = new ToolBuildWorkflow(
       writePackageWorkspace: process.env.TOOL_BUILD_PACKAGE_WORKSPACE !== "disabled",
     },
   ),
-  new CommandToolQaRunner(),
+  new CommandToolQaRunner(process.cwd(), { migrationQaPool: toolBuildMigrationQaPool }),
   new MetadataToolRegistrar(toolMetadataStore, toolMigrationStore),
   {
     reviewers: [

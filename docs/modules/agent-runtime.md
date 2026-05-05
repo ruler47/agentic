@@ -252,6 +252,12 @@ Their structured `pass`, `needs_revision`, or `fail` findings are stored in
 records the generated metadata, after which the server reloads generated tools into the
 active registry. This gives us a real end-to-end loop while keeping generated code behind
 contract validation, QA, and review gates.
+Generated storage contracts now have an additional migration QA hook. When
+`TOOL_BUILD_MIGRATION_QA_DATABASE_URL` points at a disposable Postgres database,
+`CommandToolQaRunner` executes each generated storage migration plan twice inside a
+rollback transaction before promotion continues. Without that env var, the runner still
+performs manifest-level storage QA and records pending migration metadata for later
+isolated execution.
 
 The worker is enabled by default in `src/server/main.ts`. Set
 `TOOL_BUILD_WORKER=disabled` for a fully manual queue, or tune polling/batch size with

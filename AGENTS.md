@@ -683,6 +683,8 @@ For documentation-only changes:
   checksums and QA evidence; isolated database execution remains the next migration gap.
   `toolStorageMigrationPlanner.ts` can plan generated service-runtime migrations and run
   them twice inside a rollback transaction when QA is given an isolated Postgres pool.
+  Server wiring uses `TOOL_BUILD_MIGRATION_QA_DATABASE_URL` as that optional isolated
+  pool; never point it at the primary application database.
 - Destructive database operations requested through a tool bug/rework flow must become
   explicit auditable capabilities with exact scope, dry-run preview, policy/approval
   checks, and audit events. Do not satisfy them by running arbitrary one-off SQL.
