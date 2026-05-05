@@ -1792,6 +1792,10 @@ test("web server exposes installed tool package runners", async () => {
       body.runners.map((runner: { type: string }) => runner.type),
       ["local-path", "source-bundle"],
     );
+    assert.deepEqual(
+      body.runners.map((runner: { name: string }) => runner.name),
+      ["Local compiled module runner", "Source bundle in-process runner"],
+    );
     assert.equal(body.runners[1].root, "portable-tools");
     assert.deepEqual(body.runners[1].supportedPackageTypes, ["source-bundle"]);
   } finally {

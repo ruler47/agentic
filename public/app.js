@@ -3329,7 +3329,7 @@ function renderDiagnosticsPage() {
       <div class="tool-card-header">
         <div>
           <span class="eyebrow">${escapeHtml(runner.type)}</span>
-          <h3>${escapeHtml(titleCase(String(runner.type ?? "runner").replace(/[-_]/g, " ")))}</h3>
+          <h3>${escapeHtml(runner.name ?? titleCase(String(runner.type ?? "runner").replace(/[-_]/g, " ")))}</h3>
         </div>
         ${statusBadge(runner.status ?? "available")}
       </div>

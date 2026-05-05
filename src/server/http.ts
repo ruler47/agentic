@@ -678,6 +678,7 @@ async function routeRequest(
         runner.describe
           ? runner.describe()
           : {
+              name: `${runner.type} runner`,
               type: runner.type,
               status: "available",
               detail: "Runner does not expose extended diagnostics.",

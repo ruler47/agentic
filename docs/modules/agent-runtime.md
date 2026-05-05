@@ -270,7 +270,9 @@ runners are:
   `/health` contract, and then proxies runtime calls through the external HTTP adapter.
 
 Future package runners can use the same extension point for npm packages, sandboxed
-process pools, or remote execution platforms.
+process pools, or remote execution platforms. Runner diagnostics include both the generic
+package `type` and a human-readable runner `name`, because several adapters can support
+the same package type with different isolation boundaries.
 
 `ToolPackageWorkspaceStore` is the first package-workspace writer. It creates portable
 source-bundle directories under `tools/<system-name>/<version>` by default and writes the

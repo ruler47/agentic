@@ -25,6 +25,7 @@ export type ToolPackageRunner = {
 };
 
 export type ToolPackageRunnerInfo = {
+  name: string;
   type: ToolPackageRunner["type"];
   status: "available" | "disabled";
   detail: string;
@@ -75,6 +76,7 @@ export class LocalPathToolPackageRunner implements ToolPackageRunner {
 
   describe(): ToolPackageRunnerInfo {
     return {
+      name: "Local compiled module runner",
       type: this.type,
       status: "available",
       detail: "Loads compiled local-path TypeScript modules from the application dist directory.",
@@ -125,6 +127,7 @@ export class SourceBundleToolPackageRunner implements ToolPackageRunner {
 
   describe(): ToolPackageRunnerInfo {
     return {
+      name: "Source bundle in-process runner",
       type: this.type,
       status: "available",
       detail: "Loads pre-built source-bundle packages from the tool package workspace. It does not install dependencies or execute build commands.",
@@ -199,6 +202,7 @@ export class SourceBundleHttpProcessToolPackageRunner implements ToolPackageRunn
 
   describe(): ToolPackageRunnerInfo {
     return {
+      name: "Source bundle HTTP process runner",
       type: this.type,
       status: this.enabled ? "available" : "disabled",
       detail: this.enabled
@@ -246,6 +250,7 @@ export class ExternalHttpToolPackageRunner implements ToolPackageRunner {
 
   describe(): ToolPackageRunnerInfo {
     return {
+      name: "External HTTP package runner",
       type: this.type,
       status: "available",
       detail: "Loads external-package manifests whose package.ref is an HTTP(S) tool-runtime endpoint exposing /health, /run, and optional /service lifecycle routes.",
@@ -327,6 +332,7 @@ export class OciImageToolPackageRunner implements ToolPackageRunner {
 
   describe(): ToolPackageRunnerInfo {
     return {
+      name: "OCI image HTTP runner",
       type: this.type,
       status: this.enabled ? "available" : "disabled",
       detail: this.enabled
