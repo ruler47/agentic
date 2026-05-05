@@ -281,6 +281,7 @@ test("loadGeneratedTools proxies external-package HTTP runtimes", async () => {
         content: `external:${body.input.text}`,
         data: {
           contextTool: body.context.toolName,
+          baseUrl: body.context.configuration.EXTERNAL_ECHO_BASE_URL,
           apiKey: body.context.secrets["secret.external.echo"],
         },
       }));
@@ -299,6 +300,7 @@ test("loadGeneratedTools proxies external-package HTTP runtimes", async () => {
       version: "1.0.0",
       description: "External HTTP echo.",
       capabilities: ["external-echo"],
+      requiredConfigurationKeys: ["EXTERNAL_ECHO_BASE_URL"],
       requiredSecretHandles: ["secret.external.echo"],
       packageManifest: {
         schemaVersion: "agentic.tool-package.v1",
@@ -306,6 +308,7 @@ test("loadGeneratedTools proxies external-package HTTP runtimes", async () => {
         version: "1.0.0",
         description: "External HTTP echo.",
         capabilities: ["external-echo"],
+        requiredConfigurationKeys: ["EXTERNAL_ECHO_BASE_URL"],
         requiredSecretHandles: ["secret.external.echo"],
         startupMode: "on-demand",
         package: { type: "external-package", ref: baseUrl },
@@ -319,6 +322,7 @@ test("loadGeneratedTools proxies external-package HTTP runtimes", async () => {
       {
         toolName: "generated.external.echo",
         now: new Date("2026-05-05T12:00:00.000Z"),
+        resolveConfiguration: async (key) => key === "EXTERNAL_ECHO_BASE_URL" ? "https://runtime.example.test" : undefined,
         resolveSecret: async (handle) => handle === "secret.external.echo" ? "runtime-secret" : undefined,
       },
     );
@@ -327,7 +331,11 @@ test("loadGeneratedTools proxies external-package HTTP runtimes", async () => {
     assert.equal(stored?.status, "available");
     assert.equal(stored?.lastHealthDetail, "external runtime healthy");
     assert.equal(output?.content, "external:hello");
-    assert.deepEqual(output?.data, { contextTool: "generated.external.echo", apiKey: "runtime-secret" });
+    assert.deepEqual(output?.data, {
+      contextTool: "generated.external.echo",
+      baseUrl: "https://runtime.example.test",
+      apiKey: "runtime-secret",
+    });
     assert.deepEqual(calls.map((call) => call.path), ["/health", "/run"]);
   } finally {
     await close(server);
@@ -392,6 +400,7 @@ test("external-package HTTP runners expose always-on service lifecycle handles",
       description: "External HTTP listener.",
       capabilities: ["external-listener"],
       startupMode: "always-on",
+      requiredConfigurationKeys: ["EXTERNAL_LISTENER_MODE"],
       requiredSecretHandles: ["secret.external.listener"],
       packageManifest: {
         schemaVersion: "agentic.tool-package.v1",
@@ -400,6 +409,7 @@ test("external-package HTTP runners expose always-on service lifecycle handles",
         description: "External HTTP listener.",
         capabilities: ["external-listener"],
         startupMode: "always-on",
+        requiredConfigurationKeys: ["EXTERNAL_LISTENER_MODE"],
         requiredSecretHandles: ["secret.external.listener"],
         package: { type: "external-package", ref: baseUrl },
       },
@@ -407,6 +417,7 @@ test("external-package HTTP runners expose always-on service lifecycle handles",
 
     await loadGeneratedTools(registry, metadata);
     const supervisor = new ToolServiceSupervisor(registry, undefined, undefined, {
+      resolveConfiguration: async (key) => key === "EXTERNAL_LISTENER_MODE" ? "polling" : undefined,
       resolveSecret: async (handle) => handle === "secret.external.listener" ? "listener-secret" : undefined,
     });
     const started = await supervisor.start("generated.external.listener");
@@ -420,6 +431,10 @@ test("external-package HTTP runners expose always-on service lifecycle handles",
     assert.equal(
       (calls[1]?.body as { context?: { secrets?: Record<string, string> } }).context?.secrets?.["secret.external.listener"],
       "listener-secret",
+    );
+    assert.equal(
+      (calls[1]?.body as { context?: { configuration?: Record<string, string> } }).context?.configuration?.EXTERNAL_LISTENER_MODE,
+      "polling",
     );
     assert.equal(
       (calls[4]?.body as { context?: { secrets?: Record<string, string> } }).context?.secrets?.["secret.external.listener"],

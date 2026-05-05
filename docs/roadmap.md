@@ -404,13 +404,14 @@ Remaining registry persistence:
   explicitly enabled Docker runner (`TOOL_OCI_RUNNER=enabled`) when the container exposes
   the same HTTP runtime contract. Tests also prove custom non-local manifests can be
   loaded by adding a runner, unhealthy OCI runtimes are stopped instead of promoted, and
-  HTTP/OCI runtimes receive only their declared `requiredSecretHandles` as scoped runtime
-  secret envelopes.
+  HTTP/OCI runtimes receive only their declared `requiredConfigurationKeys` and
+  `requiredSecretHandles` as scoped runtime envelopes.
   Runner inventory is visible through the API and Diagnostics page, and operators can
   explicitly reload generated tools after updating a source-bundle on disk. Remaining
   work is npm/external package install/sandboxing, production resource/log supervision for
-  containers, generalized config injection into package runtimes, and richer runner UI
-  controls. DONE for API/UI package import/export and first OCI HTTP proxy runner.
+  containers, redacted runtime logging, container-level config/secret injection policies,
+  and richer runner UI controls. DONE for API/UI package import/export and first OCI HTTP
+  proxy runner.
   The API/UI can now import portable `agentic.tool-package.v1` manifests into the
   registry and export existing generated package manifests. Non-local package references
   are intentionally registered as disabled metadata until the runner/supervisor layer can

@@ -2518,6 +2518,7 @@ async function executeRun(
         resolveSecret: options.secretHandleStore?.resolve
           ? (handle) => options.secretHandleStore!.resolve!(handle)
           : undefined,
+        resolveConfiguration: async (key) => process.env[key],
         audit: async (event) => {
           await recordAudit(options, {
             instanceId: run?.instanceId,

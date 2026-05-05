@@ -480,6 +480,7 @@ async function executionContextPayload(
     capability: context.capability,
     caller: context.caller,
     now: context.now.toISOString(),
+    ...(await resolvedConfigurationEnvelope(metadata.requiredConfigurationKeys, context.resolveConfiguration)),
     ...(await resolvedSecretEnvelope(metadata.requiredSecretHandles, context.resolveSecret)),
   });
 }
@@ -492,7 +493,33 @@ async function serviceContextPayload(
     toolName: context.toolName,
     now: context.now.toISOString(),
     baseUrl: context.baseUrl,
+    ...(await resolvedConfigurationEnvelope(metadata.requiredConfigurationKeys, context.resolveConfiguration)),
     ...(await resolvedSecretEnvelope(metadata.requiredSecretHandles, context.resolveSecret)),
+  });
+}
+
+async function resolvedConfigurationEnvelope(
+  keys: string[] | undefined,
+  resolveConfiguration: ((key: string) => Promise<string | undefined>) | undefined,
+): Promise<Record<string, unknown>> {
+  const requestedKeys = [...new Set(keys ?? [])];
+  if (!requestedKeys.length) return {};
+  if (!resolveConfiguration) {
+    return { configurationKeys: requestedKeys, missingConfigurationKeys: requestedKeys };
+  }
+
+  const configuration: Record<string, string> = {};
+  const missingConfigurationKeys: string[] = [];
+  for (const key of requestedKeys) {
+    const value = await resolveConfiguration(key);
+    if (value === undefined) missingConfigurationKeys.push(key);
+    else configuration[key] = value;
+  }
+
+  return compactRecord({
+    configurationKeys: requestedKeys,
+    configuration,
+    missingConfigurationKeys: missingConfigurationKeys.length ? missingConfigurationKeys : undefined,
   });
 }
 
