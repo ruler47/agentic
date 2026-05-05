@@ -7,13 +7,25 @@ export type ToolUsageEvent = {
 };
 
 export type ToolUsageReporter = (event: ToolUsageEvent) => Promise<void> | void;
+export type ToolRuntimeContextProvider = (input: {
+  tool: Tool;
+  input: ToolInput;
+  context: ToolExecutionContext;
+}) => Promise<Partial<Omit<ToolExecutionContext, "toolName" | "now">> | undefined>
+  | Partial<Omit<ToolExecutionContext, "toolName" | "now">>
+  | undefined;
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
   private usageReporter?: ToolUsageReporter;
+  private runtimeContextProvider?: ToolRuntimeContextProvider;
 
   setUsageReporter(reporter: ToolUsageReporter | undefined): void {
     this.usageReporter = reporter;
+  }
+
+  setRuntimeContextProvider(provider: ToolRuntimeContextProvider | undefined): void {
+    this.runtimeContextProvider = provider;
   }
 
   register(tool: Tool): void {
@@ -42,9 +54,20 @@ export class ToolRegistry {
     context?: Partial<Omit<ToolExecutionContext, "toolName">>,
   ): Promise<ToolResult> {
     const now = context?.now ?? new Date();
+    const baseContext: ToolExecutionContext = {
+      ...(context ?? {}),
+      toolName: tool.name,
+      now,
+    };
     try {
+      const providedContext = await this.runtimeContextProvider?.({
+        tool,
+        input,
+        context: baseContext,
+      });
       const result = await tool.run(input, {
-        ...(context ?? {}),
+        ...baseContext,
+        ...(providedContext ?? {}),
         toolName: tool.name,
         now,
       });

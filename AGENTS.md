@@ -670,7 +670,9 @@ For documentation-only changes:
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,
   `artifacts.saveGenerated(...)` writer, logger, and cancellation signal. The artifact
   writer is intentionally narrow so generated tools can return files without importing
-  Agentic's artifact-store implementation.
+  Agentic's artifact-store implementation. The scoped DB client is also intentionally
+  narrow: runtime calls require declared storage permissions, allow only one read/write
+  statement, and reject DDL, deletes, transactions, session changes, and maintenance.
 - Tool-owned migrations must be versioned, idempotent, QA-tested in an isolated database,
   and promoted only with the tool version they belong to. Record the applied migration,
   checksum, QA evidence, and rollback/repair notes in persistent metadata.

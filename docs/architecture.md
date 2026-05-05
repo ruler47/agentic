@@ -256,8 +256,10 @@ The target contract is:
   contract, pending for isolated execution and transactional promotion;
 - tool runtime receives a constrained `ToolExecutionContext` with secret resolver, audit
   writer, logger, provenance, cancellation signal, and a portable
-  `artifacts.saveGenerated(...)` writer for output files; scoped database client
-  injection is the next contract extension;
+  `artifacts.saveGenerated(...)` writer for output files. When Postgres is configured,
+  tools with a storage contract receive a scoped runtime DB client. The client requires
+  explicit read/write permissions, accepts only a single runtime statement, and rejects
+  DDL, transactions, session changes, deletes, and maintenance operations;
 - destructive database operations are explicit capabilities, such as `data.delete`,
   `records.purge`, or `tool-data.compact`, with preview/dry-run output, policy checks,
   approval when risk is high, and audit records;

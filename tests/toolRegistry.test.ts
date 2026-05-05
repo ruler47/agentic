@@ -122,3 +122,39 @@ test("ToolRegistry records failed tool usage without hiding the result", async (
   assert.equal((usageEvents[0] as any).toolName, "context.fail");
   assert.equal((usageEvents[0] as any).outcome, "failure");
 });
+
+test("ToolRegistry can enrich tool calls with a runtime context provider", async () => {
+  const registry = new ToolRegistry();
+  const seenContexts: unknown[] = [];
+  registry.setRuntimeContextProvider(({ tool, context }) => ({
+    db: {
+      async query<T = unknown>(sql: string) {
+        return {
+          rows: [{ sql, toolName: tool.name, runId: context.runId }] as T[],
+          rowCount: 1,
+        };
+      },
+    },
+  }));
+  const tool = {
+    name: "context.db",
+    description: "Uses injected database context.",
+    capabilities: ["db-test"],
+    async run(_input: Record<string, unknown>, context?: any) {
+      seenContexts.push(context);
+      const result = await context.db.query("select 1");
+      return { ok: true, content: JSON.stringify(result.rows[0]) };
+    },
+  };
+
+  registry.register(tool);
+  const result = await registry.execute(tool, {}, { runId: "run-db" });
+
+  assert.equal((seenContexts[0] as any).toolName, "context.db");
+  assert.equal((seenContexts[0] as any).runId, "run-db");
+  assert.deepEqual(JSON.parse(result.content), {
+    sql: "select 1",
+    toolName: "context.db",
+    runId: "run-db",
+  });
+});

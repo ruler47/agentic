@@ -714,11 +714,13 @@ Remaining Phase 3 gaps:
   generalize the inbox into a persistent approvals table for outbound actions, memory
   writes, credential usage, and policy analytics.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
-  secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
+  secret resolver, artifact store, audit writer, logger, and cancellation signal. DONE:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,
   span ids, cancellation-compatible context shape, and an abstract
-  `artifacts.saveGenerated(...)` writer backed by the run artifact store. Scoped DB client
-  injection remains.
+  `artifacts.saveGenerated(...)` writer backed by the run artifact store. When Postgres is
+  configured, tools with a declared storage contract also receive a scoped DB client that
+  allows only single-statement read/write runtime queries with explicit permissions and
+  rejects DDL, transactions, session changes, deletes, and maintenance operations.
 - Add a `tool_migrations` or `tool_schema_migrations` table that records tool name,
   version, migration id, checksum, applied time, applied-by actor, QA report, and
   rollback/repair notes. DONE for the metadata table/store/API/audit/UI visibility.

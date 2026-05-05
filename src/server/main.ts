@@ -71,6 +71,7 @@ import {
 } from "../tools/toolBuildProviders.js";
 import { ToolPackageWorkspaceStore } from "../tools/toolPackageWorkspaceStore.js";
 import { LlmToolBuildProvider } from "../tools/llmToolBuildProvider.js";
+import { createToolScopedDbContextProvider } from "../tools/toolScopedDb.js";
 
 const port = Number(process.env.PORT ?? "3000");
 const publicDir = resolve("public");
@@ -79,6 +80,9 @@ const textEmbeddingProvider = createTextEmbeddingProviderFromEnv();
 const skillMemory = pool ? new PostgresSkillMemory(pool, textEmbeddingProvider) : new SkillMemory();
 console.log(`Memory embedding provider: ${textEmbeddingProvider.name} (${textEmbeddingProvider.dimensions}d).`);
 const tools = new ToolRegistry();
+if (pool) {
+  tools.setRuntimeContextProvider(createToolScopedDbContextProvider(pool));
+}
 tools.register(new WebSearchTool());
 tools.register(new TelegramBotServiceTool());
 tools.register(new FileReadTool());
