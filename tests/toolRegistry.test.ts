@@ -35,6 +35,7 @@ test("ToolRegistry executes tools with scoped runtime context", async () => {
   const registry = new ToolRegistry();
   const seenContexts: unknown[] = [];
   const usageEvents: unknown[] = [];
+  const savedArtifacts: unknown[] = [];
   registry.setUsageReporter((event) => {
     usageEvents.push(event);
   });
@@ -44,6 +45,12 @@ test("ToolRegistry executes tools with scoped runtime context", async () => {
     capabilities: ["echo"],
     async run(input: Record<string, unknown>, context?: any) {
       seenContexts.push(context);
+      await context?.artifacts?.saveGenerated({
+        filename: "context.txt",
+        mimeType: "text/plain",
+        content: String(input.message ?? ""),
+        description: "Context artifact",
+      });
       return {
         ok: true,
         content: `${input.message}:${context?.runId}:${context?.toolName}`,
@@ -56,6 +63,21 @@ test("ToolRegistry executes tools with scoped runtime context", async () => {
     runId: "run-test",
     spanId: "span-test",
     requesterUserId: "user-admin",
+    artifacts: {
+      saveGenerated: async (artifact) => {
+        savedArtifacts.push(artifact);
+        return {
+          id: "artifact-context",
+          runId: "run-test",
+          kind: "output",
+          filename: artifact.filename,
+          mimeType: artifact.mimeType,
+          sizeBytes: String(artifact.content).length,
+          url: "/artifacts/context.txt",
+          createdAt: new Date().toISOString(),
+        };
+      },
+    },
   });
 
   assert.deepEqual(result, {
@@ -65,6 +87,14 @@ test("ToolRegistry executes tools with scoped runtime context", async () => {
   assert.equal((seenContexts[0] as any).toolName, "context.echo");
   assert.equal((seenContexts[0] as any).spanId, "span-test");
   assert.equal((seenContexts[0] as any).now instanceof Date, true);
+  assert.deepEqual(savedArtifacts, [
+    {
+      filename: "context.txt",
+      mimeType: "text/plain",
+      content: "hello",
+      description: "Context artifact",
+    },
+  ]);
   assert.equal((usageEvents[0] as any).toolName, "context.echo");
   assert.equal((usageEvents[0] as any).outcome, "success");
   assert.equal((usageEvents[0] as any).at instanceof Date, true);

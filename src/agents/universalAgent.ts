@@ -3059,13 +3059,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function buildToolExecutionContext(options: RunOptions): BaseToolExecutionContext {
-  return {
+  const context: BaseToolExecutionContext = {
     ...(options.toolExecutionContext ?? {}),
     instanceId: options.toolExecutionContext?.instanceId ?? options.instanceId,
     requesterUserId: options.toolExecutionContext?.requesterUserId ?? options.requesterUserId,
     threadId: options.toolExecutionContext?.threadId ?? options.threadId,
     runId: options.toolExecutionContext?.runId ?? options.runId,
   };
+
+  if (!context.artifacts && options.saveArtifact) {
+    context.artifacts = {
+      saveGenerated: options.saveArtifact,
+    };
+  }
+
+  return context;
 }
 
 type ScreenshotToolData = {

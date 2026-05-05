@@ -604,6 +604,7 @@ test("UniversalAgent auto-routes AML address requests to registered API JSON too
   ]);
   const registry = new ToolRegistry();
   let capturedInput: Record<string, unknown> | undefined;
+  const savedArtifacts: ArtifactCreateInput[] = [];
   registry.register({
     name: "generated.api.gl.aml",
     displayName: "GL AML",
@@ -611,8 +612,14 @@ test("UniversalAgent auto-routes AML address requests to registered API JSON too
     description: "Global Ledger AML score API for wallet address and transaction risk.",
     capabilities: ["api.gl-aml", "api-http-json", "http-api-call"],
     requiredSecretHandles: ["secret.api.gl-aml"],
-    async run(input) {
+    async run(input, context) {
       capturedInput = input;
+      await context?.artifacts?.saveGenerated({
+        filename: "aml-score.json",
+        mimeType: "application/json",
+        content: JSON.stringify({ score: 42 }),
+        description: "AML score evidence payload.",
+      });
       return {
         ok: true,
         content: "API call succeeded with HTTP 200; score: 42.",
@@ -639,6 +646,20 @@ test("UniversalAgent auto-routes AML address requests to registered API JSON too
         toolExecutionContext: {
           resolveSecret: async (handle) => handle === "secret.api.gl-aml" ? "test-token" : undefined,
         },
+        saveArtifact: async (artifact): Promise<AgentArtifact> => {
+          savedArtifacts.push(artifact);
+          return {
+            id: "artifact-aml-score",
+            runId: "run-aml",
+            kind: "output",
+            filename: artifact.filename,
+            mimeType: artifact.mimeType,
+            sizeBytes: Buffer.isBuffer(artifact.content) ? artifact.content.byteLength : artifact.content.length,
+            url: "/artifacts/aml-score.json",
+            description: artifact.description,
+            createdAt: new Date().toISOString(),
+          };
+        },
       },
     );
 
@@ -646,6 +667,9 @@ test("UniversalAgent auto-routes AML address requests to registered API JSON too
     assert.equal(capturedInput?.network, "ethereum");
     assert.equal(capturedInput?.address, "0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2");
     assert.equal(capturedInput?.secretHandle, "secret.api.gl-aml");
+    assert.equal(savedArtifacts.length, 1);
+    assert.equal(savedArtifacts[0]?.filename, "aml-score.json");
+    assert.equal(savedArtifacts[0]?.mimeType, "application/json");
     assert.ok(toolEvents.some((event) => event.title === "Tool: generated.api.gl.aml" && event.status === "completed"));
     assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /Structured tool data/);
     assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /score: 42/);

@@ -56,6 +56,11 @@ const result = await agent.run(task, {
 });
 ```
 
+The same `saveArtifact` callback is also injected into tool calls as
+`context.artifacts.saveGenerated(...)`. Tools receive that narrow writer instead of a
+store/client object, so generated tools can create artifacts without depending on
+Agentic internals, HTTP routes, Postgres, or MinIO.
+
 The runtime does not know about HTTP, browsers, databases, or queues. That separation is
 intentional: another project can import the runtime and provide its own interface.
 The same rule should apply to Telegram and future channels: always-on generated tools

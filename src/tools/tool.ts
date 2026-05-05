@@ -1,3 +1,5 @@
+import type { AgentArtifact, ArtifactCreateInput } from "../types.js";
+
 export type ToolInput = Record<string, unknown>;
 
 export type ToolResult = {
@@ -17,6 +19,10 @@ export type ToolStartupMode = "always-on" | "on-demand" | "ephemeral";
 export type ToolHealth = {
   ok: boolean;
   detail: string;
+};
+
+export type ToolArtifactWriter = {
+  saveGenerated(input: ArtifactCreateInput): Promise<AgentArtifact>;
 };
 
 export type ToolExecutionContext = {
@@ -46,6 +52,7 @@ export type ToolExecutionContext = {
     warn(message: string, metadata?: Record<string, unknown>): void;
     error(message: string, metadata?: Record<string, unknown>): void;
   };
+  artifacts?: ToolArtifactWriter;
   db?: {
     query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[]; rowCount?: number | null }>;
   };

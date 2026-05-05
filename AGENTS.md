@@ -667,7 +667,9 @@ For documentation-only changes:
 - Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
   needs database access, it must declare storage requirements/migrations and receive a
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,
-  artifact store, logger, and cancellation signal.
+  `artifacts.saveGenerated(...)` writer, logger, and cancellation signal. The artifact
+  writer is intentionally narrow so generated tools can return files without importing
+  Agentic's artifact-store implementation.
 - Tool-owned migrations must be versioned, idempotent, QA-tested in an isolated database,
   and promoted only with the tool version they belong to. Record the applied migration,
   checksum, QA evidence, and rollback/repair notes in persistent metadata.

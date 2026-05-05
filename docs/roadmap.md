@@ -716,8 +716,9 @@ Remaining Phase 3 gaps:
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,
-  span ids, and cancellation-compatible context shape. Scoped DB client and artifact-store
-  injection remain.
+  span ids, cancellation-compatible context shape, and an abstract
+  `artifacts.saveGenerated(...)` writer backed by the run artifact store. Scoped DB client
+  injection remains.
 - Add a `tool_migrations` or `tool_schema_migrations` table that records tool name,
   version, migration id, checksum, applied time, applied-by actor, QA report, and
   rollback/repair notes. DONE for the metadata table/store/API/audit/UI visibility.
