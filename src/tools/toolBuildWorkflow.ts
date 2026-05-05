@@ -1,5 +1,6 @@
 import {
   ToolBuildQaReport,
+  ToolBuildReviewReport,
   ToolBuildRequest,
   ToolBuildRequestStore,
 } from "./toolBuildRequestStore.js";
@@ -38,6 +39,14 @@ export type ToolQaRunner = {
   run(request: ToolBuildRequest, output: ToolBuildOutput): Promise<ToolBuildQaReport>;
 };
 
+export type ToolBuildReviewer = {
+  review(
+    request: ToolBuildRequest,
+    output: ToolBuildOutput,
+    qaReport: ToolBuildQaReport,
+  ): Promise<ToolBuildReviewReport>;
+};
+
 export type ToolRegistrar = {
   register(request: ToolBuildRequest, output: ToolBuildOutput): Promise<string>;
 };
@@ -49,6 +58,7 @@ export type ToolBuildWorkflowResult = {
 
 export type ToolBuildWorkflowOptions = {
   maxAttempts?: number;
+  reviewers?: ToolBuildReviewer[];
 };
 
 export class ToolBuildWorkflow {
@@ -131,10 +141,32 @@ export class ToolBuildWorkflow {
           };
         }
 
+        const reviewedQaReport = await this.runReviewGates(request, output, qaReport);
+        previousQaReport = reviewedQaReport;
+        const failedReview = reviewedQaReport.reviews?.find((review) => review.decision !== "pass");
+        if (failedReview) {
+          if (attempt < maxAttempts) {
+            await this.requests.updateStatus(id, {
+              status: "building",
+              statusDetail: `${failedReview.kind} review returned ${failedReview.decision} on attempt ${attempt}/${maxAttempts}; returning findings to Tool Builder for repair.`,
+              qaReport: reviewedQaReport,
+            });
+            continue;
+          }
+
+          return {
+            request: await this.requests.updateStatus(id, {
+              status: "qa_failed",
+              statusDetail: `${failedReview.kind} review returned ${failedReview.decision}: ${failedReview.summary}`,
+              qaReport: reviewedQaReport,
+            }),
+          };
+        }
+
         await this.requests.updateStatus(id, {
           status: "qa_passed",
-          statusDetail: qaReport.summary,
-          qaReport,
+          statusDetail: reviewedQaReport.summary,
+          qaReport: reviewedQaReport,
         });
 
         const registeredToolName = await this.registrar.register(request, output);
@@ -143,7 +175,7 @@ export class ToolBuildWorkflow {
           request: await this.requests.updateStatus(id, {
             status: "registered",
             statusDetail: `Registered ${registeredToolName}.`,
-            qaReport,
+            qaReport: reviewedQaReport,
             registeredToolName,
           }),
         };
@@ -164,5 +196,26 @@ export class ToolBuildWorkflow {
         }),
       };
     }
+  }
+
+  private async runReviewGates(
+    request: ToolBuildRequest,
+    output: ToolBuildOutput,
+    qaReport: ToolBuildQaReport,
+  ): Promise<ToolBuildQaReport> {
+    const reviews: ToolBuildReviewReport[] = [];
+    for (const reviewer of this.options.reviewers ?? []) {
+      reviews.push(await reviewer.review(request, output, qaReport));
+    }
+    if (reviews.length === 0) return qaReport;
+
+    return {
+      ...qaReport,
+      checks: [
+        ...qaReport.checks,
+        ...reviews.map((review) => `${review.kind} review ${review.decision}: ${review.summary}`),
+      ],
+      reviews,
+    };
   }
 }

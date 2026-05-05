@@ -495,9 +495,12 @@ Next implementation tasks:
   rejects unsafe paths/raw-looking secrets, and still requires isolated QA plus promotion
   checks before registration. Remaining work is richer docs ingestion, separate
   code/behavior reviewers, and out-of-process build sandboxes.
-- Add a Tool QA agent contract. DONE for generated QA criteria, isolated generated-tool
-  test execution, TypeScript build verification, and promotion checks; remaining work is
-  richer visual QA and separate worker pools.
+- Add a Tool QA/review agent contract. PARTIAL: generated QA criteria, isolated
+  generated-tool test execution, TypeScript build verification, promotion checks, and
+  deterministic code/behavior review gates now exist. Failed review findings are stored
+  in `qaReport.reviews` and returned to the builder for bounded repair attempts.
+  Remaining work is LLM code reviewers, richer behavior reviewers with real smoke
+  evidence, visual/artifact QA, and separate worker pools.
 - Add a persistent Tool Build Queue. DONE via `tool_build_requests` and
   `/api/tool-build-requests`.
 - Add Tool Build Queue lifecycle APIs. DONE via `GET/PATCH
@@ -519,8 +522,9 @@ Next implementation tasks:
   or tool rework form, and universal QA/change prompts are placeholders rather than
   silently submitted defaults.
 - Add a reusable Tool Builder workflow. DONE as `ToolBuildWorkflow`, with pluggable
-  Builder, QA Runner, and Registrar interfaces plus tests proving failed QA blocks
-  registration and failed QA reports can be returned to the builder for a bounded retry.
+  Builder, QA Runner, Review, and Registrar interfaces plus tests proving failed QA or
+  review blocks registration and failed QA/review reports can be returned to the builder
+  for a bounded retry.
 - Add a Tool QA runner that executes targeted tests plus capability-specific smoke checks
   in an isolated container/process and writes a structured QA report back to the queue.
   DONE for temporary workspace isolation, command timeouts, targeted tests, isolated build,
@@ -543,8 +547,8 @@ Remaining Phase 3 gaps:
   new providers/modules for unknown capability families. PARTIAL: `LlmToolBuildProvider`
   now acts as the guarded unknown-capability fallback after deterministic providers using
   the configured XL-tier model and the same QA/registrar pipeline. Remaining work is real
-  provider-doc chunking, iterative repair from QA failures, semantic code review, behavior
-  review, and execution outside the main app process.
+  provider-doc chunking, iterative repair from richer QA failures, semantic code review,
+  behavior review with live smoke evidence, and execution outside the main app process.
 - Fold API-docs onboarding into Tool Builds: admin uploads/pastes documentation, desired
   use cases, and credential setup notes; the builder creates a scoped TypeScript tool
   contract, tests, QA report, and registry metadata. PARTIAL: the UI/API can create

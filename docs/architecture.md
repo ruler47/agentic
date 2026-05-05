@@ -307,6 +307,7 @@ missing capability
   -> create Tool Build Request with TypeScript module contract
   -> builder writes source and tests
   -> QA runs targeted tests and build checks in an isolated workspace
+  -> code and behavior review gates inspect contract safety and QA evidence
   -> registrar validates metadata and registers the generated module
   -> runtime reloads generated tools
   -> original run can use the new tool
@@ -316,9 +317,9 @@ The next slice adds a guarded LLM-backed provider for unknown/custom capability 
 It is still not trusted runtime code execution: the model may only return the requested
 TypeScript module path and test path, must keep credentials behind secret handles, and
 the output still goes through isolated generated-tool tests, isolated build, promotion
-tests, promotion build, metadata registration, and runtime reload. Disable this fallback
-with `TOOL_BUILD_LLM_PROVIDER=disabled` when an instance should only use deterministic
-providers.
+tests, promotion build, deterministic code/behavior review gates, metadata registration,
+and runtime reload. Disable this fallback with `TOOL_BUILD_LLM_PROVIDER=disabled` when an
+instance should only use deterministic providers.
 
 The target flow also supports admin-provided API documentation and credentials. The agent
 should read the docs, propose a reusable TypeScript module contract, build tests, run QA,

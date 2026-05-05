@@ -248,7 +248,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/tools/postgresToolBuildRequestStore.ts](src/tools/postgresToolBuildRequestStore.ts)
   - Postgres-backed `tool_build_requests` queue.
 - [src/tools/toolBuildWorkflow.ts](src/tools/toolBuildWorkflow.ts) - reusable Builder/QA/
-  Registrar orchestration flow for missing tool capabilities.
+  review/Registrar orchestration flow for missing tool capabilities.
+- [src/tools/toolBuildReviewers.ts](src/tools/toolBuildReviewers.ts) - deterministic
+  generated-tool code and behavior review gates that run after QA and before registration.
 - [src/tools/toolBuildWorker.ts](src/tools/toolBuildWorker.ts) - background worker that
   claims `requested` Tool Build Queue items and runs the Builder/QA/Registrar workflow.
 - [src/tools/toolServiceSupervisor.ts](src/tools/toolServiceSupervisor.ts) - generic
@@ -611,8 +613,12 @@ For documentation-only changes:
   failed tool should create a new Tool Build request from the Tools page with the failure
   details prefilled.
 - `ToolBuildWorkflow` supports bounded retries. Builders receive the previous generated
-  output and failed QA report on retry attempts; registrars must only run after a passing
-  QA report.
+  output and failed QA/review report on retry attempts; registrars must only run after a
+  passing QA report plus all configured review gates.
+- Generated-tool promotion now has separate QA and review gates. `ToolBuildQaReport`
+  may include `reviews` for code and behavior decisions; any `needs_revision` or `fail`
+  review sends findings back into the next builder attempt or ends as `qa_failed` after
+  attempts are exhausted.
 - `LlmToolBuildProvider` is enabled by default as a guarded fallback for unknown/custom
   Tool Build requests and can be disabled with `TOOL_BUILD_LLM_PROVIDER=disabled`. Its
   output is not trusted: generated files must match the request contract, avoid raw

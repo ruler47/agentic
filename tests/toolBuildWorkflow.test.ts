@@ -56,6 +56,142 @@ test("ToolBuildWorkflow runs builder, QA, and registrar in order", async () => {
   assert.equal(stored?.registeredToolName, "generated.browser.screenshot");
 });
 
+test("ToolBuildWorkflow records code and behavior review gates before registration", async () => {
+  const calls: string[] = [];
+  const store = new InMemoryToolBuildRequestStore();
+  const request = await store.create({
+    capability: "generated-reviewable-tool",
+    reason: "Need a generated tool with review gates.",
+  });
+
+  const workflow = new ToolBuildWorkflow(
+    store,
+    {
+      async build() {
+        calls.push("builder");
+        return {
+          modulePath: "src/tools/generated/generated-reviewable-toolTool.ts",
+          testPath: "tests/generated/generated-reviewable-toolTool.test.ts",
+          summary: "Created TypeScript module and tests.",
+        };
+      },
+    },
+    {
+      async run() {
+        calls.push("qa");
+        return {
+          ok: true,
+          summary: "Generated tool tests and TypeScript build passed.",
+          checks: ["targeted generated tool tests passed", "TypeScript build passed"],
+        };
+      },
+    },
+    {
+      async register() {
+        calls.push("registrar");
+        return "generated.reviewable.tool";
+      },
+    },
+    {
+      reviewers: [
+        {
+          async review() {
+            calls.push("code-review");
+            return { kind: "code", decision: "pass", summary: "Code contract passed.", findings: [] };
+          },
+        },
+        {
+          async review() {
+            calls.push("behavior-review");
+            return { kind: "behavior", decision: "pass", summary: "Behavior evidence passed.", findings: [] };
+          },
+        },
+      ],
+    },
+  );
+
+  const result = await workflow.runOnce(request.id);
+  const stored = await store.get(request.id);
+
+  assert.deepEqual(calls, ["builder", "qa", "code-review", "behavior-review", "registrar"]);
+  assert.equal(result.request.status, "registered");
+  assert.deepEqual(
+    stored?.qaReport?.reviews?.map((review) => `${review.kind}:${review.decision}`),
+    ["code:pass", "behavior:pass"],
+  );
+  assert.ok(stored?.qaReport?.checks.some((check) => check.includes("code review pass")));
+});
+
+test("ToolBuildWorkflow returns failed review findings to builder before retry", async () => {
+  const calls: string[] = [];
+  const store = new InMemoryToolBuildRequestStore();
+  const request = await store.create({
+    capability: "repairable-tool",
+    reason: "Need a repairable generated tool.",
+  });
+
+  const workflow = new ToolBuildWorkflow(
+    store,
+    {
+      async build(_request, context) {
+        calls.push(`builder:${context?.attempt}:${context?.previousQaReport?.reviews?.[0]?.decision ?? "none"}`);
+        return {
+          modulePath: "src/tools/generated/repairable-toolTool.ts",
+          testPath: "tests/generated/repairable-toolTool.test.ts",
+          summary: `attempt ${context?.attempt}`,
+        };
+      },
+    },
+    {
+      async run() {
+        calls.push("qa");
+        return {
+          ok: true,
+          summary: "Generated tool tests and TypeScript build passed.",
+          checks: ["targeted generated tool tests passed", "TypeScript build passed"],
+        };
+      },
+    },
+    {
+      async register() {
+        calls.push("registrar");
+        return "generated.repairable.tool";
+      },
+    },
+    {
+      maxAttempts: 2,
+      reviewers: [
+        {
+          async review(_request, output) {
+            const repaired = output.summary.includes("2");
+            calls.push(`review:${repaired ? "pass" : "needs_revision"}`);
+            return {
+              kind: "code",
+              decision: repaired ? "pass" : "needs_revision",
+              summary: repaired ? "Code repaired." : "Code needs repair.",
+              findings: repaired ? [] : ["Missing contract guard."],
+            };
+          },
+        },
+      ],
+    },
+  );
+
+  const result = await workflow.runOnce(request.id);
+
+  assert.deepEqual(calls, [
+    "builder:1:none",
+    "qa",
+    "review:needs_revision",
+    "builder:2:needs_revision",
+    "qa",
+    "review:pass",
+    "registrar",
+  ]);
+  assert.equal(result.request.status, "registered");
+  assert.equal(result.request.qaReport?.reviews?.[0]?.decision, "pass");
+});
+
 test("ToolBuildWorkflow is idempotent for already registered requests", async () => {
   const calls: string[] = [];
   const store = new InMemoryToolBuildRequestStore();

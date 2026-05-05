@@ -40,6 +40,10 @@ import { InMemoryToolMigrationStore } from "../tools/toolMigrationStore.js";
 import { PostgresToolMigrationStore } from "../tools/postgresToolMigrationStore.js";
 import { loadGeneratedTools } from "../tools/generatedToolLoader.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
+import {
+  DeterministicToolBehaviorReviewer,
+  DeterministicToolCodeReviewer,
+} from "../tools/toolBuildReviewers.js";
 import { ToolBuildWorker } from "../tools/toolBuildWorker.js";
 import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
 import { InMemoryToolServiceStatusStore } from "../tools/toolServiceStatusStore.js";
@@ -132,6 +136,9 @@ const toolBuildWorkflow = new ToolBuildWorkflow(
   ]),
   new CommandToolQaRunner(),
   new MetadataToolRegistrar(toolMetadataStore),
+  {
+    reviewers: [new DeterministicToolCodeReviewer(), new DeterministicToolBehaviorReviewer()],
+  },
 );
 const toolBuildWorker = new ToolBuildWorker(toolBuildWorkflow, toolBuildRequestStore, {
   intervalMs: Number(process.env.TOOL_BUILD_WORKER_INTERVAL_MS ?? "15000"),

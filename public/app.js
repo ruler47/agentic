@@ -2648,6 +2648,7 @@ function renderBuildCard(request) {
       ${request.feedback ? `<small class="status-note">Latest feedback: ${escapeHtml(request.feedback)}</small>` : ""}
       ${request.statusDetail ? `<small class="status-note">Status detail: ${escapeHtml(request.statusDetail)}</small>` : ""}
       ${request.qaReport ? `<small class="status-note">QA: ${escapeHtml(request.qaReport.summary)}</small>` : ""}
+      ${renderToolBuildReviews(request.qaReport?.reviews)}
       <details class="build-preview" data-panel-id="build-preview:${escapeHtml(request.id)}" ${panelOpenAttr(`build-preview:${request.id}`)}>
         <summary>Preview</summary>
         ${contextBlock("Tool contract", `${request.contract?.toolName ?? "pending"}\n${request.contract?.modulePath ?? "module pending"}\n${request.contract?.testPath ?? "test pending"}`)}
@@ -2670,6 +2671,25 @@ function renderBuildCard(request) {
         </form>
       </details>
     </article>
+  `;
+}
+
+function renderToolBuildReviews(reviews) {
+  if (!Array.isArray(reviews) || reviews.length === 0) return "";
+  return `
+    <div class="build-review-list">
+      ${reviews
+        .map(
+          (review) => `
+            <small class="status-note">
+              ${escapeHtml(review.kind ?? "review")} review:
+              <strong>${escapeHtml(review.decision ?? "unknown")}</strong>
+              ${escapeHtml(review.summary ?? "")}
+            </small>
+          `,
+        )
+        .join("")}
+    </div>
   `;
 }
 

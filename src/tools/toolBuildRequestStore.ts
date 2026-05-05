@@ -56,6 +56,18 @@ export type ToolBuildQaReport = {
   summary: string;
   checks: string[];
   artifacts?: string[];
+  reviews?: ToolBuildReviewReport[];
+};
+
+export type ToolBuildReviewKind = "code" | "behavior";
+
+export type ToolBuildReviewDecision = "pass" | "needs_revision" | "fail";
+
+export type ToolBuildReviewReport = {
+  kind: ToolBuildReviewKind;
+  decision: ToolBuildReviewDecision;
+  summary: string;
+  findings: string[];
 };
 
 export type ToolBuildRequest = ToolBuildRequestInput & {
@@ -267,6 +279,12 @@ function cloneRequest(request: ToolBuildRequest): ToolBuildRequest {
           ...request.qaReport,
           checks: [...request.qaReport.checks],
           artifacts: request.qaReport.artifacts ? [...request.qaReport.artifacts] : undefined,
+          reviews: request.qaReport.reviews
+            ? request.qaReport.reviews.map((review) => ({
+                ...review,
+                findings: [...review.findings],
+              }))
+            : undefined,
         }
       : undefined,
     contract: {

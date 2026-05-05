@@ -324,7 +324,8 @@ operator does not need to open Channels just to see whether a bot/listener is ac
 `GET /api/tool-build-requests/:id` and `PATCH /api/tool-build-requests/:id` provide the
 builder lifecycle handoff. Builder, QA, and Registrar agents can mark a request as
 `building`, `qa_failed`, `qa_passed`, `registered`, or `blocked`, attach status detail,
-persist a structured QA report, and record the generated tool name that was registered.
+persist a structured QA report, persist code/behavior review gate decisions inside
+`qaReport.reviews`, and record the generated tool name that was registered.
 
 `POST /api/tool-build-requests/:id/rework` creates a new durable `requested` build from an
 existing card with operator feedback attached. This is the UI/API path for "the generated
@@ -339,8 +340,8 @@ form that creates a fresh durable build request with the failure details prefill
 workflow. The current workflow writes provider-generated TypeScript source and tests,
 runs isolated generated-tool tests plus isolated build, performs promotion tests/build in
 the real project after isolated QA passes, registers QA-passed metadata, and reloads
-generated tools into the active registry. Failed QA reports can be returned to the builder
-for bounded retry attempts before a request becomes `qa_failed`.
+generated tools into the active registry. Failed QA or review reports can be returned to
+the builder for bounded retry attempts before a request becomes `qa_failed`.
 
 `GET /api/secret-handles` and `POST /api/secret-handles` expose the credential reference
 registry used by Tool Builds, generated tools, always-on modules, and future remote model

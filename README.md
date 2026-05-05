@@ -210,6 +210,10 @@ OpenAI-compatible model for a TypeScript module and test file matching the durab
 contract, rejects unsafe file paths and raw-looking secrets, then runs the same isolated
 QA, promotion build, registrar, and reload flow. Set
 `TOOL_BUILD_LLM_PROVIDER=disabled` to allow only deterministic built-in build providers.
+Generated tools also pass separate review gates after QA and before registration. The
+current deterministic reviewers check source/manifest contract safety and QA evidence
+shape; failed review findings are returned to the next builder attempt before a request
+becomes `qa_failed`.
 
 Tool contracts are also persisted in Postgres when the Docker stack is running. The
 `tool_modules` catalog stores version, capabilities, schemas, source, status, required

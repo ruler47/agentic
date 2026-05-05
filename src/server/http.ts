@@ -40,7 +40,11 @@ import {
 } from "../settings/modelProviderStore.js";
 import { ToolSchema, ToolStartupMode } from "../tools/tool.js";
 import { ToolRegistry } from "../tools/registry.js";
-import { ToolBuildRequestStore } from "../tools/toolBuildRequestStore.js";
+import {
+  ToolBuildQaReport,
+  ToolBuildRequestStore,
+  ToolBuildReviewReport,
+} from "../tools/toolBuildRequestStore.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import { ToolMetadataStore, toolToMetadata } from "../tools/toolMetadataStore.js";
 import { normalizeToolPackageManifest } from "../tools/toolPackage.js";
@@ -3507,7 +3511,7 @@ function parseToolBuildRequestStatusUpdate(value: unknown) {
   };
 }
 
-function parseOptionalQaReport(value: unknown) {
+function parseOptionalQaReport(value: unknown): ToolBuildQaReport | undefined {
   if (value === undefined) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("qaReport must be an object");
@@ -3526,7 +3530,36 @@ function parseOptionalQaReport(value: unknown) {
     summary: candidate.summary.trim(),
     checks: parseRequiredStringArray(candidate.checks, "qaReport.checks"),
     artifacts: parseOptionalStringArray(candidate.artifacts, "qaReport.artifacts"),
+    reviews: parseOptionalToolBuildReviews(candidate.reviews),
   };
+}
+
+function parseOptionalToolBuildReviews(value: unknown): ToolBuildReviewReport[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error("qaReport.reviews must be an array");
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`qaReport.reviews[${index}] must be an object`);
+    }
+    const candidate = item as Record<string, unknown>;
+    const kind = candidate.kind;
+    if (kind !== "code" && kind !== "behavior") {
+      throw new Error(`qaReport.reviews[${index}].kind is invalid`);
+    }
+    const decision = candidate.decision;
+    if (decision !== "pass" && decision !== "needs_revision" && decision !== "fail") {
+      throw new Error(`qaReport.reviews[${index}].decision is invalid`);
+    }
+    if (typeof candidate.summary !== "string" || candidate.summary.trim() === "") {
+      throw new Error(`qaReport.reviews[${index}].summary is required`);
+    }
+    return {
+      kind,
+      decision,
+      summary: candidate.summary.trim(),
+      findings: parseRequiredStringArray(candidate.findings, `qaReport.reviews[${index}].findings`),
+    } satisfies ToolBuildReviewReport;
+  });
 }
 
 function parseGeneratedToolModuleInput(value: unknown) {

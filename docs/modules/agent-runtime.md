@@ -203,10 +203,11 @@ registration. Manual `POST /api/tool-build-requests/:id/run` remains as an opera
 fallback.
 
 `ToolBuildWorkflow` is the reusable orchestration boundary for that flow. It has pluggable
-Builder, QA Runner, and Registrar interfaces. The workflow marks a request `building`,
-attaches the QA report, returns failed QA evidence to the builder for bounded retry
-attempts, stops on final `qa_failed`, and only marks `registered` after the Registrar
-returns a generated tool name.
+Builder, QA Runner, Review, and Registrar interfaces. The workflow marks a request
+`building`, attaches the QA report, runs configured code/behavior review gates, returns
+failed QA or review evidence to the builder for bounded retry attempts, stops on final
+`qa_failed`, and only marks `registered` after QA plus all configured review gates pass
+and the Registrar returns a generated tool name.
 
 The first concrete Builder implementations are provider-backed and guarded rather than
 unrestricted runtime code execution. `BrowserScreenshotToolBuildProvider` can satisfy
@@ -230,9 +231,11 @@ to keep Tool Builds deterministic-provider-only. `CommandToolQaRunner` now uses
 temporary workspace isolation: it copies project source/tests/config into a disposable QA
 directory, links dependencies, runs the generated-tool test and build there with command
 timeouts, then runs promotion tests/build in the real project only after isolated QA
-passes. `MetadataToolRegistrar` records the generated metadata, after which the server
-reloads generated tools into the active registry. This gives us a real end-to-end loop
-while keeping generated code behind contract validation and QA gates.
+passes. After QA, deterministic review gates check generated source/manifest contract
+safety and whether QA evidence has the expected test/build shape. `MetadataToolRegistrar`
+records the generated metadata, after which the server reloads generated tools into the
+active registry. This gives us a real end-to-end loop while keeping generated code behind
+contract validation, QA, and review gates.
 
 The worker is enabled by default in `src/server/main.ts`. Set
 `TOOL_BUILD_WORKER=disabled` for a fully manual queue, or tune polling/batch size with
