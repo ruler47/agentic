@@ -46,7 +46,7 @@ type ToolPackageManifestInput = {
   examples?: ToolExample[];
 };
 
-type ToolBuildProviderOutput = {
+export type ToolBuildProviderOutput = {
   modulePath: string;
   testPath: string;
   summary: string;
@@ -65,7 +65,7 @@ type ToolBuildProviderOutput = {
   files: GeneratedFile[];
 };
 
-function genericToolPackageManifest(input: ToolPackageManifestInput): ToolPackageManifest {
+export function genericToolPackageManifest(input: ToolPackageManifestInput): ToolPackageManifest {
   return {
     schemaVersion: "agentic.tool-package.v1",
     name: input.toolName,
@@ -91,7 +91,10 @@ function genericToolPackageManifest(input: ToolPackageManifestInput): ToolPackag
 
 export type ToolBuildProvider = {
   canBuild(request: ToolBuildRequest): boolean;
-  build(request: ToolBuildRequest, context?: ToolBuildAttemptContext): ToolBuildProviderOutput;
+  build(
+    request: ToolBuildRequest,
+    context?: ToolBuildAttemptContext,
+  ): ToolBuildProviderOutput | Promise<ToolBuildProviderOutput>;
 };
 
 export class GeneratedToolFileBuilder implements ToolBuilder {
@@ -106,7 +109,7 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
       throw new Error(`No Tool Build provider can create capability "${request.capability}".`);
     }
 
-    const output = provider.build(request, context);
+    const output = await provider.build(request, context);
     for (const file of output.files) {
       const absolutePath = safeProjectPath(this.projectRoot, file.path);
       await mkdir(dirname(absolutePath), { recursive: true });

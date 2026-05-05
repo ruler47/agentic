@@ -204,6 +204,12 @@ by default: it claims the oldest `requested` item, marks it `building`, runs the
 workflow, registers only after QA passes, and reloads generated tools. Set
 `TOOL_BUILD_WORKER=disabled` to keep the queue manual, or tune polling with
 `TOOL_BUILD_WORKER_INTERVAL_MS` and `TOOL_BUILD_WORKER_BATCH_SIZE`.
+Unknown/custom Tool Build requests can also use a guarded LLM-backed builder after the
+deterministic providers decline the request. It asks the configured XL-tier
+OpenAI-compatible model for a TypeScript module and test file matching the durable request
+contract, rejects unsafe file paths and raw-looking secrets, then runs the same isolated
+QA, promotion build, registrar, and reload flow. Set
+`TOOL_BUILD_LLM_PROVIDER=disabled` to allow only deterministic built-in build providers.
 
 Tool contracts are also persisted in Postgres when the Docker stack is running. The
 `tool_modules` catalog stores version, capabilities, schemas, source, status, required

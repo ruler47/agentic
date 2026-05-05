@@ -138,7 +138,7 @@ hardcoded Bitcoin or market-analysis path:
 
 This is a product/architecture estimate, not a ticket counter.
 
-- Overall target platform: about 55-60% complete. The core run orchestration, traces,
+- Overall target platform: about 57-62% complete. The core run orchestration, traces,
   artifacts, memory lifecycle, tool registry, and model tier plumbing exist; autonomous
   recursive agents, broad generated tool families, always-on tool supervision, and policy
   enforcement still remain.
@@ -488,9 +488,13 @@ Next implementation tasks:
 - Add a tool registry persistence table. DONE for metadata; remaining work is loading
   generated executable modules from persisted registry records.
 - Add `tool-missing` trace events. DONE
-- Add a Tool Builder agent contract. DONE for persistent build request contracts and a
-  provider-based generated source writer; remaining work is LLM-authored provider
-  creation for new capability families.
+- Add a Tool Builder agent contract. PARTIAL: persistent build request contracts,
+  deterministic provider-based generated source writers, and a guarded LLM-backed
+  fallback provider for unknown/custom capability families exist. Deterministic providers
+  run first; the LLM path can write only the requested TypeScript module/test pair,
+  rejects unsafe paths/raw-looking secrets, and still requires isolated QA plus promotion
+  checks before registration. Remaining work is richer docs ingestion, separate
+  code/behavior reviewers, and out-of-process build sandboxes.
 - Add a Tool QA agent contract. DONE for generated QA criteria, isolated generated-tool
   test execution, TypeScript build verification, and promotion checks; remaining work is
   richer visual QA and separate worker pools.
@@ -536,7 +540,11 @@ Next implementation tasks:
 Remaining Phase 3 gaps:
 
 - Replace provider-authored source with a higher-level Tool Builder agent that can create
-  new providers/modules for unknown capability families.
+  new providers/modules for unknown capability families. PARTIAL: `LlmToolBuildProvider`
+  now acts as the guarded unknown-capability fallback after deterministic providers using
+  the configured XL-tier model and the same QA/registrar pipeline. Remaining work is real
+  provider-doc chunking, iterative repair from QA failures, semantic code review, behavior
+  review, and execution outside the main app process.
 - Fold API-docs onboarding into Tool Builds: admin uploads/pastes documentation, desired
   use cases, and credential setup notes; the builder creates a scoped TypeScript tool
   contract, tests, QA report, and registry metadata. PARTIAL: the UI/API can create
@@ -585,8 +593,10 @@ Remaining Phase 3 gaps:
   lifecycle expectations, and QA requirements inside the durable build contract.
   `GenericServiceToolBuildProvider` propagates that spec into generated source, docs,
   settings schema, storage contract, examples, required secret handles, and tests.
-  Remaining work is an LLM-backed provider adapter builder that turns provider docs into
-  real polling/webhook/send logic behind the same neutral contract.
+  PARTIAL for provider-adapter generation: the guarded LLM provider can now attempt
+  unknown/custom integrations behind the same neutral contract. Remaining work is robust
+  docs parsing, provider-specific smoke fixtures, service/webhook runner QA, and
+  promotion policies for long-running integrations.
 - Store credentials as secret handles, never in prompts, memory, artifacts, or source.
   DONE for the metadata/API/UI layer: `secret_handles` stores provider, label, scopes, and
   `secretRef`, rejects raw token/password/apiKey/value payloads, and audits create/delete.

@@ -208,8 +208,9 @@ attaches the QA report, returns failed QA evidence to the builder for bounded re
 attempts, stops on final `qa_failed`, and only marks `registered` after the Registrar
 returns a generated tool name.
 
-The first concrete Builder implementations are provider-backed rather than open-ended code
-generation. `BrowserScreenshotToolBuildProvider` can satisfy `browser-screenshot` requests
+The first concrete Builder implementations are provider-backed and guarded rather than
+unrestricted runtime code execution. `BrowserScreenshotToolBuildProvider` can satisfy
+`browser-screenshot` requests
 by writing a Playwright TypeScript tool and generated tests. `GenericApiToolBuildProvider`
 can satisfy reusable API capability requests such as `api.aml.score` by writing a
 domain-neutral HTTPS JSON adapter with typed URL/method/query/body inputs, optional
@@ -220,14 +221,18 @@ request maps network/address inputs to the documented HTTPS endpoint while keepi
 API key behind a declared secret handle. The Global Ledger preset now also has a
 versioned replacement path: v1.1.0 fixed `totalFunds` final-score extraction and source
 parsing, while v1.2.0 enables Unified search by appending `token=supported` to address
-and transaction report URLs. `CommandToolQaRunner` now uses
+and transaction report URLs. `LlmToolBuildProvider` is now available as a guarded fallback
+after deterministic providers decline an unknown/custom capability family: it asks the
+configured XL-tier OpenAI-compatible model for the requested TypeScript module/test pair,
+rejects unexpected paths and raw-looking secret material, and then hands the generated
+output to the same QA and registration lifecycle. Set `TOOL_BUILD_LLM_PROVIDER=disabled`
+to keep Tool Builds deterministic-provider-only. `CommandToolQaRunner` now uses
 temporary workspace isolation: it copies project source/tests/config into a disposable QA
 directory, links dependencies, runs the generated-tool test and build there with command
 timeouts, then runs promotion tests/build in the real project only after isolated QA
 passes. `MetadataToolRegistrar` records the generated metadata, after which the server
 reloads generated tools into the active registry. This gives us a real end-to-end loop
-while keeping unknown capability families blocked until a provider or future LLM-authored
-builder can safely handle them.
+while keeping generated code behind contract validation and QA gates.
 
 The worker is enabled by default in `src/server/main.ts`. Set
 `TOOL_BUILD_WORKER=disabled` for a fully manual queue, or tune polling/batch size with

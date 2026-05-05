@@ -272,6 +272,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   generated tool source writer, including browser screenshot, document/PDF artifact, and
   generic HTTP API and always-on service providers, plus isolated command QA runner and
   metadata registrar.
+- [src/tools/llmToolBuildProvider.ts](src/tools/llmToolBuildProvider.ts) - guarded
+  LLM-backed Tool Build provider for unknown/custom capability families. It asks the
+  configured XL-tier model for a TypeScript module/test pair, rejects unsafe paths and
+  raw-looking secrets, then hands output to the same isolated QA and registrar lifecycle.
 - [src/tools/fileTools.ts](src/tools/fileTools.ts) - sandboxed workspace file tools.
 - [src/settings/modelTierSettings.ts](src/settings/modelTierSettings.ts) - model tier
   policy contract and in-memory implementation.
@@ -390,7 +394,8 @@ For documentation-only changes:
 - `tests/toolBuildWorkflow.test.ts` covers Builder/QA/Registrar orchestration and failed
   QA registration blocking.
 - `tests/toolBuildProviders.test.ts` covers provider-backed TypeScript generation and
-  generated metadata registration.
+  generated metadata registration, including the guarded LLM-backed provider path for
+  unknown/custom integrations.
 - `tests/modelProviderStore.test.ts` covers model provider defaults, normalization, and
   CRUD lifecycle.
 - `tests/userStore.test.ts` covers local user and allowed channel identity resolution.
@@ -608,6 +613,11 @@ For documentation-only changes:
 - `ToolBuildWorkflow` supports bounded retries. Builders receive the previous generated
   output and failed QA report on retry attempts; registrars must only run after a passing
   QA report.
+- `LlmToolBuildProvider` is enabled by default as a guarded fallback for unknown/custom
+  Tool Build requests and can be disabled with `TOOL_BUILD_LLM_PROVIDER=disabled`. Its
+  output is not trusted: generated files must match the request contract, avoid raw
+  secrets, pass isolated generated-tool tests, pass isolated build, pass promotion tests,
+  and pass promotion build before registration.
 - The background Tool Build worker claims the oldest `requested` queue item through
   `claimNextRequested`, marks it `building`, runs the same workflow as the manual API, and
   reloads generated tools after registration. Disable it with `TOOL_BUILD_WORKER=disabled`

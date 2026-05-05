@@ -11,8 +11,22 @@ import {
   GenericServiceToolBuildProvider,
   MetadataToolRegistrar,
 } from "../src/tools/toolBuildProviders.js";
+import { LlmToolBuildProvider } from "../src/tools/llmToolBuildProvider.js";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
+
+class FakeToolBuilderLlm {
+  public calls: Array<{ messages: unknown[]; options: unknown }> = [];
+
+  constructor(private readonly responses: string[]) {}
+
+  async complete(messages: unknown[], options: unknown): Promise<string> {
+    this.calls.push({ messages, options });
+    const response = this.responses.shift();
+    if (!response) throw new Error("No fake LLM response queued");
+    return response;
+  }
+}
 
 test("GeneratedToolFileBuilder writes provider-owned TypeScript module and tests", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "agentic-builder-"));
@@ -188,6 +202,136 @@ test("GeneratedToolFileBuilder captures integration metadata for provider-like s
     const testSource = await readFile(join(projectRoot, output.testPath), "utf8");
     assert.match(testSource, /resolveSecret: async \(\) => "resolved-secret"/);
     assert.match(testSource, /validates declared runtime secret handles/);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("LlmToolBuildProvider turns unknown integration requests into QA-able generated files", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agentic-builder-"));
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const request = await requestStore.create({
+    capability: "provider.custom.crm",
+    displayName: "Custom CRM",
+    reason: "Create an always-on custom CRM integration from provider docs and token handle.",
+    desiredToolName: "generated.provider.customCrm",
+    startupMode: "always-on",
+    credentialHandles: ["secret.custom.crm"],
+  });
+  const moduleSource = [
+    'import { Tool } from "../tool.js";',
+    "export const tool: Tool = {",
+    '  name: "generated.provider.customCrm",',
+    '  version: "1.0.0",',
+    '  description: "Custom CRM integration.",',
+    '  capabilities: ["provider.custom.crm", "tool-integration"],',
+    '  startupMode: "always-on",',
+    '  requiredSecretHandles: ["secret.custom.crm"],',
+    '  async healthcheck() { return { ok: true, detail: "ok" }; },',
+    '  async run() { return { ok: true, content: "ready", data: { status: "ready" } }; }',
+    "};",
+    "export default tool;",
+  ].join("\n");
+  const testSource = [
+    'import test from "node:test";',
+    'import assert from "node:assert/strict";',
+    'import { tool } from "../../src/tools/generated/provider-custom-crmTool.js";',
+    'test("generated.provider.customCrm exposes a reusable contract", async () => {',
+    '  assert.equal(tool.name, "generated.provider.customCrm");',
+    '  assert.ok(tool.capabilities.includes("provider.custom.crm"));',
+    '  assert.equal((await tool.run({})).ok, true);',
+    "});",
+  ].join("\n");
+  const llm = new FakeToolBuilderLlm([
+    JSON.stringify({
+      summary: "Generated custom CRM integration.",
+      capabilities: ["provider.custom.crm", "tool-integration"],
+      requiredSecretHandles: ["secret.custom.crm"],
+      docsMarkdown: "Use this integration through the neutral Tool contract.",
+      files: [
+        { path: request.contract.modulePath, content: moduleSource },
+        { path: request.contract.testPath, content: testSource },
+      ],
+    }),
+  ]);
+  const builder = new GeneratedToolFileBuilder([new LlmToolBuildProvider(llm)], projectRoot);
+
+  try {
+    const output = await builder.build(request);
+    const writtenModule = await readFile(join(projectRoot, output.modulePath), "utf8");
+    const writtenTest = await readFile(join(projectRoot, output.testPath), "utf8");
+
+    assert.equal(output.modulePath, "src/tools/generated/provider-custom-crmTool.ts");
+    assert.equal(output.packageManifest?.schemaVersion, "agentic.tool-package.v1");
+    assert.equal(output.packageManifest?.startupMode, "always-on");
+    assert.deepEqual(output.requiredSecretHandles, ["secret.custom.crm"]);
+    assert.match(writtenModule, /generated.provider.customCrm/);
+    assert.match(writtenTest, /exposes a reusable contract/);
+    assert.equal(llm.calls.length, 1);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("LlmToolBuildProvider rejects unsafe file paths and raw-looking secrets", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agentic-builder-"));
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const request = await requestStore.create({
+    capability: "provider.bad",
+    reason: "Create a bad provider integration.",
+    desiredToolName: "generated.provider.bad",
+  });
+  const llm = new FakeToolBuilderLlm([
+    JSON.stringify({
+      summary: "unsafe",
+      capabilities: ["provider.bad"],
+      requiredSecretHandles: ["token=raw-secret-value"],
+      files: [
+        { path: request.contract.modulePath, content: "export {};" },
+        { path: "../outside.test.ts", content: "export {};" },
+      ],
+    }),
+  ]);
+  const builder = new GeneratedToolFileBuilder([new LlmToolBuildProvider(llm)], projectRoot);
+
+  try {
+    await assert.rejects(() => builder.build(request), /required file|unexpected file path|raw-looking secret/);
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("LlmToolBuildProvider rejects mismatched package manifests", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agentic-builder-"));
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const request = await requestStore.create({
+    capability: "provider.manifest",
+    reason: "Create a provider integration with a manifest.",
+    desiredToolName: "generated.provider.manifest",
+  });
+  const llm = new FakeToolBuilderLlm([
+    JSON.stringify({
+      summary: "mismatched manifest",
+      capabilities: ["provider.manifest"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.provider.other",
+        version: request.contract.version,
+        description: "Wrong manifest.",
+        capabilities: ["provider.manifest"],
+        startupMode: request.contract.startupMode,
+        package: { type: "local-path", ref: request.contract.modulePath },
+      },
+      files: [
+        { path: request.contract.modulePath, content: "export {};" },
+        { path: request.contract.testPath, content: "export {};" },
+      ],
+    }),
+  ]);
+  const builder = new GeneratedToolFileBuilder([new LlmToolBuildProvider(llm)], projectRoot);
+
+  try {
+    await assert.rejects(() => builder.build(request), /package manifest name must match/);
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }

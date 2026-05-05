@@ -57,6 +57,7 @@ import {
   GeneratedToolFileBuilder,
   MetadataToolRegistrar,
 } from "../tools/toolBuildProviders.js";
+import { LlmToolBuildProvider } from "../tools/llmToolBuildProvider.js";
 
 const port = Number(process.env.PORT ?? "3000");
 const publicDir = resolve("public");
@@ -107,6 +108,9 @@ const toolServiceEventStore = pool
   ? new PostgresToolServiceEventStore(pool)
   : new InMemoryToolServiceEventStore();
 const secretHandleStore = pool ? new PostgresSecretHandleStore(pool) : new InMemorySecretHandleStore();
+const modelTierSettings = pool
+  ? new PostgresModelTierSettingsStore(pool)
+  : new InMemoryModelTierSettingsStore();
 const toolServiceSupervisor = new ToolServiceSupervisor(tools, toolServiceStatusStore, toolServiceLogStore, {
   baseUrl: process.env.AGENTIC_INTERNAL_BASE_URL ?? `http://127.0.0.1:${port}`,
   resolveSecret: secretHandleStore.resolve ? (handle) => secretHandleStore.resolve!(handle) : undefined,
@@ -122,6 +126,9 @@ const toolBuildWorkflow = new ToolBuildWorkflow(
     new DocumentArtifactToolBuildProvider(),
     new GenericServiceToolBuildProvider(),
     new GenericApiToolBuildProvider(),
+    ...(process.env.TOOL_BUILD_LLM_PROVIDER === "disabled"
+      ? []
+      : [new LlmToolBuildProvider(new LlmClient(readLlmConfigFromEnv(), modelTierSettings))]),
   ]),
   new CommandToolQaRunner(),
   new MetadataToolRegistrar(toolMetadataStore),
@@ -150,9 +157,6 @@ const runStore = process.env.DATABASE_URL
 const conversationStore = pool
   ? new PostgresConversationThreadStore(pool)
   : new InMemoryConversationThreadStore();
-const modelTierSettings = pool
-  ? new PostgresModelTierSettingsStore(pool)
-  : new InMemoryModelTierSettingsStore();
 const modelProviderStore = pool
   ? new PostgresModelProviderStore(pool)
   : new InMemoryModelProviderStore();
