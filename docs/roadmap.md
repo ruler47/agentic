@@ -70,6 +70,17 @@ universal agent runtime with reusable building blocks:
   evidence, documentation, version history, and runtime telemetry;
 - a tool can be upgraded by creating a new version with a changelog and QA report, then
   promoting that version after review;
+- built-in, generated, and always-on tools must eventually use the same versioned
+  lifecycle: change request -> new version -> code review -> behavior/QA review ->
+  promotion -> reload/restart. Direct source edits are allowed only as temporary
+  operator hotfixes while the lifecycle is incomplete;
+- tools should evolve toward out-of-tree, independently packaged modules rather than
+  permanent source files inside the Agentic application repository. The core should know
+  their contracts, versions, settings, credentials, health, and endpoint/container
+  locations, but the tool implementation should not import Agentic internals;
+- a portable tool should be importable/exportable with its manifest, source or image
+  reference, schemas, docs, tests, QA evidence, version history, settings schema, secret
+  requirements, and optional storage migrations;
 - credentials, environment variables, provider URLs, and tunable tool settings are stored
   as registry metadata and secret handles, so operators can configure tools without
   editing prompts or source code;
@@ -101,6 +112,9 @@ hardcoded Bitcoin or market-analysis path:
   search the registry for a reusable structured-data acquisition capability before trying
   brittle browser scraping. Browser screenshots are proof artifacts, not primary numeric
   data sources.
+- Query context preservation: search/tool planning must carry geographic, language, and
+  source constraints from the original user task into each subtask query, so a European
+  directory task does not drift into US/global default sources.
 - Provider fallback chain: data-acquisition tools should support configurable providers
   and fallback attempts through registry settings and secret handles.
 - Tool output QA: a browser tool result that lands on a blocker page such as "Just a
@@ -124,14 +138,14 @@ hardcoded Bitcoin or market-analysis path:
 
 This is a product/architecture estimate, not a ticket counter.
 
-- Overall target platform: about 54-59% complete. The core run orchestration, traces,
+- Overall target platform: about 55-60% complete. The core run orchestration, traces,
   artifacts, memory lifecycle, tool registry, and model tier plumbing exist; autonomous
   recursive agents, broad generated tool families, always-on tool supervision, and policy
   enforcement still remain.
-- Current coordinator prototype: about 72% complete. It can delegate, review, synthesize,
+- Current coordinator prototype: about 74% complete. It can delegate, review, synthesize,
   call tools, create artifacts, and persist runs, but it is still centrally planned rather
   than a fully recursive society of agents.
-- Operator UI: about 58% complete. The shell, Dashboard, Runs, Conversations, Trace Lab,
+- Operator UI: about 61% complete. The shell, Dashboard, Runs, Conversations, Trace Lab,
   Memory, Artifacts, Tools, Tool Builds, Models, Group Profile, Settings, and Diagnostics
   have useful surfaces; several pages still need deeper interactions and tighter
   analytics.
@@ -179,6 +193,10 @@ Implementation tasks:
 - Add tests proving continuations inherit compact thread context without replaying full
   transcripts. DONE for explicit web continuation and channel-originated follow-up
   resolution without a supplied `threadId`.
+- Pass compact prior artifact metadata into continuation runs. DONE: thread context now
+  includes recent artifact filenames, MIME types, URLs, previews, kind, and QA status, so
+  a follow-up can reuse a prior CSV/screenshot/report instead of reacquiring the same
+  evidence when it is still fresh and sufficient.
 - Add audit events for run creation, tool use, artifact creation, memory writes, and
   future outbound actions. PARTIAL: run created/started/completed/failed, input/output
   artifacts, tool trace events, run cancellation, learned-memory writes, and tool build
@@ -368,6 +386,17 @@ Remaining registry persistence:
   create a context-rich request for an agent to analyze and produce a new version.
 - Add agent-readable tool docs/examples so agents know how to call a tool without reading
   source code.
+- Add an out-of-tree tool package model. The registry should support module references
+  that are not committed to the main Agentic repo: object-store source bundles,
+  uncommitted generated-tool workspaces, OCI/container images, or external package
+  references. Agentic stores the manifest, contracts, docs, QA evidence, active version,
+  settings, credentials, and lifecycle metadata, while a generic runner executes the tool.
+  PARTIAL: `ToolPackageManifest` now defines and validates the portable import/export
+  shape for source bundles, OCI images, external packages, and local-path development
+  tools. `GenericServiceToolBuildProvider` now emits a local-path package manifest in its
+  build output, and the registry persists package manifests through the active Postgres
+  row plus version history. Remaining work is API/UI package export/import and adding a
+  generic runner that can execute package manifests outside the web app process.
 
 Every tool call must emit trace events with:
 
@@ -481,6 +510,10 @@ Next implementation tasks:
   provider-backed builds through both manual `POST /api/tool-build-requests/:id/run` and
   the background `ToolBuildWorker`, which atomically claims the oldest `requested` card and
   reloads generated tools after registration.
+- Keep Tool Build and rework request forms stable during live UI refresh. DONE: soft
+  background refresh defers rendering while an operator has an open tool-build, span bug,
+  or tool rework form, and universal QA/change prompts are placeholders rather than
+  silently submitted defaults.
 - Add a reusable Tool Builder workflow. DONE as `ToolBuildWorkflow`, with pluggable
   Builder, QA Runner, and Registrar interfaces plus tests proving failed QA blocks
   registration and failed QA reports can be returned to the builder for a bounded retry.
@@ -490,6 +523,12 @@ Next implementation tasks:
   and promotion build verification.
 - Implement `browser.screenshot` as the first self-service tool target. DONE with a
   Playwright provider that writes module and smoke-test files.
+- Implement a reusable document/PDF artifact provider for missing document-generation
+  capabilities. DONE for a provider-authored `DocumentArtifactToolBuildProvider` that can
+  unblock abstract `pdf-generation`, `document-generation`, and `report-generation`
+  requests by writing a TypeScript module/test pair returning an `application/pdf`
+  artifact payload. Remaining work is richer template/layout engines and LLM-authored
+  document modules from arbitrary docs.
 - Prove the full loop with a test task that requires a missing screenshot capability.
   DONE in automated runtime tests; remaining work is repeated manual browser/UI evidence
   after Docker rebuilds.
@@ -535,8 +574,19 @@ Remaining Phase 3 gaps:
   health, start/stop/restart controls, logs, and event-to-run routing; `ephemeral` tools
   run as short-lived jobs and shut down after completion. PARTIAL: Tool Build requests now
   preserve `startupMode` in the generated contract and the UI lets operators choose it.
-  Remaining work is a generic service supervisor that can start/stop/restart always-on
-  generated modules and surface their heartbeats/errors.
+  `GenericServiceToolBuildProvider` can now generate provider-neutral always-on TypeScript
+  service modules with `startService`, lifecycle health, neutral event recording, tests,
+  and registry metadata. Remaining work is provider-specific generated adapters that
+  translate real APIs into that neutral service contract, plus process/container runners
+  outside the web app.
+- Infer and persist a neutral Tool Integration contract from Tool Build requests. DONE:
+  `ToolIntegrationSpec` now classifies API/service/webhook/polling/bot-like requests,
+  captures provider hints, inbound/outbound event shapes, secret handles, settings,
+  lifecycle expectations, and QA requirements inside the durable build contract.
+  `GenericServiceToolBuildProvider` propagates that spec into generated source, docs,
+  settings schema, storage contract, examples, required secret handles, and tests.
+  Remaining work is an LLM-backed provider adapter builder that turns provider docs into
+  real polling/webhook/send logic behind the same neutral contract.
 - Store credentials as secret handles, never in prompts, memory, artifacts, or source.
   DONE for the metadata/API/UI layer: `secret_handles` stores provider, label, scopes, and
   `secretRef`, rejects raw token/password/apiKey/value payloads, and audits create/delete.
@@ -568,6 +618,22 @@ Remaining Phase 3 gaps:
   the request through `sourceRunId`. Remaining work is to stream Builder/QA/Registrar
   progress back into that same run instead of only showing lifecycle status on Tool
   Builds.
+- Route built-in and always-on fixes through the same versioned change-request path.
+  PARTIAL: generated tools can already be reworked into a new version and promoted, and
+  always-on tools have lifecycle metadata. Contextual span/tool bug requests now guard
+  against wrong-card submissions: when the selected tool clearly does not match the
+  operator feedback and another installed tool does, the server rejects the request with a
+  clarification instead of silently retargeting it. Remaining work is to stop treating
+  reference providers such as `channel.telegram.bot` as direct app
+  source for operator changes: a bug or change request should create a replacement
+  version, run service-specific QA, promote the new version, and restart/reload the
+  service. Until this exists, direct code hotfixes are temporary technical debt and must
+  be documented as such.
+- Split tool execution out of the web application process. Target architecture:
+  `Tool Manifest` + `Tool Runner` + `Tool Service Supervisor`. On-demand tools run as
+  bounded jobs; always-on tools run as supervised services; high-load tools can scale to
+  multiple workers/containers. The first implementation can use a local runner process and
+  generated bundle directory, but the contract must also support OCI/container execution.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,
@@ -596,9 +662,13 @@ Remaining Phase 3 gaps:
 - Add span-context bug/rework creation from Trace Lab. PARTIAL: the selected span inspector
   now opens a prefilled Tool Build request form with run id, span id, task summary, actor,
   activity, status, caller, output/error context, and the exact installed tool/version when
-  the span actor maps to a registered tool. Remaining work: classify the issue with a
-  local LLM before build creation, include rejected artifact QA evidence automatically, and
-  route site limitations to failure memory instead of tool rebuilds.
+  the span actor maps to a registered tool. The server now rejects obvious wrong-card
+  contextual requests when the operator feedback names a different installed tool, so a
+  Telegram change request accidentally submitted from a `browser.operate` span asks the
+  operator to open the correct tool/span instead of creating a misleading browser request.
+  Remaining work: classify the issue with a local LLM before build creation, include
+  rejected artifact QA evidence automatically, and route site limitations to failure
+  memory instead of tool rebuilds.
 - Let agents request a versioned tool improvement, wait for the QA-approved promoted
   replacement, reload the registry, and retry the tool call once when a current tool is
   close but insufficient. PARTIAL: prompts now require workers to identify reusable tool
@@ -967,11 +1037,26 @@ Implementation tasks:
   DONE for browser evidence planning: route/result URLs from search evidence can rewrite
   fragile fill/click command plans, collect multiple source pages, save screenshots, and
   preserve diagnostic screenshots when a site blocks automation.
+- Preserve original-task search constraints in subtask web queries. PARTIAL: web-search
+  now adds detected geography/language hints from the full run context, and
+  directory-style doctor/clinic/profile discovery adds neutral source-family hints such as
+  professional directories and hospital staff pages. Remaining work is a general
+  query-planning agent/tool that can choose source families per domain without static
+  heuristics.
+- Rewrite or reject placeholder declared browser inputs. DONE: if a plan contains
+  placeholder navigation like `URL_FROM_PREVIOUS_STEP`, the runtime rewrites it to real
+  http(s) URLs extracted from upstream dependency output and prior tool evidence; if no
+  real URL exists, it skips the declared browser call instead of producing a misleading
+  `Invalid URL` failure. Remaining work is a typed dependency-output contract so planners
+  can reference upstream URLs explicitly instead of using free-text placeholders.
 - Add artifact-aware review prompts that fail when a requested file is missing or only
   represented as code/prose. PARTIAL: worker/coordinator/synthesis prompts now require a
   self-check before returning weak, irrelevant, empty, or unsupported outputs; deterministic
   typed artifact QA now covers data/source/document/image/chart/screenshot contract
-  compatibility. Remaining work is deeper semantic inspection across every artifact type.
+  compatibility. Deterministic review gates now also reject empty discovery/candidate
+  results when the subtask expected source lookup, comparison, candidates, or
+  recommendations and the worker did not prove a recovery attempt or external blocker.
+  Remaining work is deeper semantic inspection across every artifact type.
 - Add weak browser/screenshot evidence gates. PARTIAL: workers, reviewers, and synthesis
   prompts now reject blank/loading/login/blocked/unrelated screenshots, and deterministic
   review gates force a revision when a worker describes such weak evidence. Deterministic
@@ -980,6 +1065,13 @@ Implementation tasks:
   loader/blocker signals and task-specific signal mismatch before artifact storage.
   Remaining work is true OCR/vision inspection of image-only artifacts, screenshots that
   lack DOM text, and richer proof-specific scoring.
+- Add full semantic artifact QA and source-strategy repair. The runtime should not merely
+  check that an artifact is non-empty; it should decide whether the artifact actually
+  proves the local task contract. Screenshot/file/report QA should combine OCR or vision,
+  DOM/title/URL/text context, expected entities, blocker detection, and artifact-specific
+  acceptance criteria. If QA fails, the agent should try an alternative source strategy,
+  request an improved tool version, or report the blocker honestly instead of returning
+  irrelevant proof.
 - Allow the recursive universal-agent flow to delegate missing capability creation to
   Tool Builder, Tool QA, and Tool Registrar agents.
 
@@ -1029,9 +1121,11 @@ Implementation tasks:
   including whitelist rules and bot-specific behavior.
 - Add `channel_identities` mapping Telegram user IDs to users. PARTIAL: the durable table
   and server-side resolver exist; the Telegram service passes Telegram `from.id` as
-  `sourceUserId`. Users can now add identities manually, and Channels can approve an
-  ignored inbound event as `user-admin`; remaining work is richer role-aware approval
-  for non-admin users and policy simulation.
+  `sourceUserId` and also forwards `username`/`@username` aliases as
+  `sourceUserAliases`, so an operator can whitelist by numeric id or handle when Telegram
+  provides it. Users can now add identities manually, and Channels can approve an ignored
+  inbound event as `user-admin`; remaining work is richer role-aware approval for
+  non-admin users and policy simulation.
 - Add whitelist management in the admin UI. PARTIAL: Users has create/update/delete for
   members and identities, and Channels has the `Allow as Admin` shortcut for denied
   runtime events.
@@ -1045,8 +1139,15 @@ Implementation tasks:
   PARTIAL through the generic intake path and reference Telegram service:
   `POST /api/tool-services/:name/inbound` accepts normalized always-on events, resolves
   channel identity, runs the normal conversation-thread resolver, creates a run, and
-  records linked provider-neutral service events. Remaining work is richer reply-to and
-  button-driven continuation behavior.
+  records linked provider-neutral service events. The reference Telegram service now adds
+  a `Continue thread` inline button to linked replies and maps the user's next message
+  back to the internal Agentic `threadId` while preserving provider-native
+  `sourceThreadId` for external forum/topic IDs. This is a systemic fix in the generic
+  always-on intake contract because every provider must distinguish internal Agentic
+  continuation context from provider-native chat/topic ids. Remaining work is durable
+  continuation intents across restarts, richer reply-to behavior, low-confidence
+  clarification UX, and moving future fixes through versioned tool change requests
+  instead of direct reference-module edits.
 - Support `/new`, `/continue`, reply-to, and low-confidence clarification behavior.
 - Store compact thread summaries and update them after each run.
 - Send final answers back to the requester through the originating always-on tool.
@@ -1055,9 +1156,34 @@ Implementation tasks:
   record linked to the run/thread/source identity with the final answer or error payload.
   `GET /api/tool-services/:name/outbox` now exposes undelivered queued responses, and
   `POST /api/tool-services/:name/outbox/:eventId/ack` records sent/failed delivery
-  evidence. The reference Telegram service now uses those APIs automatically. Remaining
-  work is retry/backoff policy, delivery failure UI, and generalized generated provider
-  runner templates.
+  evidence. The reference Telegram service now uses those APIs automatically and splits
+  long answers into multiple Telegram messages instead of truncating them. Remaining work
+  is retry/backoff policy, delivery failure UI, artifact/file delivery, and generalized
+  generated provider runner templates.
+- Accept Telegram files as input artifacts and send generated artifacts back through
+  Telegram. TODO as a generic always-on tool capability: download provider files through
+  Telegram `getFile`, store them as input artifacts, forward artifact metadata into the
+  run, then deliver output artifacts with `sendDocument`/`sendPhoto` while recording
+  delivery audit evidence.
+- Accept Telegram voice messages. TODO as a generic media-intake capability: download
+  voice/audio, store the original audio artifact, call a speech-to-text tool selected from
+  the registry, attach the transcript to the run as source text/evidence, and preserve the
+  audio/transcript pair in the conversation thread.
+- Build the media and artifact path as generic reusable layers, not Telegram-specific
+  logic:
+  - `Generic media/artifact transport`: provider-neutral contracts for inbound files,
+    outbound files, MIME/type metadata, source identity, delivery status, retry/audit
+    evidence, and artifact-store links.
+  - `Provider adapters over generic transport`: Telegram, Slack, WhatsApp, email, webhooks,
+    or future channels only translate provider APIs such as `getFile`, `sendDocument`, or
+    `sendPhoto` into the neutral transport contract.
+  - `Media intake layer`: normalize documents, images, video, audio, and voice messages
+    into original artifacts plus extracted metadata/previews, then attach them to the
+    run/thread before agent execution.
+  - `Speech-to-text capability`: audio artifact -> registry-selected STT tool/model ->
+    transcript artifact + transcript text in run context. This should support local tools
+    such as Whisper/faster-whisper/whisper.cpp and remote transcription APIs through the
+    same tool registry, secret-handle, QA, and versioning lifecycle.
 - Store inbound/outbound messages/events in an auditable table.
   DONE for the provider-neutral foundation: `tool_service_events` stores
   inbound/outbound/system records with source identity, thread/run links, sanitized

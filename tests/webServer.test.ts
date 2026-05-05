@@ -80,12 +80,15 @@ class FakeAgent {
 
 class ThreadAwareFakeAgent {
   seenThreadSummaries: string[] = [];
+  seenThreadArtifacts: AgentArtifact[][] = [];
 
   async run(task: string, options?: {
     onEvent?: AgentEventSink;
-    threadContext?: { summary: string };
+    threadContext?: { summary: string; relevantArtifacts?: AgentArtifact[] };
+    saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>;
   }): Promise<AgentRunResult> {
     this.seenThreadSummaries.push(options?.threadContext?.summary ?? "");
+    this.seenThreadArtifacts.push(options?.threadContext?.relevantArtifacts ?? []);
     await options?.onEvent?.({
       id: `event-${task}`,
       spanId: `span-${task}`,
@@ -98,12 +101,20 @@ class ThreadAwareFakeAgent {
       timestamp: new Date().toISOString(),
     });
 
+    const artifact = await options?.saveArtifact?.({
+      filename: `${task.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "answer"}.txt`,
+      mimeType: "text/plain",
+      content: `evidence for ${task}`,
+      description: "thread continuation evidence",
+    });
+
     return {
       finalAnswer: `answer for ${task}`,
       complexity: { mode: "direct", reason: "fake", domains: ["test"], riskLevel: "low" },
       subtasks: [],
       workerResults: [],
       reviews: [],
+      artifacts: artifact ? [artifact] : [],
     };
   }
 }
@@ -419,7 +430,7 @@ test("web server creates conversation threads and continues with compact context
   const conversationStore = new InMemoryConversationThreadStore();
   const agent = new ThreadAwareFakeAgent();
 
-  const server = createWebApp({
+    const server = createWebApp({
     agent: agent as unknown as UniversalAgent,
     runStore: new InMemoryRunStore(),
     publicDir,
@@ -445,18 +456,75 @@ test("web server creates conversation threads and continues with compact context
     });
     const second = await secondResponse.json();
     const completedSecond = await waitForRun(baseUrl, second.run.id);
+    const thirdResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "continue from web composer", requesterUserId: "user-admin", channel: "web", threadId }),
+    });
+    const third = await thirdResponse.json();
+    const completedThird = await waitForRun(baseUrl, third.run.id);
     const threadDetail = await (await fetch(`${baseUrl}/api/conversation-threads/${threadId}`)).json();
 
     assert.equal(firstResponse.status, 202);
     assert.equal(secondResponse.status, 202);
+    assert.equal(thirdResponse.status, 202);
     assert.equal(first.run.threadId, threadId);
     assert.equal(completedSecond.run.threadId, threadId);
     assert.equal(completedSecond.run.parentRunId, first.run.id);
+    assert.equal(completedThird.run.threadId, threadId);
+    assert.equal(completedThird.run.parentRunId, second.run.id);
     assert.match(agent.seenThreadSummaries[1], /first task/);
-    assert.equal(threadDetail.thread.messages.length, 4);
+    assert.match(agent.seenThreadSummaries[2], /continue with correction/);
+    assert.equal(threadDetail.thread.messages.length, 6);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server includes previous thread artifacts in continuation context", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  const artifactDir = await mkdtemp(join(tmpdir(), "agentic-artifacts-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const conversationStore = new InMemoryConversationThreadStore();
+  const agent = new ThreadAwareFakeAgent();
+
+  const server = createWebApp({
+    agent: agent as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    conversationStore,
+    artifactStore: new LocalArtifactStore(artifactDir),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const firstResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "bitcoin price" }),
+    });
+    const first = await firstResponse.json();
+    const completedFirst = await waitForRun(baseUrl, first.run.id);
+    const threadId = completedFirst.run.threadId;
+
+    const secondResponse = await fetch(`${baseUrl}/api/conversation-threads/${threadId}/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "did it rise or fall" }),
+    });
+    const second = await secondResponse.json();
+    await waitForRun(baseUrl, second.run.id);
+
+    assert.equal(secondResponse.status, 202);
+    assert.equal(agent.seenThreadArtifacts[0].length, 0);
+    assert.equal(agent.seenThreadArtifacts[1].length, 1);
+    assert.equal(agent.seenThreadArtifacts[1][0].filename, "bitcoin-price.txt");
+    assert.equal(agent.seenThreadArtifacts[1][0].contentPreview, "evidence for bitcoin price");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+    await rm(artifactDir, { recursive: true, force: true });
   }
 });
 
@@ -578,6 +646,7 @@ test("web server resolves allowed channel identities before creating runs", asyn
     identities: [
       { provider: "web", providerUserId: "user-admin", userId: "user-admin" },
       { provider: "telegram", providerUserId: "tg-42", userId: "user-dima" },
+      { provider: "telegram", providerUserId: "@dima_tag", userId: "user-dima" },
     ],
   });
 
@@ -597,7 +666,8 @@ test("web server resolves allowed channel identities before creating runs", asyn
       body: JSON.stringify({
         task: "telegram mapped task",
         channel: "telegram",
-        sourceUserId: "tg-42",
+        sourceUserId: "42",
+        sourceUserAliases: ["dima_tag", "@dima_tag"],
         sourceChatId: "chat-42",
       }),
     });
@@ -1086,6 +1156,24 @@ test("web server accepts generic always-on inbound events and creates runs", asy
     assert.equal(ack.event.payload.providerMessageId, "provider-msg-1");
     assert.equal(ack.event.payload.deliveryToken, "[redacted]");
     assert.deepEqual(emptyOutbox.events, []);
+
+    const followUpResponse = await fetch(`${baseUrl}/api/tool-services/generated.bot.demo/inbound`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: "Continue the previous answer",
+        sourceUserId: "external-1",
+        sourceChatId: "chat-1",
+        sourceMessageId: "msg-2",
+        threadId: created.run.threadId,
+      }),
+    });
+    const followUp = await followUpResponse.json();
+    const completedFollowUp = await waitForRun(baseUrl, followUp.run.id);
+
+    assert.equal(followUpResponse.status, 202);
+    assert.equal(followUp.run.threadId, created.run.threadId);
+    assert.equal(completedFollowUp.run.parentRunId, created.run.id);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
@@ -1436,6 +1524,69 @@ test("web server infers tool build capability from human request fields", async 
   }
 });
 
+test("web server rejects contextual tool requests that clearly target another installed tool", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  await toolMetadataStore.syncBuiltins([
+    {
+      name: "browser.operate",
+      version: "1.0.0",
+      description: "Runs generic browser automation.",
+      capabilities: ["browser-operate"],
+      async run() {
+        return { ok: true, content: "ok" };
+      },
+    },
+    {
+      name: "channel.telegram.bot",
+      displayName: "Telegram bot service",
+      version: "1.0.0",
+      description: "Receives Telegram bot messages and bridges them to Agentic.",
+      capabilities: ["telegram-bot", "always-on-messaging"],
+      startupMode: "always-on",
+      async run() {
+        return { ok: true, content: "ok" };
+      },
+    },
+  ]);
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolBuildRequestStore,
+    toolMetadataStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/api/tool-build-requests`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        capability: "browser-operate",
+        displayName: "browser.operate",
+        reason:
+          "Add Telegram identity canonicalization: allow operator to whitelist @username and persist numeric Telegram from.id.",
+        feedback:
+          "Telegram inbound updates should map @username aliases to canonical Telegram ids.",
+        replacesToolName: "browser.operate",
+        replacesVersion: "1.0.0",
+      }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.match(body.error, /Selected tool browser\.operate does not appear to match/);
+    assert.match(body.error, /closer to channel\.telegram\.bot/);
+    assert.equal((await toolBuildRequestStore.list()).length, 0);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server stores only extracted credential material from tool build notes", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
@@ -1457,7 +1608,7 @@ test("web server stores only extracted credential material from tool build notes
       body: JSON.stringify({
         displayName: "GL AML",
         reason: "Create a reusable HTTP API tool for Global Ledger AML score.",
-        credentialNotes: "Use this as x-api-key: ZS60A6F-BBDMF51-HJ6P1EK-G7PEM0C. Do not leak it into source or memory.",
+        credentialNotes: "Use this as x-api-key: TEST-GL-AML-API-KEY-123. Do not leak it into source or memory.",
       }),
     });
     const body = await response.json();
@@ -1465,8 +1616,8 @@ test("web server stores only extracted credential material from tool build notes
     assert.equal(response.status, 201);
     assert.deepEqual(body.request.credentialHandles, ["secret.api.gl-aml"]);
     assert.match(body.request.credentialNotes, /raw operator notes were redacted/);
-    assert.doesNotMatch(body.request.credentialNotes, /ZS60A6F/);
-    assert.equal(await secretHandleStore.resolve?.("secret.api.gl-aml"), "ZS60A6F-BBDMF51-HJ6P1EK-G7PEM0C");
+    assert.doesNotMatch(body.request.credentialNotes, /TEST-GL-AML-API-KEY-123/);
+    assert.equal(await secretHandleStore.resolve?.("secret.api.gl-aml"), "TEST-GL-AML-API-KEY-123");
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
@@ -1500,6 +1651,16 @@ test("web server registers generated tool metadata with conflict checks", async 
         modulePath: "src/tools/generated/browser-screenshotTool.ts",
         testPath: "tests/generated/browser-screenshotTool.test.ts",
         changeSummary: "Initial generated screenshot module.",
+        packageManifest: {
+          schemaVersion: "agentic.tool-package.v1",
+          name: "generated.browser.screenshot",
+          displayName: "Browser Screenshot",
+          version: "1.0.0",
+          description: "Captures browser screenshots.",
+          capabilities: ["browser-screenshot", "artifact-generation"],
+          startupMode: "on-demand",
+          package: { type: "local-path", ref: "src/tools/generated/browser-screenshotTool.ts" },
+        },
       }),
     });
     const createBody = await createResponse.json();
@@ -1518,6 +1679,11 @@ test("web server registers generated tool metadata with conflict checks", async 
     const versions = await (
       await fetch(`${baseUrl}/api/tools/generated-modules/${encodeURIComponent("generated.browser.screenshot")}/versions`)
     ).json();
+    const manifest = await (
+      await fetch(
+        `${baseUrl}/api/tools/generated-modules/${encodeURIComponent("generated.browser.screenshot")}/package-manifest`,
+      )
+    ).json();
     const deleteResponse = await fetch(
       `${baseUrl}/api/tools/generated-modules/${encodeURIComponent("generated.browser.screenshot")}`,
       { method: "DELETE" },
@@ -1529,8 +1695,10 @@ test("web server registers generated tool metadata with conflict checks", async 
     assert.equal(createBody.tool.displayName, "Browser Screenshot");
     assert.equal(conflictResponse.status, 400);
     assert.equal(tools.tools[0].source, "generated");
+    assert.equal(tools.tools[0].packageManifest.package.type, "local-path");
     assert.equal(versions.versions[0].version, "1.0.0");
     assert.match(versions.versions[0].changeSummary, /Initial generated screenshot/);
+    assert.equal(manifest.manifest.name, "generated.browser.screenshot");
     assert.equal(deleteResponse.status, 200);
     assert.equal(afterDelete.tools.length, 0);
   } finally {

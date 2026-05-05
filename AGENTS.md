@@ -43,8 +43,25 @@ policies without leaking context.
   startup mode such as `always-on`, not special runtime branches. They use the same
   registry/versioning/QA/secret-handle flow as other capabilities, expose health/lifecycle
   status, and translate provider events into normal runs.
+- Built-in, generated, and always-on tool changes should converge on one versioned
+  lifecycle: change request -> new version -> code review -> behavior/QA review ->
+  promotion -> reload/restart. Direct edits to reference tool source are temporary
+  operator hotfixes while the lifecycle is incomplete.
+- Tools should evolve into out-of-tree portable modules or services, not permanent
+  Agentic app source. The core should know a tool's manifest, schemas, docs, versions,
+  settings, secret handles, QA evidence, storage migrations, health, and runner/container
+  location, while the implementation stays independent of Agentic internals.
+- Telegram identities can be mapped by numeric Telegram id or by username handle
+  (`username`/`@username`) when Telegram exposes `from.username`; the bot forwards both
+  aliases through `sourceUserAliases`.
+- Telegram outbound answers must be split into multiple messages when needed instead of
+  appending `[truncated]`; the final linked response includes a continuation button that
+  makes the next message from that chat/user continue the same thread.
 - Channel and web requests need conversation-thread continuity: the system must
   distinguish a new task from a clarification, correction, or follow-up to a previous run.
+- Continuation runs should receive compact prior artifact metadata in thread context and
+  reuse those artifacts when they satisfy the follow-up instead of reacquiring identical
+  data by default.
 - Agents will eventually send auditable outbound messages/reminders to a group or
   individual when policy allows.
 - Tools should be easy to onboard from API documentation and access credentials, but
@@ -212,6 +229,12 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   plumbing.
 - [src/tools/registry.ts](src/tools/registry.ts) - tool registry skeleton.
 - [src/tools/tool.ts](src/tools/tool.ts) - versioned tool module contract.
+- [src/tools/toolPackage.ts](src/tools/toolPackage.ts) - portable out-of-tree tool
+  package manifest contract for source bundles, OCI images, external packages, and
+  local-path development tools.
+- [src/tools/toolIntegrationSpec.ts](src/tools/toolIntegrationSpec.ts) - provider-neutral
+  Tool Build integration spec inferred from requests for API clients, bots, listeners,
+  webhooks, inbound/outbound services, credentials, settings, lifecycle, and QA.
 - [src/tools/toolMetadataStore.ts](src/tools/toolMetadataStore.ts) - persistent tool
   metadata store contract and in-memory implementation.
 - [src/tools/postgresToolMetadataStore.ts](src/tools/postgresToolMetadataStore.ts) -
@@ -246,7 +269,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   provider module for the generic always-on runtime: polls Telegram, forwards normalized
   inbound events, delivers neutral outbox events, and acknowledges provider delivery.
 - [src/tools/toolBuildProviders.ts](src/tools/toolBuildProviders.ts) - provider-backed
-  generated tool source writer, isolated command QA runner, and metadata registrar.
+  generated tool source writer, including browser screenshot, document/PDF artifact, and
+  generic HTTP API and always-on service providers, plus isolated command QA runner and
+  metadata registrar.
 - [src/tools/fileTools.ts](src/tools/fileTools.ts) - sandboxed workspace file tools.
 - [src/settings/modelTierSettings.ts](src/settings/modelTierSettings.ts) - model tier
   policy contract and in-memory implementation.
@@ -466,7 +491,8 @@ For documentation-only changes:
   backwards compatible.
 - The web console also runs a soft background refresh for list-style pages. It
   fingerprints fetched data, skips unchanged renders, and defers rendering while the
-  operator is editing an input/select/textarea to avoid focus loss and flicker.
+  operator is editing an input/select/textarea or has an open Tool Build/span bug/tool
+  rework form to avoid focus loss, panel collapse, draft clearing, and flicker.
 - The web console uses `GET /api/tool-services/logs/events` as an additive SSE stream for
   live always-on tool lifecycle logs; keep `GET /api/tool-services/logs` as the durable
   history/fallback endpoint.
@@ -474,6 +500,8 @@ For documentation-only changes:
   `resolveConversationThread()`. This keeps Telegram/Slack-style follow-ups in the
   matching source chat/thread while allowing explicit `/new` and independent tasks to
   create new conversation threads.
+- Always-on channel continuation buttons should pass the internal Agentic `threadId`.
+  Keep `sourceThreadId` for provider-native topics/threads such as Telegram forum topics.
 - The web console renders final answers and conversation messages as sanitized Markdown.
   Artifact list lines such as `- file.png: /api/runs/.../artifacts/...` should remain
   clickable download links; nested bullet lists, basic emphasis, and common inline TeX
@@ -527,6 +555,9 @@ For documentation-only changes:
   same requester user or an explicit private-memory grant.
 - Built-in and future generated tool contracts should be synced into `tool_modules` so
   source/status/health/version metadata survives restarts.
+- Always-on capabilities should use the generic `Tool.startService(context)` and
+  provider-neutral service event contracts. Prefer generated service modules over adding
+  new provider branches to the Agentic core.
 - Model provider records live in `model_providers`; store remote credentials by secret
   handle name only, keep embeddings separate from chat tiers, and avoid putting raw API
   keys in prompts, memory, trace events, or docs.
@@ -543,6 +574,11 @@ For documentation-only changes:
   provider URLs, limits, tool-owned storage contracts, migrations, examples,
   success/failure counters, health, linked run/span issues, and generated source/test/QA
   artifacts.
+- Generated service providers now emit a `ToolPackageManifest` in the build output so the
+  same generated integration can later move from in-process source to local-path,
+  source-bundle, external-package, or OCI-image execution. Postgres now persists the
+  active manifest and version-history manifests; API/UI export/import and an external
+  runner are still roadmap work.
 - Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
   needs database access, it must declare storage requirements/migrations and receive a
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,
@@ -558,6 +594,10 @@ For documentation-only changes:
 - Tool Build Queue consumers should update durable lifecycle state through the store/API:
   `requested`, `building`, `qa_failed`, `qa_passed`, `registered`, or `blocked`, with QA
   evidence attached before registration.
+- Contextual tool bug/rework requests may be created from the wrong selected span; server
+  validation should compare operator feedback with installed tool metadata. If the
+  selected tool clearly does not match and another installed tool does, reject the
+  request with a clarification instead of silently retargeting it.
 - Tool Build contracts preserve the requested `startupMode`. Use `on-demand` for normal
   call-time tools, `always-on` for bots/webhooks/listeners/services with health and
   start/stop lifecycle, and `ephemeral` for short-lived jobs.
@@ -583,6 +623,11 @@ For documentation-only changes:
   system `desiredToolName`, checking existing registry/build names where possible. The UI
   should ask for a tool name, description/docs/instructions, optional credentials text,
   and QA criteria rather than forcing users to invent internal capability/module names.
+- Tool Build contracts infer a neutral `integration` spec for service/API-like requests.
+  Generated providers should carry that spec into docs, settings schema, storage
+  contract, examples, required secret handles, and QA requirements. Do not add
+  provider-specific core branches when a generated tool can map provider APIs to the
+  standard integration event contract.
 - Generated tool modules can be deleted from the Tools page or
   `DELETE /api/tools/generated-modules/:name`; built-in tools are protected. Deleting a
   generated tool removes registry metadata and unregisters the active runtime copy when
@@ -642,6 +687,25 @@ For documentation-only changes:
   input and expands it into navigate/extract/screenshot commands. On command failure it
   should return any diagnostic screenshot payloads so the runtime can attach proof of
   blockers instead of losing evidence.
+- Declared `browser.operate` plans may come from LLM-generated subtask JSON and can
+  contain placeholders. Never execute placeholder navigation such as
+  `URL_FROM_PREVIOUS_STEP` directly; rewrite it from concrete upstream dependency or
+  prior evidence URLs, or skip it as not runnable so traces show the planning problem
+  instead of a bogus browser failure.
+- Missing document/report/PDF artifact capabilities can be handled by the generic
+  `DocumentArtifactToolBuildProvider`, which writes TypeScript generated tools returning
+  `application/pdf` artifact payloads. This is intentionally an abstract document
+  capability, not a special one-off PDF fix.
+- Telegram file attachments and artifact delivery are not complete yet. The roadmap target
+  is a generic media/file service capability: provider file download -> input artifact
+  storage -> run context attachment, and output artifact -> provider `sendDocument` or
+  equivalent with audit evidence.
+- Telegram voice recognition is also future generic media intake: download audio, store
+  the original, call a registry-selected speech-to-text tool, and attach transcript plus
+  audio artifact to the thread/run.
+- Media/file/voice work must stay provider-neutral: implement generic transport,
+  provider adapters, media intake, and speech-to-text capability layers first, then let
+  Telegram/Slack/WhatsApp/email map provider APIs onto those contracts.
 - Data-driven chart tasks should prefer a registered structured-data acquisition
   capability before rendering. Web search can still provide narrative context and source
   discovery, but chart data should not be invented from snippets when a structured tool

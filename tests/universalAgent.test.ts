@@ -766,6 +766,81 @@ test("UniversalAgent executes declared browser operate tool inputs and saves scr
   }
 });
 
+test("UniversalAgent collects browser discovery evidence from search URLs for directory-style candidate tasks", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"needs directory discovery","domains":["research"],"riskLevel":"medium"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "candidates",
+          title: "Identify specialist candidates from medical directories",
+          role: "researcher",
+          prompt: "Find candidate doctors from professional directory profile pages.",
+          expectedOutput: "Candidate names with source evidence.",
+          reviewCriteria: ["Uses directory source evidence"],
+          requiredTools: ["web-search"],
+        },
+      ],
+    }),
+    "Candidate Dr Example found in browser-extracted directory evidence.",
+    '{"subtaskId":"candidates","verdict":"pass","notes":"Browser directory evidence was used."}',
+    "Final answer names Dr Example with source evidence.",
+    '{"shouldStore":false}',
+  ]);
+  const searchInputs: unknown[] = [];
+  const browserInputs: unknown[] = [];
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "web.search",
+    description: "Fake web search",
+    capabilities: ["web-search"],
+    async run(input) {
+      searchInputs.push(input);
+      return {
+        ok: true,
+        content:
+          "1. Specialist directory\nhttps://clinic.example.org/doctors/immunology\nFind specialist doctor profiles and clinic pages.",
+      };
+    },
+  });
+  registry.register({
+    name: "browser.operate",
+    description: "Fake browser extraction",
+    capabilities: ["browser-operate", "dom-extraction"],
+    async run(input) {
+      browserInputs.push(input);
+      return {
+        ok: true,
+        content: "Executed browser extraction.",
+        data: {
+          finalUrl: "https://clinic.example.org/doctors/immunology",
+          title: "Specialist directory",
+          extractedText: [{ label: "directory", text: "Dr Example - allergy and immunology specialist" }],
+          extractedLinks: [],
+          screenshots: [],
+          steps: [],
+        },
+      };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+
+  try {
+    const result = await agent.run("Find a specialist from professional directory pages in the Schengen area.");
+
+    assert.match(JSON.stringify(searchInputs), /Schengen Europe/);
+    assert.match(JSON.stringify(searchInputs), /Doctolib Jameda OneDoc/);
+    assert.equal(browserInputs.length, 1);
+    assert.match(JSON.stringify(browserInputs[0]), /clinic\.example\.org/);
+    assert.equal(result.reviews[0]?.verdict, "pass");
+    assert.equal(fakeLlm.callCount, 6);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent rewrites brittle browser form automation to direct source URLs from search evidence", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));
@@ -876,6 +951,175 @@ test("UniversalAgent rewrites brittle browser form automation to direct source U
     assert.equal(browserInput.commands?.some((command) => command.selector === "[aria-label='Where from?']"), false);
     assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /€193 Lufthansa/);
     assert.equal(result.workerResults[0]?.artifacts?.[0]?.url, "/artifacts/flight-proof.png");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent rewrites placeholder browser navigation to real evidence URLs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const directoryUrl = "https://www.doctolib.de/allergologie/madrid";
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"needs direct directory extraction","domains":["research"],"riskLevel":"medium"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "directory-extract",
+          title: "Extract doctors from a directory",
+          role: "researcher",
+          prompt: "Use the directory URL from previous evidence and extract profile text.",
+          expectedOutput: "Doctor profile evidence from a real source URL.",
+          reviewCriteria: ["Uses a real directory URL"],
+          requiredTools: ["web-search", "browser-operate"],
+          toolInputs: {
+            "browser.operate": {
+              commands: [
+                { type: "navigate", url: "URL_FROM_PREVIOUS_STEP" },
+                { type: "extractText", label: "directory" },
+                { type: "screenshot", label: "directory-proof" },
+              ],
+            },
+          },
+        },
+      ],
+    }),
+    "Directory evidence found Dr Example from the executed browser evidence.",
+    '{"subtaskId":"directory-extract","verdict":"pass","notes":"A real directory URL was used."}',
+    "Final answer cites Dr Example.",
+    '{"shouldStore":false}',
+  ]);
+  const browserInputs: unknown[] = [];
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "web.search",
+    description: "Fake web search",
+    capabilities: ["web-search"],
+    async run() {
+      return {
+        ok: true,
+        content: `Doctolib allergy specialist directory\n${directoryUrl}\nSpecialist profiles and booking links.`,
+      };
+    },
+  });
+  registry.register({
+    name: "browser.operate",
+    description: "Fake browser extraction",
+    capabilities: ["browser-operate", "dom-extraction"],
+    async run(input) {
+      browserInputs.push(input);
+      return {
+        ok: true,
+        content: "Executed browser extraction.",
+        data: {
+          finalUrl: directoryUrl,
+          title: "Directory",
+          extractedText: [{ label: "directory", text: "Dr Example - allergology and immunology" }],
+          extractedLinks: [],
+          screenshots: [],
+          steps: [],
+        },
+      };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+
+  try {
+    await agent.run("Find specialists from the directory URL.");
+
+    const browserInput = browserInputs[0] as { commands?: Array<{ type: string; url?: string }> };
+    assert.equal(browserInput.commands?.[0]?.url, directoryUrl);
+    assert.doesNotMatch(JSON.stringify(browserInput), /URL_FROM_PREVIOUS_STEP/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent rewrites placeholder browser navigation from dependency outputs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const dependencyUrl = "https://www.doctoralia.es/alergologo/madrid";
+  const lowValueUrl = "https://medlineplus.gov/directories";
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"needs upstream source discovery","domains":["research"],"riskLevel":"medium"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "sources",
+          title: "Find source directories",
+          role: "researcher",
+          prompt: "Find professional medical directories.",
+          expectedOutput: "Directory source URLs.",
+          reviewCriteria: ["Contains real source URLs"],
+        },
+        {
+          id: "profiles",
+          title: "Extract profiles from dependency directories",
+          role: "researcher",
+          prompt: "Use the URL found by sources to extract profile text.",
+          expectedOutput: "Profile evidence from dependency URL.",
+          reviewCriteria: ["Uses dependency source URL"],
+          dependsOn: ["sources"],
+          requiredTools: ["web-search", "browser-operate"],
+          toolInputs: {
+            "browser.operate": {
+              commands: [
+                { type: "navigate", url: "URL_FROM_PREVIOUS_STEP" },
+                { type: "extractText", label: "profiles" },
+              ],
+            },
+          },
+        },
+      ],
+    }),
+    `Use Doctoralia as the source directory: ${dependencyUrl}`,
+    '{"subtaskId":"sources","verdict":"pass","notes":"Source URL is concrete."}',
+    "Profile evidence found from dependency browser extraction.",
+    '{"subtaskId":"profiles","verdict":"pass","notes":"Dependency URL was executed."}',
+    "Final answer cites the dependency URL.",
+    '{"shouldStore":false}',
+  ]);
+  const browserInputs: unknown[] = [];
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "web.search",
+    description: "Fake web search with a lower-value URL",
+    capabilities: ["web-search"],
+    async run() {
+      return {
+        ok: true,
+        content: `General medical directory\n${lowValueUrl}\nNot a profile source.`,
+      };
+    },
+  });
+  registry.register({
+    name: "browser.operate",
+    description: "Fake browser extraction",
+    capabilities: ["browser-operate", "dom-extraction"],
+    async run(input) {
+      browserInputs.push(input);
+      return {
+        ok: true,
+        content: "Executed dependency URL extraction.",
+        data: {
+          finalUrl: dependencyUrl,
+          title: "Doctoralia Madrid",
+          extractedText: [{ label: "profiles", text: "Doctor profile text" }],
+          extractedLinks: [],
+          screenshots: [],
+          steps: [],
+        },
+      };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+
+  try {
+    await agent.run("Find specialist profiles from previously identified directories.");
+
+    const serializedInputs = JSON.stringify(browserInputs);
+    assert.match(serializedInputs, /doctoralia\.es\/alergologo\/madrid/);
+    assert.doesNotMatch(serializedInputs, /URL_FROM_PREVIOUS_STEP/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1043,6 +1287,47 @@ test("UniversalAgent rejects unexecuted model tool-call syntax", async () => {
     assert.equal(result.reviews[0]?.verdict, "needs_revision");
     assert.match(result.reviews[0]?.notes ?? "", /unexecuted tool-call/);
     assert.equal(result.workerResults[0]?.output, "Revised answer based on provided evidence.");
+    assert.equal(fakeLlm.callCount, 7);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent hard-fails empty discovery results before accepting a research subtask", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"needs candidate discovery","domains":["research"],"riskLevel":"medium"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "candidates",
+          title: "Find suitable specialist candidates",
+          role: "researcher",
+          prompt: "Search for suitable doctors and collect candidates with sources.",
+          expectedOutput: "A list of candidate doctors with source evidence.",
+          reviewCriteria: ["Has at least one candidate or a well-evidenced external blocker"],
+        },
+      ],
+    }),
+    "No candidates found. Search returned no useful results.",
+    "Retried alternative source directories and direct URLs; provider pages are blocked, so no useful candidates can be produced from available evidence.",
+    '{"subtaskId":"candidates","verdict":"pass","notes":"The revised output describes the recovery attempt and blocker."}',
+    "Final answer reports the blocker and asks for a preferred source or location radius.",
+    '{"shouldStore":false}',
+  ]);
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+
+  try {
+    const result = await agent.run("Find a suitable specialist and explain the evidence.");
+
+    assert.equal(result.reviews.length, 2);
+    assert.equal(result.reviews[0]?.verdict, "needs_revision");
+    assert.match(result.reviews[0]?.notes ?? "", /expected discovery/i);
+    assert.equal(
+      result.workerResults[0]?.output,
+      "Retried alternative source directories and direct URLs; provider pages are blocked, so no useful candidates can be produced from available evidence.",
+    );
     assert.equal(fakeLlm.callCount, 7);
   } finally {
     await rm(dir, { recursive: true, force: true });

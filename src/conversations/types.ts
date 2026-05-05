@@ -40,6 +40,7 @@ export type ConversationThreadContext = {
   rejectedAttempts: string[];
   openQuestions: string[];
   relevantArtifactIds: string[];
+  relevantArtifacts?: AgentArtifact[];
 };
 
 export type CreateConversationThreadInput = {

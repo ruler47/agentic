@@ -36,6 +36,7 @@ content-type: application/json
   "requesterUserId": "user-admin",
   "channel": "web",
   "sourceUserId": "telegram_user_id_or_other_channel_identity",
+  "sourceUserAliases": ["telegram_username", "@telegram_username"],
   "sourceChatId": "channel_chat_or_room_id",
   "sourceThreadId": "channel_thread_id",
   "sourceMessageId": "channel_message_id",
@@ -60,8 +61,9 @@ Requester resolution happens before the server creates a conversation thread or 
 - explicit `requesterUserId` must exist in the configured user store, otherwise the API
   returns `400`;
 - channel-originated requests can omit `requesterUserId` and pass `channel` plus
-  `sourceUserId`; the pair must map to an allowed `channel_identities` row, otherwise the
-  API returns `403`;
+  `sourceUserId`; they may also pass `sourceUserAliases` such as a Telegram username and
+  `@username`. At least one source id or alias must map to an allowed
+  `channel_identities` row, otherwise the API returns `403`;
 - requests without explicit requester or source user fall back to the local
   `user-admin` development identity.
 
@@ -133,6 +135,7 @@ List tools:
 ```http
 GET /api/tools
 POST /api/tools/generated-modules
+GET /api/tools/generated-modules/:name/package-manifest
 DELETE /api/tools/generated-modules/:name
 GET /api/tools/health
 GET /api/tool-services
@@ -191,8 +194,9 @@ for service tools to record inbound messages, outbound deliveries, ignored/denie
 messages, and system events without adding Telegram/Slack/provider branches to the core.
 `POST /api/tool-services/:name/inbound` is the generic intake handoff for an always-on
 tool that already received a provider event. It accepts `task`, `text`, or `message`,
-optional source identity fields, writes a redacted inbound event, resolves the requester
-through channel identities, creates a normal run, and writes a linked queued event.
+optional source identity fields including `sourceUserAliases`, writes a redacted inbound
+event, resolves the requester through channel identities, creates a normal run, and writes
+a linked queued event.
 When that run completes or fails, the server also writes an `outbound/queued` service
 event with the final answer or error payload. Provider-specific always-on tools can use
 that event stream as a neutral outbox, deliver the response externally, and then record a
@@ -207,28 +211,45 @@ The built-in reference provider module `channel.telegram.bot` uses this exact co
 it resolves the `secret.telegram.bot.token` handle, polls Telegram updates, forwards text
 messages as normalized inbound events, polls neutral outbox events, sends Telegram
 messages, and acknowledges delivery. To accept a real Telegram user, create a channel
-identity with `provider=channel.telegram.bot`, `providerUserId=<telegram user id>`, and
-`allowStatus=allowed`. Operators can do this from the Users page by adding an identity to
-the target user, or from the Channels page by clicking the `Allow as Admin` shortcut on
-an ignored inbound event.
+identity with `provider=channel.telegram.bot` and either `providerUserId=<telegram user id>`
+or `providerUserId=@telegram_username`; the bot forwards both `username` and `@username`
+aliases when Telegram exposes them. Operators can do this from the Users page by adding
+an identity to the target user, or from the Channels page by clicking the `Allow as Admin`
+shortcut on an ignored inbound event.
+
+Telegram answers are chunked into multiple `sendMessage` calls when they exceed Telegram's
+message length limit, instead of appending `[truncated]`. The final chunk includes a
+`Continue thread` inline button when the outbox event is linked to a conversation thread;
+clicking it stores a short-lived continuation intent so the next message from the same
+chat/user is sent with the internal Agentic `threadId`. Provider-native
+`sourceThreadId` is still reserved for Telegram forum/topic IDs and other external
+channel thread identifiers.
 
 The browser UI keeps list-style pages fresh with a soft background refresh. It polls the
 same JSON endpoints, fingerprints the returned state, and only re-renders when data
-actually changes. If the operator is typing in an input, select, or textarea, the render
-is deferred until focus leaves the field. Live run details still prefer the per-run SSE
-stream, and always-on lifecycle logs still prefer the service-log SSE stream.
+actually changes. If the operator is typing in an input, select, or textarea, or has an
+open tool-build/rework request form, the render is deferred so drafts are not closed,
+cleared, or jumped back to the top. Live run details still prefer the per-run SSE stream,
+and always-on lifecycle logs still prefer the service-log SSE stream.
 
 `POST /api/tools/generated-modules` registers QA-passed generated tool metadata in the
 durable catalog with name/version conflict checks. Generated modules are stored as
 `disabled` until executable loading and final health checks promote them. The loader only
 imports compiled project-local modules whose exported Tool contract matches the registered
 metadata. Metadata may include a `changeSummary`/changelog explaining why the version was
-created, what changed, and which request or feedback drove it.
+created, what changed, and which request or feedback drove it. Generated metadata may
+also include a portable `packageManifest` for future import/export and out-of-process
+runner execution.
 
 `GET /api/tools/generated-modules/:name/versions` returns the version history for a
 generated tool, including active status, module/test paths, capabilities, required secret
 handles, changelog, health detail, and per-version usage counters. The Tools inspector
 uses this to show a compact version history below the active-version selector.
+
+`GET /api/tools/generated-modules/:name/package-manifest` returns the active generated
+tool's portable package manifest when one exists. This is the first API surface for
+exporting a self-contained integration package; full import and external runner support
+remain roadmap work.
 
 `DELETE /api/tools/generated-modules/:name` removes a generated tool from the durable
 catalog and unregisters it from the active runtime when loaded. Built-in tools are
@@ -281,6 +302,13 @@ The Tool Builds UI intentionally keeps the form simple:
   for short-lived jobs.
 - **QA criteria**: prefilled universal requirements for TypeScript, tests, manual smoke,
   schemas, and credential non-leakage. Operators can append case-specific checks.
+
+For API/service-like requests the server infers a provider-neutral Tool Integration
+contract and stores it inside the build request. The contract describes mode, provider
+hint, inbound/outbound event shape, secret handles, settings, storage, and QA
+requirements. Generated service modules expose that same contract in docs, examples,
+settings schema, storage metadata, and runtime status so future Telegram, Slack,
+webhook, or custom integrations can be built without a provider-specific core branch.
 
 The Tools page supports registry search across display name, system name, version,
 description, capabilities/tags, source/status, declared settings/secrets, docs/examples,
@@ -766,6 +794,13 @@ last inbound/outbound events, and start/stop/restart controls.
 Telegram is the first reference always-on tool. The built-in `channel.telegram.bot`
 module is visible in the same lifecycle UI as any future generated bot/listener, not
 hidden in logs.
+
+Contextual tool requests created from Trace Lab spans can be submitted from the wrong
+selected span. The server checks operator feedback against installed tool names, display
+names, descriptions, and capabilities. If the selected tool clearly does not match the
+text and another installed tool does, the request is rejected with a clarification instead
+of being silently retargeted. The operator can then open the correct span/tool or rewrite
+the request for the selected tool.
 
 Admin needs:
 

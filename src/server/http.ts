@@ -43,6 +43,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import { ToolBuildRequestStore } from "../tools/toolBuildRequestStore.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import { ToolMetadataStore, toolToMetadata } from "../tools/toolMetadataStore.js";
+import { normalizeToolPackageManifest } from "../tools/toolPackage.js";
 import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
 import {
   ToolServiceEventDirection,
@@ -649,6 +650,30 @@ async function routeRequest(
     return;
   }
 
+  const generatedToolManifestMatch = url.pathname.match(
+    /^\/api\/tools\/generated-modules\/([^/]+)\/package-manifest$/,
+  );
+  if (request.method === "GET" && generatedToolManifestMatch) {
+    if (!options.toolMetadataStore) {
+      sendJson(response, 503, { error: "Tool metadata store is not configured" });
+      return;
+    }
+
+    const name = decodeURIComponent(generatedToolManifestMatch[1] ?? "");
+    const tool = (await options.toolMetadataStore.list()).find((candidate) => candidate.name === name);
+    if (!tool) {
+      sendJson(response, 404, { error: "Generated tool was not found" });
+      return;
+    }
+    if (!tool.packageManifest) {
+      sendJson(response, 404, { error: "Generated tool does not have a package manifest" });
+      return;
+    }
+
+    sendJson(response, 200, { manifest: tool.packageManifest });
+    return;
+  }
+
   const generatedToolDeleteMatch = url.pathname.match(/^\/api\/tools\/generated-modules\/([^/]+)$/);
   if (request.method === "DELETE" && generatedToolDeleteMatch) {
     if (!options.toolMetadataStore) {
@@ -943,7 +968,9 @@ async function routeRequest(
           task: inbound.task,
           channel: inbound.channel,
           sourceUserId: inbound.sourceUserId,
+          sourceUserAliases: inbound.sourceUserAliases,
           sourceChatId: inbound.sourceChatId,
+          threadId: inbound.threadId,
           sourceThreadId: inbound.sourceThreadId,
           sourceMessageId: inbound.sourceMessageId,
         },
@@ -1131,8 +1158,9 @@ async function routeRequest(
     }
 
     try {
+      const parsedRequestInput = parseToolBuildRequestInput(await readJsonBody<unknown>(request));
       const requestInput = await assignGeneratedToolName(
-        parseToolBuildRequestInput(await readJsonBody<unknown>(request)),
+        await validateContextualToolBuildTarget(parsedRequestInput, options),
         options,
       );
       let sanitizedRequestInput = await attachInlineCredentialHandle(requestInput, options);
@@ -1955,6 +1983,7 @@ async function resolveRunContext(
   const bodyRequesterUserId = parseOptionalText(body.requesterUserId);
   const bodyChannel = parseOptionalText(body.channel);
   const sourceUserId = parseOptionalText(body.sourceUserId);
+  const sourceUserAliases = parseOptionalTextArray(body.sourceUserAliases);
   const sourceMessageId = parseOptionalText(body.sourceMessageId);
   const sourceChatId = parseOptionalText(body.sourceChatId);
   const sourceThreadId = parseOptionalText(body.sourceThreadId);
@@ -1973,6 +2002,7 @@ async function resolveRunContext(
         requesterUserId: bodyRequesterUserId,
         channel,
         sourceUserId,
+        sourceUserAliases,
         fallbackUserId: thread.requesterUserId,
       });
       if (!requesterUser) {
@@ -1980,6 +2010,7 @@ async function resolveRunContext(
           requesterUserId: bodyRequesterUserId,
           channel,
           sourceUserId,
+          sourceUserAliases,
         });
       }
       if (requesterUser.id !== thread.requesterUserId) {
@@ -1999,6 +2030,7 @@ async function resolveRunContext(
         requesterUserId: bodyRequesterUserId,
         channel,
         sourceUserId,
+        sourceUserAliases,
       });
       if (!requesterUser) {
         throw createRequesterResolutionError({
@@ -2034,6 +2066,7 @@ async function resolveRunContext(
       requesterUserId: bodyRequesterUserId,
       channel: bodyChannel ?? thread?.channel ?? "web",
       sourceUserId,
+      sourceUserAliases,
       fallbackUserId: thread?.requesterUserId,
     }));
   if (!requesterUser) {
@@ -2063,16 +2096,48 @@ async function resolveRunContext(
     context,
     thread,
     threadResolution,
-    threadContext: thread
-      ? {
-          summary: thread.summary,
-          acceptedFacts: thread.acceptedFacts,
-          rejectedAttempts: thread.rejectedAttempts,
-          openQuestions: thread.openQuestions,
-          relevantArtifactIds: thread.artifactIds,
-        }
-      : undefined,
+    threadContext: thread ? await buildConversationThreadContext(thread, options) : undefined,
   };
+}
+
+async function buildConversationThreadContext(
+  thread: ConversationThreadRecord,
+  options: Pick<WebAppOptions, "runStore">,
+): Promise<ConversationThreadContext> {
+  const artifacts = await collectThreadArtifacts(thread, options.runStore);
+  return {
+    summary: thread.summary,
+    acceptedFacts: thread.acceptedFacts,
+    rejectedAttempts: thread.rejectedAttempts,
+    openQuestions: thread.openQuestions,
+    relevantArtifactIds: thread.artifactIds,
+    relevantArtifacts: artifacts,
+  };
+}
+
+async function collectThreadArtifacts(
+  thread: ConversationThreadRecord,
+  runStore: RunStore,
+): Promise<AgentArtifact[]> {
+  if (thread.artifactIds.length === 0) return [];
+
+  const wantedIds = new Set(thread.artifactIds);
+  const runs = (await runStore.list())
+    .filter((run) => run.threadId === thread.id)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const artifacts: AgentArtifact[] = [];
+  const seen = new Set<string>();
+
+  for (const run of runs) {
+    for (const artifact of run.result?.artifacts ?? []) {
+      if (!wantedIds.has(artifact.id) || seen.has(artifact.id)) continue;
+      artifacts.push(artifact);
+      seen.add(artifact.id);
+      if (artifacts.length >= 12) return artifacts;
+    }
+  }
+
+  return artifacts;
 }
 
 async function resolveRequesterUser(
@@ -2081,6 +2146,7 @@ async function resolveRequesterUser(
     requesterUserId?: string;
     channel?: string;
     sourceUserId?: string;
+    sourceUserAliases?: string[];
     fallbackUserId?: string;
   },
 ): Promise<UserRecord | undefined> {
@@ -2088,6 +2154,7 @@ async function resolveRequesterUser(
     requesterUserId: input.requesterUserId,
     channel: input.channel,
     sourceUserId: input.sourceUserId,
+    sourceUserAliases: input.sourceUserAliases,
     fallbackUserId: input.fallbackUserId,
   });
 }
@@ -2109,15 +2176,17 @@ function createRequesterResolutionError(input: {
   requesterUserId?: string;
   channel?: string;
   sourceUserId?: string;
+  sourceUserAliases?: string[];
 }): RunContextError {
   if (input.requesterUserId) {
     return new RunContextError(400, `Requester user not found: ${input.requesterUserId}`);
   }
 
   if (input.sourceUserId) {
+    const aliases = input.sourceUserAliases?.length ? ` aliases=${input.sourceUserAliases.join(",")}` : "";
     return new RunContextError(
       403,
-      `Channel identity is not allowed or not mapped: ${input.channel ?? "unknown"}/${input.sourceUserId}`,
+      `Channel identity is not allowed or not mapped: ${input.channel ?? "unknown"}/${input.sourceUserId}${aliases}`,
     );
   }
 
@@ -2667,6 +2736,11 @@ function parseOptionalText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
+function parseOptionalTextArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(parseOptionalText).filter((item): item is string => Boolean(item)))];
+}
+
 function parseGroupProfileUpdate(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("group profile update must be an object");
@@ -2988,7 +3062,9 @@ function parseToolServiceInboundInput(value: unknown, toolName: string) {
     task,
     channel: parseOptionalText(value.channel) ?? toolName,
     sourceUserId: parseOptionalText(value.sourceUserId),
+    sourceUserAliases: parseOptionalTextArray(value.sourceUserAliases),
     sourceChatId: parseOptionalText(value.sourceChatId),
+    threadId: parseOptionalText(value.threadId),
     sourceThreadId: parseOptionalText(value.sourceThreadId),
     sourceMessageId: parseOptionalText(value.sourceMessageId),
   };
@@ -2998,7 +3074,9 @@ function parseLooseToolServiceInboundInput(value: Record<string, unknown>, toolN
   return {
     channel: parseOptionalText(value.channel) ?? toolName,
     sourceUserId: parseOptionalText(value.sourceUserId),
+    sourceUserAliases: parseOptionalTextArray(value.sourceUserAliases),
     sourceChatId: parseOptionalText(value.sourceChatId),
+    threadId: parseOptionalText(value.threadId),
     sourceThreadId: parseOptionalText(value.sourceThreadId),
     sourceMessageId: parseOptionalText(value.sourceMessageId),
   };
@@ -3237,6 +3315,101 @@ async function assignGeneratedToolName(
   };
 }
 
+async function validateContextualToolBuildTarget(
+  input: ReturnType<typeof parseToolBuildRequestInput>,
+  options: WebAppOptions,
+): Promise<ReturnType<typeof parseToolBuildRequestInput>> {
+  if (!input.replacesToolName || !options.toolMetadataStore) return input;
+
+  const tools = await options.toolMetadataStore.list();
+  const current = tools.find((tool) => tool.name === input.replacesToolName);
+  const text = [
+    input.reason,
+    input.feedback,
+    input.taskSummary,
+  ].join(" ");
+  const currentScore = current ? scoreToolTargetMatch(current, text) : 0;
+  const best = tools
+    .map((tool) => ({ tool, score: scoreToolTargetMatch(tool, text) }))
+    .filter((item) => item.tool.name !== input.replacesToolName)
+    .sort((a, b) => b.score - a.score)[0];
+
+  const clearlyWrongSelectedTool = best && best.score >= 4 && currentScore <= 1 && best.score >= currentScore + 4;
+  if (clearlyWrongSelectedTool) {
+    throw new Error(
+      `Selected tool ${input.replacesToolName} does not appear to match this request. ` +
+        `The text looks closer to ${best.tool.name}. No tool build request was created; ` +
+        `open the matching tool/span or rewrite the feedback for ${input.replacesToolName}.`,
+    );
+  }
+
+  return input;
+}
+
+function scoreToolTargetMatch(
+  tool: {
+    name: string;
+    displayName?: string;
+    description?: string;
+    capabilities?: string[];
+    source?: string;
+  },
+  text: string,
+): number {
+  const haystack = normalizeTargetText(text);
+  if (!haystack) return 0;
+  const aliases = [
+    tool.name,
+    tool.displayName,
+    tool.description,
+    ...(tool.capabilities ?? []),
+  ].flatMap((value) => targetTokens(value));
+  const uniqueAliases = [...new Set(aliases)];
+  return uniqueAliases.reduce((score, token) => score + (haystack.includes(token) ? weightTargetToken(token) : 0), 0);
+}
+
+function targetTokens(value: string | undefined): string[] {
+  const normalized = normalizeTargetText(value ?? "");
+  if (!normalized) return [];
+  return normalized
+    .split(" ")
+    .filter((token) => token.length >= 4 && !genericToolTargetTokens.has(token));
+}
+
+function normalizeTargetText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё@._-]+/gi, " ")
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function weightTargetToken(token: string): number {
+  if (token === "telegram" || token === "whatsapp" || token === "slack") return 4;
+  if (token === "browser" || token === "screenshot") return 3;
+  if (token === "always" || token === "service") return 2;
+  return 1;
+}
+
+const genericToolTargetTokens = new Set([
+  "tool",
+  "generated",
+  "service",
+  "adapter",
+  "capability",
+  "http",
+  "json",
+  "api",
+  "with",
+  "from",
+  "this",
+  "that",
+  "request",
+  "change",
+  "version",
+]);
+
 function generatedToolNameFromCapability(capability: string): string {
   const slug = capability
     .toLowerCase()
@@ -3389,6 +3562,10 @@ function parseGeneratedToolModuleInput(value: unknown) {
     docsMarkdown: parseOptionalText(candidate.docsMarkdown),
     changeSummary: parseOptionalText(candidate.changeSummary),
     examples: parseOptionalToolExamples(candidate.examples),
+    packageManifest:
+      candidate.packageManifest === undefined
+        ? undefined
+        : normalizeToolPackageManifest(candidate.packageManifest),
   };
 }
 

@@ -274,18 +274,24 @@ The tool:
 - resolves `secret.telegram.bot.token` or the handle named by `TELEGRAM_BOT_SECRET_HANDLE`;
 - polls Telegram Bot API updates;
 - forwards text messages to `POST /api/tool-services/channel.telegram.bot/inbound`;
-- passes Telegram user id, chat id, optional thread id, and message id as source
-  metadata;
+- passes Telegram user id, Telegram username aliases, chat id, optional thread id, and
+  message id as source metadata;
 - relies on `channel_identities.provider=channel.telegram.bot` to whitelist and map
-  Telegram users before run creation;
+  Telegram users before run creation. The provider user id can be the numeric Telegram id,
+  `username`, or `@username` when Telegram exposes `from.username`;
 - polls `GET /api/tool-services/channel.telegram.bot/outbox`;
-- sends final answers or errors back to Telegram with `sendMessage`;
+- sends final answers or errors back to Telegram with `sendMessage`, splitting long
+  answers into multiple messages instead of truncating them;
+- adds a `Продолжить тред` inline button to the final message when a run/thread link is
+  known, so the user's next message can continue that conversation thread;
 - acknowledges delivery through `POST /api/tool-services/:name/outbox/:eventId/ack`.
 
 Telegram-originated runs use the same run/event/artifact system as web-originated runs,
 with extra provenance fields such as chat ID and message ID. Remaining production work is
-webhook mode, richer retry/backoff, operator-friendly whitelist management, and durable
-worker/process supervision outside the app process.
+webhook mode, Telegram file/voice intake, artifact delivery through `sendDocument` or
+`sendPhoto`, richer retry/backoff, operator-friendly whitelist management, durable
+continuation intents across restarts, and durable worker/process supervision outside the
+app process.
 
 ### Instance Isolation
 

@@ -33,6 +33,7 @@ type ToolModuleRow = {
   docs_markdown: string | null;
   change_summary: string | null;
   examples: ToolModuleMetadata["examples"];
+  package_manifest: ToolModuleMetadata["packageManifest"] | null;
   success_count: number;
   failure_count: number;
   last_success_at: Date | null;
@@ -53,7 +54,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
              output_schema, module_path, test_path, source, status,
              last_health_ok, last_health_detail, required_configuration_keys,
              required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-             examples, success_count, failure_count, last_success_at, last_failure_at,
+             examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
              updated_at
       from tool_modules
       order by name
@@ -71,7 +72,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
                output_schema, module_path, test_path, source, status,
                last_health_ok, last_health_detail, required_configuration_keys,
                required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-               examples, success_count, failure_count, last_success_at, last_failure_at,
+               examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
                updated_at, active
         from tool_module_versions
         where name = $1
@@ -198,7 +199,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
                  output_schema, module_path, test_path, source, status,
                  last_health_ok, last_health_detail, required_configuration_keys,
                  required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                 examples, success_count, failure_count, last_success_at, last_failure_at,
+                 examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
                  updated_at
           from tool_modules
           where name = $1
@@ -222,9 +223,9 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
             name, display_name, version, description, capabilities, startup_mode, input_schema,
             output_schema, module_path, test_path, required_configuration_keys,
             required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-            examples, source, status, updated_at
+            examples, package_manifest, source, status, updated_at
           )
-          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'generated', 'disabled', $17)
+          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'generated', 'disabled', $19)
           on conflict (name) do update
           set display_name = coalesce(excluded.display_name, tool_modules.display_name),
               description = excluded.description,
@@ -241,6 +242,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               docs_markdown = excluded.docs_markdown,
               change_summary = excluded.change_summary,
               examples = excluded.examples,
+              package_manifest = excluded.package_manifest,
               source = 'generated',
               status = 'disabled',
               updated_at = excluded.updated_at
@@ -248,7 +250,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
                     output_schema, module_path, test_path, source, status,
                     last_health_ok, last_health_detail, required_configuration_keys,
                     required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                    examples, success_count, failure_count, last_success_at, last_failure_at,
+                    examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
                     updated_at
         `,
         [
@@ -269,6 +271,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           input.docsMarkdown ?? null,
           input.changeSummary ?? null,
           JSON.stringify(input.examples ?? []),
+          input.packageManifest ? JSON.stringify(input.packageManifest) : null,
           new Date().toISOString(),
         ],
       );
@@ -291,7 +294,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
                  output_schema, module_path, test_path, source, status,
                  last_health_ok, last_health_detail, required_configuration_keys,
                  required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                 examples, success_count, failure_count, last_success_at, last_failure_at,
+                 examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
                  updated_at
           from tool_modules
           where name = $1
@@ -320,17 +323,18 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               docs_markdown = $15,
               change_summary = $16,
               examples = $17,
+              package_manifest = $18,
               source = 'generated',
               status = 'disabled',
               last_health_ok = null,
               last_health_detail = null,
-              updated_at = $18
+              updated_at = $19
           where name = $1
           returning name, display_name, version, description, capabilities, startup_mode, input_schema,
                     output_schema, module_path, test_path, source, status,
                     last_health_ok, last_health_detail, required_configuration_keys,
                     required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                    examples, success_count, failure_count, last_success_at, last_failure_at,
+                    examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
                     updated_at
         `,
         [
@@ -351,6 +355,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           input.docsMarkdown ?? null,
           input.changeSummary ?? null,
           JSON.stringify(input.examples ?? []),
+          input.packageManifest ? JSON.stringify(input.packageManifest) : null,
           new Date().toISOString(),
         ],
       );
@@ -373,7 +378,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
                  output_schema, module_path, test_path, source, status,
                  last_health_ok, last_health_detail, required_configuration_keys,
                  required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                 examples, success_count, failure_count, last_success_at, last_failure_at,
+                 examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
                  updated_at
           from tool_modules
           where name = $1
@@ -409,7 +414,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
                  output_schema, module_path, test_path, source, status,
                  last_health_ok, last_health_detail, required_configuration_keys,
                  required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                 examples, success_count, failure_count, last_success_at, last_failure_at,
+                 examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
                  updated_at
           from tool_modules
           where name = $1
@@ -427,7 +432,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
                  output_schema, module_path, test_path, source, status,
                  last_health_ok, last_health_detail, required_configuration_keys,
                  required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                 examples, success_count, failure_count, last_success_at, last_failure_at,
+                 examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
                  updated_at
           from tool_module_versions
           where name = $1 and version = $2
@@ -457,17 +462,18 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               docs_markdown = $15,
               change_summary = $16,
               examples = $17,
+              package_manifest = $18,
               source = 'generated',
               status = 'disabled',
               last_health_ok = null,
               last_health_detail = null,
-              updated_at = $18
+              updated_at = $19
           where name = $1
           returning name, display_name, version, description, capabilities, startup_mode, input_schema,
                     output_schema, module_path, test_path, source, status,
                     last_health_ok, last_health_detail, required_configuration_keys,
                     required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                    examples, success_count, failure_count, last_success_at, last_failure_at,
+                    examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
                     updated_at
         `,
         [
@@ -488,6 +494,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           selectedRow.docs_markdown,
           selectedRow.change_summary,
           JSON.stringify(selectedRow.examples ?? []),
+          selectedRow.package_manifest ? JSON.stringify(selectedRow.package_manifest) : null,
           new Date().toISOString(),
         ],
       );
@@ -510,7 +517,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
                output_schema, module_path, test_path, source, status,
                last_health_ok, last_health_detail, required_configuration_keys,
                required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-               examples, success_count, failure_count, last_success_at, last_failure_at,
+               examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
                updated_at, active
         from tool_module_versions
         where name = any($1)
@@ -552,9 +559,9 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           name, version, active, display_name, description, capabilities, startup_mode, input_schema,
           output_schema, module_path, test_path, source, status, last_health_ok, last_health_detail,
           required_configuration_keys, required_secret_handles, settings_schema, storage_contract,
-          docs_markdown, change_summary, examples, success_count, failure_count, last_success_at, last_failure_at, updated_at
+          docs_markdown, change_summary, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at, updated_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'generated', $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'generated', $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
         on conflict (name, version) do update
         set active = excluded.active,
             display_name = excluded.display_name,
@@ -576,6 +583,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
             docs_markdown = excluded.docs_markdown,
             change_summary = excluded.change_summary,
             examples = excluded.examples,
+            package_manifest = excluded.package_manifest,
             success_count = excluded.success_count,
             failure_count = excluded.failure_count,
             last_success_at = excluded.last_success_at,
@@ -604,6 +612,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         row.docs_markdown,
         row.change_summary,
         JSON.stringify(row.examples ?? []),
+        row.package_manifest ? JSON.stringify(row.package_manifest) : null,
         row.success_count,
         row.failure_count,
         row.last_success_at?.toISOString(),
@@ -637,6 +646,7 @@ function mapRow(row: ToolModuleRow): ToolModuleMetadata {
     docsMarkdown: row.docs_markdown ?? undefined,
     changeSummary: row.change_summary ?? undefined,
     examples: Array.isArray(row.examples) ? row.examples : [],
+    packageManifest: row.package_manifest ?? undefined,
     successCount: row.success_count ?? 0,
     failureCount: row.failure_count ?? 0,
     lastSuccessAt: row.last_success_at?.toISOString(),
@@ -657,6 +667,7 @@ function mapVersionSummary(row: ToolModuleVersionRow): ToolModuleVersionSummary 
     testPath: row.test_path ?? undefined,
     requiredSecretHandles: row.required_secret_handles ?? [],
     changeSummary: row.change_summary ?? undefined,
+    packageManifest: row.package_manifest ?? undefined,
     lastHealthDetail: row.last_health_detail ?? undefined,
     successCount: row.success_count ?? 0,
     failureCount: row.failure_count ?? 0,

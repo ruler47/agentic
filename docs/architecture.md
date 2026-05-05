@@ -31,6 +31,12 @@ Every request also has provenance:
 The current implementation is still single-user in code, but future changes should keep
 this one-instance/one-group provenance model in mind.
 
+Continuation runs receive compact thread context, not the full transcript. That context
+includes summary, accepted facts, rejected attempts, open questions, and recent artifact
+metadata such as filename, MIME type, URL, content preview, and QA status. Agents should
+reuse these prior artifacts when they satisfy a follow-up request. They should reacquire
+data only when the prior artifact is stale, missing, insufficient, or explicitly rejected.
+
 ## Capability Principle
 
 The system should grow through reusable capabilities, not private case patches. A run may
@@ -135,6 +141,13 @@ Worker context should be small:
 - Tool evidence, if runtime tools were executed before the worker writes its result.
 - Allowed memory/tool/action scope for the requester and configured group.
 
+Declared tool inputs are treated as proposed execution hints, not trusted execution facts.
+For browser tools, the runtime rejects placeholder navigation such as
+`URL_FROM_PREVIOUS_STEP`; when upstream dependency outputs or prior tool evidence contain
+concrete source URLs, it rewrites the browser command plan to those URLs, otherwise it
+records the declared input as not runnable instead of wasting the run on an `Invalid URL`
+tool call.
+
 ### Reviewer Agent
 
 Checks one worker result.
@@ -143,6 +156,8 @@ Review focus:
 
 - Unsupported claims.
 - Missing evidence.
+- Empty discovery results that are presented as success when the subtask expected
+  candidates, source lookup, comparison, or recommendations.
 - Incorrect assumptions.
 - Incomplete code or tests.
 - Contradictions with original task.
@@ -172,6 +187,39 @@ Tools are TypeScript modules with:
 The runtime asks for capabilities through the registry instead of embedding one-off
 logic in the agent. Built-in tools are synced into `tool_modules` when Postgres is
 configured.
+
+The target architecture is out-of-tree tools. A mature tool should be a portable module
+or service with a manifest, schemas, docs, tests, QA evidence, version history, settings
+schema, secret-handle requirements, and optional storage migrations. The Agentic core
+should not need to import private tool internals. It should load or call tools through a
+generic runner by manifest reference, source bundle, package reference, or OCI/container
+image. On-demand tools run as bounded jobs; always-on tools run as supervised services;
+high-load tools can scale to several worker processes or containers behind the same
+abstract input/output contract.
+
+The first code-level slice of this target is `ToolPackageManifest`, a portable
+import/export contract for source bundles, OCI images, external packages, and local-path
+development tools. Future registry entries should be able to point at these manifests
+instead of only compiled files under `src/tools/generated`. Generated service providers
+now emit a local-path manifest with schemas, docs, examples, settings, secret handles,
+storage, and startup mode. The active generated module and each version row now persist
+that manifest in Postgres, so registry metadata survives restart and can later be
+exported/imported. Executing manifests through an external runner is still roadmap work.
+
+The second code-level slice is a provider-neutral always-on service generator. Tool
+Builder can now create TypeScript modules with `startupMode=always-on`, `startService`,
+lifecycle health, normalized event recording, and focused tests. The build contract now
+also includes a neutral `ToolIntegrationSpec` for API/service-like requests: mode,
+provider hint, inbound/outbound event shape, secret handles, settings schema, storage
+contract, examples, docs, and QA requirements are derived before the provider writes
+source. These generated service modules are still in-process today, but their contract is
+intentionally portable to a future external runner or container.
+
+This means built-in reference tools are temporary conveniences, not the final integration
+shape. A fix to a generated, built-in, or always-on tool should eventually follow one
+lifecycle: change request, new version, code review, behavior QA, promotion, and
+reload/restart. Direct source edits are operator hotfixes while that lifecycle is still
+incomplete, and should be treated as technical debt rather than the product model.
 
 Initial tools include:
 
@@ -356,6 +404,13 @@ service handle for healthchecks and shutdown. Shutdown stops active handles with
 clearing the persisted desired running state, so app startup can reconcile services that
 should still be running. It does not yet spawn durable background processes or own
 webhook routing; those must be added as generic runners behind the same tool contract.
+
+`GenericServiceToolBuildProvider` is the first generated-tool builder for this shape. It
+creates a reusable service bridge rather than a provider-specific hack: generated modules
+record neutral inbound/outbound/system events, expose health through `startService`, and
+publish their integration spec through docs, settings, examples, storage metadata, and
+runtime status. Provider-specific generated tools can build on this contract by
+translating provider APIs into the neutral event model.
 
 Always-on tools can record provider-neutral runtime events in `tool_service_events`.
 Those events cover inbound messages, outbound deliveries, ignored/denied events, and

@@ -92,6 +92,8 @@ const state = {
   dataFingerprint: undefined,
   refreshInFlight: false,
   pendingSoftRender: false,
+  composerDraft: undefined,
+  expandedPanels: new Set(),
 };
 
 window.addEventListener("hashchange", () => {
@@ -337,6 +339,19 @@ document.addEventListener("change", (event) => {
   }
 });
 
+document.addEventListener(
+  "toggle",
+  (event) => {
+    const details = event.target;
+    if (!(details instanceof HTMLDetailsElement)) return;
+    const panelId = details.dataset.panelId;
+    if (!panelId) return;
+    if (details.open) state.expandedPanels.add(panelId);
+    else state.expandedPanels.delete(panelId);
+  },
+  true,
+);
+
 void refreshData();
 window.setInterval(updateLiveTimers, 500);
 window.setInterval(() => {
@@ -437,7 +452,7 @@ async function refreshData(options = {}) {
   }
 
   state.refreshInFlight = false;
-  if (soft && isUserEditing()) {
+  if (soft && isUserEditingOrDrafting()) {
     state.pendingSoftRender = true;
     return;
   }
@@ -483,6 +498,13 @@ function isUserEditing() {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement)) return false;
   return ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName);
+}
+
+function isUserEditingOrDrafting() {
+  if (isUserEditing()) return true;
+  return [...state.expandedPanels].some((panelId) =>
+    /^(tool-build-request|tool-rework:|span-tool-request:|build-rework:)/.test(panelId),
+  );
 }
 
 function syncActiveFromRoute() {
@@ -680,6 +702,9 @@ function renderComposer({ compact, mode = "new", selectedThread }) {
   const continuing = mode === "continue" && Boolean(selectedThread);
   const requester = selectedThread?.requesterUserId ?? "user-admin";
   const channel = selectedThread?.channel ?? "web";
+  const draft = matchingComposerDraft(continuing ? "continue" : "new", selectedThread?.id);
+  const selectedRequester = draft?.requesterUserId ?? requester;
+  const selectedChannel = draft?.channel ?? channel;
   return `
     <section class="hero-composer surface-hero ${compact ? "compact" : ""}">
       <div class="composer-heading">
@@ -710,7 +735,8 @@ function renderComposer({ compact, mode = "new", selectedThread }) {
                   ${state.users.length
                     ? state.users
                         .map(
-                          (user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.displayName)} · ${escapeHtml(user.id)}</option>`,
+                          (user) =>
+                            `<option value="${escapeHtml(user.id)}" ${user.id === selectedRequester ? "selected" : ""}>${escapeHtml(user.displayName)} · ${escapeHtml(user.id)}</option>`,
                         )
                         .join("")
                     : `<option value="user-admin">Admin · user-admin</option>`}
@@ -719,13 +745,13 @@ function renderComposer({ compact, mode = "new", selectedThread }) {
               <label>
                 <span>Source</span>
                 <select name="channel">
-                  <option value="web">Web console</option>
-                  <option value="api">API</option>
+                  <option value="web" ${selectedChannel === "web" ? "selected" : ""}>Web console</option>
+                  <option value="api" ${selectedChannel === "api" ? "selected" : ""}>API</option>
                 </select>
               </label>
             </div>
           `}
-        <textarea name="task" placeholder="Ask for research, code, screenshots, reports, reminders, or a correction to the selected thread." required></textarea>
+        <textarea name="task" placeholder="Ask for research, code, screenshots, reports, reminders, or a correction to the selected thread." required>${escapeHtml(draft?.task ?? "")}</textarea>
         <div class="composer-bottom">
           <label class="attach-button">
             <input name="files" type="file" multiple />
@@ -737,6 +763,17 @@ function renderComposer({ compact, mode = "new", selectedThread }) {
       </form>
     </section>
   `;
+}
+
+function matchingComposerDraft(threadMode, threadId) {
+  const draft = state.composerDraft;
+  if (!draft || draft.threadMode !== threadMode) return undefined;
+  if (threadMode === "continue" && draft.threadId !== threadId) return undefined;
+  return draft;
+}
+
+function panelOpenAttr(panelId) {
+  return state.expandedPanels.has(panelId) ? "open" : "";
 }
 
 function renderContextPreview(thread) {
@@ -1490,7 +1527,7 @@ function renderSpanToolRequestForm(node) {
     .join("\n");
 
   return `
-    <details class="rework-box span-request-box">
+    <details class="rework-box span-request-box" data-panel-id="span-tool-request:${escapeHtml(node.spanId)}" ${panelOpenAttr(`span-tool-request:${node.spanId}`)}>
       <summary>Create tool request / bug from this span</summary>
       <form data-action="create-tool-build-request" class="rework-form">
         <input type="hidden" name="sourceRunId" value="${escapeHtml(activeRun()?.id ?? "")}" />
@@ -1505,13 +1542,13 @@ function renderSpanToolRequestForm(node) {
         <input type="hidden" name="feedback" value="${escapeHtml(reason)}" />
         <label>
           <span>Context and requested fix</span>
-          <textarea name="reason" required>${escapeHtml(reason)}</textarea>
+          <textarea name="reason" placeholder="${escapeHtml(reason)}" required></textarea>
         </label>
         <label>
           <span>QA criteria</span>
-          <textarea name="qaCriteria" rows="3">Reproduce the observed failure.
+          <textarea name="qaCriteria" rows="3" placeholder="Reproduce the observed failure.
 Add a regression test for the corrected behavior.
-Prove the produced result is useful evidence and does not leak credentials.</textarea>
+Prove the produced result is useful evidence and does not leak credentials."></textarea>
         </label>
         <button type="submit" class="ghost-button">Create contextual request</button>
       </form>
@@ -2470,7 +2507,7 @@ function renderToolReworkForm(tool, failureProblem) {
       ].join("\n");
   const activeVersion = normalizeToolVersions(tool).find((version) => version.active)?.version ?? tool.version ?? "1.0.0";
   return `
-    <details class="rework-box tool-rework-box">
+    <details class="rework-box tool-rework-box" data-panel-id="tool-rework:${escapeHtml(tool.name)}" ${panelOpenAttr(`tool-rework:${tool.name}`)}>
       <summary>Request change / new version</summary>
       <form data-action="rework-tool" class="rework-form">
         <input type="hidden" name="toolName" value="${escapeHtml(tool.name)}" />
@@ -2480,7 +2517,7 @@ function renderToolReworkForm(tool, failureProblem) {
         <input type="hidden" name="startupMode" value="${escapeHtml(tool.startupMode ?? "on-demand")}" />
         <label>
           <span>Change request</span>
-          <textarea name="feedback" required>${escapeHtml(defaultFeedback)}</textarea>
+          <textarea name="feedback" placeholder="${escapeHtml(defaultFeedback)}" required></textarea>
         </label>
         <button type="submit" class="ghost-button">Create versioned change request</button>
       </form>
@@ -2528,7 +2565,7 @@ function renderToolBuildsPage() {
           ${columns.map((column) => `<span><strong>${formatStatusLabel(column)}</strong>${escapeHtml(toolBuildStatusDescription(column))}</span>`).join("")}
         </div>
       </section>
-      <details class="surface-panel tool-build-request-panel expandable-panel">
+      <details class="surface-panel tool-build-request-panel expandable-panel" data-panel-id="tool-build-request" ${panelOpenAttr("tool-build-request")}>
         <summary>
           <div>
             <span class="eyebrow">Builder + QA + registry</span>
@@ -2563,7 +2600,7 @@ function renderToolBuildsPage() {
           </label>
           <label>
             <span>QA criteria</span>
-            <textarea name="qaCriteria" rows="5">${escapeHtml(defaultQaCriteria)}</textarea>
+            <textarea name="qaCriteria" rows="5" placeholder="${escapeHtml(defaultQaCriteria)}"></textarea>
             <small>You can add extra acceptance checks here before creating the request.</small>
           </label>
           <div class="composer-bottom">
@@ -2611,7 +2648,7 @@ function renderBuildCard(request) {
       ${request.feedback ? `<small class="status-note">Latest feedback: ${escapeHtml(request.feedback)}</small>` : ""}
       ${request.statusDetail ? `<small class="status-note">Status detail: ${escapeHtml(request.statusDetail)}</small>` : ""}
       ${request.qaReport ? `<small class="status-note">QA: ${escapeHtml(request.qaReport.summary)}</small>` : ""}
-      <details class="build-preview">
+      <details class="build-preview" data-panel-id="build-preview:${escapeHtml(request.id)}" ${panelOpenAttr(`build-preview:${request.id}`)}>
         <summary>Preview</summary>
         ${contextBlock("Tool contract", `${request.contract?.toolName ?? "pending"}\n${request.contract?.modulePath ?? "module pending"}\n${request.contract?.testPath ?? "test pending"}`)}
         ${contextBlock("Run mode", request.contract?.startupMode ?? "on-demand")}
@@ -2624,7 +2661,7 @@ function renderBuildCard(request) {
         <button type="button" class="ghost-button" data-action="stop-tool-build" data-build-id="${request.id}">Stop</button>
         <button type="button" class="ghost-button danger-button" data-action="delete-tool-build" data-build-id="${request.id}">Delete</button>
       </div>
-      <details class="rework-box">
+      <details class="rework-box" data-panel-id="build-rework:${escapeHtml(request.id)}" ${panelOpenAttr(`build-rework:${request.id}`)}>
         <summary>Create revision request</summary>
         <form data-action="rework-tool-build" class="rework-form">
           <input type="hidden" name="buildId" value="${escapeHtml(request.id)}" />
@@ -3352,8 +3389,10 @@ async function submitRun(form) {
   const requesterUserId = String(data.get("requesterUserId") ?? "user-admin");
   const channel = String(data.get("channel") ?? "web");
   const files = data.getAll("files").filter((file) => file instanceof File && file.size > 0);
+  state.composerDraft = { task, threadMode, threadId, requesterUserId, channel };
 
   setComposerBusy(form, true);
+  let shouldRenderError = false;
 
   try {
     const attachments = await Promise.all(files.map(readAttachment));
@@ -3370,17 +3409,41 @@ async function submitRun(form) {
     });
     const body = await response.json();
     if (!response.ok) throw new Error(body.error ?? "Failed to start run");
+    if (!body.run?.id) throw new Error("Run API accepted the request but did not return a run id");
 
+    state.composerDraft = undefined;
+    state.error = undefined;
+    state.notice = undefined;
     state.activeRunId = body.run.id;
     state.activeThreadId = body.run.threadId ?? state.activeThreadId;
-    await refreshData();
+    upsertRunInState(body.run);
+    if (body.thread) upsertThreadInState(body.thread);
+    connectRunStream(body.run.id);
     navigate(`run/${body.run.id}`);
+    void refreshData({ soft: true });
   } catch (error) {
-    state.error = error instanceof Error ? error.message : String(error);
-    render();
+    state.notice = {
+      type: "error",
+      title: "Run was not started",
+      body: error instanceof Error ? error.message : String(error),
+    };
+    shouldRenderError = true;
   } finally {
     setComposerBusy(form, false);
+    if (shouldRenderError) render();
   }
+}
+
+function upsertRunInState(run) {
+  const index = state.runs.findIndex((candidate) => candidate.id === run.id);
+  if (index >= 0) state.runs[index] = run;
+  else state.runs.unshift(run);
+}
+
+function upsertThreadInState(thread) {
+  const index = state.conversations.findIndex((candidate) => candidate.id === thread.id);
+  if (index >= 0) state.conversations[index] = thread;
+  else state.conversations.unshift(thread);
 }
 
 async function cancelRun(runId) {

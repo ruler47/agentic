@@ -37,6 +37,12 @@ test("in-memory user store resolves allowed channel identities only", async () =
         allowStatus: "allowed",
       },
       {
+        provider: "Telegram",
+        providerUserId: "@dima_tag",
+        userId: "user-dima",
+        allowStatus: "allowed",
+      },
+      {
         provider: "telegram",
         providerUserId: "tg-blocked",
         userId: "user-blocked",
@@ -47,6 +53,10 @@ test("in-memory user store resolves allowed channel identities only", async () =
 
   assert.equal(
     (await store.resolve({ channel: "telegram", sourceUserId: "tg-allowed" }))?.id,
+    "user-dima",
+  );
+  assert.equal(
+    (await store.resolve({ channel: "telegram", sourceUserId: "42", sourceUserAliases: ["dima_tag", "@dima_tag"] }))?.id,
     "user-dima",
   );
   assert.equal(await store.resolve({ channel: "telegram", sourceUserId: "tg-blocked" }), undefined);

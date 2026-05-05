@@ -1,4 +1,5 @@
 import { Tool, ToolExample, ToolHealth, ToolSchema, ToolStartupMode, ToolStorageContract } from "./tool.js";
+import type { ToolPackageManifest } from "./toolPackage.js";
 
 export type ToolModuleSource = "builtin" | "generated";
 export type ToolModuleStatus = "available" | "disabled" | "failed";
@@ -14,6 +15,7 @@ export type ToolModuleVersionSummary = {
   testPath?: string;
   requiredSecretHandles?: string[];
   changeSummary?: string;
+  packageManifest?: ToolPackageManifest;
   lastHealthDetail?: string;
   successCount?: number;
   failureCount?: number;
@@ -42,6 +44,7 @@ export type ToolModuleMetadata = {
   docsMarkdown?: string;
   changeSummary?: string;
   examples: ToolExample[];
+  packageManifest?: ToolPackageManifest;
   successCount: number;
   failureCount: number;
   lastSuccessAt?: string;
@@ -68,6 +71,7 @@ export type GeneratedToolModuleInput = {
   docsMarkdown?: string;
   changeSummary?: string;
   examples?: ToolExample[];
+  packageManifest?: ToolPackageManifest;
 };
 
 export type GeneratedToolReplacementInput = GeneratedToolModuleInput & {
@@ -198,6 +202,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       docsMarkdown: input.docsMarkdown ?? existing?.docsMarkdown,
       changeSummary: input.changeSummary ?? existing?.changeSummary,
       examples: input.examples ?? existing?.examples ?? [],
+      packageManifest: input.packageManifest ?? existing?.packageManifest,
       successCount: existing?.successCount ?? 0,
       failureCount: existing?.failureCount ?? 0,
       lastSuccessAt: existing?.lastSuccessAt,
@@ -238,6 +243,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       docsMarkdown: input.docsMarkdown,
       changeSummary: input.changeSummary,
       examples: input.examples ?? [],
+      packageManifest: input.packageManifest,
       successCount: existing.successCount,
       failureCount: existing.failureCount,
       lastSuccessAt: existing.lastSuccessAt,
@@ -287,6 +293,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
         testPath: module.testPath,
         requiredSecretHandles: [...(module.requiredSecretHandles ?? [])],
         changeSummary: module.changeSummary,
+        packageManifest: module.packageManifest ? cloneJson(module.packageManifest) : undefined,
         lastHealthDetail: module.lastHealthDetail,
         successCount: module.successCount,
         failureCount: module.failureCount,
@@ -313,6 +320,7 @@ export function toolToMetadata(tool: Tool, updatedAt = new Date().toISOString())
     docsMarkdown: tool.docsMarkdown,
     changeSummary: "Builtin tool synced from source.",
     examples: tool.examples ?? [],
+    packageManifest: undefined,
     successCount: 0,
     failureCount: 0,
     source: "builtin",
@@ -332,6 +340,7 @@ function cloneModule(module: ToolModuleMetadata): ToolModuleMetadata {
     settingsSchema: module.settingsSchema ? { ...module.settingsSchema } : undefined,
     storage: module.storage ? cloneJson(module.storage) : undefined,
     examples: (module.examples ?? []).map((example) => cloneJson(example)),
+    packageManifest: module.packageManifest ? cloneJson(module.packageManifest) : undefined,
     successCount: module.successCount ?? 0,
     failureCount: module.failureCount ?? 0,
   };

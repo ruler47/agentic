@@ -70,17 +70,22 @@ export class PostgresUserStore implements UserStore {
   async resolve(input: ResolveUserInput): Promise<UserRecord | undefined> {
     if (input.requesterUserId) return this.get(input.requesterUserId);
 
-    if (input.sourceUserId && input.channel) {
+    if ((input.sourceUserId || input.sourceUserAliases?.length) && input.channel) {
+      const sourceIds = uniqueIdentityIds([
+        input.sourceUserId,
+        ...(input.sourceUserAliases ?? []),
+      ]);
+      if (sourceIds.length === 0) return undefined;
       const identity = await this.pool.query<{ user_id: string }>(
         `
           select user_id
           from channel_identities
           where provider = $1
-            and provider_user_id = $2
+            and provider_user_id = any($2::text[])
             and allow_status = 'allowed'
           limit 1
         `,
-        [normalizeProvider(input.channel), input.sourceUserId],
+        [normalizeProvider(input.channel), sourceIds],
       );
       const userId = identity.rows[0]?.user_id;
       return userId ? this.get(userId) : undefined;
@@ -292,6 +297,10 @@ export class PostgresUserStore implements UserStore {
 function normalizeRoles(roles: string[]): string[] {
   const normalized = roles.map((role) => role.trim()).filter(Boolean);
   return [...new Set(normalized.length ? normalized : ["member"])];
+}
+
+function uniqueIdentityIds(values: Array<string | undefined>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
 }
 
 function createUserId(displayName: string): string {

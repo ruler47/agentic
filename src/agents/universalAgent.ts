@@ -89,6 +89,7 @@ type RunOptions = {
     rejectedAttempts: string[];
     openQuestions: string[];
     relevantArtifactIds: string[];
+    relevantArtifacts?: AgentArtifact[];
   };
   memoryScopes?: MemoryScopeFilter[];
   allowSensitiveMemory?: boolean;
@@ -723,8 +724,20 @@ export class UniversalAgent {
     const toolNeedText = `${originalTask}\n${subtask.title}\n${subtask.role}\n${subtask.prompt}\n${subtask.expectedOutput}\n${subtask.reviewCriteria.join("\n")}`;
 
     if (webSearch && shouldCollectWebSearch(subtask, toolNeedText, dependencyContext)) {
-      evidence.push(await this.runWebSearch(webSearch, subtask, emit, parentSpanId, toolExecutionContext));
+      evidence.push(await this.runWebSearch(webSearch, subtask, toolNeedText, emit, parentSpanId, toolExecutionContext));
     }
+
+    const browserDiscoveryEvidence = await this.collectBrowserDiscoveryEvidence(
+      subtask,
+      toolNeedText,
+      [dependencyContext, ...evidence].filter((item): item is string => Boolean(item)),
+      emit,
+      parentSpanId,
+      saveArtifact,
+      toolExecutionContext,
+    );
+    evidence.push(...browserDiscoveryEvidence.evidence);
+    artifacts.push(...browserDiscoveryEvidence.artifacts);
 
     const marketTool = this.tools.findByCapability("market-timeseries")[0];
     if (marketTool && shouldCollectMarketTimeseries(subtask, toolNeedText)) {
@@ -752,7 +765,7 @@ export class UniversalAgent {
 
     const declaredToolEvidence = await this.collectDeclaredToolInputs(
       subtask,
-      evidence,
+      [dependencyContext, ...evidence].filter((item): item is string => Boolean(item)),
       emit,
       parentSpanId,
       saveArtifact,
@@ -818,13 +831,14 @@ export class UniversalAgent {
   private async runWebSearch(
     webSearch: Tool,
     subtask: Subtask,
+    contextText: string,
     emit: AgentEventEmitter,
     parentSpanId: string,
     toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<string> {
     const spanId = createSpanId(`tool-${webSearch.name}`);
     const startedAt = new Date();
-    const queries = buildSearchQueries(subtask);
+    const queries = buildSearchQueries(subtask, contextText);
     const query = queries.join(" | ");
 
     await emit({
@@ -1027,6 +1041,59 @@ export class UniversalAgent {
     };
   }
 
+  private async collectBrowserDiscoveryEvidence(
+    subtask: Subtask,
+    text: string,
+    priorEvidence: string[],
+    emit: AgentEventEmitter,
+    parentSpanId: string,
+    saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
+    toolExecutionContext?: BaseToolExecutionContext,
+  ): Promise<CollectedToolEvidence> {
+    const alreadyDeclared = Object.keys(subtask.toolInputs ?? {}).some((toolName) => {
+      const normalized = toolName.toLowerCase();
+      return normalized === "browser.operate" || normalized === "browser-operate";
+    });
+    if (alreadyDeclared || !shouldCollectBrowserDiscovery(subtask, text)) {
+      return { text: "No browser discovery evidence was needed.", evidence: [], artifacts: [] };
+    }
+
+    if (!(this.tools.get("browser.operate") ?? this.tools.findByCapability("browser-operate")[0])) {
+      return { text: "No browser discovery tool is registered.", evidence: [], artifacts: [] };
+    }
+
+    const urls = selectBestUrlsForArtifact(priorEvidence.join("\n\n"), requiresMultipleSources(subtask) ? 3 : 2);
+    if (urls.length === 0) return { text: "No browser discovery URLs were available.", evidence: [], artifacts: [] };
+
+    const syntheticSubtask: Subtask = {
+      ...subtask,
+      toolInputs: {
+        "browser.operate": {
+          defaultTimeoutMs: 12000,
+          commands: urls.flatMap((url, index) => {
+            const label = `discovery-${index + 1}-${safeLabel(normalizedHost(url))}`;
+            return [
+              { type: "navigate", url },
+              { type: "dismissDialogs" },
+              { type: "extractText", label, maxLength: 9000 },
+              { type: "extractLinks", label: `${label}-links`, limit: 50 },
+              { type: "screenshot", label, fullPage: true },
+            ];
+          }),
+        },
+      },
+    };
+
+    return this.collectDeclaredToolInputs(
+      syntheticSubtask,
+      priorEvidence,
+      emit,
+      parentSpanId,
+      saveArtifact,
+      toolExecutionContext,
+    );
+  }
+
   private async collectDeclaredToolInputs(
     subtask: Subtask,
     priorEvidence: string[],
@@ -1046,6 +1113,12 @@ export class UniversalAgent {
         continue;
       }
       const runnableInput = improveDeclaredToolInput(tool.name, input, subtask, priorEvidence);
+      if (tool.name === "browser.operate" && hasInvalidBrowserNavigation(runnableInput)) {
+        evidence.push(
+          `Declared browser.operate input was skipped because it contains a placeholder or invalid navigation URL. Use real http(s) source URLs from previous evidence before running browser automation.`,
+        );
+        continue;
+      }
 
       const spanId = createSpanId(`tool-${tool.name}`);
       const startedAt = new Date();
@@ -1223,7 +1296,28 @@ export class UniversalAgent {
       parentSpanId,
       requestToolBuild,
     );
-    return undefined;
+    const generatedTool = this.tools.findByCapability(requirement.capability)[0];
+    if (!generatedTool) return undefined;
+
+    return this.runArtifactTool(
+      generatedTool,
+      {
+        title: subtask.title,
+        task: originalTask,
+        context: [dependencyContext, subtask.prompt, evidence.join("\n\n")].filter(Boolean).join("\n\n"),
+        filename: `${safeArtifactSlug(subtask.title)}.${requirement.kind === "document" ? "pdf" : "artifact"}`,
+      },
+      requirement.capability,
+      requirement.description,
+      emit,
+      parentSpanId,
+      saveArtifact,
+      isGenericArtifactToolData,
+      genericArtifactDataToCreateInput,
+      `artifact:${requirement.kind}`,
+      `${capitalize(requirement.kind)} artifact generated`,
+      toolExecutionContext,
+    );
   }
 
   private async runWorkerAndRequestReview(
@@ -2223,6 +2317,7 @@ function appendThreadContext(
     rejectedAttempts: string[];
     openQuestions: string[];
     relevantArtifactIds: string[];
+    relevantArtifacts?: AgentArtifact[];
   },
 ): string {
   if (!threadContext) return task;
@@ -2233,6 +2328,7 @@ function appendThreadContext(
     listContext("Accepted facts", threadContext.acceptedFacts),
     listContext("Rejected or failed attempts", threadContext.rejectedAttempts),
     listContext("Open questions", threadContext.openQuestions),
+    formatThreadArtifacts(threadContext.relevantArtifacts),
     listContext("Relevant artifact IDs", threadContext.relevantArtifactIds),
   ].filter(Boolean);
 
@@ -2244,6 +2340,20 @@ ${lines.join("\n")}`;
 function listContext(title: string, values: string[]): string | undefined {
   if (values.length === 0) return undefined;
   return `${title}:\n${values.map((value) => `- ${value}`).join("\n")}`;
+}
+
+function formatThreadArtifacts(artifacts: AgentArtifact[] | undefined): string | undefined {
+  if (!artifacts || artifacts.length === 0) return undefined;
+
+  return `Reusable thread artifacts:
+${artifacts
+  .map((artifact) => {
+    const preview = artifact.contentPreview ? `\n  content preview:\n${indent(artifact.contentPreview)}` : "";
+    const quality = artifact.quality?.status ? ` quality=${artifact.quality.status}` : "";
+    return `- ${artifact.filename} (${artifact.mimeType}, ${artifact.kind}) ${artifact.url}${quality}${preview}`;
+  })
+  .join("\n")}
+Use these artifacts as prior evidence when they satisfy the follow-up request. Do not reacquire the same data unless it is stale, missing, or insufficient.`;
 }
 
 function appendRuntimeContext(task: string, now: Date, timeZone = process.env.AGENT_TIME_ZONE ?? process.env.TZ ?? "Europe/Madrid"): string {
@@ -2352,6 +2462,22 @@ function shouldCollectWebSearch(subtask: Subtask, text: string, dependencyContex
   );
 }
 
+function shouldCollectBrowserDiscovery(subtask: Subtask, text: string): boolean {
+  const requestedTools = (subtask.requiredTools ?? []).map((tool) => tool.toLowerCase());
+  if (requestedTools.some((tool) => ["browser-operate", "browser.operate", "dom-extraction"].includes(tool))) {
+    return true;
+  }
+  const isDiscovery =
+    /(find|search|identify|discover|collect|candidate|profile|directory|listing|catalog|doctor|clinic|specialist|ticket|flight|найди|поиск|подбери|кандидат|профил|каталог|справочник|листинг|врач|клиник|специалист|билет|рейс)/i.test(
+      text,
+    );
+  const needsInteractiveSources =
+    /(directory|profile|listing|catalog|portal|booking|provider|hospital|staff|doctolib|jameda|onedoc|google flights|skyscanner|kayak|каталог|профил|портал|бронир|клиник|госпитал|персонал|расписан)/i.test(
+      text,
+    );
+  return isDiscovery && needsInteractiveSources;
+}
+
 function shouldCollectMarketTimeseries(subtask: Subtask, text: string): boolean {
   const requestedTools = (subtask.requiredTools ?? []).map((tool) => tool.toLowerCase());
   return (
@@ -2448,7 +2574,7 @@ function clampMarketDays(days: number): number {
   return Math.max(1, Math.min(3650, Math.round(days)));
 }
 
-function buildSearchQueries(subtask: Subtask): string[] {
+function buildSearchQueries(subtask: Subtask, contextText = ""): string[] {
   const promptLines = subtask.prompt
     .split(/\n+/)
     .map((line) => line.replace(/^[-*\d.\s:]+/, "").trim())
@@ -2457,10 +2583,18 @@ function buildSearchQueries(subtask: Subtask): string[] {
   const sourceHints = promptLines
     .filter((line) => /google flights|skyscanner|kayak|momondo|booking|source|источник|ссылка/i.test(line))
     .join(" ");
-  const raw = `${subtask.title} ${leadLine} ${sourceHints}`;
+  const contextHints = buildContextSearchHints(`${contextText}\n${subtask.title}\n${subtask.prompt}`);
+  const raw = `${subtask.title} ${leadLine} ${sourceHints} ${contextHints}`;
 
   const primary = cleanSearchQuery(raw);
   const queries = [primary];
+  if (contextHints && /doctor|clinic|specialist|allerg|immunolog|врач|клиник|специалист|аллерг|иммунолог/i.test(raw)) {
+    queries.push(
+      cleanSearchQuery(
+        `${subtask.title} ${leadLine} ${contextHints} doctor directory hospital staff Doctolib Jameda OneDoc`,
+      ),
+    );
+  }
   const iataCodes = [...new Set(subtask.prompt.match(/\b[A-Z]{3}\b/g) ?? [])];
   if (iataCodes.length >= 2) {
     queries.push(cleanSearchQuery(`${iataCodes.slice(0, 3).join(" ")} flights Google Flights Skyscanner Kayak`));
@@ -2471,6 +2605,29 @@ function buildSearchQueries(subtask: Subtask): string[] {
   }
 
   return [...new Set(queries.filter(Boolean))].slice(0, 3);
+}
+
+function buildContextSearchHints(text: string): string {
+  const hints: string[] = [];
+  const candidates: Array<[RegExp, string]> = [
+    [/\bschengen\b|шенген/i, "Schengen Europe"],
+    [/\beurope\b|европ/i, "Europe"],
+    [/\bspain\b|испан/i, "Spain"],
+    [/\bmadrid\b|мадрид/i, "Madrid"],
+    [/\bgermany\b|герман|немец/i, "Germany"],
+    [/\bfrance\b|франц/i, "France"],
+    [/\bswitzerland\b|swiss|швейцар/i, "Switzerland"],
+    [/\baustria\b|австри/i, "Austria"],
+    [/\bitaly\b|итал/i, "Italy"],
+    [/\bportugal\b|португал/i, "Portugal"],
+    [/\bukrainian\b|украин/i, "Ukrainian"],
+    [/\brussian\b|русск/i, "Russian"],
+    [/\benglish\b|англий/i, "English"],
+  ];
+  for (const [pattern, hint] of candidates) {
+    if (pattern.test(text)) hints.push(hint);
+  }
+  return [...new Set(hints)].join(" ");
 }
 
 function cleanSearchQuery(value: string): string {
@@ -2565,7 +2722,9 @@ function improveDeclaredToolInput(
 ): unknown {
   if (toolName !== "browser.operate" || !isRecord(input)) return input;
   const commands = Array.isArray(input.commands) ? input.commands : [];
-  if (!commands.some(isBrittleBrowserInteractionCommand)) return input;
+  const hasPlaceholderNavigation = commands.some(isPlaceholderNavigateCommand);
+  const hasBrittleInteraction = commands.some(isBrittleBrowserInteractionCommand);
+  if (!hasPlaceholderNavigation && !hasBrittleInteraction) return input;
 
   const evidenceUrls = selectBestUrlsForArtifact(
     priorEvidence.join("\n\n"),
@@ -2573,7 +2732,13 @@ function improveDeclaredToolInput(
   );
   if (evidenceUrls.length === 0) return input;
   const firstNavigationUrl = commands.find(isNavigateCommand)?.url;
-  if (firstNavigationUrl && !isGenericBrowserSearchUrl(firstNavigationUrl)) return input;
+  if (
+    firstNavigationUrl &&
+    !isPlaceholderNavigateCommand({ type: "navigate", url: firstNavigationUrl }) &&
+    !isGenericBrowserSearchUrl(firstNavigationUrl)
+  ) {
+    return input;
+  }
 
   return {
     ...input,
@@ -2588,6 +2753,12 @@ function improveDeclaredToolInput(
       ];
     }),
   };
+}
+
+function hasInvalidBrowserNavigation(input: unknown): boolean {
+  if (!isRecord(input)) return false;
+  const commands = Array.isArray(input.commands) ? input.commands : [];
+  return commands.some(isPlaceholderNavigateCommand);
 }
 
 function requiresMultipleSources(subtask: Subtask): boolean {
@@ -2609,6 +2780,24 @@ function isBrittleBrowserInteractionCommand(command: unknown): boolean {
 
 function isNavigateCommand(command: unknown): command is { type: "navigate"; url: string } {
   return isRecord(command) && command.type === "navigate" && typeof command.url === "string";
+}
+
+function isPlaceholderNavigateCommand(command: unknown): boolean {
+  if (!isNavigateCommand(command)) return false;
+  const url = command.url.trim();
+  if (
+    /(?:URL_FROM_|PLACEHOLDER|REPLACE_WITH|PREVIOUS_STEP|SOURCE_URL|DIRECTORY_URL|PROFILE_URL|<url>|example\.com)/i.test(
+      url,
+    )
+  ) {
+    return true;
+  }
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol !== "http:" && parsed.protocol !== "https:";
+  } catch {
+    return true;
+  }
 }
 
 function isGenericBrowserSearchUrl(url: string): boolean {
@@ -2697,6 +2886,11 @@ function scoreArtifactUrl(url: string): number {
     if (host.includes("kayak") && /flight|route/.test(path)) return 105;
     if (/(momondo|kiwi|expedia|trip\.com|aviasales)/.test(host) && /flight|route/.test(path)) return 95;
     if (/(pegasus|turkishairlines|ryanair|easyjet|vueling|lufthansa)/.test(host)) return 85;
+    if (/(doctolib|doctoralia|jameda|onedoc|topdoctors|sanego|miodottore)/.test(host)) return 90;
+    if (/(find-?a-?doctor|doctor|doctors|clinician|specialist|provider|appointment|booking|aerzte|arzt|medecin|especialista|allergolog|immunolog)/.test(path)) {
+      return 70;
+    }
+    if (/(hospital|clinic|medical|health|gesundheit|hopital|spital)/.test(host)) return 45;
     return 0;
   } catch {
     return 0;
@@ -2704,7 +2898,7 @@ function scoreArtifactUrl(url: string): number {
 }
 
 function isLowValueProofUrl(url: string): boolean {
-  return /example\.com|placeholder|localhost|127\.0\.0\.1|facebook\.com|reddit\.com|quora\.com|\.pdf(?:$|[?#])|faa\.gov|easa\.europa\.eu|aclanthology\.org|stanford\.edu|baymard\.com|codalab\.org|nlp\.biu\.ac\.il/i.test(
+  return /example\.com|placeholder|localhost|127\.0\.0\.1|facebook\.com|reddit\.com|quora\.com|github\.com|medlineplus\.gov|ahd\.com|\.pdf(?:$|[?#])|faa\.gov|easa\.europa\.eu|aclanthology\.org|stanford\.edu|baymard\.com|codalab\.org|nlp\.biu\.ac\.il/i.test(
     url,
   );
 }
@@ -2774,6 +2968,15 @@ function hardGateReview(workerResult: WorkerResult): ReviewResult | undefined {
     };
   }
 
+  if (containsUnsatisfiedDiscoveryFailure(workerResult)) {
+    return {
+      subtaskId: workerResult.subtask.id,
+      verdict: "needs_revision",
+      notes:
+        "The subtask expected discovery or candidate evidence, but the worker only reported that nothing useful was found. Retry with an alternative source/tool strategy, or return a precise external blocker with evidence.",
+    };
+  }
+
   if (containsPlaceholderProof(workerResult.output)) {
     return {
       subtaskId: workerResult.subtask.id,
@@ -2813,6 +3016,31 @@ function containsPlaceholderProof(text: string): boolean {
   return /https?:\/\/(?:www\.)?example\.com|placeholder|fake-|screenshot-capture\.placeholder|dummy|todo-url/i.test(text);
 }
 
+function containsUnsatisfiedDiscoveryFailure(workerResult: WorkerResult): boolean {
+  const subtaskText = [
+    workerResult.subtask.title,
+    workerResult.subtask.prompt,
+    workerResult.subtask.expectedOutput,
+    ...(workerResult.subtask.reviewCriteria ?? []),
+  ].join("\n");
+  const expectsDiscovery =
+    /(find|search|identify|discover|collect|candidate|source|lookup|recommend|rank|compare|list|doctor|clinic|specialist|profile|price|ticket|flight|найди|поиск|подбери|кандидат|источник|список|рекоменд|сравн|врач|клиник|специалист|билет|рейс|цена)/i.test(
+      subtaskText,
+    );
+  if (!expectsDiscovery) return false;
+  const output = workerResult.output;
+  const emptyDiscovery =
+    /(no candidates|no suitable candidates|no results|nothing useful|nothing found|could not find|unable to find|failed to find|insufficient data|empty result|search returned no|не наш[её]л|не удалось найти|нет кандидатов|нет результатов|ничего не найдено|не обнаружено|данных недостаточно)/i.test(
+      output,
+    );
+  if (!emptyDiscovery) return false;
+  const hasRecoveryEvidence =
+    /(retried|alternative source|second source|direct url|browser\.operate|tool evidence|artifact URL|external blocker|access denied|login wall|blocked by|provider returned|повтор|альтернатив|другой источник|прямая ссылка|артефакт|внешн(?:ий|яя) блокер|доступ запрещ|заблокирован)/i.test(
+      output,
+    ) || (workerResult.toolEvidence?.length ?? 0) >= 2;
+  return !hasRecoveryEvidence;
+}
+
 function containsWeakArtifactEvidence(text: string): boolean {
   const hasArtifactContext = /screenshot|скриншот|artifact|артефакт|browser|браузер|proof|доказатель/i.test(text);
   const hasWeakEvidence =
@@ -2850,6 +3078,16 @@ type ScreenshotToolData = {
   url?: string;
 };
 
+type GenericArtifactToolData = {
+  artifact: {
+    filename: string;
+    mimeType: string;
+    contentBase64?: string;
+    content?: string;
+    description?: string;
+  };
+};
+
 function isScreenshotToolData(data: unknown): data is ScreenshotToolData {
   if (!data || typeof data !== "object") return false;
   const artifact = (data as { artifact?: unknown }).artifact;
@@ -2862,6 +3100,43 @@ function isScreenshotToolData(data: unknown): data is ScreenshotToolData {
     typeof candidate.contentBase64 === "string" &&
     candidate.contentBase64.length > 0
   );
+}
+
+function isGenericArtifactToolData(data: unknown): data is GenericArtifactToolData {
+  if (!data || typeof data !== "object") return false;
+  const artifact = (data as { artifact?: unknown }).artifact;
+  if (!artifact || typeof artifact !== "object") return false;
+
+  const candidate = artifact as Partial<GenericArtifactToolData["artifact"]>;
+  return (
+    typeof candidate.filename === "string" &&
+    typeof candidate.mimeType === "string" &&
+    ((typeof candidate.contentBase64 === "string" && candidate.contentBase64.length > 0) ||
+      typeof candidate.content === "string")
+  );
+}
+
+function genericArtifactDataToCreateInput(data: GenericArtifactToolData): ArtifactCreateInput {
+  return {
+    filename: data.artifact.filename,
+    mimeType: data.artifact.mimeType,
+    content: data.artifact.contentBase64
+      ? Buffer.from(data.artifact.contentBase64, "base64")
+      : data.artifact.content ?? "",
+    description: data.artifact.description,
+  };
+}
+
+function safeArtifactSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё]+/giu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "artifact";
+}
+
+function capitalize(value: string): string {
+  return value.slice(0, 1).toUpperCase() + value.slice(1);
 }
 
 function sanitizeToolPayload(value: unknown): unknown {

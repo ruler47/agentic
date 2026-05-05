@@ -3,7 +3,8 @@ import {
   ToolBuildRequest,
   ToolBuildRequestStore,
 } from "./toolBuildRequestStore.js";
-import { ToolSchema } from "./tool.js";
+import { ToolExample, ToolSchema, ToolStorageContract } from "./tool.js";
+import type { ToolPackageManifest } from "./toolPackage.js";
 
 export type ToolBuildOutput = {
   modulePath: string;
@@ -14,7 +15,12 @@ export type ToolBuildOutput = {
   inputSchema?: ToolSchema;
   outputSchema?: ToolSchema;
   requiredSecretHandles?: string[];
+  requiredConfigurationKeys?: string[];
+  settingsSchema?: ToolSchema;
+  storage?: ToolStorageContract;
   docsMarkdown?: string;
+  examples?: ToolExample[];
+  packageManifest?: ToolPackageManifest;
   changeSummary?: string;
 };
 

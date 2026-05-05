@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
+import { PostgresToolMetadataStore } from "../src/tools/postgresToolMetadataStore.js";
 import { InMemoryToolBuildRequestStore, createToolBuildContract } from "../src/tools/toolBuildRequestStore.js";
 import { Tool } from "../src/tools/tool.js";
+import { PgPool } from "../src/db/pool.js";
 
 const tool: Tool = {
   name: "example.tool",
@@ -235,6 +237,85 @@ test("InMemoryToolMetadataStore blocks generated replacements for builtin tools"
   );
 });
 
+test("PostgresToolMetadataStore registerGenerated binds every insert column", async () => {
+  const queries: Array<{ text: string; params?: unknown[] }> = [];
+  const rowDate = new Date("2026-05-04T10:00:00.000Z");
+  const pool = {
+    async query(text: string, params?: unknown[]) {
+      queries.push({ text, params });
+      if (text.includes("select name") && text.includes("from tool_modules")) {
+        return { rows: [] };
+      }
+      if (text.includes("insert into tool_modules")) {
+        assert.match(text, /examples, package_manifest, source, status, updated_at/);
+        assert.match(text, /\$17,\s*\$18,\s*'generated',\s*'disabled',\s*\$19/);
+        assert.equal(params?.length, 19);
+        return {
+          rows: [
+            {
+              name: params?.[0],
+              display_name: params?.[1],
+              version: params?.[2],
+              description: params?.[3],
+              capabilities: params?.[4],
+              startup_mode: params?.[5],
+              input_schema: params?.[6],
+              output_schema: params?.[7],
+              module_path: params?.[8],
+              test_path: params?.[9],
+              required_configuration_keys: params?.[10],
+              required_secret_handles: params?.[11],
+              settings_schema: params?.[12],
+              storage_contract: params?.[13],
+              docs_markdown: params?.[14],
+              change_summary: params?.[15],
+              examples: JSON.parse(String(params?.[16] ?? "[]")),
+              package_manifest: params?.[17] ? JSON.parse(String(params?.[17])) : null,
+              source: "generated",
+              status: "disabled",
+              last_health_ok: null,
+              last_health_detail: null,
+              success_count: 0,
+              failure_count: 0,
+              last_success_at: null,
+              last_failure_at: null,
+              updated_at: rowDate,
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    },
+  } as unknown as PgPool;
+
+  const store = new PostgresToolMetadataStore(pool);
+  const registered = await store.registerGenerated({
+    name: "generated.pdf.report",
+    displayName: "PDF Report",
+    version: "1.0.0",
+    description: "Creates PDF artifacts.",
+    capabilities: ["pdf-generation", "artifact-generation"],
+    modulePath: "src/tools/generated/pdf-reportTool.ts",
+    testPath: "tests/generated/pdf-reportTool.test.ts",
+    docsMarkdown: "Use this tool to create a PDF artifact.",
+    examples: [{ title: "Report", input: { title: "Hello" } }],
+    packageManifest: {
+      schemaVersion: "agentic.tool-package.v1",
+      name: "generated.pdf.report",
+      version: "1.0.0",
+      description: "Creates PDF artifacts.",
+      capabilities: ["pdf-generation", "artifact-generation"],
+      startupMode: "on-demand",
+      package: { type: "local-path", ref: "src/tools/generated/pdf-reportTool.ts" },
+    },
+  });
+
+  assert.equal(registered.name, "generated.pdf.report");
+  assert.equal(registered.displayName, "PDF Report");
+  assert.equal(registered.packageManifest?.package.type, "local-path");
+  assert.equal(queries.some((query) => query.text === "commit"), true);
+});
+
 test("tool build request store creates a reusable builder and QA contract", async () => {
   const store = new InMemoryToolBuildRequestStore();
   const request = await store.create({
@@ -383,4 +464,9 @@ test("createToolBuildContract preserves requested always-on startup mode", () =>
       instruction.includes('Use startupMode "always-on"'),
     ),
   );
+  assert.equal(contract.integration?.kind, "integration");
+  assert.equal(contract.integration?.mode, "always-on-service");
+  assert.equal(contract.integration?.providerHint, "telegram");
+  assert.equal(contract.integration?.inbound.mapsTo, "run");
+  assert.ok(contract.builderInstructions.some((instruction) => instruction.includes("Integration contract")));
 });

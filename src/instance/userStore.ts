@@ -55,6 +55,7 @@ export type ResolveUserInput = {
   requesterUserId?: string;
   channel?: string;
   sourceUserId?: string;
+  sourceUserAliases?: string[];
   fallbackUserId?: string;
 };
 
@@ -171,13 +172,17 @@ export class InMemoryUserStore implements UserStore {
   async resolve(input: ResolveUserInput): Promise<UserRecord | undefined> {
     if (input.requesterUserId) return this.get(input.requesterUserId);
 
-    if (input.sourceUserId && input.channel) {
+    if ((input.sourceUserId || input.sourceUserAliases?.length) && input.channel) {
       const provider = normalizeProvider(input.channel);
+      const sourceIds = uniqueIdentityIds([
+        input.sourceUserId,
+        ...(input.sourceUserAliases ?? []),
+      ]);
       for (const user of this.users.values()) {
         const identity = user.identities.find(
           (candidate) =>
             candidate.provider === provider &&
-            candidate.providerUserId === input.sourceUserId &&
+            sourceIds.includes(candidate.providerUserId) &&
             candidate.allowStatus === "allowed",
         );
         if (identity) return cloneUser(user);
@@ -305,6 +310,10 @@ function cloneUser(user: UserRecord): UserRecord {
 function normalizeRoles(roles: string[]): string[] {
   const normalized = roles.map((role) => role.trim()).filter(Boolean);
   return [...new Set(normalized.length ? normalized : ["member"])];
+}
+
+function uniqueIdentityIds(values: Array<string | undefined>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
 }
 
 function createUserId(displayName: string): string {

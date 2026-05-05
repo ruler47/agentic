@@ -51,7 +51,9 @@ import { PostgresToolServiceEventStore } from "../tools/postgresToolServiceEvent
 import {
   BrowserScreenshotToolBuildProvider,
   CommandToolQaRunner,
+  DocumentArtifactToolBuildProvider,
   GenericApiToolBuildProvider,
+  GenericServiceToolBuildProvider,
   GeneratedToolFileBuilder,
   MetadataToolRegistrar,
 } from "../tools/toolBuildProviders.js";
@@ -115,7 +117,12 @@ if (reconciledToolServices.length > 0) {
 }
 const toolBuildWorkflow = new ToolBuildWorkflow(
   toolBuildRequestStore,
-  new GeneratedToolFileBuilder([new BrowserScreenshotToolBuildProvider(), new GenericApiToolBuildProvider()]),
+  new GeneratedToolFileBuilder([
+    new BrowserScreenshotToolBuildProvider(),
+    new DocumentArtifactToolBuildProvider(),
+    new GenericServiceToolBuildProvider(),
+    new GenericApiToolBuildProvider(),
+  ]),
   new CommandToolQaRunner(),
   new MetadataToolRegistrar(toolMetadataStore),
 );

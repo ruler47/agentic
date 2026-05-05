@@ -15,11 +15,35 @@ import {
   ToolBuildRequest,
 } from "./toolBuildRequestStore.js";
 import { ToolMetadataStore } from "./toolMetadataStore.js";
-import { ToolSchema } from "./tool.js";
+import { ToolExample, ToolSchema, ToolStartupMode, ToolStorageContract } from "./tool.js";
+import {
+  integrationDocsMarkdown,
+  integrationSettingsSchema,
+  ToolIntegrationSpec,
+} from "./toolIntegrationSpec.js";
+import type { ToolPackageManifest } from "./toolPackage.js";
 
 type GeneratedFile = {
   path: string;
   content: string;
+};
+
+type ToolPackageManifestInput = {
+  toolName: string;
+  displayName?: string;
+  version: string;
+  description: string;
+  capabilities: string[];
+  startupMode: ToolStartupMode;
+  modulePath: string;
+  inputSchema?: ToolSchema;
+  outputSchema?: ToolSchema;
+  requiredConfigurationKeys?: string[];
+  requiredSecretHandles?: string[];
+  settingsSchema?: ToolSchema;
+  storage?: ToolStorageContract;
+  docsMarkdown?: string;
+  examples?: ToolExample[];
 };
 
 type ToolBuildProviderOutput = {
@@ -31,10 +55,39 @@ type ToolBuildProviderOutput = {
   inputSchema?: ToolSchema;
   outputSchema?: ToolSchema;
   requiredSecretHandles?: string[];
+  requiredConfigurationKeys?: string[];
+  settingsSchema?: ToolSchema;
+  storage?: ToolStorageContract;
   docsMarkdown?: string;
+  examples?: ToolExample[];
+  packageManifest?: ToolPackageManifest;
   changeSummary?: string;
   files: GeneratedFile[];
 };
+
+function genericToolPackageManifest(input: ToolPackageManifestInput): ToolPackageManifest {
+  return {
+    schemaVersion: "agentic.tool-package.v1",
+    name: input.toolName,
+    displayName: input.displayName,
+    version: input.version,
+    description: input.description,
+    capabilities: [...input.capabilities],
+    startupMode: input.startupMode,
+    package: {
+      type: "local-path",
+      ref: input.modulePath,
+    },
+    inputSchema: input.inputSchema,
+    outputSchema: input.outputSchema,
+    requiredConfigurationKeys: input.requiredConfigurationKeys,
+    requiredSecretHandles: input.requiredSecretHandles,
+    settingsSchema: input.settingsSchema,
+    storage: input.storage,
+    docsMarkdown: input.docsMarkdown,
+    examples: input.examples,
+  };
+}
 
 export type ToolBuildProvider = {
   canBuild(request: ToolBuildRequest): boolean;
@@ -69,7 +122,12 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
       inputSchema: output.inputSchema,
       outputSchema: output.outputSchema,
       requiredSecretHandles: output.requiredSecretHandles,
+      requiredConfigurationKeys: output.requiredConfigurationKeys,
+      settingsSchema: output.settingsSchema,
+      storage: output.storage,
       docsMarkdown: output.docsMarkdown,
+      examples: output.examples,
+      packageManifest: output.packageManifest,
       changeSummary: output.changeSummary,
     };
   }
@@ -160,8 +218,13 @@ export class MetadataToolRegistrar implements ToolRegistrar {
       outputSchema: output.outputSchema ?? request.contract.outputSchema,
       modulePath: output.modulePath,
       testPath: output.testPath,
+      requiredConfigurationKeys: output.requiredConfigurationKeys,
       requiredSecretHandles: output.requiredSecretHandles ?? request.credentialHandles,
+      settingsSchema: output.settingsSchema,
+      storage: output.storage,
       docsMarkdown: output.docsMarkdown,
+      examples: output.examples,
+      packageManifest: output.packageManifest,
       changeSummary: output.changeSummary ?? formatToolVersionChangeSummary(request, output),
     };
 
@@ -265,6 +328,174 @@ export class GenericApiToolBuildProvider implements ToolBuildProvider {
       ],
     };
   }
+}
+
+export class GenericServiceToolBuildProvider implements ToolBuildProvider {
+  canBuild(request: ToolBuildRequest): boolean {
+    const text = [
+      request.capability,
+      request.contract.capability,
+      request.contract.toolName,
+      request.reason,
+      request.taskSummary,
+      (request.requiredInputs ?? []).join(" "),
+      (request.requiredOutputs ?? []).join(" "),
+    ].join(" ");
+
+    return (
+      request.contract.startupMode === "always-on" ||
+      /\b(service|listener|bot|channel|messaging|inbound|outbound|webhook|always[-\s]?on)\b/i.test(text)
+    );
+  }
+
+  build(request: ToolBuildRequest): ToolBuildProviderOutput {
+    const modulePath = request.contract.modulePath;
+    const testPath = request.contract.testPath;
+    const toolName = request.contract.toolName;
+    const capability = request.capability;
+    const integration = request.contract.integration ?? defaultServiceIntegration(request);
+    const secretHandles = integration.credentials.handles.length
+      ? integration.credentials.handles
+      : request.credentialHandles ?? [];
+    const capabilities = [...new Set([
+      capability,
+      "always-on-service",
+      "tool-integration",
+      "inbound-event",
+      "outbound-event",
+      "service-runtime",
+      ...(integration.providerHint ? [`provider:${integration.providerHint}`] : []),
+    ])];
+    const settingsSchema = integrationSettingsSchema(integration);
+    const storage = genericServiceStorageContract(toolName);
+
+    return {
+      modulePath,
+      testPath,
+      summary: `Generated provider-neutral always-on service tool ${toolName}.`,
+      displayName: request.displayName ?? request.contract.displayName,
+      capabilities,
+      inputSchema: genericServiceInputSchema(),
+      outputSchema: genericServiceOutputSchema(),
+      requiredSecretHandles: secretHandles,
+      settingsSchema,
+      storage,
+      docsMarkdown: genericServiceDocsMarkdown(capability, integration),
+      examples: genericServiceExamples(integration),
+      packageManifest: genericToolPackageManifest({
+        toolName,
+        displayName: request.displayName ?? request.contract.displayName,
+        version: request.contract.version,
+        description: "Provider-neutral always-on service bridge with lifecycle health and normalized event recording.",
+        capabilities,
+        startupMode: "always-on",
+        modulePath,
+        inputSchema: genericServiceInputSchema(),
+        outputSchema: genericServiceOutputSchema(),
+        requiredSecretHandles: secretHandles,
+        settingsSchema,
+        storage,
+        docsMarkdown: genericServiceDocsMarkdown(capability, integration),
+        examples: genericServiceExamples(integration),
+      }),
+      files: [
+        {
+          path: modulePath,
+          content: genericServiceToolSource(
+            toolName,
+            capability,
+            capabilities,
+            integration,
+            settingsSchema,
+            storage,
+            secretHandles,
+            request.contract.version,
+          ),
+        },
+        { path: testPath, content: genericServiceToolTestSource(modulePath, toolName, capability, integration) },
+      ],
+    };
+  }
+}
+
+export class DocumentArtifactToolBuildProvider implements ToolBuildProvider {
+  canBuild(request: ToolBuildRequest): boolean {
+    const text = [
+      request.capability,
+      request.contract.capability,
+      request.contract.toolName,
+      request.reason,
+      request.taskSummary,
+      (request.requiredOutputs ?? []).join(" "),
+    ].join(" ");
+
+    return /\b(pdf|document|report|docx|markdown|html)\b|pdf[-.\s]?generation|document[-.\s]?generation|report[-.\s]?generation/i.test(text);
+  }
+
+  build(request: ToolBuildRequest): ToolBuildProviderOutput {
+    const modulePath = request.contract.modulePath;
+    const testPath = request.contract.testPath;
+    const toolName = request.contract.toolName;
+    const capability = request.capability;
+
+    return {
+      modulePath,
+      testPath,
+      summary: `Generated reusable PDF/document artifact renderer ${toolName}.`,
+      displayName: request.displayName ?? request.contract.displayName,
+      capabilities: [...new Set([capability, "document-generation", "pdf-generation", "artifact-generation"])],
+      inputSchema: documentArtifactInputSchema(),
+      outputSchema: documentArtifactOutputSchema(),
+      docsMarkdown: documentArtifactDocsMarkdown(capability),
+      files: [
+        { path: modulePath, content: documentArtifactToolSource(toolName, capability, request.contract.version) },
+        { path: testPath, content: documentArtifactToolTestSource(modulePath, toolName, capability) },
+      ],
+    };
+  }
+}
+
+function documentArtifactInputSchema(): ToolSchema {
+  return {
+    type: "object",
+    properties: {
+      title: { type: "string" },
+      content: { type: "string" },
+      markdown: { type: "string" },
+      task: { type: "string" },
+      context: { type: "string" },
+      filename: { type: "string" },
+    },
+  };
+}
+
+function documentArtifactOutputSchema(): ToolSchema {
+  return {
+    type: "object",
+    properties: {
+      ok: { type: "boolean" },
+      content: { type: "string" },
+      data: {
+        type: "object",
+        properties: {
+          artifact: { type: "object" },
+        },
+      },
+    },
+    required: ["ok", "content"],
+  };
+}
+
+function documentArtifactDocsMarkdown(capability: string): string {
+  return [
+    `# ${capability}`,
+    "",
+    "Generated reusable document artifact renderer.",
+    "",
+    "Use this tool when an agent needs to turn reviewed task context into a downloadable PDF report artifact.",
+    "Inputs are domain-neutral: title, content/markdown/context, and optional filename.",
+    "The tool returns an artifact payload with `application/pdf` MIME type and base64 content for the shared artifact store.",
+  ].join("\n");
 }
 
 type ApiEndpointPreset = {
@@ -484,6 +715,122 @@ function genericApiOutputSchema(): ToolSchema {
     },
     required: ["ok", "content"],
   };
+}
+
+function genericServiceInputSchema(): ToolSchema {
+  return {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["status", "recordInbound", "recordOutbound", "recordEvent"] },
+      eventId: { type: "string" },
+      sourceUserId: { type: "string" },
+      sourceChatId: { type: "string" },
+      sourceMessageId: { type: "string" },
+      threadId: { type: "string" },
+      payload: { type: "object" },
+    },
+  };
+}
+
+function genericServiceOutputSchema(): ToolSchema {
+  return {
+    type: "object",
+    properties: {
+      ok: { type: "boolean" },
+      content: { type: "string" },
+      data: {
+        type: "object",
+        properties: {
+          status: { type: "string" },
+          startupMode: { type: "string" },
+          events: { type: "object" },
+        },
+      },
+    },
+    required: ["ok", "content"],
+  };
+}
+
+function defaultServiceIntegration(request: ToolBuildRequest): ToolIntegrationSpec {
+  return {
+    kind: "integration",
+    mode: "always-on-service",
+    providerHint: undefined,
+    inbound: {
+      enabled: true,
+      eventShape: "generic",
+      mapsTo: "run",
+    },
+    outbound: {
+      enabled: true,
+      eventShape: "generic",
+      source: "outbox",
+    },
+    credentials: {
+      handles: request.credentialHandles ?? [],
+      inferredFromNotes: false,
+      required: !!request.credentialHandles?.length,
+    },
+    settings: [],
+    lifecycle: {
+      startupMode: request.contract.startupMode,
+      healthcheckRequired: true,
+      supervisorManaged: true,
+      qaRequired: [
+        "Generated module imports and exposes a standard Tool contract.",
+        "Lifecycle healthcheck is observable before and after startup.",
+        "Inbound/outbound events use the neutral integration event contract.",
+      ],
+    },
+    notes: ["Provider APIs must be mapped into the neutral integration event contract."],
+  };
+}
+
+function genericServiceStorageContract(toolName: string): ToolStorageContract {
+  const schema = `tool_${toolName.replace(/^generated[._-]/, "").replace(/[^a-zA-Z0-9]+/g, "_").toLowerCase()}`.slice(0, 63);
+  return {
+    schema,
+    tables: ["service_events", "service_offsets", "service_delivery_attempts"],
+    migrations: ["001_create_service_runtime_tables"],
+    retention: "Runtime events should be retained according to instance artifact/audit policy.",
+    permissions: ["select", "insert", "update", "delete-own-runtime-records"],
+    destructiveCapabilities: ["delete runtime events for this generated integration only"],
+  };
+}
+
+function genericServiceExamples(integration: ToolIntegrationSpec): ToolExample[] {
+  return [
+    {
+      title: "Check service status",
+      input: { action: "status" },
+      output: { ok: true, data: { status: "ready", startupMode: integration.lifecycle.startupMode } },
+    },
+    {
+      title: "Record normalized inbound event",
+      input: {
+        action: "recordInbound",
+        eventId: "provider-event-1",
+        sourceUserId: "provider-user-1",
+        payload: { text: "Create a task from this message." },
+      },
+      output: { ok: true, data: { event: { direction: "inbound" } } },
+    },
+  ];
+}
+
+function genericServiceDocsMarkdown(capability: string, integration: ToolIntegrationSpec): string {
+  return [
+    `# ${capability}`,
+    "",
+    "Generated provider-neutral always-on service tool.",
+    "",
+    "Use this module as a durable service/listener bridge when an agent needs a tool that can run continuously.",
+    "The module exposes the standard Tool `startService` contract, healthchecks, and neutral event recording actions.",
+    "Provider-specific APIs must translate their native events into the neutral inbound/outbound event shape instead of importing Agentic internals.",
+    "Secrets must be passed through declared secret handles and resolved by the runtime context.",
+    "",
+    integrationDocsMarkdown(integration),
+  ].join("\n");
 }
 
 function genericApiToolSource(
@@ -924,6 +1271,304 @@ test("${toolName} calls a JSON API endpoint with query and declared secret handl
 `;
 }
 
+function genericServiceToolSource(
+  toolName: string,
+  capability: string,
+  capabilities: string[],
+  integration: ToolIntegrationSpec,
+  settingsSchema: ToolSchema,
+  storage: ToolStorageContract,
+  secretHandles: string[],
+  version = "1.0.0",
+): string {
+  return `import {
+  Tool,
+  ToolInput,
+  ToolResult,
+  ToolServiceContext,
+  ToolServiceHandle,
+} from "../tool.js";
+
+type NeutralServiceEvent = {
+  id: string;
+  direction: "inbound" | "outbound" | "system";
+  sourceUserId?: string;
+  sourceChatId?: string;
+  sourceMessageId?: string;
+  threadId?: string;
+  payload?: Record<string, unknown>;
+  recordedAt: string;
+};
+
+type ServiceState = {
+  startedAt?: string;
+  stoppedAt?: string;
+  lastHeartbeatAt?: string;
+  events: NeutralServiceEvent[];
+  missingSecrets: string[];
+};
+
+const state: ServiceState = {
+  events: [],
+  missingSecrets: [],
+};
+const integrationSpec = ${JSON.stringify(integration, null, 2)} as { mode: string; providerHint?: string } & Record<string, unknown>;
+const requiredSecretHandles = ${JSON.stringify(secretHandles)};
+
+export const tool: Tool = {
+  name: ${JSON.stringify(toolName)},
+  version: ${JSON.stringify(version)},
+  description: "Provider-neutral always-on service bridge with lifecycle health and normalized event recording.",
+  capabilities: ${JSON.stringify(capabilities)},
+  startupMode: "always-on",
+  requiredSecretHandles,
+  settingsSchema: ${JSON.stringify(settingsSchema, null, 2)},
+  storage: ${JSON.stringify(storage, null, 2)},
+  docsMarkdown: ${JSON.stringify(genericServiceDocsMarkdown(capability, integration))},
+  examples: ${JSON.stringify(genericServiceExamples(integration), null, 2)},
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["status", "recordInbound", "recordOutbound", "recordEvent"] },
+      eventId: { type: "string" },
+      sourceUserId: { type: "string" },
+      sourceChatId: { type: "string" },
+      sourceMessageId: { type: "string" },
+      threadId: { type: "string" },
+      payload: { type: "object" }
+    }
+  },
+  outputSchema: {
+    type: "object",
+    properties: {
+      ok: { type: "boolean" },
+      content: { type: "string" },
+      data: {
+        type: "object",
+        properties: {
+          status: { type: "string" },
+          startupMode: { type: "string" },
+          events: { type: "object" }
+        }
+      }
+    },
+    required: ["ok", "content"]
+  },
+  async healthcheck() {
+    return {
+      ok: state.missingSecrets.length === 0,
+      detail: state.missingSecrets.length > 0
+        ? "Missing required secret handles: " + state.missingSecrets.join(", ")
+        : state.startedAt && !state.stoppedAt
+        ? "Service bridge runtime is started."
+        : "Service bridge module is importable and ready to start."
+    };
+  },
+  async startService(context: ToolServiceContext): Promise<ToolServiceHandle> {
+    state.missingSecrets = [];
+    for (const handle of requiredSecretHandles) {
+      if (!context.resolveSecret) {
+        state.missingSecrets.push(handle);
+        continue;
+      }
+      const secret = await context.resolveSecret(handle);
+      if (!secret) state.missingSecrets.push(handle);
+    }
+    state.startedAt = context.now.toISOString();
+    state.stoppedAt = undefined;
+    state.lastHeartbeatAt = state.startedAt;
+    context.logger?.info("Generated service bridge started.", {
+      capability: ${JSON.stringify(capability)},
+      startupMode: "always-on",
+      mode: integrationSpec.mode,
+      providerHint: integrationSpec.providerHint
+    });
+
+    const timer = setInterval(() => {
+      state.lastHeartbeatAt = new Date().toISOString();
+    }, 60_000);
+    timer.unref?.();
+
+    const stop = async () => {
+      clearInterval(timer);
+      state.stoppedAt = new Date().toISOString();
+      context.logger?.info("Generated service bridge stopped.", {
+        capability: ${JSON.stringify(capability)}
+      });
+    };
+    context.signal.addEventListener("abort", () => {
+      void stop();
+    }, { once: true });
+
+    return {
+      stop,
+      async healthcheck() {
+        return {
+          ok: !state.stoppedAt && state.missingSecrets.length === 0,
+          detail: state.missingSecrets.length > 0
+            ? "Missing required secret handles: " + state.missingSecrets.join(", ")
+            : state.stoppedAt
+            ? "Service bridge runtime is stopped."
+            : "Service bridge runtime is healthy."
+        };
+      }
+    };
+  },
+  async run(input: ToolInput): Promise<ToolResult> {
+    const action = typeof input.action === "string" ? input.action : "status";
+    if (action === "recordInbound" || action === "recordOutbound" || action === "recordEvent") {
+      const event = normalizeEvent(input, action);
+      state.events.unshift(event);
+      state.events.splice(50);
+      return {
+        ok: true,
+        content: "Recorded neutral service event " + event.id + ".",
+        data: {
+          status: runtimeStatus(),
+          startupMode: "always-on",
+          integration: integrationSpec,
+          event
+        }
+      };
+    }
+
+    return {
+      ok: true,
+      content: "Service bridge status: " + runtimeStatus() + ".",
+      data: {
+        status: runtimeStatus(),
+        startupMode: "always-on",
+        integration: integrationSpec,
+        startedAt: state.startedAt,
+        stoppedAt: state.stoppedAt,
+        lastHeartbeatAt: state.lastHeartbeatAt,
+        missingSecrets: state.missingSecrets,
+        events: state.events.slice(0, 10)
+      }
+    };
+  }
+};
+
+export default tool;
+
+function normalizeEvent(input: ToolInput, action: string): NeutralServiceEvent {
+  const direction = action === "recordOutbound"
+    ? "outbound"
+    : action === "recordInbound"
+      ? "inbound"
+      : "system";
+  const eventId = typeof input.eventId === "string" && input.eventId.trim()
+    ? input.eventId.trim()
+    : "event_" + Date.now().toString(36);
+
+  return {
+    id: eventId,
+    direction,
+    sourceUserId: textValue(input.sourceUserId),
+    sourceChatId: textValue(input.sourceChatId),
+    sourceMessageId: textValue(input.sourceMessageId),
+    threadId: textValue(input.threadId),
+    payload: isRecord(input.payload) ? input.payload : undefined,
+    recordedAt: new Date().toISOString()
+  };
+}
+
+function runtimeStatus(): string {
+  if (state.startedAt && !state.stoppedAt) return "running";
+  if (state.stoppedAt) return "stopped";
+  return "ready";
+}
+
+function textValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+`;
+}
+
+function genericServiceToolTestSource(
+  modulePath: string,
+  toolName: string,
+  capability: string,
+  integration: ToolIntegrationSpec,
+): string {
+  const importPath = relative("tests/generated", modulePath).replace(/\\/g, "/").replace(/\.ts$/, ".js");
+
+  return `import test from "node:test";
+import assert from "node:assert/strict";
+import { tool } from "${importPath.startsWith(".") ? importPath : `./${importPath}`}";
+
+test("${toolName} exposes a valid generated always-on service contract", async () => {
+  const health = await tool.healthcheck?.();
+
+  assert.equal(tool.name, ${JSON.stringify(toolName)});
+  assert.equal(tool.startupMode, "always-on");
+  assert.equal(typeof tool.startService, "function");
+  assert.ok(tool.capabilities.includes(${JSON.stringify(capability)}));
+  assert.ok(tool.capabilities.includes("always-on-service"));
+  assert.ok(tool.capabilities.includes("tool-integration"));
+  assert.equal(tool.storage?.tables?.includes("service_events"), true);
+  assert.equal(tool.settingsSchema?.type, "object");
+  assert.match(tool.docsMarkdown ?? "", /Integration contract/);
+  assert.equal(health?.ok, true);
+});
+
+test("${toolName} starts, reports health, records neutral events, and stops", async () => {
+  const controller = new AbortController();
+  const logs: string[] = [];
+  const handle = await tool.startService?.({
+    toolName: tool.name,
+    now: new Date("2026-05-05T00:00:00.000Z"),
+    signal: controller.signal,
+    logger: {
+      info(message) { logs.push(message); },
+      warn(message) { logs.push(message); },
+      error(message) { logs.push(message); }
+    },
+    resolveSecret: async () => "resolved-secret"
+  });
+
+  assert.ok(handle);
+  assert.equal((await handle?.healthcheck?.())?.ok, true);
+  assert.ok(logs.some((message) => message.includes("started")));
+
+  const event = await tool.run({
+    action: "recordInbound",
+    eventId: "evt-1",
+    sourceUserId: "user-1",
+    payload: { text: "hello" }
+  });
+  const eventData = event.data as { event?: { id?: string; direction?: string } } | undefined;
+
+  assert.equal(event.ok, true);
+  assert.equal(eventData?.event?.id, "evt-1");
+  assert.equal(eventData?.event?.direction, "inbound");
+
+  await handle?.stop?.();
+  assert.equal((await handle?.healthcheck?.())?.ok, false);
+});
+
+test("${toolName} validates declared runtime secret handles", async () => {
+  if (${JSON.stringify(integration.credentials.handles.length)} === 0) return;
+  const controller = new AbortController();
+  const handle = await tool.startService?.({
+    toolName: tool.name,
+    now: new Date("2026-05-05T00:00:00.000Z"),
+    signal: controller.signal,
+    resolveSecret: async () => undefined
+  });
+
+  const health = await handle?.healthcheck?.();
+  assert.equal(health?.ok, false);
+  assert.match(health?.detail ?? "", /Missing required secret handles/);
+  await handle?.stop?.();
+});
+`;
+}
+
 function browserScreenshotToolSource(toolName: string, capability: string, version = "1.0.0"): string {
   return `import { chromium } from "@playwright/test";
 import { Tool, ToolInput, ToolResult } from "../tool.js";
@@ -1092,6 +1737,196 @@ test("${toolName} captures a local page screenshot artifact", async () => {
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
+});
+`;
+}
+
+function documentArtifactToolSource(toolName: string, capability: string, version = "1.0.0"): string {
+  return `import { Tool, ToolInput, ToolResult } from "../tool.js";
+
+type PdfArtifactData = {
+  artifact: {
+    filename: string;
+    mimeType: "application/pdf";
+    contentBase64: string;
+    description: string;
+  };
+};
+
+export const tool: Tool = {
+  name: ${JSON.stringify(toolName)},
+  version: ${JSON.stringify(version)},
+  description: "Renders plain text or Markdown-like content into a downloadable PDF artifact payload.",
+  capabilities: [...new Set([${JSON.stringify(capability)}, "document-generation", "pdf-generation", "artifact-generation"])],
+  startupMode: "on-demand",
+  inputSchema: {
+    type: "object",
+    properties: {
+      title: { type: "string" },
+      content: { type: "string" },
+      markdown: { type: "string" },
+      task: { type: "string" },
+      context: { type: "string" },
+      filename: { type: "string" }
+    }
+  },
+  outputSchema: {
+    type: "object",
+    properties: {
+      ok: { type: "boolean" },
+      content: { type: "string" },
+      data: { type: "object", properties: { artifact: { type: "object" } } }
+    },
+    required: ["ok", "content"]
+  },
+  async healthcheck() {
+    return { ok: true, detail: "Document artifact renderer is importable." };
+  },
+  async run(input: ToolInput): Promise<ToolResult> {
+    const title = textValue(input.title) || "Agentic Report";
+    const body = [input.content, input.markdown, input.context, input.task]
+      .map(textValue)
+      .filter(Boolean)
+      .join("\\n\\n");
+    if (!body.trim()) {
+      return { ok: false, content: "document generation requires content, markdown, context, or task text." };
+    }
+
+    const filename = safePdfFilename(textValue(input.filename) || title);
+    const pdf = renderSimplePdf(title, body);
+    const data: PdfArtifactData = {
+      artifact: {
+        filename,
+        mimeType: "application/pdf",
+        contentBase64: pdf.toString("base64"),
+        description: "Generated PDF document artifact: " + title
+      }
+    };
+
+    return {
+      ok: true,
+      content: "Generated PDF document artifact " + filename + ".",
+      data
+    };
+  }
+};
+
+export default tool;
+
+function textValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function safePdfFilename(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яё._-]+/giu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "agentic-report";
+  return slug.endsWith(".pdf") ? slug : slug + ".pdf";
+}
+
+function renderSimplePdf(title: string, body: string): Buffer {
+  const lines = wrapLines([title, "", ...body.split(/\\r?\\n/)].join("\\n"), 92).slice(0, 52);
+  const escapedLines = lines.map(escapePdfText);
+  const textCommands = [
+    "BT",
+    "/F1 12 Tf",
+    "50 792 Td",
+    "14 TL",
+    ...escapedLines.map((line, index) => index === 0 ? "(" + line + ") Tj" : "T* (" + line + ") Tj"),
+    "ET"
+  ].join("\\n");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    "<< /Length " + Buffer.byteLength(textCommands, "utf8") + " >>\\nstream\\n" + textCommands + "\\nendstream"
+  ];
+
+  let pdf = "%PDF-1.4\\n";
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(pdf, "utf8"));
+    pdf += String(index + 1) + " 0 obj\\n" + objects[index] + "\\nendobj\\n";
+  }
+  const xrefOffset = Buffer.byteLength(pdf, "utf8");
+  pdf += "xref\\n0 " + (objects.length + 1) + "\\n";
+  pdf += "0000000000 65535 f \\n";
+  for (let index = 1; index < offsets.length; index += 1) {
+    pdf += String(offsets[index]).padStart(10, "0") + " 00000 n \\n";
+  }
+  pdf += "trailer\\n<< /Size " + (objects.length + 1) + " /Root 1 0 R >>\\n";
+  pdf += "startxref\\n" + xrefOffset + "\\n%%EOF\\n";
+  return Buffer.from(pdf, "utf8");
+}
+
+function wrapLines(value: string, width: number): string[] {
+  const result: string[] = [];
+  for (const rawLine of value.split(/\\r?\\n/)) {
+    const words = rawLine.replace(/\\s+/g, " ").trim().split(" ").filter(Boolean);
+    if (words.length === 0) {
+      result.push("");
+      continue;
+    }
+    let line = "";
+    for (const word of words) {
+      if ((line + " " + word).trim().length > width) {
+        result.push(line);
+        line = word;
+      } else {
+        line = (line + " " + word).trim();
+      }
+    }
+    result.push(line);
+  }
+  return result;
+}
+
+function escapePdfText(value: string): string {
+  return value.replace(/\\\\/g, "\\\\\\\\").replace(/\\(/g, "\\\\(").replace(/\\)/g, "\\\\)");
+}
+`;
+}
+
+function documentArtifactToolTestSource(modulePath: string, toolName: string, capability: string): string {
+  const importPath = relative("tests/generated", modulePath).replace(/\\/g, "/").replace(/\.ts$/, ".js");
+
+  return `import test from "node:test";
+import assert from "node:assert/strict";
+import { tool } from "${importPath.startsWith(".") ? importPath : `./${importPath}`}";
+
+test("${toolName} exposes a valid generated document tool contract", async () => {
+  const health = await tool.healthcheck?.();
+
+  assert.equal(tool.name, ${JSON.stringify(toolName)});
+  assert.ok(tool.capabilities.includes(${JSON.stringify(capability)}));
+  assert.ok(tool.capabilities.includes("pdf-generation"));
+  assert.equal(health?.ok, true);
+});
+
+test("${toolName} rejects empty document content", async () => {
+  const result = await tool.run({ title: "Empty" });
+
+  assert.equal(result.ok, false);
+  assert.match(result.content, /requires content/);
+});
+
+test("${toolName} creates a reusable PDF artifact payload", async () => {
+  const result = await tool.run({
+    title: "Reusable Agent Report",
+    content: "A reusable report body with structured findings, evidence notes, and next actions.",
+    filename: "reusable-agent-report.pdf"
+  });
+  const data = result.data as { artifact?: { filename?: string; mimeType?: string; contentBase64?: string } } | undefined;
+  const content = Buffer.from(data?.artifact?.contentBase64 ?? "", "base64");
+
+  assert.equal(result.ok, true);
+  assert.equal(data?.artifact?.filename, "reusable-agent-report.pdf");
+  assert.equal(data?.artifact?.mimeType, "application/pdf");
+  assert.equal(content.subarray(0, 5).toString("utf8"), "%PDF-");
+  assert.ok(content.byteLength > 500);
 });
 `;
 }

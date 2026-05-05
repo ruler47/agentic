@@ -1,4 +1,9 @@
 import { ToolSchema, ToolStartupMode } from "./tool.js";
+import {
+  inferToolIntegrationSpec,
+  integrationDocsMarkdown,
+  ToolIntegrationSpec,
+} from "./toolIntegrationSpec.js";
 
 export type ToolBuildRequestStatus =
   | "requested"
@@ -43,6 +48,7 @@ export type ToolBuildContract = {
   builderInstructions: string[];
   version: string;
   replacesVersion?: string;
+  integration?: ToolIntegrationSpec;
 };
 
 export type ToolBuildQaReport = {
@@ -153,6 +159,7 @@ export function createToolBuildContract(input: ToolBuildRequestInput): ToolBuild
   const pathSlug = input.replacesVersion ? `${slug}-v${version.replace(/[^a-z0-9]+/gi, "-")}` : slug;
   const requiredInputs = input.requiredInputs?.length ? input.requiredInputs : ["task", "context"];
   const requiredOutputs = input.requiredOutputs?.length ? input.requiredOutputs : ["content", "data"];
+  const integration = inferToolIntegrationSpec(input);
   const qaCriteria = input.qaCriteria?.length
     ? input.qaCriteria
     : [
@@ -193,10 +200,17 @@ export function createToolBuildContract(input: ToolBuildRequestInput): ToolBuild
     qaCriteria,
     version,
     replacesVersion: input.replacesVersion,
+    integration,
     builderInstructions: [
       "Create a TypeScript module implementing the Tool interface.",
       "Keep dependencies explicit and minimal; prefer existing project utilities.",
       `Use startupMode "${input.startupMode ?? "on-demand"}". For always-on/service-style tools, expose a healthcheck and make lifecycle behavior observable without requiring a special runtime branch.`,
+      ...(integration
+        ? [
+            "Implement the request through the neutral Tool Integration contract below, not through an Agentic-internal import.",
+            integrationDocsMarkdown(integration),
+          ]
+        : []),
       ...(input.credentialHandles?.length
         ? [
             `Use only these credential handles when credentials are needed: ${input.credentialHandles.join(", ")}.`,
@@ -264,6 +278,23 @@ function cloneRequest(request: ToolBuildRequest): ToolBuildRequest {
       builderInstructions: [...request.contract.builderInstructions],
       version: request.contract.version,
       replacesVersion: request.contract.replacesVersion,
+      integration: request.contract.integration
+        ? {
+            ...request.contract.integration,
+            inbound: { ...request.contract.integration.inbound },
+            outbound: { ...request.contract.integration.outbound },
+            credentials: {
+              ...request.contract.integration.credentials,
+              handles: [...request.contract.integration.credentials.handles],
+            },
+            settings: request.contract.integration.settings.map((setting) => ({ ...setting })),
+            lifecycle: {
+              ...request.contract.integration.lifecycle,
+              qaRequired: [...request.contract.integration.lifecycle.qaRequired],
+            },
+            notes: [...request.contract.integration.notes],
+          }
+        : undefined,
     },
   };
 }

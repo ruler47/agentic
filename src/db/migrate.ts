@@ -394,6 +394,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         docs_markdown text,
         change_summary text,
         examples jsonb not null default '[]',
+        package_manifest jsonb,
         success_count integer not null default 0 check (success_count >= 0),
         failure_count integer not null default 0 check (failure_count >= 0),
         last_success_at timestamptz,
@@ -422,6 +423,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       where source = 'generated' and change_summary is null;
     `);
     await pool.query(`alter table tool_modules add column if not exists examples jsonb not null default '[]';`);
+    await pool.query(`alter table tool_modules add column if not exists package_manifest jsonb;`);
     await pool.query(`alter table tool_modules add column if not exists success_count integer not null default 0;`);
     await pool.query(`alter table tool_modules add column if not exists failure_count integer not null default 0;`);
     await pool.query(`alter table tool_modules add column if not exists last_success_at timestamptz;`);
@@ -515,6 +517,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         docs_markdown text,
         change_summary text,
         examples jsonb not null default '[]',
+        package_manifest jsonb,
         success_count integer not null default 0 check (success_count >= 0),
         failure_count integer not null default 0 check (failure_count >= 0),
         last_success_at timestamptz,
@@ -524,6 +527,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       );
     `);
     await pool.query(`alter table tool_module_versions add column if not exists change_summary text;`);
+    await pool.query(`alter table tool_module_versions add column if not exists package_manifest jsonb;`);
 
     await pool.query(`
       insert into tool_module_versions (
@@ -531,13 +535,13 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         input_schema, output_schema, module_path, test_path, source, status,
         last_health_ok, last_health_detail, required_configuration_keys,
         required_secret_handles, settings_schema, storage_contract, docs_markdown,
-        change_summary, examples, success_count, failure_count, last_success_at, last_failure_at, updated_at
+        change_summary, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at, updated_at
       )
       select name, version, true, display_name, description, capabilities, startup_mode,
              input_schema, output_schema, module_path, test_path, source, status,
              last_health_ok, last_health_detail, required_configuration_keys,
              required_secret_handles, settings_schema, storage_contract, docs_markdown,
-             change_summary, examples, success_count, failure_count, last_success_at, last_failure_at, updated_at
+             change_summary, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at, updated_at
       from tool_modules
       where source = 'generated'
       on conflict (name, version) do nothing;
