@@ -929,6 +929,8 @@ test("web server exposes memory and tool registries", async () => {
           autoRestartEnabled: false,
           maxAutoRestarts: 1,
           restartBackoffMs: 2500,
+          restartBackoffMultiplier: 2,
+          restartBackoffMaxMs: 10000,
           restartRequiresApproval: true,
         }),
         headers: { "content-type": "application/json" },
@@ -950,6 +952,8 @@ test("web server exposes memory and tool registries", async () => {
     assert.equal(policy.service.autoRestartEnabled, false);
     assert.equal(policy.service.maxAutoRestarts, 1);
     assert.equal(policy.service.restartBackoffMs, 2500);
+    assert.equal(policy.service.restartBackoffMultiplier, 2);
+    assert.equal(policy.service.restartBackoffMaxMs, 10000);
     assert.equal(policy.service.restartRequiresApproval, true);
     assert.equal(stopped.service.status, "stopped");
     assert.equal(serviceLogs.logs[0].toolName, "web.search");

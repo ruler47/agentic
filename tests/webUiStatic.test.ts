@@ -143,6 +143,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /Approve restart/);
   assert.match(app, /pendingRestartApproval/);
   assert.match(app, /restartBackoffMs/);
+  assert.match(app, /restartBackoffMultiplier/);
+  assert.match(app, /restartBackoffMaxMs/);
   assert.match(app, /restartRequiresApproval/);
   assert.match(app, /function formatFutureRelative/);
   assert.match(app, /function renderServiceLogPreview/);

@@ -221,8 +221,9 @@ reconciliation, and new lifecycle records are streamed through an in-process SSE
 Each service can also override the default restart policy through
 `PATCH /api/tool-services/:name/restart-policy`, which stores whether failed heartbeats
 should auto-restart, the maximum auto-restart count, an optional restart backoff in
-milliseconds, and whether automatic recovery must pause for operator approval. Approval
-gates are intentionally service-local for now: a failed heartbeat records
+milliseconds, optional multiplier/cap values for progressively delayed recovery, and
+whether automatic recovery must pause for operator approval. Approval gates are
+intentionally service-local for now: a failed heartbeat records
 `pendingRestartApproval=true` and waits for an explicit operator restart instead of
 silently recovering. The current Approvals UI already surfaces those pending restart
 decisions from the same service state; future policy work should extend that inbox rather

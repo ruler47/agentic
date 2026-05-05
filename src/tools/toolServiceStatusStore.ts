@@ -18,6 +18,8 @@ export type ToolServiceStatus = {
   autoRestartEnabled?: boolean;
   maxAutoRestarts?: number;
   restartBackoffMs?: number;
+  restartBackoffMultiplier?: number;
+  restartBackoffMaxMs?: number;
   restartRequiresApproval?: boolean;
   nextRestartAt?: string;
   pendingRestartApproval?: boolean;

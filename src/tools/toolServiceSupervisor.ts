@@ -22,6 +22,8 @@ export type ToolServiceRestartPolicyInput = {
   autoRestartEnabled?: boolean;
   maxAutoRestarts?: number;
   restartBackoffMs?: number;
+  restartBackoffMultiplier?: number;
+  restartBackoffMaxMs?: number;
   restartRequiresApproval?: boolean;
 };
 
@@ -193,6 +195,12 @@ export class ToolServiceSupervisor {
       restartBackoffMs: input.restartBackoffMs === undefined
         ? undefined
         : normalizeNonNegativeInteger(input.restartBackoffMs, 0),
+      restartBackoffMultiplier: input.restartBackoffMultiplier === undefined
+        ? undefined
+        : normalizeRestartBackoffMultiplier(input.restartBackoffMultiplier),
+      restartBackoffMaxMs: input.restartBackoffMaxMs === undefined
+        ? undefined
+        : normalizeNonNegativeInteger(input.restartBackoffMaxMs, 0),
       restartRequiresApproval: input.restartRequiresApproval,
       updatedAt: now,
     });
@@ -349,7 +357,7 @@ export class ToolServiceSupervisor {
       await this.logLifecycle(toolName, "warn", "Service auto-restart is waiting for operator approval.", pending);
       return { ...pending, displayName, description };
     }
-    const backoffMs = normalizeNonNegativeInteger(failed.restartBackoffMs, 0);
+    const backoffMs = restartBackoffDelayMs(failed);
     if (backoffMs > 0) {
       const nowMs = Date.now();
       const scheduled = await this.write({
@@ -471,4 +479,21 @@ function normalizeMaxAutoRestarts(value: number | undefined, fallback: number): 
 function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   return Math.max(0, Math.floor(value));
+}
+
+function normalizeRestartBackoffMultiplier(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value < 1) return 1;
+  return Math.min(100, value);
+}
+
+function restartBackoffDelayMs(status: StoredToolServiceStatus): number {
+  const baseMs = normalizeNonNegativeInteger(status.restartBackoffMs, 0);
+  if (baseMs <= 0) return 0;
+  const multiplier = normalizeRestartBackoffMultiplier(status.restartBackoffMultiplier);
+  const exponent = Math.max(0, status.restartCount);
+  const uncapped = baseMs * multiplier ** exponent;
+  const capMs = status.restartBackoffMaxMs === undefined
+    ? uncapped
+    : normalizeNonNegativeInteger(status.restartBackoffMaxMs, baseMs);
+  return Math.floor(Math.min(uncapped, capMs, Number.MAX_SAFE_INTEGER));
 }

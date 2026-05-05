@@ -447,6 +447,8 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table tool_service_statuses add column if not exists auto_restart_enabled boolean;`);
     await pool.query(`alter table tool_service_statuses add column if not exists max_auto_restarts integer check (max_auto_restarts >= 0);`);
     await pool.query(`alter table tool_service_statuses add column if not exists restart_backoff_ms integer check (restart_backoff_ms >= 0);`);
+    await pool.query(`alter table tool_service_statuses add column if not exists restart_backoff_multiplier double precision check (restart_backoff_multiplier >= 1);`);
+    await pool.query(`alter table tool_service_statuses add column if not exists restart_backoff_max_ms integer check (restart_backoff_max_ms >= 0);`);
     await pool.query(`alter table tool_service_statuses add column if not exists restart_requires_approval boolean;`);
     await pool.query(`alter table tool_service_statuses add column if not exists next_restart_at timestamptz;`);
     await pool.query(`alter table tool_service_statuses add column if not exists pending_restart_approval boolean;`);

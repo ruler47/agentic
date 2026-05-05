@@ -144,6 +144,7 @@ Generated tool package workspace:
 - Service-specific restart policy overrides are stored through
   `PATCH /api/tool-services/:name/restart-policy` and shown in the Channels/Tool Detail UI.
   The same policy can set `restartBackoffMs` for delayed recovery and
+  `restartBackoffMultiplier`/`restartBackoffMaxMs` for capped progressive recovery, plus
   `restartRequiresApproval` so sensitive services stop in `pendingRestartApproval` until
   an operator explicitly restarts them.
 - Source-bundle HTTP process runtimes forward child stdout/stderr into the same tool
@@ -486,10 +487,10 @@ For documentation-only changes:
   in-process service loop under that supervisor; the app injects a base URL and secret
   resolver and stops active service handles on shutdown without clearing the persisted
   desired running state. Per-service restart policy now includes bounded auto-restarts,
-  optional backoff, and a service-local approval gate before restart. The Approvals page
-  derives pending service restart decisions from that same state and uses normal
-  lifecycle actions to approve/reject. Durable external process/webhook runners are still
-  a roadmap item.
+  optional capped/multiplied backoff, and a service-local approval gate before restart.
+  The Approvals page derives pending service restart decisions from that same state and
+  uses normal lifecycle actions to approve/reject. Durable external process/webhook
+  runners are still a roadmap item.
 - The built-in `channel.telegram.bot` module is a reference always-on provider tool. It
   resolves `secret.telegram.bot.token` (or `TELEGRAM_BOT_SECRET_HANDLE`), polls Telegram
   updates, forwards text messages to the generic inbound endpoint with provider user/chat

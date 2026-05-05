@@ -703,13 +703,14 @@ Remaining Phase 3 gaps:
   persisted desired/runtime state, heartbeat health, restart count, consecutive failures,
   last failure/restart metadata, bounded auto-restart after failed heartbeat,
   per-service restart policy overrides through API/UI, optional restart backoff, and a
-  service-local operator approval gate for sensitive service restarts. Source-bundle
-  HTTP process runtimes now bridge child stdout/stderr into lifecycle logs/SSE.
+  service-local operator approval gate for sensitive service restarts. Backoff policy now
+  supports multiplier and max-cap values so flapping services can slow down progressively.
+  Source-bundle HTTP process runtimes now bridge child stdout/stderr into lifecycle logs/SSE.
   Heartbeats now also refuse false-green status for service tools whose runtime failed to
   start: the supervisor retries `startService` instead of accepting static module health.
   Service restart approval gates are now visible in the unified Approvals page, where
   approve calls the normal restart endpoint and reject stops the service. Remaining work:
-  add richer exponential/jittered schedules and generalize the inbox into a persistent
+  add jittered schedules and generalize the inbox into a persistent
   approvals table for outbound actions, memory writes, credential usage, and policy
   analytics.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,

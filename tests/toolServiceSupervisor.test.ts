@@ -300,6 +300,44 @@ test("ToolServiceSupervisor schedules failed heartbeat restarts after backoff", 
   assert.equal(stopped, 1);
 });
 
+test("ToolServiceSupervisor applies multiplier and cap to restart backoff", async () => {
+  const registry = new ToolRegistry();
+  const statusStore = new InMemoryToolServiceStatusStore();
+  registry.register(serviceTool({
+    async startService() {
+      let healthchecks = 0;
+      return {
+        async healthcheck() {
+          healthchecks += 1;
+          return healthchecks > 1
+            ? { ok: false, detail: "runtime flapped again" }
+            : { ok: true, detail: "runtime healthy" };
+        },
+      };
+    },
+  }));
+  const supervisor = new ToolServiceSupervisor(registry, statusStore, undefined, {}, {
+    maxAutoRestartsPerService: 5,
+  });
+
+  const policy = await supervisor.updateRestartPolicy("service.echo", {
+    restartBackoffMs: 1000,
+    restartBackoffMultiplier: 3,
+    restartBackoffMaxMs: 2500,
+  });
+  await supervisor.start("service.echo");
+  const existing = await statusStore.get("service.echo");
+  assert.ok(existing);
+  await statusStore.set({ ...existing, restartCount: 2 });
+  const scheduled = await supervisor.heartbeat("service.echo");
+
+  assert.equal(policy.restartBackoffMultiplier, 3);
+  assert.equal(policy.restartBackoffMaxMs, 2500);
+  assert.equal(scheduled.status, "failed");
+  assert.match(scheduled.detail, /2500 ms backoff/);
+  assert.ok(scheduled.nextRestartAt);
+});
+
 test("ToolServiceSupervisor can hold failed heartbeat restarts for operator approval", async () => {
   const registry = new ToolRegistry();
   let started = 0;

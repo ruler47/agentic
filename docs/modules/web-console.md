@@ -179,8 +179,9 @@ channel type. State persists through `tool_service_statuses` when Postgres is co
 the app reconciles desired-running services on startup by refreshing their health status.
 `PATCH /api/tool-services/:name/restart-policy` stores per-service auto-restart
 overrides (`autoRestartEnabled`, `maxAutoRestarts`, `restartBackoffMs`,
-`restartRequiresApproval`) so one fragile or sensitive integration can be handled
-manually or delayed without disabling bounded recovery for every other service. When
+`restartBackoffMultiplier`, `restartBackoffMaxMs`, `restartRequiresApproval`) so one
+fragile or sensitive integration can be handled manually or delayed without disabling
+bounded recovery for every other service. When
 approval is required, a failed heartbeat leaves the service in a pending restart approval
 state. The Approvals page reads those pending service restart decisions from the same
 tool-service state and exposes provider-neutral approve/reject actions: approve calls the

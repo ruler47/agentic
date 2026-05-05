@@ -1163,6 +1163,8 @@ async function routeRequest(
           autoRestartEnabled: service.autoRestartEnabled,
           maxAutoRestarts: service.maxAutoRestarts,
           restartBackoffMs: service.restartBackoffMs,
+          restartBackoffMultiplier: service.restartBackoffMultiplier,
+          restartBackoffMaxMs: service.restartBackoffMaxMs,
           restartRequiresApproval: service.restartRequiresApproval,
         },
       });
@@ -3186,6 +3188,8 @@ function parseToolServiceRestartPolicyInput(value: unknown): {
   autoRestartEnabled?: boolean;
   maxAutoRestarts?: number;
   restartBackoffMs?: number;
+  restartBackoffMultiplier?: number;
+  restartBackoffMaxMs?: number;
   restartRequiresApproval?: boolean;
 } {
   if (!isRecord(value)) throw new Error("restart policy input must be an object");
@@ -3199,10 +3203,18 @@ function parseToolServiceRestartPolicyInput(value: unknown): {
   }
   const maxAutoRestarts = parseOptionalNonNegativeInteger(value.maxAutoRestarts, "maxAutoRestarts");
   const restartBackoffMs = parseOptionalNonNegativeInteger(value.restartBackoffMs, "restartBackoffMs");
+  const restartBackoffMultiplier = parseOptionalMinimumNumber(
+    value.restartBackoffMultiplier,
+    "restartBackoffMultiplier",
+    1,
+  );
+  const restartBackoffMaxMs = parseOptionalNonNegativeInteger(value.restartBackoffMaxMs, "restartBackoffMaxMs");
   return {
     autoRestartEnabled,
     maxAutoRestarts,
     restartBackoffMs,
+    restartBackoffMultiplier,
+    restartBackoffMaxMs,
     restartRequiresApproval,
   };
 }
@@ -3218,6 +3230,19 @@ function parseOptionalNonNegativeInteger(value: unknown, fieldName: string): num
     throw new Error(`${fieldName} must be a non-negative integer`);
   }
   return Math.floor(parsed);
+}
+
+function parseOptionalMinimumNumber(value: unknown, fieldName: string, minimum: number): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = typeof value === "number"
+    ? value
+    : typeof value === "string"
+      ? Number.parseFloat(value)
+      : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed < minimum) {
+    throw new Error(`${fieldName} must be a number greater than or equal to ${minimum}`);
+  }
+  return parsed;
 }
 
 function parseToolServiceInboundInput(value: unknown, toolName: string) {

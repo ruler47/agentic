@@ -2389,11 +2389,14 @@ function renderServiceRestartPolicyForm(service) {
   const autoRestartEnabled = service.autoRestartEnabled ?? true;
   const maxAutoRestarts = service.maxAutoRestarts ?? 3;
   const restartBackoffMs = service.restartBackoffMs ?? 0;
+  const restartBackoffMultiplier = service.restartBackoffMultiplier ?? 1;
+  const restartBackoffMaxMs = service.restartBackoffMaxMs ?? 0;
   const restartRequiresApproval = Boolean(service.restartRequiresApproval);
   const policyParts = [
     autoRestartEnabled ? "auto" : "manual",
     `max ${maxAutoRestarts}`,
-    restartBackoffMs > 0 ? `backoff ${formatDuration(restartBackoffMs)}` : "no backoff",
+    restartBackoffMs > 0 ? `backoff ${formatDuration(restartBackoffMs)} ×${restartBackoffMultiplier}` : "no backoff",
+    restartBackoffMaxMs > 0 ? `cap ${formatDuration(restartBackoffMaxMs)}` : "no cap",
     restartRequiresApproval ? "approval" : "no approval",
   ];
   return `
@@ -2416,6 +2419,14 @@ function renderServiceRestartPolicyForm(service) {
         <label>
           Restart backoff, ms
           <input type="number" name="restartBackoffMs" min="0" step="1000" value="${escapeHtml(String(restartBackoffMs))}" />
+        </label>
+        <label>
+          Backoff multiplier
+          <input type="number" name="restartBackoffMultiplier" min="1" step="0.1" value="${escapeHtml(String(restartBackoffMultiplier))}" />
+        </label>
+        <label>
+          Backoff cap, ms
+          <input type="number" name="restartBackoffMaxMs" min="0" step="1000" value="${escapeHtml(String(restartBackoffMaxMs))}" />
         </label>
         <button type="submit" class="ghost-button">Save policy</button>
       </form>
@@ -4040,6 +4051,8 @@ async function updateToolServiceRestartPolicy(form) {
   }
   const maxAutoRestarts = Number.parseInt(String(data.get("maxAutoRestarts") ?? "3"), 10);
   const restartBackoffMs = Number.parseInt(String(data.get("restartBackoffMs") ?? "0"), 10);
+  const restartBackoffMultiplier = Number.parseFloat(String(data.get("restartBackoffMultiplier") ?? "1"));
+  const restartBackoffMaxMs = Number.parseInt(String(data.get("restartBackoffMaxMs") ?? "0"), 10);
   try {
     const result = await fetchJson(`/api/tool-services/${encodeURIComponent(toolName)}/restart-policy`, {
       method: "PATCH",
@@ -4047,6 +4060,10 @@ async function updateToolServiceRestartPolicy(form) {
         autoRestartEnabled: data.get("autoRestartEnabled") === "on",
         maxAutoRestarts: Number.isFinite(maxAutoRestarts) ? Math.max(0, maxAutoRestarts) : 3,
         restartBackoffMs: Number.isFinite(restartBackoffMs) ? Math.max(0, restartBackoffMs) : 0,
+        restartBackoffMultiplier: Number.isFinite(restartBackoffMultiplier)
+          ? Math.max(1, restartBackoffMultiplier)
+          : 1,
+        restartBackoffMaxMs: Number.isFinite(restartBackoffMaxMs) ? Math.max(0, restartBackoffMaxMs) : 0,
         restartRequiresApproval: data.get("restartRequiresApproval") === "on",
       }),
     });
