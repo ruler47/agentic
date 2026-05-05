@@ -250,7 +250,12 @@ human `displayName`, stable system-name/version conflict checks, and generated-t
 deletion. Registered generated modules start as `disabled` until the runtime can load
 their executable TypeScript module and pass health checks.
 
-Generated module loading is deliberately constrained:
+Generated module loading now goes through a `ToolPackageRunner` contract. The first
+runner is `LocalPathToolPackageRunner`, which preserves the current compiled TypeScript
+path while giving future external-package, source-bundle, and OCI runners a stable
+extension point.
+
+Local-path loading is deliberately constrained:
 
 - metadata must include a project-relative `modulePath`;
 - the app imports the compiled JavaScript equivalent from `dist`;
@@ -260,7 +265,8 @@ Generated module loading is deliberately constrained:
 - failed imports, mismatches, or failed healthchecks update registry status to `failed`.
 - imported non-local package manifests (`source-bundle`, `oci-image`, or
   `external-package`) are not marked failed during startup; they remain disabled metadata
-  until a package runner/supervisor can execute that reference type.
+  until a package runner/supervisor can execute that reference type. Tests prove that a
+  registered external runner can load such a manifest without changing the core loader.
 
 This gives the future Tool Builder a safe promotion path: write TypeScript, run QA, register
 metadata, rebuild/restart, then let the loader promote the tool after contract validation.

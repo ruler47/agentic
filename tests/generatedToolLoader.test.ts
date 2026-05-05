@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { loadGeneratedTools, compiledModulePath } from "../src/tools/generatedToolLoader.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
+import { ToolPackageRunner } from "../src/tools/toolPackageRunner.js";
 
 test("compiledModulePath maps source tool modules to built JavaScript modules", () => {
   assert.equal(
@@ -126,4 +127,55 @@ test("loadGeneratedTools leaves non-local package manifests disabled until a run
   assert.equal(stored?.status, "disabled");
   assert.equal(stored?.lastHealthOk, undefined);
   assert.equal(registry.get("generated.remote.normalize"), undefined);
+});
+
+test("loadGeneratedTools can load non-local package manifests through a registered runner", async () => {
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+  await metadata.registerGenerated({
+    name: "generated.remote.normalize",
+    version: "1.0.0",
+    description: "Portable package reference.",
+    capabilities: ["text-normalization"],
+    packageManifest: {
+      schemaVersion: "agentic.tool-package.v1",
+      name: "generated.remote.normalize",
+      version: "1.0.0",
+      description: "Portable package reference.",
+      capabilities: ["text-normalization"],
+      startupMode: "on-demand",
+      package: { type: "external-package", ref: "npm:@agentic-tools/remote-normalize@1.0.0" },
+    },
+  });
+  const runner: ToolPackageRunner = {
+    type: "external-package",
+    canLoad(module) {
+      return module.packageManifest?.package.type === "external-package";
+    },
+    async load(module) {
+      return {
+        loaded: true,
+        detail: `Loaded ${module.name} through test external runner.`,
+        health: { ok: true, detail: "external runner healthy" },
+        tool: {
+          name: module.name,
+          version: module.version,
+          description: module.description,
+          capabilities: module.capabilities,
+          async run(input) {
+            return { ok: true, content: String(input.text ?? "").trim().replace(/\s+/g, " ") };
+          },
+        },
+      };
+    },
+  };
+
+  const results = await loadGeneratedTools(registry, metadata, process.cwd(), [runner]);
+  const [stored] = await metadata.list();
+  const output = await registry.get("generated.remote.normalize")?.run({ text: " hello   runner " });
+
+  assert.equal(results[0]?.loaded, true);
+  assert.equal(stored?.status, "available");
+  assert.equal(stored?.lastHealthDetail, "external runner healthy");
+  assert.equal(output?.content, "hello runner");
 });

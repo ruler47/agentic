@@ -395,8 +395,11 @@ Remaining registry persistence:
   shape for source bundles, OCI images, external packages, and local-path development
   tools. `GenericServiceToolBuildProvider` now emits a local-path package manifest in its
   build output, and the registry persists package manifests through the active Postgres
-  row plus version history. Remaining work is API/UI package export/import and adding a
-  generic runner that can execute package manifests outside the web app process.
+  row plus version history. `ToolPackageRunner` now gives the loader a pluggable execution
+  boundary: local-path packages load through the first runner, and tests prove non-local
+  manifests can be loaded by adding an external runner. Remaining work is production
+  source-bundle/OCI/external-package runners, package runner supervision, and runner UI.
+  DONE for API/UI package import/export.
   The API/UI can now import portable `agentic.tool-package.v1` manifests into the
   registry and export existing generated package manifests. Non-local package references
   are intentionally registered as disabled metadata until the runner/supervisor layer can

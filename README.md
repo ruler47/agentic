@@ -229,6 +229,9 @@ Portable package manifests can be exported from
 `GET /api/tools/generated-modules/:name/package-manifest` and imported through
 `POST /api/tools/package-manifests` or the Tools page. Imported non-local packages are
 registered as disabled metadata until a runner can execute their package reference.
+Generated package execution goes through `ToolPackageRunner`: local-path packages use the
+compiled TypeScript runner today, while source-bundle, external-package, and OCI runners
+can be added without changing the core loader.
 
 Tool-owned storage changes are tracked separately in `tool_migrations`: tool name/version,
 migration id, checksum, status, applied actor/time, QA report, and rollback notes. This is
