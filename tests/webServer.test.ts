@@ -1861,6 +1861,38 @@ test("web server imports and reloads loadable source-bundle package manifests", 
   }
 });
 
+test("web server reloads generated tools on operator request", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  const auditEventStore = new InMemoryAuditEventStore();
+  let reloads = 0;
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolMetadataStore,
+    auditEventStore,
+    reloadGeneratedTools: async () => {
+      reloads += 1;
+    },
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/api/tools/reload-generated`, { method: "POST" });
+    const body = await response.json();
+    const auditEvents = await auditEventStore.list(10);
+
+    assert.equal(response.status, 200);
+    assert.equal(reloads, 1);
+    assert.deepEqual(body.tools, []);
+    assert.equal(auditEvents[0]?.action, "tool.generated_reload");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server records tool migration metadata with audit events", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");

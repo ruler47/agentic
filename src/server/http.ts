@@ -833,6 +833,35 @@ async function routeRequest(
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/tools/reload-generated") {
+    if (!options.reloadGeneratedTools) {
+      sendJson(response, 503, { error: "Generated tool reload is not configured" });
+      return;
+    }
+
+    try {
+      await options.reloadGeneratedTools();
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool.generated_reload",
+        targetType: "tool_registry",
+        targetId: "generated-tools",
+        status: "success",
+        summary: "Generated tools reloaded by operator.",
+      });
+      sendJson(response, 200, {
+        tools: options.toolMetadataStore ? await options.toolMetadataStore.list() : [],
+      });
+    } catch (error) {
+      sendJson(response, 500, {
+        error: error instanceof Error ? error.message : "Generated tool reload failed",
+      });
+    }
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/tool-services") {
     sendJson(response, 200, {
       services: options.toolServiceSupervisor ? await options.toolServiceSupervisor.list() : [],

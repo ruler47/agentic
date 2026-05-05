@@ -11,6 +11,7 @@ export type AuditAction =
   | "tool.deleted"
   | "tool.package_imported"
   | "tool.version_activated"
+  | "tool.generated_reload"
   | "tool_service.start"
   | "tool_service.stop"
   | "tool_service.restart"

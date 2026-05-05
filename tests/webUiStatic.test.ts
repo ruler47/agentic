@@ -56,6 +56,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /\/api\/tools\/generated-modules\/\$\{encodeURIComponent\(toolName\)\}/);
   assert.match(app, /\/api\/tool-package-runners/);
   assert.match(app, /Package Runners/);
+  assert.match(app, /data-action="reload-generated-tools"/);
+  assert.match(app, /\/api\/tools\/reload-generated/);
   assert.match(app, /\/api\/secret-handles/);
   assert.match(app, /function createSecretHandle/);
   assert.match(app, /function deleteSecretHandle/);

@@ -234,6 +234,8 @@ compiled TypeScript runner, and pre-built `source-bundle` packages can be loaded
 `TOOL_PACKAGE_ROOT` (default `tool-packages`) via `dist/index.js` or `index.js`.
 External-package and OCI runners can be added without changing the core loader. Runner
 diagnostics are exposed through `GET /api/tool-package-runners` and the Diagnostics page.
+Operators can call `POST /api/tools/reload-generated` or use the Diagnostics action to
+reload generated/source-bundle packages without restarting the app.
 
 Tool-owned storage changes are tracked separately in `tool_migrations`: tool name/version,
 migration id, checksum, status, applied actor/time, QA report, and rollback notes. This is

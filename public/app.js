@@ -264,6 +264,9 @@ document.addEventListener("click", (event) => {
   if (actionName === "run-tool-health") {
     void runToolHealthchecks();
   }
+  if (actionName === "reload-generated-tools") {
+    void reloadGeneratedTools();
+  }
   if (actionName === "tool-service-action" && serviceToolName && serviceAction) {
     void updateToolService(serviceToolName, serviceAction);
   }
@@ -3360,6 +3363,7 @@ function renderDiagnosticsPage() {
             <h2>Package Runners</h2>
             <p>Execution adapters for portable tool package manifests.</p>
           </div>
+          <button class="ghost-button" type="button" data-action="reload-generated-tools">Reload generated tools</button>
         </div>
         <div class="tool-grid">
           ${runnerCards || renderEmptyState("No package runners", "The app has not exposed any generated-tool package runners.", "Diagnostics")}
@@ -3880,6 +3884,21 @@ async function runToolHealthchecks() {
       body: failed.length
         ? `${failed.length} tool healthcheck${failed.length === 1 ? "" : "s"} failed.`
         : `Healthchecks passed for ${(result.tools ?? []).length} tool${(result.tools ?? []).length === 1 ? "" : "s"}.`,
+    };
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function reloadGeneratedTools() {
+  try {
+    const result = await fetchJson("/api/tools/reload-generated", { method: "POST" });
+    await refreshData();
+    state.notice = {
+      title: "Generated tools reloaded",
+      body: `${(result.tools ?? []).length} generated/builtin registry record${(result.tools ?? []).length === 1 ? "" : "s"} available after reload.`,
     };
     render();
   } catch (error) {

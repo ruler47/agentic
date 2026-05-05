@@ -348,6 +348,10 @@ types, status, and root/configuration hints. The Diagnostics page surfaces the s
 inventory so operators can tell whether an imported package is disabled because the tool
 is broken or because no runner exists for its package type yet.
 
+`POST /api/tools/reload-generated` reloads generated tools through the installed package
+runners and writes an audit event. Diagnostics exposes this as "Reload generated tools",
+which is useful after updating a source-bundle package on disk without restarting the app.
+
 `POST /api/tool-build-requests/:id/stop` marks a request `blocked` with a human status
 detail. `DELETE /api/tool-build-requests/:id` removes a queue card. Both operations write
 audit events. Installed tools that are marked `failed` expose a Tools-page "Rework tool"
