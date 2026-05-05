@@ -277,7 +277,9 @@ heartbeat can trigger a bounded auto-restart policy
 operator review. Operators can override that policy per service through
 `PATCH /api/tool-services/:name/restart-policy` or the Channels/Tool Detail UI,
 including `restartBackoffMs` for delayed recovery and `restartRequiresApproval` for
-sensitive services that must wait for a manual restart/approval.
+sensitive services that must wait for a manual restart/approval. Pending service restart
+approvals also appear in the Approvals page, where approve/reject routes through the same
+generic service lifecycle API.
 Source-bundle HTTP process runtimes forward child `stdout`/`stderr` into the same
 lifecycle log stream, so isolated tools can be debugged without shelling into their
 process.

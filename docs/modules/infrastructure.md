@@ -224,8 +224,9 @@ should auto-restart, the maximum auto-restart count, an optional restart backoff
 milliseconds, and whether automatic recovery must pause for operator approval. Approval
 gates are intentionally service-local for now: a failed heartbeat records
 `pendingRestartApproval=true` and waits for an explicit operator restart instead of
-silently recovering. A future unified Approval Inbox should reuse this state rather than
-invent a provider-specific workflow.
+silently recovering. The current Approvals UI already surfaces those pending restart
+decisions from the same service state; future policy work should extend that inbox rather
+than invent provider-specific approval tables.
 Tools may also implement `startService(context)` to run an in-process service loop under
 the supervisor. The context provides the tool name, abort signal, internal base URL,
 optional fetch implementation, secret resolver, and lifecycle logger. The supervisor

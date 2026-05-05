@@ -707,9 +707,11 @@ Remaining Phase 3 gaps:
   HTTP process runtimes now bridge child stdout/stderr into lifecycle logs/SSE.
   Heartbeats now also refuse false-green status for service tools whose runtime failed to
   start: the supervisor retries `startService` instead of accepting static module health.
-  Remaining work: connect service restart approval gates to the unified Approvals inbox,
-  add richer exponential/jittered schedules, and preserve approval decisions in policy
-  audit analytics.
+  Service restart approval gates are now visible in the unified Approvals page, where
+  approve calls the normal restart endpoint and reject stops the service. Remaining work:
+  add richer exponential/jittered schedules and generalize the inbox into a persistent
+  approvals table for outbound actions, memory writes, credential usage, and policy
+  analytics.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,

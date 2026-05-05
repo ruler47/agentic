@@ -182,8 +182,9 @@ overrides (`autoRestartEnabled`, `maxAutoRestarts`, `restartBackoffMs`,
 `restartRequiresApproval`) so one fragile or sensitive integration can be handled
 manually or delayed without disabling bounded recovery for every other service. When
 approval is required, a failed heartbeat leaves the service in a pending restart approval
-state; the existing `restart` action is the operator approval path until the general
-Approvals inbox is wired into service lifecycle decisions.
+state. The Approvals page reads those pending service restart decisions from the same
+tool-service state and exposes provider-neutral approve/reject actions: approve calls the
+normal restart endpoint, while reject stops the service.
 `GET /api/tool-services/logs` returns recent lifecycle log records written by the
 supervisor for starts, stops, restarts, heartbeats, and startup reconciliation.
 `GET /api/tool-services/logs/events` is an SSE stream that emits `service-log` events for
@@ -687,7 +688,7 @@ Dashboard:
   thread cannot be changed accidentally; IMPLEMENTED
 - active run card and recent runs;
 - system health for app, database, Redis, MinIO, SearXNG, Telegram, and LLM;
-- pending approvals for outbound actions;
+- pending approvals for outbound actions and approval-gated service restarts;
 - high-level stats for runs, artifacts, tools, memory, and channels.
 
 Run Workspace:

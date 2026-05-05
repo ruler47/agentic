@@ -1019,6 +1019,81 @@ test("web server streams tool service lifecycle logs as server-sent events", asy
   }
 });
 
+test("web server audits operator approval for pending service restarts", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  let started = 0;
+  const serviceTool = {
+    name: "service.approval",
+    version: "1.0.0",
+    description: "Approval-gated service.",
+    capabilities: ["service.approval"],
+    startupMode: "always-on" as const,
+    inputSchema: { type: "object" as const, properties: {} },
+    outputSchema: { type: "object" as const, properties: {} },
+    async startService() {
+      started += 1;
+      const instance = started;
+      let healthchecks = 0;
+      return {
+        async healthcheck() {
+          healthchecks += 1;
+          if (instance === 1 && healthchecks > 1) {
+            return { ok: false, detail: "service dependency failed" };
+          }
+          return { ok: true, detail: `service healthy ${instance}` };
+        },
+      };
+    },
+    async run() {
+      return { ok: true, content: "ok" };
+    },
+  };
+  const serviceRegistry = {
+    list() {
+      return [serviceTool];
+    },
+    get(name: string) {
+      return name === serviceTool.name ? serviceTool : undefined;
+    },
+  };
+  const auditEventStore = new InMemoryAuditEventStore();
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolRegistry: serviceRegistry,
+    toolServiceSupervisor: new ToolServiceSupervisor(serviceRegistry),
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    await fetch(`${baseUrl}/api/tool-services/service.approval/restart-policy`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ restartRequiresApproval: true }),
+    });
+    await fetch(`${baseUrl}/api/tool-services/service.approval/start`, { method: "POST" });
+    const pending = await (
+      await fetch(`${baseUrl}/api/tool-services/service.approval/heartbeat`, { method: "POST" })
+    ).json();
+    const restarted = await (
+      await fetch(`${baseUrl}/api/tool-services/service.approval/restart`, { method: "POST" })
+    ).json();
+    const audit = await auditEventStore.list(10);
+    const restartAudit = audit.find((event) => event.action === "tool_service.restart");
+
+    assert.equal(pending.service.pendingRestartApproval, true);
+    assert.equal(restarted.service.status, "running");
+    assert.equal(restarted.service.pendingRestartApproval, false);
+    assert.equal(restartAudit?.metadata?.approvedPendingRestart, true);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server records provider-neutral tool service events", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");

@@ -1184,6 +1184,8 @@ async function routeRequest(
     const toolName = decodeURIComponent(toolServiceActionMatch[1] ?? "");
     const action = toolServiceActionMatch[2] ?? "";
     try {
+      const beforeAction = (await options.toolServiceSupervisor.list())
+        .find((service) => service.toolName === toolName);
       const auditAction =
         action === "start"
           ? "tool_service.start"
@@ -1213,6 +1215,9 @@ async function routeRequest(
           status: service.status,
           desiredState: service.desiredState,
           detail: service.detail,
+          approvedPendingRestart: action === "restart" && Boolean(beforeAction?.pendingRestartApproval),
+          pendingRestartApproval: service.pendingRestartApproval,
+          nextRestartAt: service.nextRestartAt,
         },
       });
       sendJson(response, 200, { service });

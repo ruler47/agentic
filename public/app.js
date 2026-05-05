@@ -3235,9 +3235,59 @@ function renderPoliciesPage() {
 }
 
 function renderApprovalsPage() {
-  return renderPlaceholderPage("Approvals", "A unified inbox for outbound messages, sensitive tools, memory writes, and generated artifacts.", [
-    "No pending approvals",
-  ]);
+  const approvals = pendingApprovalItems();
+  return `
+    <section class="page-stack">
+      <section class="surface-panel hero-panel">
+        <div>
+          <span class="eyebrow">CONTROL</span>
+          <h2>Approvals</h2>
+          <p>Human decisions before sensitive service restarts, outbound actions, memory writes, and generated artifacts.</p>
+        </div>
+        <span class="status-pill ${approvals.length ? "blocked" : "completed"}">${approvals.length} pending</span>
+      </section>
+      <section class="surface-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Decision Inbox</h2>
+            <p>Items here are generic approval contracts, not provider-specific workflows.</p>
+          </div>
+        </div>
+        <div class="approval-list">
+          ${approvals.length ? approvals.map(renderApprovalCard).join("") : renderEmptyState("No pending approvals", "Sensitive actions that need a human decision will appear here.", "Approvals")}
+        </div>
+      </section>
+    </section>
+  `;
+}
+
+function renderApprovalCard(item) {
+  if (item.type === "service-restart") {
+    const service = item.service;
+    return `
+      <article class="approval-card">
+        <div class="card-topline">
+          <span>${escapeHtml(item.risk)}</span>
+          <span>${escapeHtml(service.status)}</span>
+        </div>
+        <h3>${escapeHtml(item.title)}</h3>
+        <p>${escapeHtml(item.reason)}</p>
+        <div class="service-status-row">
+          <span class="status-pill blocked">approval required</span>
+          <span>${escapeHtml(service.toolName)}</span>
+          <span>${escapeHtml(`${service.consecutiveFailureCount ?? 0} failures`)}</span>
+          ${service.lastFailureAt ? `<span>${escapeHtml(`failed ${formatRelative(service.lastFailureAt)}`)}</span>` : ""}
+        </div>
+        <small class="status-note">${escapeHtml(service.detail || "No service detail.")}</small>
+        <div class="card-actions">
+          <button type="button" class="primary-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="restart">Approve restart</button>
+          <button type="button" class="ghost-button danger-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="stop">Reject and stop</button>
+          <button type="button" class="ghost-button" data-action="navigate" data-route="channels">Open service</button>
+        </div>
+      </article>
+    `;
+  }
+  return "";
 }
 
 function renderSchedulerPage() {
@@ -4532,7 +4582,20 @@ function isActiveNav(id) {
 }
 
 function pendingApprovalCount() {
-  return 0;
+  return pendingApprovalItems().length;
+}
+
+function pendingApprovalItems() {
+  return state.toolServices
+    .filter((service) => service.pendingRestartApproval)
+    .map((service) => ({
+      id: `service-restart:${service.toolName}`,
+      type: "service-restart",
+      risk: "service restart",
+      title: `Restart ${service.displayName || service.toolName}`,
+      reason: "This always-on tool failed a heartbeat and its policy requires operator approval before recovery.",
+      service,
+    }));
 }
 
 function connectRunStream(id) {

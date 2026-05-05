@@ -640,7 +640,8 @@ textarea {
 .conversation-card,
 .knowledge-card,
 .tool-card,
-.build-card {
+.build-card,
+.approval-card {
   display: grid;
   gap: 12px;
   min-width: 0;
@@ -667,12 +668,18 @@ textarea {
   gap: 8px;
 }
 
+.approval-list {
+  display: grid;
+  gap: 12px;
+}
+
 .run-card:hover,
 .conversation-card:hover,
 .knowledge-card:hover,
 .tool-card:hover,
 .artifact-card:hover,
-.build-card:hover {
+.build-card:hover,
+.approval-card:hover {
   border-color: rgba(53, 230, 193, 0.3);
   background: rgba(21, 30, 43, 0.92);
   box-shadow: var(--shadow);
