@@ -214,6 +214,10 @@ Generated tools also pass separate review gates after QA and before registration
 current deterministic reviewers check source/manifest contract safety and QA evidence
 shape; failed review findings are returned to the next builder attempt before a request
 becomes `qa_failed`.
+Set `TOOL_BUILD_LLM_REVIEW=enabled` to add strict LLM code and behavior reviewers on top
+of the deterministic gates. These reviewers read the request contract, QA report, and
+generated module/test previews, and their structured findings are also returned to the
+builder for bounded repair.
 
 Tool contracts are also persisted in Postgres when the Docker stack is running. The
 `tool_modules` catalog stores version, capabilities, schemas, source, status, required

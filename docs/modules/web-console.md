@@ -326,6 +326,9 @@ builder lifecycle handoff. Builder, QA, and Registrar agents can mark a request 
 `building`, `qa_failed`, `qa_passed`, `registered`, or `blocked`, attach status detail,
 persist a structured QA report, persist code/behavior review gate decisions inside
 `qaReport.reviews`, and record the generated tool name that was registered.
+When `TOOL_BUILD_LLM_REVIEW=enabled`, LLM code/behavior reviewer decisions are stored in
+the same `qaReport.reviews` array. The UI treats them as real promotion gates, not merely
+advice, so a non-pass decision remains visible on the card and can drive a repair retry.
 
 `POST /api/tool-build-requests/:id/rework` creates a new durable `requested` build from an
 existing card with operator feedback attached. This is the UI/API path for "the generated

@@ -43,6 +43,7 @@ import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import {
   DeterministicToolBehaviorReviewer,
   DeterministicToolCodeReviewer,
+  LlmToolBuildReviewer,
 } from "../tools/toolBuildReviewers.js";
 import { ToolBuildWorker } from "../tools/toolBuildWorker.js";
 import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
@@ -137,7 +138,18 @@ const toolBuildWorkflow = new ToolBuildWorkflow(
   new CommandToolQaRunner(),
   new MetadataToolRegistrar(toolMetadataStore),
   {
-    reviewers: [new DeterministicToolCodeReviewer(), new DeterministicToolBehaviorReviewer()],
+    reviewers: [
+      new DeterministicToolCodeReviewer(),
+      new DeterministicToolBehaviorReviewer(),
+      ...(process.env.TOOL_BUILD_LLM_REVIEW === "enabled"
+        ? [
+            new LlmToolBuildReviewer(new LlmClient(readLlmConfigFromEnv(), modelTierSettings), { kind: "code" }),
+            new LlmToolBuildReviewer(new LlmClient(readLlmConfigFromEnv(), modelTierSettings), {
+              kind: "behavior",
+            }),
+          ]
+        : []),
+    ],
   },
 );
 const toolBuildWorker = new ToolBuildWorker(toolBuildWorkflow, toolBuildRequestStore, {

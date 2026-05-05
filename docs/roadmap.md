@@ -497,10 +497,13 @@ Next implementation tasks:
   code/behavior reviewers, and out-of-process build sandboxes.
 - Add a Tool QA/review agent contract. PARTIAL: generated QA criteria, isolated
   generated-tool test execution, TypeScript build verification, promotion checks, and
-  deterministic code/behavior review gates now exist. Failed review findings are stored
-  in `qaReport.reviews` and returned to the builder for bounded repair attempts.
-  Remaining work is LLM code reviewers, richer behavior reviewers with real smoke
-  evidence, visual/artifact QA, and separate worker pools.
+  deterministic code/behavior review gates now exist. Optional LLM code/behavior
+  reviewers can be enabled with `TOOL_BUILD_LLM_REVIEW=enabled`; they inspect the durable
+  request contract, QA report, and generated module/test previews, then store structured
+  decisions in `qaReport.reviews`. Failed review findings are returned to the builder for
+  bounded repair attempts. Remaining work is making LLM review a managed model-tier
+  policy instead of an env flag, richer behavior reviewers with real smoke evidence,
+  visual/artifact QA, and separate worker pools.
 - Add a persistent Tool Build Queue. DONE via `tool_build_requests` and
   `/api/tool-build-requests`.
 - Add Tool Build Queue lifecycle APIs. DONE via `GET/PATCH

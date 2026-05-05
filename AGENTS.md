@@ -249,8 +249,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   - Postgres-backed `tool_build_requests` queue.
 - [src/tools/toolBuildWorkflow.ts](src/tools/toolBuildWorkflow.ts) - reusable Builder/QA/
   review/Registrar orchestration flow for missing tool capabilities.
-- [src/tools/toolBuildReviewers.ts](src/tools/toolBuildReviewers.ts) - deterministic
-  generated-tool code and behavior review gates that run after QA and before registration.
+- [src/tools/toolBuildReviewers.ts](src/tools/toolBuildReviewers.ts) - deterministic and
+  optional LLM generated-tool code/behavior review gates that run after QA and before
+  registration.
 - [src/tools/toolBuildWorker.ts](src/tools/toolBuildWorker.ts) - background worker that
   claims `requested` Tool Build Queue items and runs the Builder/QA/Registrar workflow.
 - [src/tools/toolServiceSupervisor.ts](src/tools/toolServiceSupervisor.ts) - generic
@@ -624,6 +625,10 @@ For documentation-only changes:
   output is not trusted: generated files must match the request contract, avoid raw
   secrets, pass isolated generated-tool tests, pass isolated build, pass promotion tests,
   and pass promotion build before registration.
+- Optional LLM code/behavior reviewers can be enabled with `TOOL_BUILD_LLM_REVIEW=enabled`.
+  They read the durable request contract, QA report, and generated module/test previews,
+  then return structured `pass`, `needs_revision`, or `fail` decisions. Treat their output
+  as an additional review gate, not as a replacement for deterministic QA.
 - The background Tool Build worker claims the oldest `requested` queue item through
   `claimNextRequested`, marks it `building`, runs the same workflow as the manual API, and
   reloads generated tools after registration. Disable it with `TOOL_BUILD_WORKER=disabled`

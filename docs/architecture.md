@@ -308,18 +308,21 @@ missing capability
   -> builder writes source and tests
   -> QA runs targeted tests and build checks in an isolated workspace
   -> code and behavior review gates inspect contract safety and QA evidence
+  -> optional LLM code/behavior reviewers inspect source previews and behavior evidence
   -> registrar validates metadata and registers the generated module
   -> runtime reloads generated tools
   -> original run can use the new tool
 ```
 
-The next slice adds a guarded LLM-backed provider for unknown/custom capability families.
-It is still not trusted runtime code execution: the model may only return the requested
-TypeScript module path and test path, must keep credentials behind secret handles, and
-the output still goes through isolated generated-tool tests, isolated build, promotion
-tests, promotion build, deterministic code/behavior review gates, metadata registration,
-and runtime reload. Disable this fallback with `TOOL_BUILD_LLM_PROVIDER=disabled` when an
-instance should only use deterministic providers.
+The guarded LLM-backed provider can build unknown/custom capability families after
+deterministic providers decline the request. It is still not trusted runtime code
+execution: the model may only return the requested TypeScript module path and test path,
+must keep credentials behind secret handles, and the output still goes through isolated
+generated-tool tests, isolated build, promotion tests, promotion build, deterministic
+code/behavior review gates, optional LLM review gates, metadata registration, and runtime
+reload. Disable this fallback with `TOOL_BUILD_LLM_PROVIDER=disabled` when an instance
+should only use deterministic providers. Enable `TOOL_BUILD_LLM_REVIEW=enabled` when the
+instance should add LLM code/behavior reviewers before promotion.
 
 The target flow also supports admin-provided API documentation and credentials. The agent
 should read the docs, propose a reusable TypeScript module contract, build tests, run QA,

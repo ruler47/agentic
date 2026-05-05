@@ -232,7 +232,11 @@ temporary workspace isolation: it copies project source/tests/config into a disp
 directory, links dependencies, runs the generated-tool test and build there with command
 timeouts, then runs promotion tests/build in the real project only after isolated QA
 passes. After QA, deterministic review gates check generated source/manifest contract
-safety and whether QA evidence has the expected test/build shape. `MetadataToolRegistrar`
+safety and whether QA evidence has the expected test/build shape. If
+`TOOL_BUILD_LLM_REVIEW=enabled`, the workflow also runs LLM code and behavior reviewers
+that inspect the durable request contract, QA report, and generated module/test previews.
+Their structured `pass`, `needs_revision`, or `fail` findings are stored in
+`qaReport.reviews` and can be returned to the builder for repair. `MetadataToolRegistrar`
 records the generated metadata, after which the server reloads generated tools into the
 active registry. This gives us a real end-to-end loop while keeping generated code behind
 contract validation, QA, and review gates.
