@@ -8,7 +8,11 @@ import { AddressInfo } from "node:net";
 import { loadGeneratedTools, compiledModulePath } from "../src/tools/generatedToolLoader.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
-import { OciImageToolPackageRunner, ToolPackageRunner } from "../src/tools/toolPackageRunner.js";
+import {
+  OciImageToolPackageRunner,
+  SourceBundleHttpProcessToolPackageRunner,
+  ToolPackageRunner,
+} from "../src/tools/toolPackageRunner.js";
 import { ToolServiceSupervisor } from "../src/tools/toolServiceSupervisor.js";
 
 test("compiledModulePath maps source tool modules to built JavaScript modules", () => {
@@ -228,6 +232,77 @@ test("loadGeneratedTools imports prebuilt source-bundle package manifests from p
     assert.equal(stored?.status, "available");
     assert.equal(stored?.lastHealthDetail, "bundle healthy");
     assert.equal(output?.content, "hello bundle");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loadGeneratedTools can execute source-bundles through local HTTP process runtime", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentic-source-http-runtime-"));
+  const runtimePath = join(root, "tool-packages/normalize/dist/runtime/server.js");
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+
+  try {
+    await mkdir(join(root, "tool-packages/normalize/dist/runtime"), { recursive: true });
+    await writeFile(
+      runtimePath,
+      `
+        import { createServer } from "node:http";
+        const port = Number(process.env.PORT ?? 8080);
+        const server = createServer(async (request, response) => {
+          response.setHeader("content-type", "application/json");
+          if (request.method === "GET" && request.url === "/health") {
+            response.end(JSON.stringify({ ok: true, detail: "process runtime healthy" }));
+            return;
+          }
+          if (request.method === "POST" && request.url === "/run") {
+            const chunks = [];
+            for await (const chunk of request) chunks.push(Buffer.from(chunk));
+            const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            response.end(JSON.stringify({
+              ok: true,
+              content: String(body.input?.text ?? "").trim().toLowerCase()
+            }));
+            return;
+          }
+          response.statusCode = 404;
+          response.end(JSON.stringify({ ok: false, error: "not found" }));
+        });
+        server.listen(port, "127.0.0.1");
+      `,
+    );
+    await metadata.registerGenerated({
+      name: "generated.bundle.httpnormalize",
+      version: "1.0.0",
+      description: "Normalize text from an out-of-tree HTTP runtime package.",
+      capabilities: ["text-normalization"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.bundle.httpnormalize",
+        version: "1.0.0",
+        description: "Normalize text from an out-of-tree HTTP runtime package.",
+        capabilities: ["text-normalization"],
+        startupMode: "on-demand",
+        package: { type: "source-bundle", ref: "normalize" },
+      },
+    });
+
+    const results = await loadGeneratedTools(registry, metadata, root, [
+      new SourceBundleHttpProcessToolPackageRunner({
+        enabled: true,
+        packageRoot: "tool-packages",
+        startupTimeoutMs: 5000,
+        pollIntervalMs: 50,
+      }),
+    ]);
+    const [stored] = await metadata.list();
+    const output = await registry.get("generated.bundle.httpnormalize")?.run({ text: " HELLO HTTP PROCESS " });
+
+    assert.equal(results[0]?.loaded, true, JSON.stringify(results[0], null, 2));
+    assert.equal(stored?.status, "available");
+    assert.match(stored?.lastHealthDetail ?? "", /entrypoint is present/);
+    assert.equal(output?.content, "hello http process");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

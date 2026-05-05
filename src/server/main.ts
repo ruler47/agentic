@@ -43,6 +43,7 @@ import {
   ExternalHttpToolPackageRunner,
   LocalPathToolPackageRunner,
   OciImageToolPackageRunner,
+  SourceBundleHttpProcessToolPackageRunner,
   SourceBundleToolPackageRunner,
 } from "../tools/toolPackageRunner.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
@@ -100,6 +101,7 @@ const toolMigrationStore = pool
   : new InMemoryToolMigrationStore();
 const toolPackageRunners = [
   new LocalPathToolPackageRunner(),
+  new SourceBundleHttpProcessToolPackageRunner(),
   new SourceBundleToolPackageRunner(),
   new ExternalHttpToolPackageRunner(),
   new OciImageToolPackageRunner(),

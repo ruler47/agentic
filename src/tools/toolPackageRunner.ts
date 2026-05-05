@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { execFile } from "node:child_process";
+import { createServer } from "node:http";
+import { execFile, spawn, ChildProcess } from "node:child_process";
 import { resolve, relative, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -101,17 +102,10 @@ export class SourceBundleToolPackageRunner implements ToolPackageRunner {
       return { loaded: false, detail, health: { ok: false, detail } };
     }
 
-    const candidates = this.packageRoots.map((root) => {
-      const packageDir = safePackagePath(resolve(projectRoot, root), ref);
-      return {
-        packageDir,
-        moduleFile: firstExisting([
-          join(packageDir, "dist/index.js"),
-          join(packageDir, "index.js"),
-        ]),
-      };
-    });
-    const found = candidates.find((candidate) => candidate.moduleFile);
+    const found = findSourceBundlePackage(projectRoot, this.packageRoots, ref, [
+      "dist/index.js",
+      "index.js",
+    ]);
     if (!found?.moduleFile) {
       const detail = `Source-bundle package has no loadable dist/index.js or index.js under: ${this.packageRoots.join(", ")}`;
       return { loaded: false, detail, health: { ok: false, detail } };
@@ -134,6 +128,78 @@ export class SourceBundleToolPackageRunner implements ToolPackageRunner {
       type: this.type,
       status: "available",
       detail: "Loads pre-built source-bundle packages from the tool package workspace. It does not install dependencies or execute build commands.",
+      supportedPackageTypes: ["source-bundle"],
+      root: this.packageRoots.join(","),
+    };
+  }
+}
+
+export type SourceBundleHttpProcessToolPackageRunnerOptions = {
+  enabled?: boolean;
+  packageRoot?: string | string[];
+  startupTimeoutMs?: number;
+  pollIntervalMs?: number;
+  fetchImpl?: typeof fetch;
+};
+
+export class SourceBundleHttpProcessToolPackageRunner implements ToolPackageRunner {
+  readonly type = "source-bundle";
+  private readonly enabled: boolean;
+  private readonly packageRoots: string[];
+  private readonly startupTimeoutMs: number;
+  private readonly pollIntervalMs: number;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(options: SourceBundleHttpProcessToolPackageRunnerOptions = {}) {
+    this.enabled = options.enabled ?? (
+      process.env.TOOL_SOURCE_BUNDLE_HTTP_RUNNER === "enabled" ||
+      process.env.TOOL_SOURCE_BUNDLE_RUNNER === "http-process"
+    );
+    const roots = options.packageRoot ?? defaultSourceBundleRoots();
+    this.packageRoots = Array.isArray(roots) ? roots : [roots];
+    this.startupTimeoutMs = options.startupTimeoutMs ?? Number(process.env.TOOL_SOURCE_BUNDLE_STARTUP_TIMEOUT_MS ?? 15_000);
+    this.pollIntervalMs = options.pollIntervalMs ?? Number(process.env.TOOL_SOURCE_BUNDLE_POLL_INTERVAL_MS ?? 250);
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  canLoad(metadata: ToolModuleMetadata): boolean {
+    return this.enabled && metadata.packageManifest?.package.type === "source-bundle";
+  }
+
+  async load(metadata: ToolModuleMetadata, projectRoot: string): Promise<ToolPackageLoadResult> {
+    const ref = metadata.packageManifest?.package.ref;
+    if (!ref) {
+      const detail = "Source-bundle package manifest has no package.ref.";
+      return { loaded: false, detail, health: { ok: false, detail } };
+    }
+
+    const found = findSourceBundlePackage(projectRoot, this.packageRoots, ref, ["dist/runtime/server.js"]);
+    if (!found?.moduleFile) {
+      const detail = `Source-bundle package has no HTTP runtime dist/runtime/server.js under: ${this.packageRoots.join(", ")}`;
+      return { loaded: false, detail, health: { ok: false, detail } };
+    }
+
+    return {
+      loaded: true,
+      detail: `Loaded ${metadata.name} from source-bundle HTTP process runtime ${found.moduleFile}`,
+      tool: sourceBundleHttpProcessTool(metadata, {
+        packageDir: found.packageDir,
+        serverFile: found.moduleFile,
+        startupTimeoutMs: this.startupTimeoutMs,
+        pollIntervalMs: this.pollIntervalMs,
+        fetchImpl: this.fetchImpl,
+      }),
+      health: { ok: true, detail: "Source-bundle HTTP runtime entrypoint is present; process starts on demand or service start." },
+    };
+  }
+
+  describe(): ToolPackageRunnerInfo {
+    return {
+      type: this.type,
+      status: this.enabled ? "available" : "disabled",
+      detail: this.enabled
+        ? "Starts source-bundle package HTTP runtimes as local supervised Node processes."
+        : "Disabled by default. Set TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled or TOOL_SOURCE_BUNDLE_RUNNER=http-process to execute source-bundles as local HTTP runtimes.",
       supportedPackageTypes: ["source-bundle"],
       root: this.packageRoots.join(","),
     };
@@ -350,6 +416,22 @@ function safePackagePath(root: string, ref: string): string {
   return resolved;
 }
 
+function findSourceBundlePackage(
+  projectRoot: string,
+  packageRoots: string[],
+  ref: string,
+  entrypoints: string[],
+): { packageDir: string; moduleFile?: string } | undefined {
+  const candidates = packageRoots.map((root) => {
+    const packageDir = safePackagePath(resolve(projectRoot, root), ref);
+    return {
+      packageDir,
+      moduleFile: firstExisting(entrypoints.map((entrypoint) => join(packageDir, entrypoint))),
+    };
+  });
+  return candidates.find((candidate) => candidate.moduleFile);
+}
+
 function firstExisting(paths: string[]): string | undefined {
   return paths.find((path) => existsSync(path));
 }
@@ -391,6 +473,107 @@ function externalHttpProxyTool(
       return externalHttpServiceHandle(fetchImpl, metadata, baseUrl, context);
     },
   };
+}
+
+type SourceBundleHttpProcessRuntimeOptions = {
+  packageDir: string;
+  serverFile: string;
+  startupTimeoutMs: number;
+  pollIntervalMs: number;
+  fetchImpl: typeof fetch;
+};
+
+function sourceBundleHttpProcessTool(
+  metadata: ToolModuleMetadata,
+  options: SourceBundleHttpProcessRuntimeOptions,
+): Tool {
+  return {
+    name: metadata.name,
+    displayName: metadata.displayName,
+    version: metadata.version,
+    description: metadata.description,
+    capabilities: [...metadata.capabilities],
+    inputSchema: metadata.inputSchema,
+    outputSchema: metadata.outputSchema,
+    startupMode: metadata.startupMode,
+    requiredConfigurationKeys: metadata.requiredConfigurationKeys,
+    requiredSecretHandles: metadata.requiredSecretHandles,
+    settingsSchema: metadata.settingsSchema,
+    storage: metadata.storage,
+    docsMarkdown: metadata.docsMarkdown,
+    examples: metadata.examples,
+    async healthcheck() {
+      return { ok: true, detail: "Source-bundle HTTP process runtime entrypoint is available." };
+    },
+    async run(input, context) {
+      const runtime = await startSourceBundleHttpRuntime(options);
+      try {
+        const response = await postJson(options.fetchImpl, `${runtime.baseUrl}/run`, {
+          input,
+          context: await executionContextPayload(metadata, context),
+        }, context?.signal);
+        return parseToolResult(response);
+      } finally {
+        stopChildProcess(runtime.child);
+      }
+    },
+    async startService(context) {
+      const runtime = await startSourceBundleHttpRuntime(options);
+      try {
+        await postJson(options.fetchImpl, `${runtime.baseUrl}/service/start`, {
+          context: await serviceContextPayload(metadata, context),
+        }, context.signal);
+      } catch (error) {
+        stopChildProcess(runtime.child);
+        throw error;
+      }
+      return {
+        async stop() {
+          try {
+            await postJson(options.fetchImpl, `${runtime.baseUrl}/service/stop`, {
+              context: await serviceContextPayload(metadata, context),
+            });
+          } finally {
+            stopChildProcess(runtime.child);
+          }
+        },
+        async healthcheck() {
+          return fetchHealth(options.fetchImpl, runtime.baseUrl, context.signal);
+        },
+      };
+    },
+  };
+}
+
+async function startSourceBundleHttpRuntime(options: SourceBundleHttpProcessRuntimeOptions): Promise<{
+  child: ChildProcess;
+  baseUrl: string;
+}> {
+  const port = await freeLocalPort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const output: Buffer[] = [];
+  const child = spawn(process.execPath, [options.serverFile], {
+    cwd: options.packageDir,
+    env: { ...process.env, PORT: String(port) },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout?.on("data", (chunk) => output.push(Buffer.from(chunk)));
+  child.stderr?.on("data", (chunk) => output.push(Buffer.from(chunk)));
+
+  const health = await waitForHealthyRuntime(
+    options.fetchImpl,
+    baseUrl,
+    options.startupTimeoutMs,
+    options.pollIntervalMs,
+  );
+  if (!health.ok) {
+    stopChildProcess(child);
+    const processDetail = Buffer.concat(output).toString("utf8").trim();
+    throw new Error(processDetail ? `${health.detail}: ${processDetail}` : health.detail);
+  }
+
+  attachChildProcessCleanup(child);
+  return { child, baseUrl };
 }
 
 function externalHttpServiceHandle(
@@ -632,6 +815,20 @@ async function waitForHealthyRuntime(
   return { ok: false, detail: lastDetail };
 }
 
+async function freeLocalPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolvePort, rejectPort) => {
+    server.once("error", rejectPort);
+    server.listen(0, "127.0.0.1", () => resolvePort());
+  });
+  const address = server.address();
+  await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+  if (!address || typeof address === "string") {
+    throw new Error("Could not allocate a local port for source-bundle runtime.");
+  }
+  return address.port;
+}
+
 function dockerPortOutputToBaseUrl(value: string): string {
   const firstLine = value.split(/\r?\n/).find((line) => line.trim());
   if (!firstLine) throw new Error("Docker did not publish an HTTP runtime port.");
@@ -646,6 +843,17 @@ function attachProcessCleanup(runtime: OciContainerRuntime, containerId: string)
     void bestEffortStop(runtime, containerId);
   };
   process.once("exit", cleanup);
+}
+
+function attachChildProcessCleanup(child: ChildProcess): void {
+  const cleanup = () => {
+    stopChildProcess(child);
+  };
+  process.once("exit", cleanup);
+}
+
+function stopChildProcess(child: ChildProcess): void {
+  if (!child.killed) child.kill("SIGTERM");
 }
 
 async function bestEffortStop(runtime: OciContainerRuntime, containerId: string): Promise<void> {

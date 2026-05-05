@@ -5,6 +5,7 @@ import {
   ExternalHttpToolPackageRunner,
   LocalPathToolPackageRunner,
   OciImageToolPackageRunner,
+  SourceBundleHttpProcessToolPackageRunner,
   SourceBundleToolPackageRunner,
   ToolPackageRunner,
 } from "./toolPackageRunner.js";
@@ -21,6 +22,7 @@ export async function loadGeneratedTools(
   projectRoot = process.cwd(),
   runners: ToolPackageRunner[] = [
     new LocalPathToolPackageRunner(),
+    new SourceBundleHttpProcessToolPackageRunner(),
     new SourceBundleToolPackageRunner(),
     new ExternalHttpToolPackageRunner(),
     new OciImageToolPackageRunner(),

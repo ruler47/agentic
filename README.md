@@ -247,6 +247,13 @@ out-of-tree package entrypoint instead of treating `src/tools/generated` as the 
 runtime source. Generated package folders also include a small HTTP runtime server and
 Dockerfile entrypoint: `GET /health`, `POST /run`, and optional service lifecycle routes
 map to the same tool contract, which is the handoff toward independently hosted tools.
+By default source-bundles are still imported through `dist/index.js`, but setting
+`TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or `TOOL_SOURCE_BUNDLE_RUNNER=http-process`
+makes the loader start the package-local `dist/runtime/server.js` as a separate local
+Node HTTP process for each on-demand call, or as a service lifecycle process for
+always-on tools. `TOOL_SOURCE_BUNDLE_STARTUP_TIMEOUT_MS` and
+`TOOL_SOURCE_BUNDLE_POLL_INTERVAL_MS` tune readiness waits. This is the local-process
+bridge before full external supervisor/OCI execution.
 `external-package` manifests whose `package.ref` is an HTTP(S) URL load through the
 external HTTP package runner. That runtime must expose `GET /health`, `POST /run`, and
 optional `POST /service/start` / `POST /service/stop` for always-on tools. `oci-image`

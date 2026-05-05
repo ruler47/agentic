@@ -296,6 +296,15 @@ then goes through `SourceBundleToolPackageRunner` and imports the package-built
 optional `POST /service/start` and `POST /service/stop`. The package Dockerfile runs the
 compiled server by default, so the same generated source-bundle can be imported in-process
 today and containerized later without changing its tool implementation.
+`SourceBundleHttpProcessToolPackageRunner` is the intermediate execution mode for that
+same package-local runtime. It is disabled by default; set
+`TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or `TOOL_SOURCE_BUNDLE_RUNNER=http-process` to
+make source-bundle packages start `dist/runtime/server.js` as a separate local Node HTTP
+process instead of importing `dist/index.js` into the app process. On-demand tools get a
+fresh bounded process per call; always-on tools get a process-backed service handle that
+proxies `/service/start`, `/health`, and `/service/stop`. This keeps the package portable
+without requiring Docker during local development, while preserving the same HTTP
+contract used by external and OCI runners.
 When a package workspace is present, the QA report lists its `tool.package.json` alongside
 the legacy generated module and test artifacts, so later promotion stages can trace which
 portable package snapshot was reviewed. `validateToolPackageWorkspace` also runs as part

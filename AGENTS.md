@@ -129,6 +129,12 @@ Generated tool package workspace:
   writing while keeping the legacy local-path generated module flow.
 - `SourceBundleToolPackageRunner` searches `TOOL_PACKAGE_ROOT`,
   `TOOL_PACKAGE_WORKSPACE_ROOT`, default `tools`, and legacy `tool-packages`.
+- `TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or
+  `TOOL_SOURCE_BUNDLE_RUNNER=http-process` makes generated source-bundles execute through
+  their package-local `dist/runtime/server.js` HTTP runtime as a separate local Node
+  process instead of importing `dist/index.js` into the Agentic app process.
+- `TOOL_SOURCE_BUNDLE_STARTUP_TIMEOUT_MS` and `TOOL_SOURCE_BUNDLE_POLL_INTERVAL_MS`
+  tune the local HTTP process runner readiness wait.
 - The top-level `tools/` directory is intentionally gitignored; package source should be
   exported/imported through manifests or promoted into OCI/external runtimes, not committed
   as Agentic app code.
@@ -613,7 +619,10 @@ For documentation-only changes:
   active manifest and version-history manifests; API/UI export/import exists, and
   `ToolPackageRunner` is the loader extension point. Local-path modules load from the
   compiled app; pre-built source-bundle packages load from `TOOL_PACKAGE_ROOT`,
-  `TOOL_PACKAGE_WORKSPACE_ROOT`, default `tools`, or legacy `tool-packages`; HTTP(S)
+  `TOOL_PACKAGE_WORKSPACE_ROOT`, default `tools`, or legacy `tool-packages`; source-bundle
+  packages can also run through their package-local HTTP runtime in a separate local Node
+  process when `TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or
+  `TOOL_SOURCE_BUNDLE_RUNNER=http-process`; HTTP(S)
   external-package refs load through an external runtime proxy; OCI-image refs can load
   through the Docker runner when `TOOL_OCI_RUNNER=enabled` and the container exposes
   `/health` and `/run`; HTTP/OCI runtimes receive only declared
