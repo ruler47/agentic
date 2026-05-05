@@ -703,8 +703,8 @@ Remaining Phase 3 gaps:
   persisted desired/runtime state, heartbeat health, restart count, consecutive failures,
   last failure/restart metadata, bounded auto-restart after failed heartbeat, and
   per-service restart policy overrides through API/UI. Remaining work: richer backoff
-  schedules, log streaming from isolated process stdout/stderr, and operator approval
-  gates for sensitive service restarts.
+  schedules and operator approval gates for sensitive service restarts. Source-bundle
+  HTTP process runtimes now bridge child stdout/stderr into lifecycle logs/SSE.
   Heartbeats now also refuse false-green status for service tools whose runtime failed to
   start: the supervisor retries `startService` instead of accepting static module health.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,

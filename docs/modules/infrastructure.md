@@ -226,10 +226,12 @@ the supervisor. The context provides the tool name, abort signal, internal base 
 optional fetch implementation, secret resolver, and lifecycle logger. The supervisor
 keeps the returned service handle, prefers the handle healthcheck while the service is
 active, and stops active handles during shutdown without clearing the desired running
-state. This is useful for local/reference providers, but it is not a durable process
-manager yet. The next infrastructure step is to move long-running generated modules to
-queue-backed or process-backed workers that can survive app restarts and attach their own
-runtime log streams.
+state. Source-bundle HTTP process runtimes bridge child `stdout`/`stderr` into this
+lifecycle logger, so isolated package processes surface useful diagnostics in the same
+`tool_service_logs` API/SSE feed as built-in tools. This is useful for local/reference
+providers, but it is not a durable process manager yet. The next infrastructure step is
+to move long-running generated modules to queue-backed or process-backed workers that can
+survive app restarts.
 
 Provider-neutral service activity is stored in `tool_service_events`. Generated
 always-on tools should write inbound, outbound, and system events there with source

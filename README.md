@@ -275,6 +275,9 @@ auto-restart policy (`TOOL_SERVICE_AUTO_RESTART_ON_FAILED_HEARTBEAT`, disabled o
 set to `disabled`; `TOOL_SERVICE_MAX_AUTO_RESTARTS`, default `3`) before the service is
 left failed for operator review. Operators can override that policy per service through
 `PATCH /api/tool-services/:name/restart-policy` or the Channels/Tool Detail UI.
+Source-bundle HTTP process runtimes forward child `stdout`/`stderr` into the same
+lifecycle log stream, so isolated tools can be debugged without shelling into their
+process.
 
 Tool-owned storage changes are tracked separately in `tool_migrations`: tool name/version,
 migration id, checksum, status, applied actor/time, QA report, and rollback notes. This is

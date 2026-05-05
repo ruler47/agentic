@@ -143,6 +143,8 @@ Generated tool package workspace:
   service before the operator has to intervene.
 - Service-specific restart policy overrides are stored through
   `PATCH /api/tool-services/:name/restart-policy` and shown in the Channels/Tool Detail UI.
+- Source-bundle HTTP process runtimes forward child stdout/stderr into the same tool
+  service lifecycle logs/SSE stream as built-in always-on tools.
 - The top-level `tools/` directory is intentionally gitignored; package source should be
   exported/imported through manifests or promoted into OCI/external runtimes, not committed
   as Agentic app code.

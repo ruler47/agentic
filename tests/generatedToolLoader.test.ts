@@ -339,6 +339,8 @@ test("source-bundle HTTP process runtimes support always-on service lifecycle", 
             const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
             calls.push({ path: "/service/start", mode: body.context?.configuration?.LISTENER_MODE });
             started = true;
+            console.log("listener service started");
+            console.error("listener service stderr diagnostic");
             response.end(JSON.stringify({ ok: true }));
             return;
           }
@@ -352,7 +354,7 @@ test("source-bundle HTTP process runtimes support always-on service lifecycle", 
           response.statusCode = 404;
           response.end(JSON.stringify({ ok: false, error: "not found" }));
         });
-        server.listen(port, "127.0.0.1");
+        server.listen(port, "127.0.0.1", () => console.log("listener runtime booted"));
       `,
     );
     await metadata.registerGenerated({
@@ -388,6 +390,7 @@ test("source-bundle HTTP process runtimes support always-on service lifecycle", 
     const started = await supervisor.start("generated.bundle.httplistener");
     const heartbeat = await supervisor.heartbeat("generated.bundle.httplistener");
     const stopped = await supervisor.stop("generated.bundle.httplistener");
+    const logs = await supervisor.listLogs("generated.bundle.httplistener");
 
     assert.equal(results[0]?.loaded, true, JSON.stringify(results[0], null, 2));
     assert.equal(started.status, "running");
@@ -395,6 +398,8 @@ test("source-bundle HTTP process runtimes support always-on service lifecycle", 
     assert.equal(heartbeat.lastHealthOk, true);
     assert.equal(heartbeat.detail, "listener service running");
     assert.equal(stopped.status, "stopped");
+    assert.match(logs.map((log) => log.message).join("\n"), /Source-bundle runtime stdout: listener service started/);
+    assert.match(logs.map((log) => log.message).join("\n"), /Source-bundle runtime stderr: listener service stderr diagnostic/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

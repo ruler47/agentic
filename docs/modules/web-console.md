@@ -183,7 +183,8 @@ handled manually without disabling bounded recovery for every other service.
 `GET /api/tool-services/logs` returns recent lifecycle log records written by the
 supervisor for starts, stops, restarts, heartbeats, and startup reconciliation.
 `GET /api/tool-services/logs/events` is an SSE stream that emits `service-log` events for
-new lifecycle records, filtered by `toolName` when provided. Tools can implement
+new lifecycle records, filtered by `toolName` when provided. Source-bundle HTTP process
+runtimes also forward child `stdout`/`stderr` into this stream. Tools can implement
 `startService(context)` to run an in-process loop under the same lifecycle controls; the
 supervisor injects the internal base URL and secret resolver, stores the returned handle,
 prefers handle healthchecks, and stops active handles during shutdown without clearing the

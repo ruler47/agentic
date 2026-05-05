@@ -517,7 +517,7 @@ function sourceBundleHttpProcessTool(
       return { ok: true, detail: "Source-bundle HTTP process runtime entrypoint is available." };
     },
     async run(input, context) {
-      const runtime = await startSourceBundleHttpRuntime(options);
+      const runtime = await startSourceBundleHttpRuntime(options, context?.logger);
       try {
         const response = await withTimeoutSignal(
           context?.signal,
@@ -534,7 +534,7 @@ function sourceBundleHttpProcessTool(
       }
     },
     async startService(context) {
-      const runtime = await startSourceBundleHttpRuntime(options);
+      const runtime = await startSourceBundleHttpRuntime(options, context.logger);
       try {
         await withTimeoutSignal(
           context.signal,
@@ -571,7 +571,10 @@ function sourceBundleHttpProcessTool(
   };
 }
 
-async function startSourceBundleHttpRuntime(options: SourceBundleHttpProcessRuntimeOptions): Promise<{
+async function startSourceBundleHttpRuntime(
+  options: SourceBundleHttpProcessRuntimeOptions,
+  logger?: ToolServiceContext["logger"] | ToolExecutionContext["logger"],
+): Promise<{
   child: ChildProcess;
   baseUrl: string;
 }> {
@@ -583,8 +586,14 @@ async function startSourceBundleHttpRuntime(options: SourceBundleHttpProcessRunt
     env: { ...process.env, PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stdout?.on("data", (chunk) => output.push(Buffer.from(chunk)));
-  child.stderr?.on("data", (chunk) => output.push(Buffer.from(chunk)));
+  child.stdout?.on("data", (chunk) => {
+    output.push(Buffer.from(chunk));
+    logRuntimeOutput(logger, "info", "stdout", chunk);
+  });
+  child.stderr?.on("data", (chunk) => {
+    output.push(Buffer.from(chunk));
+    logRuntimeOutput(logger, "warn", "stderr", chunk);
+  });
 
   const exitBeforeHealth = new Promise<ToolHealth>((resolveExit) => {
     child.once("exit", (code, signal) => {
@@ -615,6 +624,23 @@ async function startSourceBundleHttpRuntime(options: SourceBundleHttpProcessRunt
 
   attachChildProcessCleanup(child);
   return { child, baseUrl };
+}
+
+function logRuntimeOutput(
+  logger: ToolServiceContext["logger"] | ToolExecutionContext["logger"] | undefined,
+  level: "info" | "warn",
+  stream: "stdout" | "stderr",
+  chunk: unknown,
+): void {
+  if (!logger) return;
+  const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
+  for (const line of text.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
+    const output = line.length > 2_000 ? `${line.slice(0, 2_000)}...` : line;
+    logger[level](`Source-bundle runtime ${stream}: ${output.slice(0, 180)}`, {
+      stream,
+      output,
+    });
+  }
 }
 
 function externalHttpServiceHandle(

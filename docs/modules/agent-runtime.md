@@ -325,6 +325,10 @@ queue listener, webhook receiver, or scheduled worker all use the same lifecycle
 If a service exposes a runtime `startService` hook but no active runtime is present,
 heartbeat triggers a fresh start attempt instead of accepting the module-level healthcheck
 as proof that the long-running process is alive.
+For source-bundle HTTP process runtimes, child process `stdout` and `stderr` are bridged
+into the tool/logger channel. Always-on services therefore stream runtime diagnostics into
+the same lifecycle logs and SSE feed as built-in service modules, without coupling the
+core to any provider-specific bot/listener implementation.
 When a package workspace is present, the QA report lists its `tool.package.json` alongside
 the legacy generated module and test artifacts, so later promotion stages can trace which
 portable package snapshot was reviewed. `validateToolPackageWorkspace` also runs as part
