@@ -23,6 +23,7 @@ import {
 } from "./toolIntegrationSpec.js";
 import type { ToolPackageManifest } from "./toolPackage.js";
 import { ToolPackageWorkspaceStore } from "./toolPackageWorkspaceStore.js";
+import { validateToolPackageWorkspace } from "./toolPackageWorkspaceQa.js";
 
 type GeneratedFile = {
   path: string;
@@ -332,6 +333,18 @@ export class IsolatedCommandToolQaRunner implements ToolQaRunner {
         summary: `Promotion TypeScript build failed for ${request.contract.toolName}.`,
         checks,
       };
+    }
+
+    if (output.packageWorkspace) {
+      const packageQa = await validateToolPackageWorkspace(this.projectRoot, output.packageWorkspace);
+      checks.push(...packageQa.checks.map((check) => `package workspace: ${check}`));
+      if (!packageQa.ok) {
+        return {
+          ok: false,
+          summary: packageQa.summary,
+          checks,
+        };
+      }
     }
 
     return {

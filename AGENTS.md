@@ -251,6 +251,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/tools/toolPackageWorkspaceStore.ts](src/tools/toolPackageWorkspaceStore.ts) -
   gitignored source-bundle package workspace writer for generated tools outside app
   source.
+- [src/tools/toolPackageWorkspaceQa.ts](src/tools/toolPackageWorkspaceQa.ts) -
+  structural QA for package manifests, build scaffold, Dockerfile, and local Tool
+  contract before package snapshots become promotion candidates.
 - [src/tools/toolIntegrationSpec.ts](src/tools/toolIntegrationSpec.ts) - provider-neutral
   Tool Build integration spec inferred from requests for API clients, bots, listeners,
   webhooks, inbound/outbound services, credentials, settings, lifecycle, and QA.
@@ -628,7 +631,8 @@ For documentation-only changes:
   `src/tools/generated` entirely. Mirrored packages include a minimal package-local
   `src/tools/tool.ts` contract so generated source can compile against portable Tool
   types instead of reading Agentic internals. QA reports include the sidecar
-  `tool.package.json` path when one was written.
+  `tool.package.json` path when one was written, and `IsolatedCommandToolQaRunner`
+  performs structural package-workspace QA before returning a passing report.
 - Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
   needs database access, it must declare storage requirements/migrations and receive a
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,

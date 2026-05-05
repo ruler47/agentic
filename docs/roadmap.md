@@ -683,11 +683,12 @@ Remaining Phase 3 gaps:
   PARTIAL: the app can now write source-bundle package workspaces outside the main repo
   under gitignored `tools/<name>/<version>` folders, mirror Tool Builder output into that
   workspace by default, include a package-local minimal Tool contract for generated
-  TypeScript modules, include the sidecar package manifest in QA evidence, reload
-  pre-built source-bundles from that workspace, proxy external HTTP packages, and
-  optionally run OCI HTTP packages. The next step is to make package
-  workspaces the active generated source of truth instead of sidecar snapshots, then
-  promote them through package-local QA and runner activation.
+  TypeScript modules, include the sidecar package manifest in QA evidence, run structural
+  package-workspace QA during command QA, reload pre-built source-bundles from that
+  workspace, proxy external HTTP packages, and optionally run OCI HTTP packages. The next
+  step is to execute package-local build/test inside the package workspace, then make
+  package workspaces the active generated source of truth instead of sidecar snapshots and
+  promote them through runner activation.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,

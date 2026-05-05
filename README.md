@@ -239,7 +239,9 @@ source, and tests outside the main application source so generated capabilities 
 toward independent services. The server mirrors Tool Build output into that workspace by
 default; set `TOOL_BUILD_PACKAGE_WORKSPACE=disabled` to keep only the legacy local-path
 generated module output while package-local QA is still being introduced. Mirrored
-packages include a minimal package-local Tool contract for generated TypeScript modules.
+packages include a minimal package-local Tool contract for generated TypeScript modules,
+and command QA performs structural checks on the package manifest and scaffold before
+returning a passing report.
 `external-package` manifests whose `package.ref` is an HTTP(S) URL load through the
 external HTTP package runner. That runtime must expose `GET /health`, `POST /run`, and
 optional `POST /service/start` / `POST /service/stop` for always-on tools. `oci-image`
