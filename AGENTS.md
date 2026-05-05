@@ -53,7 +53,8 @@ policies without leaking context.
   location, while the implementation stays independent of Agentic internals.
 - The default out-of-tree generated package workspace is top-level `tools/`, which is
   gitignored. Generated packages should live under `tools/<system-name>/<version>` with
-  their own `tool.package.json`, README, Dockerfile, package metadata, source, and tests.
+  their own `tool.package.json`, README, Dockerfile, package metadata, TypeScript build
+  config, source, and tests.
 - Telegram identities can be mapped by numeric Telegram id or by username handle
   (`username`/`@username`) when Telegram exposes `from.username`; the bot forwards both
   aliases through `sourceUserAliases`.
@@ -616,8 +617,8 @@ For documentation-only changes:
   npm-style external packages remain roadmap work.
 - `ToolPackageWorkspaceStore` can write source-bundle packages under gitignored
   `tools/<system-name>/<version>` with manifest, README, Dockerfile, package metadata,
-  source, and tests. It is the preferred next target for Tool Builder output before
-  containerization.
+  TypeScript build config, source, and tests. It is the preferred next target for Tool
+  Builder output before containerization.
 - Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
   needs database access, it must declare storage requirements/migrations and receive a
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,

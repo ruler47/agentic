@@ -402,8 +402,9 @@ Remaining registry persistence:
   `TOOL_PACKAGE_ROOT`, or the legacy `tool-packages` directory without living in the main
   committed generated-tools directory. `ToolPackageWorkspaceStore` can now write
   portable package folders with `tool.package.json`, README, Dockerfile, package metadata,
-  source, and tests under that workspace while rejecting path traversal and non
-  source-bundle manifests. External-package manifests whose `package.ref` is
+  TypeScript build config, source, and tests under that workspace while rejecting path
+  traversal and non-source-bundle manifests. External-package manifests whose
+  `package.ref` is
   an HTTP(S) runtime URL now load through a proxy runner that calls `/health`, `/run`, and
   optional service lifecycle routes. OCI-image manifests can now be executed by an
   explicitly enabled Docker runner (`TOOL_OCI_RUNNER=enabled`) when the container exposes

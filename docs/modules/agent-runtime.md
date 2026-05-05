@@ -274,11 +274,12 @@ process pools, or remote execution platforms.
 
 `ToolPackageWorkspaceStore` is the first package-workspace writer. It creates portable
 source-bundle directories under `tools/<system-name>/<version>` by default and writes the
-manifest, README, Dockerfile, package metadata, source files, and tests. It rejects path
-traversal and non-source-bundle manifests. This is a transition layer: today it gives the
-Builder a safe out-of-repo target for generated TypeScript packages; later the same folder
-can be built into an OCI image, uploaded to object storage, exported, imported into
-another Agentic instance, or run as an external HTTP service.
+manifest, README, Dockerfile, package metadata, TypeScript build config, local package
+ignore rules, source files, and tests. It rejects path traversal and non-source-bundle
+manifests. This is a transition layer: today it gives the Builder a safe out-of-repo
+target for generated TypeScript packages; later the same folder can be built into an OCI
+image, uploaded to object storage, exported, imported into another Agentic instance, or
+run as an external HTTP service.
 
 Local-path loading is deliberately constrained:
 

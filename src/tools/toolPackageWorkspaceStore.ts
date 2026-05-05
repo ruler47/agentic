@@ -19,6 +19,7 @@ export type ToolPackageWorkspaceInput = {
   readmeMarkdown?: string;
   dockerfile?: string;
   packageJson?: Record<string, unknown>;
+  tsconfigJson?: Record<string, unknown>;
 };
 
 export type ToolPackageWorkspaceRecord = {
@@ -73,6 +74,14 @@ export class ToolPackageWorkspaceStore {
       {
         path: "package.json",
         content: `${JSON.stringify(input.packageJson ?? defaultPackageJson(manifest), null, 2)}\n`,
+      },
+      {
+        path: "tsconfig.json",
+        content: `${JSON.stringify(input.tsconfigJson ?? defaultTsconfigJson(), null, 2)}\n`,
+      },
+      {
+        path: ".gitignore",
+        content: "node_modules/\ndist/\n.env\n.DS_Store\n",
       },
       ...(input.files ?? []),
     ];
@@ -167,8 +176,29 @@ function defaultPackageJson(manifest: ToolPackageManifest): Record<string, unkno
     private: true,
     type: "module",
     scripts: {
+      build: "tsc -p tsconfig.json",
       start: "node dist/index.js",
-      test: "node --test",
+      test: "node --test \"dist/tests/**/*.test.js\"",
     },
+    devDependencies: {
+      typescript: "^5.6.3",
+    },
+  };
+}
+
+function defaultTsconfigJson(): Record<string, unknown> {
+  return {
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      strict: true,
+      esModuleInterop: true,
+      forceConsistentCasingInFileNames: true,
+      skipLibCheck: true,
+      outDir: "dist",
+      rootDir: ".",
+    },
+    include: ["src/**/*.ts", "tests/**/*.ts"],
   };
 }

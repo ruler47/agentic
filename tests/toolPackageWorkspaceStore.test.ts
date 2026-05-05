@@ -29,6 +29,9 @@ test("ToolPackageWorkspaceStore writes portable source-bundle packages outside a
     const manifest = JSON.parse(await readFile(join(projectRoot, record.manifestPath), "utf8"));
     const readme = await readFile(join(projectRoot, "tools/generated.demo.echo/1.2.0/README.md"), "utf8");
     const dockerfile = await readFile(join(projectRoot, "tools/generated.demo.echo/1.2.0/Dockerfile"), "utf8");
+    const packageJson = JSON.parse(await readFile(join(projectRoot, "tools/generated.demo.echo/1.2.0/package.json"), "utf8"));
+    const tsconfig = JSON.parse(await readFile(join(projectRoot, "tools/generated.demo.echo/1.2.0/tsconfig.json"), "utf8"));
+    const gitignore = await readFile(join(projectRoot, "tools/generated.demo.echo/1.2.0/.gitignore"), "utf8");
 
     assert.equal(record.packageRef, "generated.demo.echo/1.2.0");
     assert.equal(record.manifest.package.type, "source-bundle");
@@ -36,6 +39,9 @@ test("ToolPackageWorkspaceStore writes portable source-bundle packages outside a
     assert.equal(manifest.name, "generated.demo.echo");
     assert.match(readme, /Runtime Contract/);
     assert.match(dockerfile, /FROM node:22-alpine/);
+    assert.equal(packageJson.scripts.build, "tsc -p tsconfig.json");
+    assert.equal(tsconfig.compilerOptions.outDir, "dist");
+    assert.match(gitignore, /node_modules/);
     assert.ok(record.files.includes("tools/generated.demo.echo/1.2.0/src/index.ts"));
     assert.equal(record.files.some((path) => path.startsWith("src/tools/generated")), false);
   } finally {
