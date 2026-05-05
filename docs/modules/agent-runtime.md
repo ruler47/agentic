@@ -258,6 +258,9 @@ Generated module loading is deliberately constrained:
 - exported name/version/capabilities must match `tool_modules`;
 - healthcheck must pass before the tool is registered in `ToolRegistry`;
 - failed imports, mismatches, or failed healthchecks update registry status to `failed`.
+- imported non-local package manifests (`source-bundle`, `oci-image`, or
+  `external-package`) are not marked failed during startup; they remain disabled metadata
+  until a package runner/supervisor can execute that reference type.
 
 This gives the future Tool Builder a safe promotion path: write TypeScript, run QA, register
 metadata, rebuild/restart, then let the loader promote the tool after contract validation.

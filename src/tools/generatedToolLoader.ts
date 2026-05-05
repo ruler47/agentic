@@ -33,6 +33,15 @@ async function loadGeneratedTool(
   metadataStore: ToolMetadataStore,
   projectRoot: string,
 ): Promise<GeneratedToolLoadResult> {
+  const packageType = metadata.packageManifest?.package.type;
+  if (packageType && packageType !== "local-path") {
+    return {
+      name: metadata.name,
+      loaded: false,
+      detail: `No generated-tool runner is available for ${packageType} package references yet.`,
+    };
+  }
+
   if (!metadata.modulePath) {
     const detail = "Generated tool metadata has no modulePath.";
     await metadataStore.updateHealth(metadata.name, { ok: false, detail });

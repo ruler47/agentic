@@ -98,3 +98,32 @@ test("loadGeneratedTools rejects modules that do not match registered metadata",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("loadGeneratedTools leaves non-local package manifests disabled until a runner exists", async () => {
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+  await metadata.registerGenerated({
+    name: "generated.remote.normalize",
+    version: "1.0.0",
+    description: "Portable package reference.",
+    capabilities: ["text-normalization"],
+    packageManifest: {
+      schemaVersion: "agentic.tool-package.v1",
+      name: "generated.remote.normalize",
+      version: "1.0.0",
+      description: "Portable package reference.",
+      capabilities: ["text-normalization"],
+      startupMode: "on-demand",
+      package: { type: "external-package", ref: "npm:@agentic-tools/remote-normalize@1.0.0" },
+    },
+  });
+
+  const results = await loadGeneratedTools(registry, metadata);
+  const [stored] = await metadata.list();
+
+  assert.equal(results[0]?.loaded, false);
+  assert.match(results[0]?.detail ?? "", /No generated-tool runner/);
+  assert.equal(stored?.status, "disabled");
+  assert.equal(stored?.lastHealthOk, undefined);
+  assert.equal(registry.get("generated.remote.normalize"), undefined);
+});
