@@ -18,6 +18,10 @@ type ToolServiceStatusRow = {
   stopped_at: Date | null;
   updated_at: Date;
   restart_count: number;
+  consecutive_failure_count: number;
+  last_failure_at: Date | null;
+  last_restart_at: Date | null;
+  last_restart_reason: string | null;
 };
 
 export class PostgresToolServiceStatusStore implements ToolServiceStatusStore {
@@ -27,7 +31,8 @@ export class PostgresToolServiceStatusStore implements ToolServiceStatusStore {
     const rows = await this.pool.query<ToolServiceStatusRow>(
       `
         select tool_name, status, desired_state, detail, last_health_ok,
-               last_heartbeat_at, started_at, stopped_at, updated_at, restart_count
+               last_heartbeat_at, started_at, stopped_at, updated_at, restart_count,
+               consecutive_failure_count, last_failure_at, last_restart_at, last_restart_reason
         from tool_service_statuses
         where tool_name = $1
       `,
@@ -42,9 +47,10 @@ export class PostgresToolServiceStatusStore implements ToolServiceStatusStore {
       `
         insert into tool_service_statuses (
           tool_name, status, desired_state, detail, last_health_ok,
-          last_heartbeat_at, started_at, stopped_at, updated_at, restart_count
+          last_heartbeat_at, started_at, stopped_at, updated_at, restart_count,
+          consecutive_failure_count, last_failure_at, last_restart_at, last_restart_reason
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         on conflict (tool_name) do update
         set status = excluded.status,
             desired_state = excluded.desired_state,
@@ -54,9 +60,14 @@ export class PostgresToolServiceStatusStore implements ToolServiceStatusStore {
             started_at = excluded.started_at,
             stopped_at = excluded.stopped_at,
             updated_at = excluded.updated_at,
-            restart_count = excluded.restart_count
+            restart_count = excluded.restart_count,
+            consecutive_failure_count = excluded.consecutive_failure_count,
+            last_failure_at = excluded.last_failure_at,
+            last_restart_at = excluded.last_restart_at,
+            last_restart_reason = excluded.last_restart_reason
         returning tool_name, status, desired_state, detail, last_health_ok,
-                  last_heartbeat_at, started_at, stopped_at, updated_at, restart_count
+                  last_heartbeat_at, started_at, stopped_at, updated_at, restart_count,
+                  consecutive_failure_count, last_failure_at, last_restart_at, last_restart_reason
       `,
       [
         status.toolName,
@@ -69,6 +80,10 @@ export class PostgresToolServiceStatusStore implements ToolServiceStatusStore {
         status.stoppedAt ?? null,
         status.updatedAt,
         status.restartCount,
+        status.consecutiveFailureCount,
+        status.lastFailureAt ?? null,
+        status.lastRestartAt ?? null,
+        status.lastRestartReason ?? null,
       ],
     );
     return cloneStoredStatus(mapRow(rows.rows[0]));
@@ -87,5 +102,9 @@ function mapRow(row: ToolServiceStatusRow): StoredToolServiceStatus {
     stoppedAt: row.stopped_at?.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     restartCount: row.restart_count,
+    consecutiveFailureCount: row.consecutive_failure_count,
+    lastFailureAt: row.last_failure_at?.toISOString(),
+    lastRestartAt: row.last_restart_at?.toISOString(),
+    lastRestartReason: row.last_restart_reason ?? undefined,
   };
 }

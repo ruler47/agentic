@@ -268,6 +268,12 @@ scoped runtime envelopes. Runner diagnostics are exposed through
 `GET /api/tool-package-runners` and the Diagnostics page.
 Operators can call `POST /api/tools/reload-generated` or use the Diagnostics action to
 reload generated/source-bundle packages without restarting the app.
+Always-on tools are supervised through the same provider-neutral lifecycle API. The
+supervisor tracks desired state, heartbeat health, restart count, consecutive failures,
+last failure, and last restart reason. A failed heartbeat can trigger a bounded
+auto-restart policy (`TOOL_SERVICE_AUTO_RESTART_ON_FAILED_HEARTBEAT`, disabled only when
+set to `disabled`; `TOOL_SERVICE_MAX_AUTO_RESTARTS`, default `3`) before the service is
+left failed for operator review.
 
 Tool-owned storage changes are tracked separately in `tool_migrations`: tool name/version,
 migration id, checksum, status, applied actor/time, QA report, and rollback notes. This is

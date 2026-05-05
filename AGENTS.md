@@ -137,6 +137,10 @@ Generated tool package workspace:
   tune the local HTTP process runner readiness wait.
 - `TOOL_SOURCE_BUNDLE_CALL_TIMEOUT_MS` bounds `/run` and service lifecycle HTTP calls for
   source-bundle local process runtimes; default is 60 seconds.
+- `TOOL_SERVICE_AUTO_RESTART_ON_FAILED_HEARTBEAT=disabled` disables the default bounded
+  auto-restart after a failed always-on service heartbeat.
+- `TOOL_SERVICE_MAX_AUTO_RESTARTS` defaults to `3` and limits automatic restarts per
+  service before the operator has to intervene.
 - The top-level `tools/` directory is intentionally gitignored; package source should be
   exported/imported through manifests or promoted into OCI/external runtimes, not committed
   as Agentic app code.

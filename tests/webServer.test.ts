@@ -932,7 +932,9 @@ test("web server exposes memory and tool registries", async () => {
     assert.equal(tools.tools[0].version, "1.0.0");
     assert.equal(health.tools[0].ok, true);
     assert.equal(services.services[0].status, "stopped");
+    assert.equal(services.services[0].consecutiveFailureCount, 0);
     assert.equal(started.service.status, "running");
+    assert.equal(started.service.consecutiveFailureCount, 0);
     assert.equal(stopped.service.status, "stopped");
     assert.equal(serviceLogs.logs[0].toolName, "web.search");
     assert.match(serviceLogs.logs.map((log: { message: string }) => log.message).join("\n"), /Service stopped/);

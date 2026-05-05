@@ -699,6 +699,13 @@ Remaining Phase 3 gaps:
   source-bundle local process on-demand calls, always-on service lifecycle, and bounded
   runtime call timeouts. The local process runner also detects runtimes that exit before
   readiness and reports exit code/signal plus bootstrap output.
+- Add provider-neutral always-on restart policy and lifecycle diagnostics. DONE for
+  persisted desired/runtime state, heartbeat health, restart count, consecutive failures,
+  last failure/restart metadata, and bounded auto-restart after failed heartbeat. Remaining
+  work: richer backoff schedules, per-tool restart policy UI, log streaming from isolated
+  process stdout/stderr, and operator approval gates for sensitive service restarts.
+  Heartbeats now also refuse false-green status for service tools whose runtime failed to
+  start: the supervisor retries `startService` instead of accepting static module health.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,

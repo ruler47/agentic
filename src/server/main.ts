@@ -135,6 +135,9 @@ const toolServiceSupervisor = new ToolServiceSupervisor(tools, toolServiceStatus
   baseUrl: process.env.AGENTIC_INTERNAL_BASE_URL ?? `http://127.0.0.1:${port}`,
   resolveSecret: secretHandleStore.resolve ? (handle) => secretHandleStore.resolve!(handle) : undefined,
   resolveConfiguration: async (key) => process.env[key],
+}, {
+  restartOnFailedHeartbeat: process.env.TOOL_SERVICE_AUTO_RESTART_ON_FAILED_HEARTBEAT !== "disabled",
+  maxAutoRestartsPerService: Number(process.env.TOOL_SERVICE_MAX_AUTO_RESTARTS ?? 3),
 });
 const reconciledToolServices = await toolServiceSupervisor.reconcileDesiredServices();
 if (reconciledToolServices.length > 0) {

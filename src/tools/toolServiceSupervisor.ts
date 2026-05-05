@@ -13,6 +13,11 @@ import {
   defaultToolServiceStatus,
 } from "./toolServiceStatusStore.js";
 
+export type ToolServiceSupervisorOptions = {
+  restartOnFailedHeartbeat?: boolean;
+  maxAutoRestartsPerService?: number;
+};
+
 export class ToolServiceSupervisor {
   private readonly logListeners = new Set<(record: ToolServiceLogRecord) => void>();
   private readonly activeServices = new Map<string, {
@@ -25,7 +30,17 @@ export class ToolServiceSupervisor {
     private readonly statusStore: ToolServiceStatusStore = new InMemoryToolServiceStatusStore(),
     private readonly logStore: ToolServiceLogStore = new InMemoryToolServiceLogStore(),
     private readonly serviceContext: Omit<ToolServiceContext, "toolName" | "now" | "signal" | "logger"> = {},
+    private readonly supervisorOptions: ToolServiceSupervisorOptions = {},
   ) {}
+
+  private get restartOnFailedHeartbeat(): boolean {
+    return this.supervisorOptions.restartOnFailedHeartbeat ?? true;
+  }
+
+  private get maxAutoRestartsPerService(): number {
+    const configured = this.supervisorOptions.maxAutoRestartsPerService ?? 3;
+    return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : 3;
+  }
 
   async list(): Promise<ToolServiceStatus[]> {
     const tools = this.registry
@@ -71,6 +86,8 @@ export class ToolServiceSupervisor {
           status: "failed",
           detail: error instanceof Error ? error.message : "Service runtime failed to start.",
           lastHealthOk: false,
+          consecutiveFailureCount: starting.consecutiveFailureCount + 1,
+          lastFailureAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         });
         await this.logLifecycle(toolName, "error", "Service runtime failed to start.", failed);
@@ -88,6 +105,8 @@ export class ToolServiceSupervisor {
       lastHealthOk: health.ok,
       lastHeartbeatAt: nextNow,
       startedAt: health.ok ? (starting.startedAt ?? nextNow) : starting.startedAt,
+      consecutiveFailureCount: health.ok ? 0 : starting.consecutiveFailureCount + 1,
+      lastFailureAt: health.ok ? starting.lastFailureAt : nextNow,
       updatedAt: nextNow,
     });
     if (!health.ok) {
@@ -107,6 +126,7 @@ export class ToolServiceSupervisor {
       desiredState: "stopped",
       detail: "Stopped by operator.",
       stoppedAt: now,
+      consecutiveFailureCount: 0,
       updatedAt: now,
     });
     await this.logLifecycle(toolName, "info", "Service stopped by operator.", next);
@@ -139,6 +159,8 @@ export class ToolServiceSupervisor {
       desiredState: "running",
       detail: "Restart requested.",
       stoppedAt: new Date().toISOString(),
+      lastRestartAt: new Date().toISOString(),
+      lastRestartReason: "manual",
       updatedAt: new Date().toISOString(),
     });
     await this.logLifecycle(toolName, "info", "Service restart requested.", await this.statusFor(toolName));
@@ -151,18 +173,34 @@ export class ToolServiceSupervisor {
     if (existing.desiredState !== "running") {
       return { ...existing, displayName: tool.displayName, description: tool.description };
     }
+    if (tool.startService && !this.activeServices.has(toolName)) {
+      await this.logLifecycle(
+        toolName,
+        "warn",
+        "Service heartbeat found no active runtime; start requested by supervisor.",
+        existing,
+      );
+      return this.start(toolName);
+    }
 
-    const health = await this.runHealthcheck(toolName);
     const now = new Date().toISOString();
+    const health = await this.runHealthcheck(toolName);
+    const consecutiveFailureCount = health.ok ? 0 : existing.consecutiveFailureCount + 1;
     const next = await this.write({
       ...existing,
       status: health.ok ? "running" : "failed",
       detail: health.detail,
       lastHealthOk: health.ok,
       lastHeartbeatAt: now,
+      consecutiveFailureCount,
+      lastFailureAt: health.ok ? existing.lastFailureAt : now,
       updatedAt: now,
     });
     await this.logLifecycle(toolName, health.ok ? "info" : "error", "Service heartbeat completed.", next);
+    if (!health.ok && this.shouldAutoRestart(next)) {
+      await this.logLifecycle(toolName, "warn", "Service heartbeat failed; auto-restart requested by restart policy.", next);
+      return this.autoRestartAfterHeartbeatFailure(toolName, next, tool.displayName, tool.description);
+    }
     return { ...next, displayName: tool.displayName, description: tool.description };
   }
 
@@ -237,6 +275,41 @@ export class ToolServiceSupervisor {
     } finally {
       this.activeServices.delete(toolName);
     }
+  }
+
+  private shouldAutoRestart(status: StoredToolServiceStatus): boolean {
+    return (
+      this.restartOnFailedHeartbeat &&
+      status.desiredState === "running" &&
+      status.restartCount < this.maxAutoRestartsPerService
+    );
+  }
+
+  private async autoRestartAfterHeartbeatFailure(
+    toolName: string,
+    failed: StoredToolServiceStatus,
+    displayName: string | undefined,
+    description: string,
+  ): Promise<ToolServiceStatus> {
+    await this.stopRuntime(toolName, "Service runtime stopped after failed heartbeat before auto-restart.");
+    const now = new Date().toISOString();
+    await this.write({
+      ...failed,
+      status: "starting",
+      desiredState: "running",
+      detail: "Auto-restarting after failed heartbeat.",
+      restartCount: failed.restartCount + 1,
+      lastRestartAt: now,
+      lastRestartReason: "failed-heartbeat",
+      updatedAt: now,
+    });
+    await this.logLifecycle(toolName, "warn", "Service auto-restart started.", await this.statusFor(toolName));
+    const restarted = await this.start(toolName);
+    return {
+      ...restarted,
+      displayName,
+      description,
+    };
   }
 
   private requiredAlwaysOnTool(toolName: string) {

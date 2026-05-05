@@ -14,6 +14,10 @@ export type ToolServiceStatus = {
   stoppedAt?: string;
   updatedAt: string;
   restartCount: number;
+  consecutiveFailureCount: number;
+  lastFailureAt?: string;
+  lastRestartAt?: string;
+  lastRestartReason?: string;
 };
 
 export type StoredToolServiceStatus = Omit<ToolServiceStatus, "displayName" | "description">;
@@ -45,6 +49,7 @@ export function defaultToolServiceStatus(toolName: string, now = new Date()): St
     detail: "Service is installed but not started by the supervisor.",
     updatedAt: now.toISOString(),
     restartCount: 0,
+    consecutiveFailureCount: 0,
   };
 }
 

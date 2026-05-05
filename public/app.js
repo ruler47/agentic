@@ -2366,7 +2366,9 @@ function renderToolServiceControls(service) {
         <span class="status-pill ${escapeHtml(service.status)}">${escapeHtml(service.status)}</span>
         <span>${escapeHtml(service.desiredState)}</span>
         <span>${escapeHtml(service.lastHeartbeatAt ? formatRelative(service.lastHeartbeatAt) : "no heartbeat")}</span>
+        <span>${escapeHtml(`${service.consecutiveFailureCount ?? 0} failures`)}</span>
       </div>
+      ${service.lastRestartAt ? `<small class="status-note">Last restart ${escapeHtml(formatRelative(service.lastRestartAt))}${service.lastRestartReason ? ` · ${escapeHtml(service.lastRestartReason)}` : ""}</small>` : ""}
       <p>${escapeHtml(service.detail || "No service detail.")}</p>
       <div class="action-row compact">
         <button type="button" class="ghost-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="start">Start</button>
@@ -3116,7 +3118,9 @@ function renderServiceCard(service) {
         <span class="status-pill ${escapeHtml(service.status)}">${escapeHtml(service.status)}</span>
         <span>${escapeHtml(service.lastHeartbeatAt ? `heartbeat ${formatRelative(service.lastHeartbeatAt)}` : "no heartbeat")}</span>
         <span>${escapeHtml(`${service.restartCount ?? 0} restarts`)}</span>
+        <span>${escapeHtml(`${service.consecutiveFailureCount ?? 0} failures`)}</span>
       </div>
+      ${service.lastRestartAt ? `<small class="status-note">Last restart ${escapeHtml(formatRelative(service.lastRestartAt))}${service.lastRestartReason ? ` · ${escapeHtml(service.lastRestartReason)}` : ""}</small>` : ""}
       <small class="status-note">${escapeHtml(service.detail || "No service detail.")}</small>
       ${renderServiceLogPreview(service.toolName)}
       <div class="card-actions">

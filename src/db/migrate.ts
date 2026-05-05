@@ -443,6 +443,10 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         restart_count integer not null default 0 check (restart_count >= 0)
       );
     `);
+    await pool.query(`alter table tool_service_statuses add column if not exists consecutive_failure_count integer not null default 0 check (consecutive_failure_count >= 0);`);
+    await pool.query(`alter table tool_service_statuses add column if not exists last_failure_at timestamptz;`);
+    await pool.query(`alter table tool_service_statuses add column if not exists last_restart_at timestamptz;`);
+    await pool.query(`alter table tool_service_statuses add column if not exists last_restart_reason text;`);
 
     await pool.query(`
       create index if not exists tool_service_statuses_status_idx

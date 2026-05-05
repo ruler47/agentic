@@ -312,6 +312,19 @@ healthy and then hangs on `/run` or lifecycle calls is aborted and the local pro
 stopped. If the process exits before it ever becomes healthy, the runner reports the exit
 code/signal plus captured bootstrap output instead of waiting for the full readiness
 timeout.
+
+Always-on tools are managed by `ToolServiceSupervisor`, independent of whether the
+runtime is built-in, source-bundle, external HTTP, or OCI. The supervisor persists desired
+state, runtime status, heartbeat health, restart count, consecutive failures, last
+failure, last restart time, and last restart reason. Heartbeat failures now support a
+bounded auto-restart policy: by default a service with `desiredState="running"` is stopped
+and restarted after a failed heartbeat until `TOOL_SERVICE_MAX_AUTO_RESTARTS` is reached;
+set `TOOL_SERVICE_AUTO_RESTART_ON_FAILED_HEARTBEAT=disabled` to leave failed heartbeats
+for manual intervention. This is intentionally provider-neutral so a future Telegram bot,
+queue listener, webhook receiver, or scheduled worker all use the same lifecycle.
+If a service exposes a runtime `startService` hook but no active runtime is present,
+heartbeat triggers a fresh start attempt instead of accepting the module-level healthcheck
+as proof that the long-running process is alive.
 When a package workspace is present, the QA report lists its `tool.package.json` alongside
 the legacy generated module and test artifacts, so later promotion stages can trace which
 portable package snapshot was reviewed. `validateToolPackageWorkspace` also runs as part
