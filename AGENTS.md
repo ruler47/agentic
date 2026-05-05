@@ -679,6 +679,8 @@ For documentation-only changes:
 - Tool-owned migrations must be versioned, idempotent, QA-tested in an isolated database,
   and promoted only with the tool version they belong to. Record the applied migration,
   checksum, QA evidence, and rollback/repair notes in persistent metadata.
+  Current generated registrations record pending migration manifests with deterministic
+  checksums and QA evidence; isolated database execution remains the next migration gap.
 - Destructive database operations requested through a tool bug/rework flow must become
   explicit auditable capabilities with exact scope, dry-run preview, policy/approval
   checks, and audit events. Do not satisfy them by running arbitrary one-off SQL.

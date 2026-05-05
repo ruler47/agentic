@@ -64,6 +64,15 @@ export class PostgresToolMigrationStore implements ToolMigrationStore {
           created_at, updated_at
         )
         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+        on conflict (tool_name, tool_version, migration_id)
+        do update set
+          checksum = excluded.checksum,
+          status = excluded.status,
+          applied_at = excluded.applied_at,
+          applied_by_actor = excluded.applied_by_actor,
+          qa_report = excluded.qa_report,
+          rollback_notes = excluded.rollback_notes,
+          updated_at = excluded.updated_at
         returning id, tool_name, tool_version, migration_id, checksum, status,
                   applied_at, applied_by_actor, qa_report, rollback_notes,
                   created_at, updated_at

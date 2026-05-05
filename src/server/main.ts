@@ -166,7 +166,7 @@ const toolBuildWorkflow = new ToolBuildWorkflow(
     },
   ),
   new CommandToolQaRunner(),
-  new MetadataToolRegistrar(toolMetadataStore),
+  new MetadataToolRegistrar(toolMetadataStore, toolMigrationStore),
   {
     reviewers: [
       new DeterministicToolCodeReviewer(),

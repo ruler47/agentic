@@ -728,7 +728,9 @@ Remaining Phase 3 gaps:
   maintenance capability. The builder must generate versioned migrations, tests,
   documentation, and operator-visible permission metadata. PARTIAL: generated always-on
   service contracts now emit scoped runtime permissions (`tool-db:read`/`tool-db:write`)
-  that match `ToolExecutionContext.db`; full generated migration execution is still next.
+  that match `ToolExecutionContext.db`, QA rejects invalid migration manifests before
+  promotion, and registration records idempotent pending migration manifests with
+  checksum/QA evidence; full generated migration execution is still next.
 - Run generated tool migrations in an isolated Postgres database during QA, including
   idempotency checks and fixture-based behavior tests.
 - Promote tool versions transactionally: migration metadata, tool metadata, generated

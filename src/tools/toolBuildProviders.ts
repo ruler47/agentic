@@ -24,6 +24,7 @@ import {
 import type { ToolPackageManifest } from "./toolPackage.js";
 import { ToolPackageWorkspaceStore } from "./toolPackageWorkspaceStore.js";
 import { validateAndBuildToolPackageWorkspace } from "./toolPackageWorkspaceQa.js";
+import { createToolMigrationChecksum, ToolMigrationStore } from "./toolMigrationStore.js";
 
 type GeneratedFile = {
   path: string;
@@ -427,6 +428,16 @@ export class IsolatedCommandToolQaRunner implements ToolQaRunner {
 
   async run(request: ToolBuildRequest, output: ToolBuildOutput): Promise<ToolBuildQaReport> {
     const checks: string[] = [];
+    const storageContractQa = validateToolStorageMigrationContract(output.storage);
+    checks.push(...storageContractQa.checks);
+    if (!storageContractQa.ok) {
+      return {
+        ok: false,
+        summary: storageContractQa.summary,
+        checks,
+      };
+    }
+
     const isolatedRoot = await createIsolatedQaWorkspace(this.projectRoot);
     try {
       const isolatedTestResult = await runCommand(
@@ -507,10 +518,72 @@ export class IsolatedCommandToolQaRunner implements ToolQaRunner {
 
 export class CommandToolQaRunner extends IsolatedCommandToolQaRunner {}
 
-export class MetadataToolRegistrar implements ToolRegistrar {
-  constructor(private readonly metadataStore: ToolMetadataStore) {}
+export function validateToolStorageMigrationContract(storage?: ToolStorageContract): ToolBuildQaReport {
+  if (!storage || !storage.migrations?.length) {
+    return {
+      ok: true,
+      summary: "No generated storage migrations declared.",
+      checks: ["storage migration contract: no migrations declared"],
+    };
+  }
 
-  async register(request: ToolBuildRequest, output: ToolBuildOutput): Promise<string> {
+  const checks: string[] = [];
+  const errors: string[] = [];
+  if (!storage.schema || !/^tool_[a-z0-9_]{1,58}$/.test(storage.schema)) {
+    errors.push("storage.schema must be a tool-owned snake_case namespace prefixed with tool_");
+  } else {
+    checks.push(`storage migration contract: schema ${storage.schema}`);
+  }
+
+  const tables = storage.tables ?? [];
+  if (tables.length === 0) {
+    errors.push("storage.tables must list owned tables for each generated migration");
+  }
+  for (const table of tables) {
+    if (!/^[a-z][a-z0-9_]{0,62}$/.test(table)) {
+      errors.push(`storage table ${table} must be snake_case and unqualified`);
+    }
+  }
+  if (tables.length > 0) {
+    checks.push(`storage migration contract: ${tables.length} owned table(s) declared`);
+  }
+
+  for (const migrationId of storage.migrations) {
+    if (!/^[0-9]{3}_[a-z0-9_]+$/.test(migrationId)) {
+      errors.push(`migration id ${migrationId} must look like 001_create_runtime_tables`);
+    }
+  }
+  checks.push(`storage migration contract: ${storage.migrations.length} migration manifest(s) declared`);
+
+  const permissions = new Set(storage.permissions ?? []);
+  const rawSqlPermissions = ["select", "insert", "update", "delete", "truncate"].filter((permission) =>
+    permissions.has(permission),
+  );
+  if (rawSqlPermissions.length > 0) {
+    errors.push(`storage.permissions must use registry permissions, not raw SQL verbs: ${rawSqlPermissions.join(", ")}`);
+  }
+  if (!permissions.has("tool-db:read") || !permissions.has("tool-db:write")) {
+    errors.push("storage.permissions must include tool-db:read and tool-db:write for runtime storage tools");
+  } else {
+    checks.push("storage migration contract: scoped DB permissions declared");
+  }
+
+  return {
+    ok: errors.length === 0,
+    summary: errors.length === 0
+      ? "Generated storage migration contract passed manifest QA."
+      : `Generated storage migration contract failed manifest QA: ${errors.join("; ")}`,
+    checks: errors.length === 0 ? checks : [...checks, ...errors.map((error) => `storage migration contract error: ${error}`)],
+  };
+}
+
+export class MetadataToolRegistrar implements ToolRegistrar {
+  constructor(
+    private readonly metadataStore: ToolMetadataStore,
+    private readonly migrationStore?: ToolMigrationStore,
+  ) {}
+
+  async register(request: ToolBuildRequest, output: ToolBuildOutput, qaReport?: ToolBuildQaReport): Promise<string> {
     const toolName = request.contract.toolName;
     const input = {
       name: toolName,
@@ -544,7 +617,39 @@ export class MetadataToolRegistrar implements ToolRegistrar {
       await this.metadataStore.registerGenerated(input);
     }
 
+    await this.recordStorageMigrationManifests(request, output, qaReport);
+
     return toolName;
+  }
+
+  private async recordStorageMigrationManifests(
+    request: ToolBuildRequest,
+    output: ToolBuildOutput,
+    qaReport?: ToolBuildQaReport,
+  ): Promise<void> {
+    if (!this.migrationStore || !output.storage?.migrations?.length) return;
+
+    for (const migrationId of output.storage.migrations) {
+      await this.migrationStore.create({
+        toolName: request.contract.toolName,
+        toolVersion: request.contract.version,
+        migrationId,
+        checksum: createToolMigrationChecksum({
+          toolName: request.contract.toolName,
+          toolVersion: request.contract.version,
+          migrationId,
+          schema: output.storage.schema,
+          tables: output.storage.tables,
+        }),
+        status: "pending",
+        qaReport: {
+          ok: qaReport?.ok ?? true,
+          summary: qaReport?.summary ?? "Migration manifest recorded with generated tool metadata.",
+          checks: qaReport?.checks ?? ["migration manifest recorded; isolated database execution pending"],
+        },
+        rollbackNotes: "Pending isolated database execution and transactional promotion.",
+      });
+    }
   }
 }
 

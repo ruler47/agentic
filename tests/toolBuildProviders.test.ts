@@ -13,10 +13,12 @@ import {
   GenericApiToolBuildProvider,
   GenericServiceToolBuildProvider,
   MetadataToolRegistrar,
+  validateToolStorageMigrationContract,
 } from "../src/tools/toolBuildProviders.js";
 import { LlmToolBuildProvider } from "../src/tools/llmToolBuildProvider.js";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
+import { InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { loadGeneratedTools } from "../src/tools/generatedToolLoader.js";
 import { validateAndBuildToolPackageWorkspace } from "../src/tools/toolPackageWorkspaceQa.js";
@@ -514,6 +516,60 @@ test("MetadataToolRegistrar promotes package workspace manifests when available"
   assert.equal(metadata?.packageManifest?.package.ref, "generated.api.amlscore/1.0.0");
   assert.equal(metadata?.packageManifest?.name, "generated.api.amlScore");
   assert.deepEqual(metadata?.packageManifest?.requiredSecretHandles, ["secret.aml.gl.api"]);
+});
+
+test("MetadataToolRegistrar records pending migration manifests with QA evidence", async () => {
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const metadataStore = new InMemoryToolMetadataStore();
+  const migrationStore = new InMemoryToolMigrationStore();
+  const request = await requestStore.create({
+    capability: "custom-inbound-service",
+    displayName: "Custom Inbound Service",
+    reason: "Create a reusable always-on bridge with storage.",
+    desiredToolName: "generated.custom.inboundService",
+    startupMode: "always-on",
+  });
+  const registrar = new MetadataToolRegistrar(metadataStore, migrationStore);
+
+  await registrar.register(
+    request,
+    {
+      modulePath: request.contract.modulePath,
+      testPath: request.contract.testPath,
+      summary: "Generated service module.",
+      storage: {
+        schema: "tool_custom_inboundservice",
+        tables: ["service_events", "service_offsets"],
+        migrations: ["001_create_service_runtime_tables"],
+        permissions: ["tool-db:read", "tool-db:write"],
+      },
+    },
+    {
+      ok: true,
+      summary: "Generated service passed QA.",
+      checks: ["isolated package build", "storage contract checked"],
+    },
+  );
+  const [migration] = await migrationStore.list({ toolName: "generated.custom.inboundService" });
+
+  assert.equal(migration?.status, "pending");
+  assert.equal(migration?.migrationId, "001_create_service_runtime_tables");
+  assert.match(migration?.checksum ?? "", /^sha256:[a-f0-9]{64}$/);
+  assert.deepEqual(migration?.qaReport?.checks, ["isolated package build", "storage contract checked"]);
+  assert.match(migration?.rollbackNotes ?? "", /Pending isolated database execution/);
+});
+
+test("validateToolStorageMigrationContract rejects raw SQL permissions before promotion QA", () => {
+  const report = validateToolStorageMigrationContract({
+    schema: "tool_bad_runtime",
+    tables: ["service_events"],
+    migrations: ["001_create_service_runtime_tables"],
+    permissions: ["select", "insert"],
+  });
+
+  assert.equal(report.ok, false);
+  assert.match(report.summary, /raw SQL verbs/);
+  assert.match(report.summary, /tool-db:read/);
 });
 
 test("package workspace promotion loads generated tools through source-bundle runner", async () => {

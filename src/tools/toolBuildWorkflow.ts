@@ -53,7 +53,7 @@ export type ToolBuildReviewer = {
 };
 
 export type ToolRegistrar = {
-  register(request: ToolBuildRequest, output: ToolBuildOutput): Promise<string>;
+  register(request: ToolBuildRequest, output: ToolBuildOutput, qaReport?: ToolBuildQaReport): Promise<string>;
 };
 
 export type ToolBuildWorkflowResult = {
@@ -174,7 +174,7 @@ export class ToolBuildWorkflow {
           qaReport: reviewedQaReport,
         });
 
-        const registeredToolName = await this.registrar.register(request, output);
+        const registeredToolName = await this.registrar.register(request, output, reviewedQaReport);
         return {
           registeredToolName,
           request: await this.requests.updateStatus(id, {

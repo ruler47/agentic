@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
+import { createToolMigrationChecksum, InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
 
 test("InMemoryToolMigrationStore records and updates tool-owned migrations", async () => {
   const store = new InMemoryToolMigrationStore();
@@ -32,4 +32,48 @@ test("InMemoryToolMigrationStore records and updates tool-owned migrations", asy
 
   assert.equal((await store.list({ toolName: "generated.api.client" })).length, 1);
   assert.equal((await store.list({ status: "failed" })).length, 0);
+});
+
+test("createToolMigrationChecksum is stable across table ordering", () => {
+  const first = createToolMigrationChecksum({
+    toolName: "generated.service.bridge",
+    toolVersion: "1.0.0",
+    migrationId: "001_create_service_runtime_tables",
+    schema: "tool_service_bridge",
+    tables: ["service_offsets", "service_events"],
+  });
+  const second = createToolMigrationChecksum({
+    toolName: "generated.service.bridge",
+    toolVersion: "1.0.0",
+    migrationId: "001_create_service_runtime_tables",
+    schema: "tool_service_bridge",
+    tables: ["service_events", "service_offsets"],
+  });
+
+  assert.match(first, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(first, second);
+});
+
+test("InMemoryToolMigrationStore create is idempotent per tool version migration", async () => {
+  const store = new InMemoryToolMigrationStore();
+  const first = await store.create({
+    toolName: "generated.service.bridge",
+    toolVersion: "1.0.0",
+    migrationId: "001_create_service_runtime_tables",
+    checksum: "sha256:first",
+    status: "pending",
+  });
+  const second = await store.create({
+    toolName: "generated.service.bridge",
+    toolVersion: "1.0.0",
+    migrationId: "001_create_service_runtime_tables",
+    checksum: "sha256:second",
+    status: "failed",
+    qaReport: { ok: false },
+  });
+
+  assert.equal(second.id, first.id);
+  assert.equal(second.checksum, "sha256:second");
+  assert.equal(second.status, "failed");
+  assert.equal((await store.list({ toolName: "generated.service.bridge" })).length, 1);
 });

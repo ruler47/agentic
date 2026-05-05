@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export type ToolMigrationStatus = "pending" | "applied" | "failed" | "rolled_back";
 
@@ -48,6 +48,14 @@ export type ToolMigrationStore = {
   update(id: string, input: ToolMigrationUpdateInput): Promise<ToolMigrationRecord>;
 };
 
+export type ToolMigrationChecksumInput = {
+  toolName: string;
+  toolVersion: string;
+  migrationId: string;
+  schema?: string;
+  tables?: string[];
+};
+
 export class InMemoryToolMigrationStore implements ToolMigrationStore {
   private readonly migrations = new Map<string, ToolMigrationRecord>();
 
@@ -62,6 +70,26 @@ export class InMemoryToolMigrationStore implements ToolMigrationStore {
   async create(input: ToolMigrationCreateInput): Promise<ToolMigrationRecord> {
     validateCreateInput(input);
     const now = new Date().toISOString();
+    const existing = [...this.migrations.values()].find((migration) =>
+      migration.toolName === input.toolName
+      && migration.toolVersion === input.toolVersion
+      && migration.migrationId === input.migrationId,
+    );
+    if (existing) {
+      const updated: ToolMigrationRecord = {
+        ...existing,
+        checksum: input.checksum,
+        status: input.status ?? "pending",
+        appliedAt: input.appliedAt?.toISOString(),
+        appliedByActor: input.appliedByActor,
+        qaReport: input.qaReport ? cloneJson(input.qaReport) : undefined,
+        rollbackNotes: input.rollbackNotes,
+        updatedAt: now,
+      };
+      this.migrations.set(existing.id, cloneMigration(updated));
+      return cloneMigration(updated);
+    }
+
     const record: ToolMigrationRecord = {
       id: `tool_migration_${randomUUID()}`,
       toolName: input.toolName,
@@ -104,6 +132,17 @@ export function validateToolMigrationStatus(status: string): ToolMigrationStatus
     return status;
   }
   throw new Error(`Unsupported tool migration status: ${status}`);
+}
+
+export function createToolMigrationChecksum(input: ToolMigrationChecksumInput): string {
+  const payload = JSON.stringify({
+    toolName: input.toolName,
+    toolVersion: input.toolVersion,
+    migrationId: input.migrationId,
+    schema: input.schema,
+    tables: [...(input.tables ?? [])].sort(),
+  });
+  return `sha256:${createHash("sha256").update(payload).digest("hex")}`;
 }
 
 function validateCreateInput(input: ToolMigrationCreateInput): void {
