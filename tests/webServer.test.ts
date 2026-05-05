@@ -922,6 +922,13 @@ test("web server exposes memory and tool registries", async () => {
     const started = await (
       await fetch(`${baseUrl}/api/tool-services/${encodeURIComponent("web.search")}/start`, { method: "POST" })
     ).json();
+    const policy = await (
+      await fetch(`${baseUrl}/api/tool-services/${encodeURIComponent("web.search")}/restart-policy`, {
+        method: "PATCH",
+        body: JSON.stringify({ autoRestartEnabled: false, maxAutoRestarts: 1 }),
+        headers: { "content-type": "application/json" },
+      })
+    ).json();
     const stopped = await (
       await fetch(`${baseUrl}/api/tool-services/${encodeURIComponent("web.search")}/stop`, { method: "POST" })
     ).json();
@@ -935,6 +942,8 @@ test("web server exposes memory and tool registries", async () => {
     assert.equal(services.services[0].consecutiveFailureCount, 0);
     assert.equal(started.service.status, "running");
     assert.equal(started.service.consecutiveFailureCount, 0);
+    assert.equal(policy.service.autoRestartEnabled, false);
+    assert.equal(policy.service.maxAutoRestarts, 1);
     assert.equal(stopped.service.status, "stopped");
     assert.equal(serviceLogs.logs[0].toolName, "web.search");
     assert.match(serviceLogs.logs.map((log: { message: string }) => log.message).join("\n"), /Service stopped/);

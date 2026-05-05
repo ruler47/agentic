@@ -141,6 +141,8 @@ Generated tool package workspace:
   auto-restart after a failed always-on service heartbeat.
 - `TOOL_SERVICE_MAX_AUTO_RESTARTS` defaults to `3` and limits automatic restarts per
   service before the operator has to intervene.
+- Service-specific restart policy overrides are stored through
+  `PATCH /api/tool-services/:name/restart-policy` and shown in the Channels/Tool Detail UI.
 - The top-level `tools/` directory is intentionally gitignored; package source should be
   exported/imported through manifests or promoted into OCI/external runtimes, not committed
   as Agentic app code.

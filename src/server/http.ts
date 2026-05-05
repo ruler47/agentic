@@ -1137,6 +1137,41 @@ async function routeRequest(
     return;
   }
 
+  const toolServicePolicyMatch = url.pathname.match(/^\/api\/tool-services\/([^/]+)\/restart-policy$/);
+  if (request.method === "PATCH" && toolServicePolicyMatch) {
+    if (!options.toolServiceSupervisor) {
+      sendJson(response, 503, { error: "Tool service supervisor is not configured" });
+      return;
+    }
+
+    const toolName = decodeURIComponent(toolServicePolicyMatch[1] ?? "");
+    try {
+      const service = await options.toolServiceSupervisor.updateRestartPolicy(
+        toolName,
+        parseToolServiceRestartPolicyInput(await readJsonBody<unknown>(request)),
+      );
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool_service.restart_policy_updated",
+        targetType: "tool",
+        targetId: toolName,
+        status: "success",
+        summary: `Tool service restart policy updated: ${toolName}`,
+        metadata: {
+          autoRestartEnabled: service.autoRestartEnabled,
+          maxAutoRestarts: service.maxAutoRestarts,
+        },
+      });
+      sendJson(response, 200, { service });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid tool service restart policy";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
   const toolServiceActionMatch = url.pathname.match(/^\/api\/tool-services\/([^/]+)\/(start|stop|restart|heartbeat)$/);
   if (request.method === "POST" && toolServiceActionMatch) {
     if (!options.toolServiceSupervisor) {
@@ -3137,6 +3172,33 @@ function parseToolServiceOutboxAckInput(value: unknown): {
     providerMessageId: parseOptionalText(value.providerMessageId),
     detail: parseOptionalText(value.detail),
     payload: isRecord(value.payload) ? sanitizeObject(value.payload) : undefined,
+  };
+}
+
+function parseToolServiceRestartPolicyInput(value: unknown): {
+  autoRestartEnabled?: boolean;
+  maxAutoRestarts?: number;
+} {
+  if (!isRecord(value)) throw new Error("restart policy input must be an object");
+  const autoRestartEnabled = value.autoRestartEnabled;
+  if (autoRestartEnabled !== undefined && typeof autoRestartEnabled !== "boolean") {
+    throw new Error("autoRestartEnabled must be a boolean");
+  }
+  const maxAutoRestarts = value.maxAutoRestarts;
+  if (maxAutoRestarts === undefined || maxAutoRestarts === null || maxAutoRestarts === "") {
+    return { autoRestartEnabled };
+  }
+  const parsed = typeof maxAutoRestarts === "number"
+    ? maxAutoRestarts
+    : typeof maxAutoRestarts === "string"
+      ? Number.parseInt(maxAutoRestarts, 10)
+      : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error("maxAutoRestarts must be a non-negative integer");
+  }
+  return {
+    autoRestartEnabled,
+    maxAutoRestarts: Math.floor(parsed),
   };
 }
 

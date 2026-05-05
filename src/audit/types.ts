@@ -15,6 +15,7 @@ export type AuditAction =
   | "tool_service.start"
   | "tool_service.stop"
   | "tool_service.restart"
+  | "tool_service.restart_policy_updated"
   | "tool_service.heartbeat"
   | "tool_service.event_recorded"
   | "tool_build.requested"

@@ -218,6 +218,9 @@ controls through `/api/tool-services`. On app startup it reconciles services who
 desired state is `running` by refreshing their health status. Lifecycle events are stored
 in `tool_service_logs` for starts, stops, restarts, heartbeats, and startup
 reconciliation, and new lifecycle records are streamed through an in-process SSE channel.
+Each service can also override the default restart policy through
+`PATCH /api/tool-services/:name/restart-policy`, which stores whether failed heartbeats
+should auto-restart and the maximum auto-restart count for that specific service.
 Tools may also implement `startService(context)` to run an in-process service loop under
 the supervisor. The context provides the tool name, abort signal, internal base URL,
 optional fetch implementation, secret resolver, and lifecycle logger. The supervisor

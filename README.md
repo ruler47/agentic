@@ -273,7 +273,8 @@ supervisor tracks desired state, heartbeat health, restart count, consecutive fa
 last failure, and last restart reason. A failed heartbeat can trigger a bounded
 auto-restart policy (`TOOL_SERVICE_AUTO_RESTART_ON_FAILED_HEARTBEAT`, disabled only when
 set to `disabled`; `TOOL_SERVICE_MAX_AUTO_RESTARTS`, default `3`) before the service is
-left failed for operator review.
+left failed for operator review. Operators can override that policy per service through
+`PATCH /api/tool-services/:name/restart-policy` or the Channels/Tool Detail UI.
 
 Tool-owned storage changes are tracked separately in `tool_migrations`: tool name/version,
 migration id, checksum, status, applied actor/time, QA report, and rollback notes. This is

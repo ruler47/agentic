@@ -210,6 +210,43 @@ test("ToolServiceSupervisor can leave failed heartbeats stopped by policy", asyn
   assert.equal(stopped, 0);
 });
 
+test("ToolServiceSupervisor stores per-service restart policy overrides", async () => {
+  const registry = new ToolRegistry();
+  let stopped = 0;
+  registry.register(serviceTool({
+    async startService() {
+      let healthchecks = 0;
+      return {
+        stop() {
+          stopped += 1;
+        },
+        async healthcheck() {
+          healthchecks += 1;
+          return healthchecks > 1
+            ? { ok: false, detail: "runtime unavailable" }
+            : { ok: true, detail: "initially healthy" };
+        },
+      };
+    },
+  }));
+  const supervisor = new ToolServiceSupervisor(registry);
+
+  const policy = await supervisor.updateRestartPolicy("service.echo", {
+    autoRestartEnabled: false,
+    maxAutoRestarts: 7,
+  });
+  await supervisor.start("service.echo");
+  const failed = await supervisor.heartbeat("service.echo");
+
+  assert.equal(policy.autoRestartEnabled, false);
+  assert.equal(policy.maxAutoRestarts, 7);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.autoRestartEnabled, false);
+  assert.equal(failed.maxAutoRestarts, 7);
+  assert.equal(failed.restartCount, 0);
+  assert.equal(stopped, 0);
+});
+
 test("ToolServiceSupervisor stops all active service runtimes", async () => {
   const registry = new ToolRegistry();
   let stopped = 0;

@@ -150,6 +150,7 @@ POST /api/tool-services/:name/start
 POST /api/tool-services/:name/stop
 POST /api/tool-services/:name/restart
 POST /api/tool-services/:name/heartbeat
+PATCH /api/tool-services/:name/restart-policy
 GET /api/tool-migrations
 POST /api/tool-migrations
 GET /api/tool-build-requests
@@ -176,6 +177,9 @@ actions are provider-neutral: they call the tool healthcheck, update runtime ser
 state, and write audit events without hardcoding Telegram, Slack, webhooks, or any other
 channel type. State persists through `tool_service_statuses` when Postgres is configured;
 the app reconciles desired-running services on startup by refreshing their health status.
+`PATCH /api/tool-services/:name/restart-policy` stores per-service auto-restart
+overrides (`autoRestartEnabled`, `maxAutoRestarts`) so one fragile integration can be
+handled manually without disabling bounded recovery for every other service.
 `GET /api/tool-services/logs` returns recent lifecycle log records written by the
 supervisor for starts, stops, restarts, heartbeats, and startup reconciliation.
 `GET /api/tool-services/logs/events` is an SSE stream that emits `service-log` events for

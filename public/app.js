@@ -136,6 +136,9 @@ document.addEventListener("submit", (event) => {
   if (form.dataset.action === "activate-tool-version") {
     void activateToolVersion(form);
   }
+  if (form.dataset.action === "update-tool-service-policy") {
+    void updateToolServiceRestartPolicy(form);
+  }
   if (form.dataset.action === "import-tool-package") {
     void importToolPackageManifest(form);
   }
@@ -2370,12 +2373,35 @@ function renderToolServiceControls(service) {
       </div>
       ${service.lastRestartAt ? `<small class="status-note">Last restart ${escapeHtml(formatRelative(service.lastRestartAt))}${service.lastRestartReason ? ` · ${escapeHtml(service.lastRestartReason)}` : ""}</small>` : ""}
       <p>${escapeHtml(service.detail || "No service detail.")}</p>
+      ${renderServiceRestartPolicyForm(service)}
       <div class="action-row compact">
         <button type="button" class="ghost-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="start">Start</button>
         <button type="button" class="ghost-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="restart">Restart</button>
         <button type="button" class="ghost-button danger-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="stop">Stop</button>
       </div>
     </section>
+  `;
+}
+
+function renderServiceRestartPolicyForm(service) {
+  const autoRestartEnabled = service.autoRestartEnabled ?? true;
+  const maxAutoRestarts = service.maxAutoRestarts ?? 3;
+  return `
+    <details class="service-policy-editor">
+      <summary>Restart policy: ${autoRestartEnabled ? "auto" : "manual"} · max ${escapeHtml(String(maxAutoRestarts))}</summary>
+      <form data-action="update-tool-service-policy" class="inline-edit-form">
+        <input type="hidden" name="toolName" value="${escapeHtml(service.toolName)}" />
+        <label class="checkbox-line">
+          <input type="checkbox" name="autoRestartEnabled" ${autoRestartEnabled ? "checked" : ""} />
+          Auto-restart after failed heartbeat
+        </label>
+        <label>
+          Max auto restarts
+          <input type="number" name="maxAutoRestarts" min="0" step="1" value="${escapeHtml(String(maxAutoRestarts))}" />
+        </label>
+        <button type="submit" class="ghost-button">Save policy</button>
+      </form>
+    </details>
   `;
 }
 
@@ -3122,6 +3148,7 @@ function renderServiceCard(service) {
       </div>
       ${service.lastRestartAt ? `<small class="status-note">Last restart ${escapeHtml(formatRelative(service.lastRestartAt))}${service.lastRestartReason ? ` · ${escapeHtml(service.lastRestartReason)}` : ""}</small>` : ""}
       <small class="status-note">${escapeHtml(service.detail || "No service detail.")}</small>
+      ${renderServiceRestartPolicyForm(service)}
       ${renderServiceLogPreview(service.toolName)}
       <div class="card-actions">
         <button type="button" class="ghost-button" data-action="tool-service-action" data-service-tool-name="${escapeHtml(service.toolName)}" data-service-action="start">Start</button>
@@ -3925,6 +3952,38 @@ async function updateToolService(toolName, action) {
     state.notice = {
       title: `Service ${action}`,
       body: `${data.service.displayName || data.service.toolName}: ${data.service.status}. ${data.service.detail}`,
+    };
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function updateToolServiceRestartPolicy(form) {
+  const data = new FormData(form);
+  const toolName = normalizeOptionalInput(data.get("toolName"));
+  if (!toolName) {
+    state.error = "Tool service name is required";
+    render();
+    return;
+  }
+  const maxAutoRestarts = Number.parseInt(String(data.get("maxAutoRestarts") ?? "3"), 10);
+  try {
+    const result = await fetchJson(`/api/tool-services/${encodeURIComponent(toolName)}/restart-policy`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        autoRestartEnabled: data.get("autoRestartEnabled") === "on",
+        maxAutoRestarts: Number.isFinite(maxAutoRestarts) ? Math.max(0, maxAutoRestarts) : 3,
+      }),
+    });
+    state.toolServices = [
+      result.service,
+      ...state.toolServices.filter((service) => service.toolName !== result.service.toolName),
+    ].sort((a, b) => a.toolName.localeCompare(b.toolName));
+    state.notice = {
+      title: "Restart policy saved",
+      body: `${result.service.displayName || result.service.toolName}: ${result.service.autoRestartEnabled === false ? "manual restart" : "auto restart"} · max ${result.service.maxAutoRestarts ?? 3}.`,
     };
     render();
   } catch (error) {

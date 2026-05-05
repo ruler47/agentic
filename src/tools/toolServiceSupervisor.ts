@@ -18,6 +18,11 @@ export type ToolServiceSupervisorOptions = {
   maxAutoRestartsPerService?: number;
 };
 
+export type ToolServiceRestartPolicyInput = {
+  autoRestartEnabled?: boolean;
+  maxAutoRestarts?: number;
+};
+
 export class ToolServiceSupervisor {
   private readonly logListeners = new Set<(record: ToolServiceLogRecord) => void>();
   private readonly activeServices = new Map<string, {
@@ -39,7 +44,7 @@ export class ToolServiceSupervisor {
 
   private get maxAutoRestartsPerService(): number {
     const configured = this.supervisorOptions.maxAutoRestartsPerService ?? 3;
-    return Number.isFinite(configured) ? Math.max(0, Math.floor(configured)) : 3;
+    return normalizeMaxAutoRestarts(configured, 3);
   }
 
   async list(): Promise<ToolServiceStatus[]> {
@@ -167,6 +172,22 @@ export class ToolServiceSupervisor {
     return this.start(toolName);
   }
 
+  async updateRestartPolicy(toolName: string, input: ToolServiceRestartPolicyInput): Promise<ToolServiceStatus> {
+    const tool = this.requiredAlwaysOnTool(toolName);
+    const existing = await this.statusFor(toolName);
+    const now = new Date().toISOString();
+    const next = await this.write({
+      ...existing,
+      autoRestartEnabled: input.autoRestartEnabled,
+      maxAutoRestarts: input.maxAutoRestarts === undefined
+        ? undefined
+        : normalizeMaxAutoRestarts(input.maxAutoRestarts, this.maxAutoRestartsPerService),
+      updatedAt: now,
+    });
+    await this.logLifecycle(toolName, "info", "Service restart policy updated.", next);
+    return { ...next, displayName: tool.displayName, description: tool.description };
+  }
+
   async heartbeat(toolName: string): Promise<ToolServiceStatus> {
     const tool = this.requiredAlwaysOnTool(toolName);
     const existing = await this.statusFor(toolName);
@@ -279,9 +300,9 @@ export class ToolServiceSupervisor {
 
   private shouldAutoRestart(status: StoredToolServiceStatus): boolean {
     return (
-      this.restartOnFailedHeartbeat &&
+      (status.autoRestartEnabled ?? this.restartOnFailedHeartbeat) &&
       status.desiredState === "running" &&
-      status.restartCount < this.maxAutoRestartsPerService
+      status.restartCount < normalizeMaxAutoRestarts(status.maxAutoRestarts, this.maxAutoRestartsPerService)
     );
   }
 
@@ -379,4 +400,9 @@ export class ToolServiceSupervisor {
       },
     };
   }
+}
+
+function normalizeMaxAutoRestarts(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
 }

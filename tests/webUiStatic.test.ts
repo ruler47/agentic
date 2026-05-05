@@ -137,9 +137,12 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /\/api\/tool-services\/logs\/events/);
   assert.match(app, /\/api\/tool-service-events/);
   assert.match(app, /function renderServiceCard/);
+  assert.match(app, /function renderServiceRestartPolicyForm/);
   assert.match(app, /function renderServiceLogPreview/);
   assert.match(app, /function renderServiceEventRow/);
   assert.match(app, /function updateToolService/);
+  assert.match(app, /function updateToolServiceRestartPolicy/);
+  assert.match(app, /\/api\/tool-services\/\$\{encodeURIComponent\(toolName\)\}\/restart-policy/);
   assert.match(app, /function connectServiceLogStream/);
   assert.match(app, /window\.setInterval\(\(\) => \{\s*void refreshData\(\{ soft: true \}\);/);
   assert.match(app, /function dataFingerprint/);

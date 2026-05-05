@@ -15,6 +15,8 @@ export type ToolServiceStatus = {
   updatedAt: string;
   restartCount: number;
   consecutiveFailureCount: number;
+  autoRestartEnabled?: boolean;
+  maxAutoRestarts?: number;
   lastFailureAt?: string;
   lastRestartAt?: string;
   lastRestartReason?: string;
