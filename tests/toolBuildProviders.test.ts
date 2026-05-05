@@ -79,11 +79,14 @@ test("GeneratedToolFileBuilder can mirror generated output into an out-of-tree p
     assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/src/tools/generated/browser-screenshotTool.ts"));
 
     const packageManifest = JSON.parse(await readFile(join(projectRoot, packageManifestPath), "utf8"));
+    const packageJson = JSON.parse(await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/package.json"), "utf8"));
     const packageReadme = await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/README.md"), "utf8");
     const packageToolContract = await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/src/tools/tool.ts"), "utf8");
     assert.equal(packageManifest.package.type, "source-bundle");
     assert.equal(packageManifest.package.ref, "generated.browser.screenshot/1.0.0");
     assert.equal(packageManifest.name, "generated.browser.screenshot");
+    assert.equal(packageJson.scripts.build, "tsc -p tsconfig.json");
+    assert.equal(packageJson.dependencies["@playwright/test"], "^1.59.1");
     assert.match(packageReadme, /Source Snapshot/);
     assert.match(packageToolContract, /export type Tool =/);
     assert.equal(output.modulePath, "src/tools/generated/browser-screenshotTool.ts");

@@ -238,10 +238,10 @@ is gitignored) or legacy `TOOL_PACKAGE_ROOT`/`tool-packages`, via `dist/index.js
 source, and tests outside the main application source so generated capabilities can move
 toward independent services. The server mirrors Tool Build output into that workspace by
 default; set `TOOL_BUILD_PACKAGE_WORKSPACE=disabled` to keep only the legacy local-path
-generated module output while package-local QA is still being introduced. Mirrored
-packages include a minimal package-local Tool contract for generated TypeScript modules,
-and command QA performs structural checks on the package manifest and scaffold before
-returning a passing report.
+generated module output. Mirrored packages include a minimal package-local Tool contract
+for generated TypeScript modules, and command QA performs package checks before returning
+a passing report: manifest/scaffold validation, package-local TypeScript build, and
+package-local tests.
 `external-package` manifests whose `package.ref` is an HTTP(S) URL load through the
 external HTTP package runner. That runtime must expose `GET /health`, `POST /run`, and
 optional `POST /service/start` / `POST /service/stop` for always-on tools. `oci-image`

@@ -285,16 +285,19 @@ run as an external HTTP service.
 workspace while still returning the current local-path output for promotion. This sidecar
 is enabled in the server by default and can be disabled with
 `TOOL_BUILD_PACKAGE_WORKSPACE=disabled`. The sidecar is not yet the active source of
-truth; package-local QA and runner promotion are the next step before generated code can
-leave `src/tools/generated` entirely. Mirrored packages include a minimal local
+truth; runner promotion is the next step before generated code can leave
+`src/tools/generated` entirely. Mirrored packages include a minimal local
 `src/tools/tool.ts` contract so generated modules can compile against a package-local
 interface instead of importing Agentic internals for basic Tool types.
 When a package workspace is present, the QA report lists its `tool.package.json` alongside
 the legacy generated module and test artifacts, so later promotion stages can trace which
 portable package snapshot was reviewed. `validateToolPackageWorkspace` also runs as part
 of command QA and rejects malformed package snapshots before a passing report is returned.
-This is structural package QA; executing package-local build/test inside the package
-itself is still the next promotion-hardening step.
+Package workspace QA now also enters the sidecar package, links the app `node_modules`
+for local verification, runs the package-local TypeScript build, and executes the
+package-local test script. This is still a transition layer because the active promoted
+runtime is usually the legacy local-path module, but a generated tool can no longer pass
+command QA with only an unbuildable portable package snapshot.
 
 Local-path loading is deliberately constrained:
 

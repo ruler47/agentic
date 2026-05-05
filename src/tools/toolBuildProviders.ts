@@ -23,7 +23,7 @@ import {
 } from "./toolIntegrationSpec.js";
 import type { ToolPackageManifest } from "./toolPackage.js";
 import { ToolPackageWorkspaceStore } from "./toolPackageWorkspaceStore.js";
-import { validateToolPackageWorkspace } from "./toolPackageWorkspaceQa.js";
+import { validateAndBuildToolPackageWorkspace } from "./toolPackageWorkspaceQa.js";
 
 type GeneratedFile = {
   path: string;
@@ -171,6 +171,7 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
         examples: output.examples,
       },
       readmeMarkdown: packageWorkspaceReadme(request, output),
+      packageJson: packageWorkspacePackageJson(request, output),
       files: [
         {
           path: "src/tools/tool.ts",
@@ -189,6 +190,41 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
       files: record.files,
     };
   }
+}
+
+function packageWorkspacePackageJson(request: ToolBuildRequest, output: ToolBuildProviderOutput): Record<string, unknown> {
+  const source = output.files.map((file) => file.content).join("\n");
+  const dependencies: Record<string, string> = {};
+  const devDependencies: Record<string, string> = {
+    "@types/node": "^20.12.12",
+    typescript: "^5.6.3",
+  };
+
+  if (source.includes("\"@playwright/test\"") || source.includes("'@playwright/test'")) {
+    dependencies["@playwright/test"] = "^1.59.1";
+  }
+  if (source.includes("\"pg\"") || source.includes("'pg'")) {
+    dependencies.pg = "^8.20.0";
+    devDependencies["@types/pg"] = "^8.20.0";
+  }
+  if (source.includes("\"pngjs\"") || source.includes("'pngjs'")) {
+    dependencies.pngjs = "^7.0.0";
+    devDependencies["@types/pngjs"] = "^6.0.5";
+  }
+
+  return {
+    name: request.contract.toolName,
+    version: request.contract.version,
+    private: true,
+    type: "module",
+    scripts: {
+      build: "tsc -p tsconfig.json",
+      start: "node dist/index.js",
+      test: "node --test \"dist/tests/**/*.test.js\"",
+    },
+    ...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
+    devDependencies,
+  };
 }
 
 function packageToolContractSource(): string {
@@ -336,7 +372,7 @@ export class IsolatedCommandToolQaRunner implements ToolQaRunner {
     }
 
     if (output.packageWorkspace) {
-      const packageQa = await validateToolPackageWorkspace(this.projectRoot, output.packageWorkspace);
+      const packageQa = await validateAndBuildToolPackageWorkspace(this.projectRoot, output.packageWorkspace);
       checks.push(...packageQa.checks.map((check) => `package workspace: ${check}`));
       if (!packageQa.ok) {
         return {
