@@ -309,7 +309,9 @@ without requiring Docker during local development, while preserving the same HTT
 contract used by external and OCI runners. Runtime calls are bounded by
 `TOOL_SOURCE_BUNDLE_CALL_TIMEOUT_MS` (default 60 seconds), so a package that becomes
 healthy and then hangs on `/run` or lifecycle calls is aborted and the local process is
-stopped.
+stopped. If the process exits before it ever becomes healthy, the runner reports the exit
+code/signal plus captured bootstrap output instead of waiting for the full readiness
+timeout.
 When a package workspace is present, the QA report lists its `tool.package.json` alongside
 the legacy generated module and test artifacts, so later promotion stages can trace which
 portable package snapshot was reviewed. `validateToolPackageWorkspace` also runs as part

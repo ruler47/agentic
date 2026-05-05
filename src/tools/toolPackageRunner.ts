@@ -586,16 +586,31 @@ async function startSourceBundleHttpRuntime(options: SourceBundleHttpProcessRunt
   child.stdout?.on("data", (chunk) => output.push(Buffer.from(chunk)));
   child.stderr?.on("data", (chunk) => output.push(Buffer.from(chunk)));
 
-  const health = await waitForHealthyRuntime(
-    options.fetchImpl,
-    baseUrl,
-    options.startupTimeoutMs,
-    options.pollIntervalMs,
-  );
+  const exitBeforeHealth = new Promise<ToolHealth>((resolveExit) => {
+    child.once("exit", (code, signal) => {
+      const processDetail = Buffer.concat(output).toString("utf8").trim();
+      const reason = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+      resolveExit({
+        ok: false,
+        detail: processDetail
+          ? `Source-bundle HTTP runtime exited before healthcheck with ${reason}: ${processDetail}`
+          : `Source-bundle HTTP runtime exited before healthcheck with ${reason}.`,
+      });
+    });
+  });
+  const health = await Promise.race([
+    waitForHealthyRuntime(
+      options.fetchImpl,
+      baseUrl,
+      options.startupTimeoutMs,
+      options.pollIntervalMs,
+    ),
+    exitBeforeHealth,
+  ]);
   if (!health.ok) {
     stopChildProcess(child);
     const processDetail = Buffer.concat(output).toString("utf8").trim();
-    throw new Error(processDetail ? `${health.detail}: ${processDetail}` : health.detail);
+    throw new Error(health.detail.includes(processDetail) ? health.detail : processDetail ? `${health.detail}: ${processDetail}` : health.detail);
   }
 
   attachChildProcessCleanup(child);

@@ -697,7 +697,8 @@ Remaining Phase 3 gaps:
   production supervision, richer resource limits, log streaming/redaction, and
   packaging/building those source-bundles as external services or OCI images. DONE for
   source-bundle local process on-demand calls, always-on service lifecycle, and bounded
-  runtime call timeouts.
+  runtime call timeouts. The local process runner also detects runtimes that exit before
+  readiness and reports exit code/signal plus bootstrap output.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,

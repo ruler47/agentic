@@ -463,6 +463,55 @@ test("source-bundle HTTP process runtime calls are bounded by timeout", async ()
   }
 });
 
+test("source-bundle HTTP process runner reports runtimes that exit before healthcheck", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentic-source-http-crash-"));
+  const runtimePath = join(root, "tool-packages/crash/dist/runtime/server.js");
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+
+  try {
+    await mkdir(join(root, "tool-packages/crash/dist/runtime"), { recursive: true });
+    await writeFile(
+      runtimePath,
+      `
+        console.error("crash during bootstrap");
+        process.exit(42);
+      `,
+    );
+    await metadata.registerGenerated({
+      name: "generated.bundle.crashruntime",
+      version: "1.0.0",
+      description: "Crashing source-bundle HTTP runtime.",
+      capabilities: ["crash-runtime"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.bundle.crashruntime",
+        version: "1.0.0",
+        description: "Crashing source-bundle HTTP runtime.",
+        capabilities: ["crash-runtime"],
+        startupMode: "on-demand",
+        package: { type: "source-bundle", ref: "crash" },
+      },
+    });
+
+    await loadGeneratedTools(registry, metadata, root, [
+      new SourceBundleHttpProcessToolPackageRunner({
+        enabled: true,
+        packageRoot: "tool-packages",
+        startupTimeoutMs: 5000,
+        pollIntervalMs: 50,
+      }),
+    ]);
+
+    await assert.rejects(
+      () => registry.get("generated.bundle.crashruntime")!.run({ text: "boom" }),
+      /exited before healthcheck with code 42: crash during bootstrap/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("loadGeneratedTools rejects source-bundle refs outside the package root", async () => {
   const metadata = new InMemoryToolMetadataStore();
   const registry = new ToolRegistry();
