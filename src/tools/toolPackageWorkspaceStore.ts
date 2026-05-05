@@ -181,6 +181,7 @@ function defaultPackageJson(manifest: ToolPackageManifest): Record<string, unkno
       test: "node --test \"dist/tests/**/*.test.js\"",
     },
     devDependencies: {
+      "@types/node": "^20.12.12",
       typescript: "^5.6.3",
     },
   };

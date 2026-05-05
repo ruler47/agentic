@@ -682,10 +682,11 @@ Remaining Phase 3 gaps:
   generated bundle directory, but the contract must also support OCI/container execution.
   PARTIAL: the app can now write source-bundle package workspaces outside the main repo
   under gitignored `tools/<name>/<version>` folders, mirror Tool Builder output into that
-  workspace by default, reload pre-built source-bundles from that workspace, proxy
-  external HTTP packages, and optionally run OCI HTTP packages. The next step is to make
-  package workspaces the active generated source of truth instead of sidecar snapshots,
-  then promote them through package-local QA and runner activation.
+  workspace by default, include a package-local minimal Tool contract for generated
+  TypeScript modules, reload pre-built source-bundles from that workspace, proxy external
+  HTTP packages, and optionally run OCI HTTP packages. The next step is to make package
+  workspaces the active generated source of truth instead of sidecar snapshots, then
+  promote them through package-local QA and runner activation.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,

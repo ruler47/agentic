@@ -286,7 +286,9 @@ workspace while still returning the current local-path output for promotion. Thi
 is enabled in the server by default and can be disabled with
 `TOOL_BUILD_PACKAGE_WORKSPACE=disabled`. The sidecar is not yet the active source of
 truth; package-local QA and runner promotion are the next step before generated code can
-leave `src/tools/generated` entirely.
+leave `src/tools/generated` entirely. Mirrored packages include a minimal local
+`src/tools/tool.ts` contract so generated modules can compile against a package-local
+interface instead of importing Agentic internals for basic Tool types.
 
 Local-path loading is deliberately constrained:
 

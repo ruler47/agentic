@@ -625,7 +625,9 @@ For documentation-only changes:
   package workspace by default while retaining the legacy local-path promotion output.
   This bridge can be disabled with `TOOL_BUILD_PACKAGE_WORKSPACE=disabled`; package-local
   QA and active source-bundle promotion remain the next step before generated code leaves
-  `src/tools/generated` entirely.
+  `src/tools/generated` entirely. Mirrored packages include a minimal package-local
+  `src/tools/tool.ts` contract so generated source can compile against portable Tool
+  types instead of reading Agentic internals.
 - Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
   needs database access, it must declare storage requirements/migrations and receive a
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,

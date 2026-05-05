@@ -40,6 +40,7 @@ test("ToolPackageWorkspaceStore writes portable source-bundle packages outside a
     assert.match(readme, /Runtime Contract/);
     assert.match(dockerfile, /FROM node:22-alpine/);
     assert.equal(packageJson.scripts.build, "tsc -p tsconfig.json");
+    assert.equal(packageJson.devDependencies["@types/node"], "^20.12.12");
     assert.equal(tsconfig.compilerOptions.outDir, "dist");
     assert.match(gitignore, /node_modules/);
     assert.ok(record.files.includes("tools/generated.demo.echo/1.2.0/src/index.ts"));

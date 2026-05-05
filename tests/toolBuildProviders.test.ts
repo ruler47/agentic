@@ -75,14 +75,17 @@ test("GeneratedToolFileBuilder can mirror generated output into an out-of-tree p
     assert.ok(packageManifestPath);
     assert.equal(packageManifestPath, "tools/generated.browser.screenshot/1.0.0/tool.package.json");
     assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/tsconfig.json"));
+    assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/src/tools/tool.ts"));
     assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/src/tools/generated/browser-screenshotTool.ts"));
 
     const packageManifest = JSON.parse(await readFile(join(projectRoot, packageManifestPath), "utf8"));
     const packageReadme = await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/README.md"), "utf8");
+    const packageToolContract = await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/src/tools/tool.ts"), "utf8");
     assert.equal(packageManifest.package.type, "source-bundle");
     assert.equal(packageManifest.package.ref, "generated.browser.screenshot/1.0.0");
     assert.equal(packageManifest.name, "generated.browser.screenshot");
     assert.match(packageReadme, /Source Snapshot/);
+    assert.match(packageToolContract, /export type Tool =/);
     assert.equal(output.modulePath, "src/tools/generated/browser-screenshotTool.ts");
   } finally {
     await rm(projectRoot, { recursive: true, force: true });

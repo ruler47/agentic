@@ -170,10 +170,16 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
         examples: output.examples,
       },
       readmeMarkdown: packageWorkspaceReadme(request, output),
-      files: output.files.map((file) => ({
-        path: file.path,
-        content: file.content,
-      })),
+      files: [
+        {
+          path: "src/tools/tool.ts",
+          content: packageToolContractSource(),
+        },
+        ...output.files.map((file) => ({
+          path: file.path,
+          content: file.content,
+        })),
+      ],
     });
 
     return {
@@ -182,6 +188,69 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
       files: record.files,
     };
   }
+}
+
+function packageToolContractSource(): string {
+  return `export type ToolInput = Record<string, unknown>;
+
+export type ToolResult = {
+  ok: boolean;
+  content: string;
+  data?: unknown;
+  artifacts?: Array<{
+    filename: string;
+    mimeType: string;
+    contentBase64?: string;
+    content?: string;
+    kind?: string;
+    preview?: unknown;
+  }>;
+};
+
+export type ToolSchema = Record<string, unknown>;
+
+export type ToolStartupMode = "on-demand" | "always-on" | "ephemeral";
+
+export type ToolStorageContract = {
+  tables?: string[];
+  migrations?: Array<Record<string, unknown>>;
+  notes?: string;
+};
+
+export type ToolExecutionContext = {
+  runId?: string;
+  spanId?: string;
+  caller?: string;
+  signal?: AbortSignal;
+  logger?: {
+    info?: (message: string, data?: unknown) => void;
+    warn?: (message: string, data?: unknown) => void;
+    error?: (message: string, data?: unknown) => void;
+  };
+  resolveSecret?: (handle: string) => Promise<string | undefined> | string | undefined;
+  resolveConfiguration?: (key: string) => Promise<string | undefined> | string | undefined;
+  [key: string]: unknown;
+};
+
+export type Tool = {
+  name: string;
+  version: string;
+  description: string;
+  capabilities: string[];
+  startupMode?: ToolStartupMode;
+  inputSchema?: ToolSchema;
+  outputSchema?: ToolSchema;
+  requiredConfigurationKeys?: string[];
+  requiredSecretHandles?: string[];
+  settingsSchema?: ToolSchema;
+  storage?: ToolStorageContract;
+  examples?: unknown[];
+  healthcheck?: () => Promise<{ ok: boolean; detail: string }> | { ok: boolean; detail: string };
+  run: (input: ToolInput, context?: ToolExecutionContext) => Promise<ToolResult> | ToolResult;
+  startService?: (context?: ToolExecutionContext) => Promise<ToolResult> | ToolResult;
+  stopService?: (context?: ToolExecutionContext) => Promise<ToolResult> | ToolResult;
+};
+`;
 }
 
 function packageWorkspaceReadme(request: ToolBuildRequest, output: ToolBuildProviderOutput): string {
