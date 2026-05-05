@@ -135,6 +135,9 @@ document.addEventListener("submit", (event) => {
   if (form.dataset.action === "activate-tool-version") {
     void activateToolVersion(form);
   }
+  if (form.dataset.action === "import-tool-package") {
+    void importToolPackageManifest(form);
+  }
   if (form.dataset.action === "create-secret-handle") {
     void createSecretHandle(form);
   }
@@ -2215,6 +2218,17 @@ function renderToolsPage() {
           <button type="button">Source</button>
           <button type="button">Capability</button>
         </section>
+        <details class="surface-panel collapsible-panel" data-panel-id="tool-package-import" ${panelOpenAttr("tool-package-import")}>
+          <summary>Import portable tool package manifest</summary>
+          <form data-action="import-tool-package" class="settings-form">
+            <label>
+              Manifest JSON
+              <textarea name="manifest" rows="8" placeholder='{"schemaVersion":"agentic.tool-package.v1","name":"generated.example.tool","version":"1.0.0","description":"Reusable capability package.","capabilities":["example-capability"],"startupMode":"on-demand","package":{"type":"external-package","ref":"npm:@scope/tool@1.0.0"}}'></textarea>
+            </label>
+            <p class="context-note">Imports contract metadata only. Non-local packages stay disabled until a runner can execute that package reference.</p>
+            <button type="submit" class="ghost-button">Import package</button>
+          </form>
+        </details>
         <div class="card-grid">
           ${visibleTools.length
             ? visibleTools.map(renderToolCard).join("")
@@ -3931,6 +3945,35 @@ async function deleteTool(toolName) {
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);
     render();
+  }
+}
+
+async function importToolPackageManifest(form) {
+  const formData = new FormData(form);
+  const rawManifest = String(formData.get("manifest") ?? "").trim();
+  setComposerBusy(form, true);
+  try {
+    const manifest = JSON.parse(rawManifest);
+    const data = await fetchJson("/api/tools/package-manifests", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ manifest }),
+    });
+    state.tools = [data.tool, ...state.tools.filter((tool) => tool.name !== data.tool.name)].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    state.selectedToolName = data.tool.name;
+    state.notice = {
+      title: "Tool package imported",
+      body: `${data.tool.displayName || data.tool.name} v${data.tool.version} was added to the registry.`,
+    };
+    form.reset();
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  } finally {
+    setComposerBusy(form, false);
   }
 }
 

@@ -225,6 +225,10 @@ configuration keys, secret handles, storage contracts, docs/examples, success/fa
 counters, and latest health details. Generated tool metadata can be registered with
 name/version conflict checks. Executable generated tools are loaded only from compiled
 project-local modules, validated against metadata, and promoted after health checks pass.
+Portable package manifests can be exported from
+`GET /api/tools/generated-modules/:name/package-manifest` and imported through
+`POST /api/tools/package-manifests` or the Tools page. Imported non-local packages are
+registered as disabled metadata until a runner can execute their package reference.
 
 Tool-owned storage changes are tracked separately in `tool_migrations`: tool name/version,
 migration id, checksum, status, applied actor/time, QA report, and rollback notes. This is

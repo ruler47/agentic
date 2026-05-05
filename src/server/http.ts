@@ -46,7 +46,11 @@ import {
   ToolBuildReviewReport,
 } from "../tools/toolBuildRequestStore.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
-import { ToolMetadataStore, toolToMetadata } from "../tools/toolMetadataStore.js";
+import {
+  generatedToolInputFromPackageManifest,
+  ToolMetadataStore,
+  toolToMetadata,
+} from "../tools/toolMetadataStore.js";
 import { normalizeToolPackageManifest } from "../tools/toolPackage.js";
 import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
 import {
@@ -631,6 +635,34 @@ async function routeRequest(
     } catch (error) {
       sendJson(response, 400, {
         error: error instanceof Error ? error.message : "Invalid generated tool module",
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/tools/package-manifests") {
+    if (!options.toolMetadataStore) {
+      sendJson(response, 503, { error: "Tool metadata store is not configured" });
+      return;
+    }
+
+    try {
+      const input = parseToolPackageManifestImport(await readJsonBody<unknown>(request));
+      const tool = await options.toolMetadataStore.registerGenerated(input);
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool.package_imported",
+        targetType: "tool",
+        targetId: tool.name,
+        status: "success",
+        summary: `Imported tool package manifest: ${tool.name}@${tool.version}`,
+      });
+      sendJson(response, 201, { tool });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid tool package manifest",
       });
     }
     return;
@@ -3600,6 +3632,15 @@ function parseGeneratedToolModuleInput(value: unknown) {
         ? undefined
         : normalizeToolPackageManifest(candidate.packageManifest),
   };
+}
+
+function parseToolPackageManifestImport(value: unknown) {
+  const body =
+    value && typeof value === "object" && !Array.isArray(value) && "manifest" in value
+      ? (value as Record<string, unknown>).manifest
+      : value;
+  const manifest = normalizeToolPackageManifest(body);
+  return generatedToolInputFromPackageManifest(manifest);
 }
 
 function parseOptionalStorageContract(value: unknown) {

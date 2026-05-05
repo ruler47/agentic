@@ -62,7 +62,7 @@ export type GeneratedToolModuleInput = {
   startupMode?: ToolStartupMode;
   inputSchema?: ToolSchema;
   outputSchema?: ToolSchema;
-  modulePath: string;
+  modulePath?: string;
   testPath?: string;
   requiredConfigurationKeys?: string[];
   requiredSecretHandles?: string[];
@@ -326,6 +326,33 @@ export function toolToMetadata(tool: Tool, updatedAt = new Date().toISOString())
     source: "builtin",
     status: "available",
     updatedAt,
+  };
+}
+
+export function generatedToolInputFromPackageManifest(
+  manifest: ToolPackageManifest,
+  changeSummary?: string,
+): GeneratedToolModuleInput {
+  return {
+    name: manifest.name,
+    displayName: manifest.displayName,
+    version: manifest.version,
+    description: manifest.description,
+    capabilities: [...manifest.capabilities],
+    startupMode: manifest.startupMode,
+    inputSchema: manifest.inputSchema,
+    outputSchema: manifest.outputSchema,
+    modulePath: manifest.package.type === "local-path" ? manifest.package.ref : undefined,
+    requiredConfigurationKeys: manifest.requiredConfigurationKeys,
+    requiredSecretHandles: manifest.requiredSecretHandles,
+    settingsSchema: manifest.settingsSchema,
+    storage: manifest.storage,
+    docsMarkdown: manifest.docsMarkdown,
+    examples: manifest.examples as ToolExample[] | undefined,
+    packageManifest: manifest,
+    changeSummary:
+      changeSummary ??
+      `Imported portable tool package manifest ${manifest.name}@${manifest.version} from ${manifest.package.type}:${manifest.package.ref}.`,
   };
 }
 

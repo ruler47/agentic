@@ -397,6 +397,10 @@ Remaining registry persistence:
   build output, and the registry persists package manifests through the active Postgres
   row plus version history. Remaining work is API/UI package export/import and adding a
   generic runner that can execute package manifests outside the web app process.
+  The API/UI can now import portable `agentic.tool-package.v1` manifests into the
+  registry and export existing generated package manifests. Non-local package references
+  are intentionally registered as disabled metadata until the runner/supervisor layer can
+  execute them.
 
 Every tool call must emit trace events with:
 

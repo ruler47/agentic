@@ -334,6 +334,13 @@ advice, so a non-pass decision remains visible on the card and can drive a repai
 existing card with operator feedback attached. This is the UI/API path for "the generated
 tool is close, but change these details" without losing the original QA evidence.
 
+`POST /api/tools/package-manifests` imports a portable
+`agentic.tool-package.v1` manifest into the registry. The Tools page exposes the same
+collapsed import form. Local-path manifests can later be loaded by the current compiled
+module loader; non-local package references such as external packages, source bundles, or
+OCI images are stored as disabled metadata until a generic package runner can execute
+them.
+
 `POST /api/tool-build-requests/:id/stop` marks a request `blocked` with a human status
 detail. `DELETE /api/tool-build-requests/:id` removes a queue card. Both operations write
 audit events. Installed tools that are marked `failed` expose a Tools-page "Rework tool"

@@ -324,6 +324,13 @@ reload. Disable this fallback with `TOOL_BUILD_LLM_PROVIDER=disabled` when an in
 should only use deterministic providers. Enable `TOOL_BUILD_LLM_REVIEW=enabled` when the
 instance should add LLM code/behavior reviewers before promotion.
 
+The registry also has a portable package-manifest import/export layer. Generated tools
+can expose `agentic.tool-package.v1` manifests through the API, and operators can import
+the same manifest shape back into the registry. Local-path packages remain compatible
+with the current compiled-module loader; source-bundle, OCI-image, and external-package
+references are stored as disabled package metadata until the generic out-of-process
+runner exists.
+
 The target flow also supports admin-provided API documentation and credentials. The agent
 should read the docs, propose a reusable TypeScript module contract, build tests, run QA,
 register the tool, and store credentials through secret handles rather than prompt text.

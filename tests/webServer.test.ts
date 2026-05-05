@@ -1707,6 +1707,61 @@ test("web server registers generated tool metadata with conflict checks", async 
   }
 });
 
+test("web server imports portable tool package manifests without executable source", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolMetadataStore,
+    auditEventStore: new InMemoryAuditEventStore(),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const importResponse = await fetch(`${baseUrl}/api/tools/package-manifests`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        manifest: {
+          schemaVersion: "agentic.tool-package.v1",
+          name: "generated.remote.normalize",
+          displayName: "Remote Normalizer",
+          version: "1.0.0",
+          description: "Portable package reference for a remote text normalizer.",
+          capabilities: ["text-normalization"],
+          startupMode: "on-demand",
+          package: { type: "external-package", ref: "npm:@agentic-tools/remote-normalize@1.0.0" },
+          requiredSecretHandles: ["secret.remote.normalize"],
+          qa: {
+            summary: "Imported package has external QA evidence.",
+            checks: ["package manifest validated"],
+          },
+        },
+      }),
+    });
+    const importBody = await importResponse.json();
+    const tools = await (await fetch(`${baseUrl}/api/tools`)).json();
+    const manifest = await (
+      await fetch(
+        `${baseUrl}/api/tools/generated-modules/${encodeURIComponent("generated.remote.normalize")}/package-manifest`,
+      )
+    ).json();
+
+    assert.equal(importResponse.status, 201);
+    assert.equal(importBody.tool.name, "generated.remote.normalize");
+    assert.equal(importBody.tool.modulePath, undefined);
+    assert.equal(importBody.tool.packageManifest.package.type, "external-package");
+    assert.equal(tools.tools[0].requiredSecretHandles[0], "secret.remote.normalize");
+    assert.equal(manifest.manifest.package.ref, "npm:@agentic-tools/remote-normalize@1.0.0");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server records tool migration metadata with audit events", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");

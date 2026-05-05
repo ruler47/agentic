@@ -563,6 +563,9 @@ For documentation-only changes:
   same requester user or an explicit private-memory grant.
 - Built-in and future generated tool contracts should be synced into `tool_modules` so
   source/status/health/version metadata survives restarts.
+- Portable generated tool packages use `agentic.tool-package.v1`. The API/UI can import
+  package manifests into registry metadata and export generated package manifests.
+  Non-local package refs are metadata-only/disabled until a generic runner exists.
 - Always-on capabilities should use the generic `Tool.startService(context)` and
   provider-neutral service event contracts. Prefer generated service modules over adding
   new provider branches to the Agentic core.
