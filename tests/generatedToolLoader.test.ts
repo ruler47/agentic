@@ -279,7 +279,10 @@ test("loadGeneratedTools proxies external-package HTTP runtimes", async () => {
       response.end(JSON.stringify({
         ok: true,
         content: `external:${body.input.text}`,
-        data: { contextTool: body.context.toolName },
+        data: {
+          contextTool: body.context.toolName,
+          apiKey: body.context.secrets["secret.external.echo"],
+        },
       }));
       return;
     }
@@ -296,12 +299,14 @@ test("loadGeneratedTools proxies external-package HTTP runtimes", async () => {
       version: "1.0.0",
       description: "External HTTP echo.",
       capabilities: ["external-echo"],
+      requiredSecretHandles: ["secret.external.echo"],
       packageManifest: {
         schemaVersion: "agentic.tool-package.v1",
         name: "generated.external.echo",
         version: "1.0.0",
         description: "External HTTP echo.",
         capabilities: ["external-echo"],
+        requiredSecretHandles: ["secret.external.echo"],
         startupMode: "on-demand",
         package: { type: "external-package", ref: baseUrl },
       },
@@ -311,14 +316,18 @@ test("loadGeneratedTools proxies external-package HTTP runtimes", async () => {
     const [stored] = await metadata.list();
     const output = await registry.get("generated.external.echo")?.run(
       { text: "hello" },
-      { toolName: "generated.external.echo", now: new Date("2026-05-05T12:00:00.000Z") },
+      {
+        toolName: "generated.external.echo",
+        now: new Date("2026-05-05T12:00:00.000Z"),
+        resolveSecret: async (handle) => handle === "secret.external.echo" ? "runtime-secret" : undefined,
+      },
     );
 
     assert.equal(results[0]?.loaded, true);
     assert.equal(stored?.status, "available");
     assert.equal(stored?.lastHealthDetail, "external runtime healthy");
     assert.equal(output?.content, "external:hello");
-    assert.deepEqual(output?.data, { contextTool: "generated.external.echo" });
+    assert.deepEqual(output?.data, { contextTool: "generated.external.echo", apiKey: "runtime-secret" });
     assert.deepEqual(calls.map((call) => call.path), ["/health", "/run"]);
   } finally {
     await close(server);
@@ -354,9 +363,12 @@ test("loadGeneratedTools keeps non-HTTP external packages disabled until a runne
 });
 
 test("external-package HTTP runners expose always-on service lifecycle handles", async () => {
-  const calls: string[] = [];
+  const calls: Array<{ path: string; body?: unknown }> = [];
   const server = createServer(async (request, response) => {
-    calls.push(request.url ?? "");
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const bodyText = Buffer.concat(chunks).toString("utf8");
+    calls.push({ path: request.url ?? "", body: bodyText ? JSON.parse(bodyText) : undefined });
     response.setHeader("content-type", "application/json");
     if (request.url === "/health") {
       response.end(JSON.stringify({ ok: true, detail: "external service healthy" }));
@@ -380,6 +392,7 @@ test("external-package HTTP runners expose always-on service lifecycle handles",
       description: "External HTTP listener.",
       capabilities: ["external-listener"],
       startupMode: "always-on",
+      requiredSecretHandles: ["secret.external.listener"],
       packageManifest: {
         schemaVersion: "agentic.tool-package.v1",
         name: "generated.external.listener",
@@ -387,12 +400,15 @@ test("external-package HTTP runners expose always-on service lifecycle handles",
         description: "External HTTP listener.",
         capabilities: ["external-listener"],
         startupMode: "always-on",
+        requiredSecretHandles: ["secret.external.listener"],
         package: { type: "external-package", ref: baseUrl },
       },
     });
 
     await loadGeneratedTools(registry, metadata);
-    const supervisor = new ToolServiceSupervisor(registry);
+    const supervisor = new ToolServiceSupervisor(registry, undefined, undefined, {
+      resolveSecret: async (handle) => handle === "secret.external.listener" ? "listener-secret" : undefined,
+    });
     const started = await supervisor.start("generated.external.listener");
     const heartbeat = await supervisor.heartbeat("generated.external.listener");
     const stopped = await supervisor.stop("generated.external.listener");
@@ -400,7 +416,15 @@ test("external-package HTTP runners expose always-on service lifecycle handles",
     assert.equal(started.status, "running");
     assert.equal(heartbeat.lastHealthOk, true);
     assert.equal(stopped.status, "stopped");
-    assert.deepEqual(calls, ["/health", "/service/start", "/health", "/health", "/service/stop"]);
+    assert.deepEqual(calls.map((call) => call.path), ["/health", "/service/start", "/health", "/health", "/service/stop"]);
+    assert.equal(
+      (calls[1]?.body as { context?: { secrets?: Record<string, string> } }).context?.secrets?.["secret.external.listener"],
+      "listener-secret",
+    );
+    assert.equal(
+      (calls[4]?.body as { context?: { secrets?: Record<string, string> } }).context?.secrets?.["secret.external.listener"],
+      "listener-secret",
+    );
   } finally {
     await close(server);
   }

@@ -238,8 +238,9 @@ optional `POST /service/start` / `POST /service/stop` for always-on tools. `oci-
 manifests can use the same HTTP runtime contract when `TOOL_OCI_RUNNER=enabled`; the
 Docker runner starts the image, publishes internal port `TOOL_OCI_INTERNAL_PORT` (default
 `8080`), waits for `/health`, and then proxies `/run` and optional service lifecycle
-calls. Runner diagnostics are exposed through `GET /api/tool-package-runners` and the
-Diagnostics page.
+calls. External HTTP/OCI runtimes receive only the secret handles declared by their tool
+metadata, resolved as a scoped runtime envelope. Runner diagnostics are exposed through
+`GET /api/tool-package-runners` and the Diagnostics page.
 Operators can call `POST /api/tools/reload-generated` or use the Diagnostics action to
 reload generated/source-bundle packages without restarting the app.
 

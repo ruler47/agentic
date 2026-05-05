@@ -365,28 +365,29 @@ function externalHttpProxyTool(
     async run(input, context) {
       const response = await postJson(fetchImpl, `${baseUrl}/run`, {
         input,
-        context: executionContextPayload(context),
+        context: await executionContextPayload(metadata, context),
       }, context?.signal);
       return parseToolResult(response);
     },
     async startService(context) {
       await postJson(fetchImpl, `${baseUrl}/service/start`, {
-        context: serviceContextPayload(context),
+        context: await serviceContextPayload(metadata, context),
       }, context.signal);
-      return externalHttpServiceHandle(fetchImpl, baseUrl, context);
+      return externalHttpServiceHandle(fetchImpl, metadata, baseUrl, context);
     },
   };
 }
 
 function externalHttpServiceHandle(
   fetchImpl: typeof fetch,
+  metadata: ToolModuleMetadata,
   baseUrl: string,
   context: ToolServiceContext,
 ): ToolServiceHandle {
   return {
     async stop() {
       await postJson(fetchImpl, `${baseUrl}/service/stop`, {
-        context: serviceContextPayload(context),
+        context: await serviceContextPayload(metadata, context),
       });
     },
     async healthcheck() {
@@ -463,7 +464,10 @@ function parseToolResult(value: unknown): ToolResult {
   };
 }
 
-function executionContextPayload(context: ToolExecutionContext | undefined): Record<string, unknown> | undefined {
+async function executionContextPayload(
+  metadata: ToolModuleMetadata,
+  context: ToolExecutionContext | undefined,
+): Promise<Record<string, unknown> | undefined> {
   if (!context) return undefined;
   return compactRecord({
     instanceId: context.instanceId,
@@ -476,14 +480,42 @@ function executionContextPayload(context: ToolExecutionContext | undefined): Rec
     capability: context.capability,
     caller: context.caller,
     now: context.now.toISOString(),
+    ...(await resolvedSecretEnvelope(metadata.requiredSecretHandles, context.resolveSecret)),
   });
 }
 
-function serviceContextPayload(context: ToolServiceContext): Record<string, unknown> {
+async function serviceContextPayload(
+  metadata: ToolModuleMetadata,
+  context: ToolServiceContext,
+): Promise<Record<string, unknown>> {
   return compactRecord({
     toolName: context.toolName,
     now: context.now.toISOString(),
     baseUrl: context.baseUrl,
+    ...(await resolvedSecretEnvelope(metadata.requiredSecretHandles, context.resolveSecret)),
+  });
+}
+
+async function resolvedSecretEnvelope(
+  handles: string[] | undefined,
+  resolveSecret: ((handle: string) => Promise<string | undefined>) | undefined,
+): Promise<Record<string, unknown>> {
+  const requestedHandles = [...new Set(handles ?? [])];
+  if (!requestedHandles.length) return {};
+  if (!resolveSecret) return { secretHandles: requestedHandles, missingSecretHandles: requestedHandles };
+
+  const secrets: Record<string, string> = {};
+  const missingSecretHandles: string[] = [];
+  for (const handle of requestedHandles) {
+    const value = await resolveSecret(handle);
+    if (value === undefined) missingSecretHandles.push(handle);
+    else secrets[handle] = value;
+  }
+
+  return compactRecord({
+    secretHandles: requestedHandles,
+    secrets,
+    missingSecretHandles: missingSecretHandles.length ? missingSecretHandles : undefined,
   });
 }
 

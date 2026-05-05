@@ -287,8 +287,12 @@ Local-path loading is deliberately constrained:
 The first OCI runner is intentionally conservative: it starts one HTTP runtime container
 per loaded package and delegates tool semantics to that container. It does not yet pull
 images, rotate containers, stream container logs, enforce resource limits, or pass
-runtime secrets into containers. Those belong to the next runner-supervisor hardening
-phase.
+tool configuration into containers. Runtime calls and service lifecycle calls do receive
+a scoped secret envelope for the tool's declared `requiredSecretHandles`: the proxy
+resolves only those handles through `ToolExecutionContext.resolveSecret` /
+`ToolServiceContext.resolveSecret` and sends `{ secretHandles, secrets,
+missingSecretHandles }` in the runtime context. Broader config injection and secret
+transport policy belong to the next runner-supervisor hardening phase.
 
 This gives the future Tool Builder a safe promotion path: write TypeScript, run QA, register
 metadata, rebuild/restart, then let the loader promote the tool after contract validation.

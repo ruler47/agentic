@@ -346,6 +346,9 @@ shows it as disabled otherwise. Package references without an installed runner, 
 npm package coordinates or OCI images while the runner is disabled, are stored as disabled
 metadata until a generic package runner can execute them. Import triggers a generated-tool
 reload, so loadable package manifests can become available immediately after registration.
+For HTTP/OCI runtimes, declared `requiredSecretHandles` are resolved at call time and sent
+as a scoped runtime envelope; undeclared secrets are never forwarded by the package
+runner.
 
 `GET /api/tool-package-runners` returns installed package runners, their supported package
 types, status, and root/configuration hints. The Diagnostics page surfaces the same
