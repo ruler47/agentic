@@ -308,6 +308,161 @@ test("loadGeneratedTools can execute source-bundles through local HTTP process r
   }
 });
 
+test("source-bundle HTTP process runtimes support always-on service lifecycle", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentic-source-http-service-"));
+  const runtimePath = join(root, "tool-packages/listener/dist/runtime/server.js");
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+
+  try {
+    await mkdir(join(root, "tool-packages/listener/dist/runtime"), { recursive: true });
+    await writeFile(
+      runtimePath,
+      `
+        import { createServer } from "node:http";
+        const port = Number(process.env.PORT ?? 8080);
+        let started = false;
+        const calls = [];
+        const server = createServer(async (request, response) => {
+          response.setHeader("content-type", "application/json");
+          if (request.method === "GET" && request.url === "/health") {
+            response.end(JSON.stringify({
+              ok: true,
+              detail: started ? "listener service running" : "listener runtime healthy",
+              data: { calls }
+            }));
+            return;
+          }
+          if (request.method === "POST" && request.url === "/service/start") {
+            const chunks = [];
+            for await (const chunk of request) chunks.push(Buffer.from(chunk));
+            const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            calls.push({ path: "/service/start", mode: body.context?.configuration?.LISTENER_MODE });
+            started = true;
+            response.end(JSON.stringify({ ok: true }));
+            return;
+          }
+          if (request.method === "POST" && request.url === "/service/stop") {
+            calls.push({ path: "/service/stop" });
+            started = false;
+            response.end(JSON.stringify({ ok: true }));
+            setTimeout(() => server.close(), 5);
+            return;
+          }
+          response.statusCode = 404;
+          response.end(JSON.stringify({ ok: false, error: "not found" }));
+        });
+        server.listen(port, "127.0.0.1");
+      `,
+    );
+    await metadata.registerGenerated({
+      name: "generated.bundle.httplistener",
+      version: "1.0.0",
+      description: "Always-on source-bundle HTTP runtime.",
+      capabilities: ["message-listener"],
+      startupMode: "always-on",
+      requiredConfigurationKeys: ["LISTENER_MODE"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.bundle.httplistener",
+        version: "1.0.0",
+        description: "Always-on source-bundle HTTP runtime.",
+        capabilities: ["message-listener"],
+        startupMode: "always-on",
+        requiredConfigurationKeys: ["LISTENER_MODE"],
+        package: { type: "source-bundle", ref: "listener" },
+      },
+    });
+
+    const results = await loadGeneratedTools(registry, metadata, root, [
+      new SourceBundleHttpProcessToolPackageRunner({
+        enabled: true,
+        packageRoot: "tool-packages",
+        startupTimeoutMs: 5000,
+        pollIntervalMs: 50,
+      }),
+    ]);
+    const supervisor = new ToolServiceSupervisor(registry, undefined, undefined, {
+      resolveConfiguration: async (key) => key === "LISTENER_MODE" ? "polling" : undefined,
+    });
+    const started = await supervisor.start("generated.bundle.httplistener");
+    const heartbeat = await supervisor.heartbeat("generated.bundle.httplistener");
+    const stopped = await supervisor.stop("generated.bundle.httplistener");
+
+    assert.equal(results[0]?.loaded, true, JSON.stringify(results[0], null, 2));
+    assert.equal(started.status, "running");
+    assert.equal(heartbeat.status, "running");
+    assert.equal(heartbeat.lastHealthOk, true);
+    assert.equal(heartbeat.detail, "listener service running");
+    assert.equal(stopped.status, "stopped");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("source-bundle HTTP process runtime calls are bounded by timeout", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentic-source-http-timeout-"));
+  const runtimePath = join(root, "tool-packages/slow/dist/runtime/server.js");
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+
+  try {
+    await mkdir(join(root, "tool-packages/slow/dist/runtime"), { recursive: true });
+    await writeFile(
+      runtimePath,
+      `
+        import { createServer } from "node:http";
+        const port = Number(process.env.PORT ?? 8080);
+        const server = createServer((request, response) => {
+          response.setHeader("content-type", "application/json");
+          if (request.method === "GET" && request.url === "/health") {
+            response.end(JSON.stringify({ ok: true, detail: "slow runtime healthy" }));
+            return;
+          }
+          if (request.method === "POST" && request.url === "/run") {
+            return;
+          }
+          response.statusCode = 404;
+          response.end(JSON.stringify({ ok: false, error: "not found" }));
+        });
+        server.listen(port, "127.0.0.1");
+      `,
+    );
+    await metadata.registerGenerated({
+      name: "generated.bundle.slowruntime",
+      version: "1.0.0",
+      description: "Slow source-bundle HTTP runtime.",
+      capabilities: ["slow-runtime"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.bundle.slowruntime",
+        version: "1.0.0",
+        description: "Slow source-bundle HTTP runtime.",
+        capabilities: ["slow-runtime"],
+        startupMode: "on-demand",
+        package: { type: "source-bundle", ref: "slow" },
+      },
+    });
+
+    await loadGeneratedTools(registry, metadata, root, [
+      new SourceBundleHttpProcessToolPackageRunner({
+        enabled: true,
+        packageRoot: "tool-packages",
+        startupTimeoutMs: 5000,
+        pollIntervalMs: 50,
+        callTimeoutMs: 50,
+      }),
+    ]);
+
+    await assert.rejects(
+      () => registry.get("generated.bundle.slowruntime")!.run({ text: "hang" }),
+      /\/run call timed out after 50 ms/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("loadGeneratedTools rejects source-bundle refs outside the package root", async () => {
   const metadata = new InMemoryToolMetadataStore();
   const registry = new ToolRegistry();

@@ -420,8 +420,9 @@ Remaining registry persistence:
   logging, container-level config/secret injection policies, and richer runner UI
   controls. DONE for API/UI package import/export, package workspace writing,
   package-local build/test QA, active source-bundle promotion, package-local HTTP runtime
-  scaffold, opt-in local HTTP process runner for source-bundles, and first OCI HTTP proxy
-  runner.
+  scaffold, opt-in local HTTP process runner for source-bundles, source-bundle
+  always-on lifecycle smoke, bounded source-bundle runtime calls, and first OCI HTTP
+  proxy runner.
   The API/UI can now import portable `agentic.tool-package.v1` manifests into the
   registry and export existing generated package manifests. Non-local package references
   are intentionally registered as disabled metadata until the runner/supervisor layer can
@@ -693,8 +694,10 @@ Remaining Phase 3 gaps:
   run OCI HTTP packages. Generated package folders now include an HTTP runtime server and
   Dockerfile entrypoint, and the local-process runner can execute that runtime without
   importing generated package code into the Agentic process. Remaining work is stronger
-  production supervision, resource limits, log streaming/redaction, and packaging/building
-  those source-bundles as external services or OCI images.
+  production supervision, richer resource limits, log streaming/redaction, and
+  packaging/building those source-bundles as external services or OCI images. DONE for
+  source-bundle local process on-demand calls, always-on service lifecycle, and bounded
+  runtime call timeouts.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,

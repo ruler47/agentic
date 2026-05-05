@@ -304,7 +304,10 @@ process instead of importing `dist/index.js` into the app process. On-demand too
 fresh bounded process per call; always-on tools get a process-backed service handle that
 proxies `/service/start`, `/health`, and `/service/stop`. This keeps the package portable
 without requiring Docker during local development, while preserving the same HTTP
-contract used by external and OCI runners.
+contract used by external and OCI runners. Runtime calls are bounded by
+`TOOL_SOURCE_BUNDLE_CALL_TIMEOUT_MS` (default 60 seconds), so a package that becomes
+healthy and then hangs on `/run` or lifecycle calls is aborted and the local process is
+stopped.
 When a package workspace is present, the QA report lists its `tool.package.json` alongside
 the legacy generated module and test artifacts, so later promotion stages can trace which
 portable package snapshot was reviewed. `validateToolPackageWorkspace` also runs as part

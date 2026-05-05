@@ -139,6 +139,7 @@ export type SourceBundleHttpProcessToolPackageRunnerOptions = {
   packageRoot?: string | string[];
   startupTimeoutMs?: number;
   pollIntervalMs?: number;
+  callTimeoutMs?: number;
   fetchImpl?: typeof fetch;
 };
 
@@ -148,6 +149,7 @@ export class SourceBundleHttpProcessToolPackageRunner implements ToolPackageRunn
   private readonly packageRoots: string[];
   private readonly startupTimeoutMs: number;
   private readonly pollIntervalMs: number;
+  private readonly callTimeoutMs: number;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: SourceBundleHttpProcessToolPackageRunnerOptions = {}) {
@@ -159,6 +161,7 @@ export class SourceBundleHttpProcessToolPackageRunner implements ToolPackageRunn
     this.packageRoots = Array.isArray(roots) ? roots : [roots];
     this.startupTimeoutMs = options.startupTimeoutMs ?? Number(process.env.TOOL_SOURCE_BUNDLE_STARTUP_TIMEOUT_MS ?? 15_000);
     this.pollIntervalMs = options.pollIntervalMs ?? Number(process.env.TOOL_SOURCE_BUNDLE_POLL_INTERVAL_MS ?? 250);
+    this.callTimeoutMs = options.callTimeoutMs ?? Number(process.env.TOOL_SOURCE_BUNDLE_CALL_TIMEOUT_MS ?? 60_000);
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -187,6 +190,7 @@ export class SourceBundleHttpProcessToolPackageRunner implements ToolPackageRunn
         serverFile: found.moduleFile,
         startupTimeoutMs: this.startupTimeoutMs,
         pollIntervalMs: this.pollIntervalMs,
+        callTimeoutMs: this.callTimeoutMs,
         fetchImpl: this.fetchImpl,
       }),
       health: { ok: true, detail: "Source-bundle HTTP runtime entrypoint is present; process starts on demand or service start." },
@@ -480,6 +484,7 @@ type SourceBundleHttpProcessRuntimeOptions = {
   serverFile: string;
   startupTimeoutMs: number;
   pollIntervalMs: number;
+  callTimeoutMs: number;
   fetchImpl: typeof fetch;
 };
 
@@ -508,10 +513,15 @@ function sourceBundleHttpProcessTool(
     async run(input, context) {
       const runtime = await startSourceBundleHttpRuntime(options);
       try {
-        const response = await postJson(options.fetchImpl, `${runtime.baseUrl}/run`, {
-          input,
-          context: await executionContextPayload(metadata, context),
-        }, context?.signal);
+        const response = await withTimeoutSignal(
+          context?.signal,
+          options.callTimeoutMs,
+          "Source-bundle HTTP runtime /run call",
+          async (signal) => postJson(options.fetchImpl, `${runtime.baseUrl}/run`, {
+            input,
+            context: await executionContextPayload(metadata, context),
+          }, signal),
+        );
         return parseToolResult(response);
       } finally {
         stopChildProcess(runtime.child);
@@ -520,9 +530,14 @@ function sourceBundleHttpProcessTool(
     async startService(context) {
       const runtime = await startSourceBundleHttpRuntime(options);
       try {
-        await postJson(options.fetchImpl, `${runtime.baseUrl}/service/start`, {
-          context: await serviceContextPayload(metadata, context),
-        }, context.signal);
+        await withTimeoutSignal(
+          context.signal,
+          options.callTimeoutMs,
+          "Source-bundle HTTP runtime /service/start call",
+          async (signal) => postJson(options.fetchImpl, `${runtime.baseUrl}/service/start`, {
+            context: await serviceContextPayload(metadata, context),
+          }, signal),
+        );
       } catch (error) {
         stopChildProcess(runtime.child);
         throw error;
@@ -530,9 +545,14 @@ function sourceBundleHttpProcessTool(
       return {
         async stop() {
           try {
-            await postJson(options.fetchImpl, `${runtime.baseUrl}/service/stop`, {
-              context: await serviceContextPayload(metadata, context),
-            });
+            await withTimeoutSignal(
+              undefined,
+              options.callTimeoutMs,
+              "Source-bundle HTTP runtime /service/stop call",
+              async (signal) => postJson(options.fetchImpl, `${runtime.baseUrl}/service/stop`, {
+                context: await serviceContextPayload(metadata, context),
+              }, signal),
+            );
           } finally {
             stopChildProcess(runtime.child);
           }
@@ -633,6 +653,44 @@ async function postJson(
     throw new Error(responseDetail(parsed) ?? `External tool runtime call failed with HTTP ${response.status}.`);
   }
   return parsed;
+}
+
+async function withTimeoutSignal<T>(
+  upstreamSignal: AbortSignal | undefined,
+  timeoutMs: number,
+  label: string,
+  action: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  if (timeoutMs <= 0) {
+    return action(upstreamSignal ?? new AbortController().signal);
+  }
+
+  const controller = new AbortController();
+  let timedOut = false;
+  const onAbort = () => controller.abort(upstreamSignal?.reason);
+
+  if (upstreamSignal?.aborted) {
+    controller.abort(upstreamSignal.reason);
+  } else {
+    upstreamSignal?.addEventListener("abort", onAbort, { once: true });
+  }
+
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await action(controller.signal);
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(`${label} timed out after ${timeoutMs} ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    upstreamSignal?.removeEventListener("abort", onAbort);
+  }
 }
 
 async function readJsonResponse(response: Response): Promise<unknown> {

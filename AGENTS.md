@@ -135,6 +135,8 @@ Generated tool package workspace:
   process instead of importing `dist/index.js` into the Agentic app process.
 - `TOOL_SOURCE_BUNDLE_STARTUP_TIMEOUT_MS` and `TOOL_SOURCE_BUNDLE_POLL_INTERVAL_MS`
   tune the local HTTP process runner readiness wait.
+- `TOOL_SOURCE_BUNDLE_CALL_TIMEOUT_MS` bounds `/run` and service lifecycle HTTP calls for
+  source-bundle local process runtimes; default is 60 seconds.
 - The top-level `tools/` directory is intentionally gitignored; package source should be
   exported/imported through manifests or promoted into OCI/external runtimes, not committed
   as Agentic app code.
