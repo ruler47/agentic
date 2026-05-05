@@ -3,6 +3,7 @@ import { ToolMetadataStore, ToolModuleMetadata } from "./toolMetadataStore.js";
 import {
   compiledModulePath,
   LocalPathToolPackageRunner,
+  SourceBundleToolPackageRunner,
   ToolPackageRunner,
 } from "./toolPackageRunner.js";
 
@@ -16,7 +17,10 @@ export async function loadGeneratedTools(
   registry: ToolRegistry,
   metadataStore: ToolMetadataStore,
   projectRoot = process.cwd(),
-  runners: ToolPackageRunner[] = [new LocalPathToolPackageRunner()],
+  runners: ToolPackageRunner[] = [
+    new LocalPathToolPackageRunner(),
+    new SourceBundleToolPackageRunner(),
+  ],
 ): Promise<GeneratedToolLoadResult[]> {
   const modules = (await metadataStore.list()).filter((item) => item.source === "generated");
   const results: GeneratedToolLoadResult[] = [];

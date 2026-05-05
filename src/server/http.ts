@@ -52,6 +52,7 @@ import {
   toolToMetadata,
 } from "../tools/toolMetadataStore.js";
 import { normalizeToolPackageManifest } from "../tools/toolPackage.js";
+import { ToolPackageRunner } from "../tools/toolPackageRunner.js";
 import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
 import {
   ToolServiceEventDirection,
@@ -79,6 +80,7 @@ export type WebAppOptions = {
   toolBuildWorkflow?: ToolBuildWorkflow;
   toolServiceSupervisor?: ToolServiceSupervisor;
   toolServiceEventStore?: ToolServiceEventStore;
+  toolPackageRunners?: ToolPackageRunner[];
   reloadGeneratedTools?: () => Promise<void>;
   modelTierSettings?: ModelTierSettingsStore;
   modelProviderStore?: ModelProviderStore;
@@ -648,7 +650,9 @@ async function routeRequest(
 
     try {
       const input = parseToolPackageManifestImport(await readJsonBody<unknown>(request));
-      const tool = await options.toolMetadataStore.registerGenerated(input);
+      const registered = await options.toolMetadataStore.registerGenerated(input);
+      await options.reloadGeneratedTools?.();
+      const tool = (await options.toolMetadataStore.list()).find((candidate) => candidate.name === registered.name) ?? registered;
       await recordAudit(options, {
         instanceId: "instance-local",
         actorId: "user-admin",
@@ -665,6 +669,22 @@ async function routeRequest(
         error: error instanceof Error ? error.message : "Invalid tool package manifest",
       });
     }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/tool-package-runners") {
+    sendJson(response, 200, {
+      runners: (options.toolPackageRunners ?? []).map((runner) =>
+        runner.describe
+          ? runner.describe()
+          : {
+              type: runner.type,
+              status: "available",
+              detail: "Runner does not expose extended diagnostics.",
+              supportedPackageTypes: runner.type === "legacy-local-path" ? [] : [runner.type],
+            },
+      ),
+    });
     return;
   }
 

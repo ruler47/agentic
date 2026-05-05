@@ -55,6 +55,7 @@ const state = {
   memories: [],
   memoryReviews: [],
   tools: [],
+  toolPackageRunners: [],
   toolServices: [],
   toolServiceLogs: [],
   toolServiceEvents: [],
@@ -380,6 +381,7 @@ async function refreshData(options = {}) {
       memories,
       memoryReviews,
       tools,
+      toolPackageRunners,
       toolMigrations,
       buildRequests,
       secretHandles,
@@ -399,6 +401,7 @@ async function refreshData(options = {}) {
       fetchJson("/api/memories").then((data) => data.memories ?? []),
       fetchJson("/api/memories/review-queue").then((data) => data.reviews ?? []),
       fetchJson("/api/tools").then((data) => data.tools ?? []),
+      fetchJson("/api/tool-package-runners").then((data) => data.runners ?? []),
       fetchJson("/api/tool-migrations").then((data) => data.migrations ?? []),
       fetchJson("/api/tool-build-requests").then((data) => data.requests ?? []),
       fetchJson("/api/secret-handles").then((data) => data.secretHandles ?? []),
@@ -420,6 +423,7 @@ async function refreshData(options = {}) {
       memories,
       memoryReviews,
       tools,
+      toolPackageRunners,
       toolMigrations,
       buildRequests,
       secretHandles,
@@ -483,6 +487,7 @@ function dataFingerprint(data) {
     memories: data.memories,
     memoryReviews: data.memoryReviews,
     tools: data.tools,
+    toolPackageRunners: data.toolPackageRunners,
     toolMigrations: data.toolMigrations,
     buildRequests: data.buildRequests,
     secretHandles: data.secretHandles,
@@ -3316,14 +3321,52 @@ function metricCard(label, value, detail) {
 }
 
 function renderDiagnosticsPage() {
-  return renderPlaceholderPage("Diagnostics", "Runtime health, migrations, generated tools, queues, recent errors, and log previews.", [
-    "App ready",
-    "Postgres healthy",
-    "Redis healthy",
-    "MinIO healthy",
-    "SearXNG available",
-    `${state.tools.length} tools loaded`,
-  ]);
+  const runnerCards = state.toolPackageRunners.map((runner) => `
+    <article class="tool-card">
+      <div class="tool-card-header">
+        <div>
+          <span class="eyebrow">${escapeHtml(runner.type)}</span>
+          <h3>${escapeHtml(titleCase(String(runner.type ?? "runner").replace(/[-_]/g, " ")))}</h3>
+        </div>
+        ${statusBadge(runner.status ?? "available")}
+      </div>
+      <p>${escapeHtml(runner.detail ?? "No runner detail available.")}</p>
+      <div class="chip-row">
+        ${(runner.supportedPackageTypes ?? []).map((type) => `<span class="chip">${escapeHtml(type)}</span>`).join("")}
+        ${runner.root ? `<span class="chip">root: ${escapeHtml(runner.root)}</span>` : ""}
+      </div>
+    </article>
+  `).join("");
+
+  return `
+    <section class="page-grid">
+      <div class="surface-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Diagnostics</h2>
+            <p>Runtime health, generated package runners, queues, and operational checks.</p>
+          </div>
+        </div>
+        <div class="metric-grid compact">
+          ${metricCard("App", "Ready", "HTTP server responding")}
+          ${metricCard("Tools", String(state.tools.length), "registered modules")}
+          ${metricCard("Builds", String(state.buildRequests.length), "tool build requests")}
+          ${metricCard("Services", String(state.toolServices.length), "always-on tools")}
+        </div>
+      </div>
+      <div class="surface-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Package Runners</h2>
+            <p>Execution adapters for portable tool package manifests.</p>
+          </div>
+        </div>
+        <div class="tool-grid">
+          ${runnerCards || renderEmptyState("No package runners", "The app has not exposed any generated-tool package runners.", "Diagnostics")}
+        </div>
+      </div>
+    </section>
+  `;
 }
 
 function renderCommandPalettePage() {

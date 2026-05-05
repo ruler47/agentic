@@ -39,6 +39,7 @@ import { PostgresToolBuildRequestStore } from "../tools/postgresToolBuildRequest
 import { InMemoryToolMigrationStore } from "../tools/toolMigrationStore.js";
 import { PostgresToolMigrationStore } from "../tools/postgresToolMigrationStore.js";
 import { loadGeneratedTools } from "../tools/generatedToolLoader.js";
+import { LocalPathToolPackageRunner, SourceBundleToolPackageRunner } from "../tools/toolPackageRunner.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import {
   DeterministicToolBehaviorReviewer,
@@ -91,13 +92,17 @@ const toolBuildRequestStore = pool
 const toolMigrationStore = pool
   ? new PostgresToolMigrationStore(pool)
   : new InMemoryToolMigrationStore();
-const generatedToolResults = await loadGeneratedTools(tools, toolMetadataStore);
+const toolPackageRunners = [
+  new LocalPathToolPackageRunner(),
+  new SourceBundleToolPackageRunner(),
+];
+const generatedToolResults = await loadGeneratedTools(tools, toolMetadataStore, process.cwd(), toolPackageRunners);
 const loadedGeneratedTools = generatedToolResults.filter((result) => result.loaded);
 if (loadedGeneratedTools.length > 0) {
   console.log(`Loaded ${loadedGeneratedTools.length} generated tool(s).`);
 }
 const reloadGeneratedTools = async () => {
-  const results = await loadGeneratedTools(tools, toolMetadataStore);
+  const results = await loadGeneratedTools(tools, toolMetadataStore, process.cwd(), toolPackageRunners);
   const loaded = results.filter((result) => result.loaded);
   if (loaded.length > 0) {
     console.log(`Reloaded ${loaded.length} generated tool(s).`);
@@ -209,6 +214,7 @@ const server = createWebApp({
   toolBuildWorkflow,
   toolServiceSupervisor,
   toolServiceEventStore,
+  toolPackageRunners,
   reloadGeneratedTools,
   modelTierSettings,
   modelProviderStore,

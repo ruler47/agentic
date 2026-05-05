@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AddressInfo } from "node:net";
@@ -23,6 +23,9 @@ import { SkillMemory } from "../src/memory/skillMemory.js";
 import { InMemorySecretHandleStore } from "../src/secrets/secretHandleStore.js";
 import { ToolServiceSupervisor } from "../src/tools/toolServiceSupervisor.js";
 import { InMemoryToolServiceEventStore } from "../src/tools/toolServiceEventStore.js";
+import { LocalPathToolPackageRunner, SourceBundleToolPackageRunner } from "../src/tools/toolPackageRunner.js";
+import { ToolRegistry } from "../src/tools/registry.js";
+import { loadGeneratedTools } from "../src/tools/generatedToolLoader.js";
 
 class FakeAgent {
   async run(task: string, options?: {
@@ -1758,6 +1761,102 @@ test("web server imports portable tool package manifests without executable sour
     assert.equal(manifest.manifest.package.ref, "npm:@agentic-tools/remote-normalize@1.0.0");
   } finally {
     await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server exposes installed tool package runners", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolPackageRunners: [
+      new LocalPathToolPackageRunner(),
+      new SourceBundleToolPackageRunner("portable-tools"),
+    ],
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/api/tool-package-runners`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      body.runners.map((runner: { type: string }) => runner.type),
+      ["local-path", "source-bundle"],
+    );
+    assert.equal(body.runners[1].root, "portable-tools");
+    assert.deepEqual(body.runners[1].supportedPackageTypes, ["source-bundle"]);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server imports and reloads loadable source-bundle package manifests", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentic-source-web-"));
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  const toolRegistry = new ToolRegistry();
+  const runners = [new SourceBundleToolPackageRunner("tool-packages")];
+  let server: ReturnType<typeof createWebApp> | undefined;
+
+  try {
+    await mkdir(join(root, "tool-packages/normalize/dist"), { recursive: true });
+    await writeFile(
+      join(root, "tool-packages/normalize/dist/index.js"),
+      `
+        export default {
+          name: "generated.bundle.webnormalize",
+          version: "1.0.0",
+          description: "Web import source bundle.",
+          capabilities: ["text-normalization"],
+          async healthcheck() { return { ok: true, detail: "web bundle healthy" }; },
+          async run(input) { return { ok: true, content: String(input.text ?? "").trim() }; }
+        };
+      `,
+    );
+
+    server = createWebApp({
+      agent: new FakeAgent() as unknown as UniversalAgent,
+      runStore: new InMemoryRunStore(),
+      publicDir,
+      toolRegistry,
+      toolMetadataStore,
+      toolPackageRunners: runners,
+      reloadGeneratedTools: async () => {
+        await loadGeneratedTools(toolRegistry, toolMetadataStore, root, runners);
+      },
+    });
+
+    const baseUrl = await listen(server);
+    const importResponse = await fetch(`${baseUrl}/api/tools/package-manifests`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.bundle.webnormalize",
+        version: "1.0.0",
+        description: "Web import source bundle.",
+        capabilities: ["text-normalization"],
+        startupMode: "on-demand",
+        package: { type: "source-bundle", ref: "normalize" },
+      }),
+    });
+    const body = await importResponse.json();
+    const tools = await (await fetch(`${baseUrl}/api/tools`)).json();
+    const output = await toolRegistry.get("generated.bundle.webnormalize")?.run({ text: " bundle loaded " });
+
+    assert.equal(importResponse.status, 201);
+    assert.equal(body.tool.status, "available");
+    assert.equal(body.tool.lastHealthDetail, "web bundle healthy");
+    assert.equal(tools.tools[0].status, "available");
+    assert.equal(output?.content, "bundle loaded");
+  } finally {
+    if (server) await close(server);
+    await rm(root, { recursive: true, force: true });
     await rm(publicDir, { recursive: true, force: true });
   }
 });

@@ -179,3 +179,81 @@ test("loadGeneratedTools can load non-local package manifests through a register
   assert.equal(stored?.lastHealthDetail, "external runner healthy");
   assert.equal(output?.content, "hello runner");
 });
+
+test("loadGeneratedTools imports prebuilt source-bundle package manifests from package root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentic-source-bundles-"));
+  const bundlePath = join(root, "tool-packages/normalize/dist/index.js");
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+
+  try {
+    await mkdir(join(root, "tool-packages/normalize/dist"), { recursive: true });
+    await writeFile(
+      bundlePath,
+      `
+        export const tool = {
+          name: "generated.bundle.normalize",
+          version: "1.0.0",
+          description: "Normalize text from an out-of-tree package.",
+          capabilities: ["text-normalization"],
+          async healthcheck() { return { ok: true, detail: "bundle healthy" }; },
+          async run(input) { return { ok: true, content: String(input.text ?? "").toLowerCase() }; }
+        };
+      `,
+    );
+    await metadata.registerGenerated({
+      name: "generated.bundle.normalize",
+      version: "1.0.0",
+      description: "Normalize text from an out-of-tree package.",
+      capabilities: ["text-normalization"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.bundle.normalize",
+        version: "1.0.0",
+        description: "Normalize text from an out-of-tree package.",
+        capabilities: ["text-normalization"],
+        startupMode: "on-demand",
+        package: { type: "source-bundle", ref: "normalize" },
+      },
+    });
+
+    const results = await loadGeneratedTools(registry, metadata, root);
+    const [stored] = await metadata.list();
+    const output = await registry.get("generated.bundle.normalize")?.run({ text: "HELLO BUNDLE" });
+
+    assert.equal(results[0]?.loaded, true);
+    assert.equal(stored?.status, "available");
+    assert.equal(stored?.lastHealthDetail, "bundle healthy");
+    assert.equal(output?.content, "hello bundle");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("loadGeneratedTools rejects source-bundle refs outside the package root", async () => {
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+  await metadata.registerGenerated({
+    name: "generated.bundle.unsafe",
+    version: "1.0.0",
+    description: "Unsafe bundle ref.",
+    capabilities: ["text-normalization"],
+    packageManifest: {
+      schemaVersion: "agentic.tool-package.v1",
+      name: "generated.bundle.unsafe",
+      version: "1.0.0",
+      description: "Unsafe bundle ref.",
+      capabilities: ["text-normalization"],
+      startupMode: "on-demand",
+      package: { type: "source-bundle", ref: "../outside" },
+    },
+  });
+
+  const results = await loadGeneratedTools(registry, metadata);
+  const [stored] = await metadata.list();
+
+  assert.equal(results[0]?.loaded, false);
+  assert.match(results[0]?.detail ?? "", /inside TOOL_PACKAGE_ROOT/);
+  assert.equal(stored?.status, "failed");
+  assert.equal(registry.get("generated.bundle.unsafe"), undefined);
+});

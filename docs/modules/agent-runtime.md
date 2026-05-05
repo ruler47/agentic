@@ -250,10 +250,15 @@ human `displayName`, stable system-name/version conflict checks, and generated-t
 deletion. Registered generated modules start as `disabled` until the runtime can load
 their executable TypeScript module and pass health checks.
 
-Generated module loading now goes through a `ToolPackageRunner` contract. The first
-runner is `LocalPathToolPackageRunner`, which preserves the current compiled TypeScript
-path while giving future external-package, source-bundle, and OCI runners a stable
-extension point.
+Generated module loading now goes through a `ToolPackageRunner` contract. The installed
+runners are:
+
+- `LocalPathToolPackageRunner`, which preserves the current compiled TypeScript path;
+- `SourceBundleToolPackageRunner`, which loads pre-built out-of-tree packages from
+  `TOOL_PACKAGE_ROOT` (default `tool-packages`) when a manifest declares
+  `package.type="source-bundle"` and `package.ref` stays inside that package root.
+
+Future external-package and OCI runners can use the same extension point.
 
 Local-path loading is deliberately constrained:
 
@@ -263,10 +268,10 @@ Local-path loading is deliberately constrained:
 - exported name/version/capabilities must match `tool_modules`;
 - healthcheck must pass before the tool is registered in `ToolRegistry`;
 - failed imports, mismatches, or failed healthchecks update registry status to `failed`.
-- imported non-local package manifests (`source-bundle`, `oci-image`, or
-  `external-package`) are not marked failed during startup; they remain disabled metadata
-  until a package runner/supervisor can execute that reference type. Tests prove that a
-  registered external runner can load such a manifest without changing the core loader.
+- imported package manifests with no installed runner (`oci-image` or `external-package`)
+  are not marked failed during startup; they remain disabled metadata until a package
+  runner/supervisor can execute that reference type. Tests prove that a registered
+  external runner can load such a manifest without changing the core loader.
 
 This gives the future Tool Builder a safe promotion path: write TypeScript, run QA, register
 metadata, rebuild/restart, then let the loader promote the tool after contract validation.

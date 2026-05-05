@@ -230,8 +230,10 @@ Portable package manifests can be exported from
 `POST /api/tools/package-manifests` or the Tools page. Imported non-local packages are
 registered as disabled metadata until a runner can execute their package reference.
 Generated package execution goes through `ToolPackageRunner`: local-path packages use the
-compiled TypeScript runner today, while source-bundle, external-package, and OCI runners
-can be added without changing the core loader.
+compiled TypeScript runner, and pre-built `source-bundle` packages can be loaded from
+`TOOL_PACKAGE_ROOT` (default `tool-packages`) via `dist/index.js` or `index.js`.
+External-package and OCI runners can be added without changing the core loader. Runner
+diagnostics are exposed through `GET /api/tool-package-runners` and the Diagnostics page.
 
 Tool-owned storage changes are tracked separately in `tool_migrations`: tool name/version,
 migration id, checksum, status, applied actor/time, QA report, and rollback notes. This is

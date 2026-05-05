@@ -337,9 +337,16 @@ tool is close, but change these details" without losing the original QA evidence
 `POST /api/tools/package-manifests` imports a portable
 `agentic.tool-package.v1` manifest into the registry. The Tools page exposes the same
 collapsed import form. Local-path manifests can later be loaded by the current compiled
-module loader; non-local package references such as external packages, source bundles, or
-OCI images are stored as disabled metadata until a generic package runner can execute
-them.
+module loader; pre-built source-bundle manifests can load from `TOOL_PACKAGE_ROOT` when
+they contain `dist/index.js` or `index.js`; package references without an installed
+runner, such as external packages or OCI images, are stored as disabled metadata until a
+generic package runner can execute them. Import triggers a generated-tool reload, so
+loadable package manifests can become available immediately after registration.
+
+`GET /api/tool-package-runners` returns installed package runners, their supported package
+types, status, and root/configuration hints. The Diagnostics page surfaces the same
+inventory so operators can tell whether an imported package is disabled because the tool
+is broken or because no runner exists for its package type yet.
 
 `POST /api/tool-build-requests/:id/stop` marks a request `blocked` with a human status
 detail. `DELETE /api/tool-build-requests/:id` removes a queue card. Both operations write
