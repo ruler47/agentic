@@ -232,8 +232,11 @@ registered as disabled metadata until a runner can execute their package referen
 Generated package execution goes through `ToolPackageRunner`: local-path packages use the
 compiled TypeScript runner, and pre-built `source-bundle` packages can be loaded from
 `TOOL_PACKAGE_ROOT` (default `tool-packages`) via `dist/index.js` or `index.js`.
-External-package and OCI runners can be added without changing the core loader. Runner
-diagnostics are exposed through `GET /api/tool-package-runners` and the Diagnostics page.
+`external-package` manifests whose `package.ref` is an HTTP(S) URL load through the
+external HTTP package runner. That runtime must expose `GET /health`, `POST /run`, and
+optional `POST /service/start` / `POST /service/stop` for always-on tools. OCI runners can
+later start containers that expose the same HTTP contract. Runner diagnostics are exposed
+through `GET /api/tool-package-runners` and the Diagnostics page.
 Operators can call `POST /api/tools/reload-generated` or use the Diagnostics action to
 reload generated/source-bundle packages without restarting the app.
 

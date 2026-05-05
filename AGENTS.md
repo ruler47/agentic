@@ -590,8 +590,9 @@ For documentation-only changes:
   source-bundle, external-package, or OCI-image execution. Postgres now persists the
   active manifest and version-history manifests; API/UI export/import exists, and
   `ToolPackageRunner` is the loader extension point. Local-path modules load from the
-  compiled app; pre-built source-bundle packages load from `TOOL_PACKAGE_ROOT`; external
-  package and OCI-image runners remain roadmap work.
+  compiled app; pre-built source-bundle packages load from `TOOL_PACKAGE_ROOT`; HTTP(S)
+  external-package refs load through an external runtime proxy; npm-style external
+  packages and OCI-image runners remain roadmap work.
 - Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
   needs database access, it must declare storage requirements/migrations and receive a
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,

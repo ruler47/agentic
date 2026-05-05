@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve, relative, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { Tool, ToolHealth } from "./tool.js";
+import { Tool, ToolExecutionContext, ToolHealth, ToolResult, ToolServiceContext, ToolServiceHandle } from "./tool.js";
 import { ToolModuleMetadata } from "./toolMetadataStore.js";
 import { ToolPackageReferenceType } from "./toolPackage.js";
 
@@ -122,6 +122,44 @@ export class SourceBundleToolPackageRunner implements ToolPackageRunner {
   }
 }
 
+export class ExternalHttpToolPackageRunner implements ToolPackageRunner {
+  readonly type = "external-package";
+
+  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+
+  canLoad(metadata: ToolModuleMetadata): boolean {
+    const reference = metadata.packageManifest?.package;
+    return reference?.type === "external-package" && isHttpUrl(reference.ref);
+  }
+
+  async load(metadata: ToolModuleMetadata): Promise<ToolPackageLoadResult> {
+    const ref = metadata.packageManifest?.package.ref;
+    if (!ref || !isHttpUrl(ref)) {
+      const detail = "External package ref must be an http(s) URL for the HTTP package runner.";
+      return { loaded: false, detail, health: { ok: false, detail } };
+    }
+    const baseUrl = normalizeBaseUrl(ref);
+    const tool = externalHttpProxyTool(metadata, baseUrl, this.fetchImpl);
+    const health = await tool.healthcheck?.() ?? { ok: true, detail: "No healthcheck registered." };
+    if (!health.ok) return { loaded: false, detail: health.detail, health };
+    return {
+      loaded: true,
+      detail: `Loaded ${metadata.name} as external HTTP package ${baseUrl}`,
+      tool,
+      health,
+    };
+  }
+
+  describe(): ToolPackageRunnerInfo {
+    return {
+      type: this.type,
+      status: "available",
+      detail: "Loads external-package manifests whose package.ref is an HTTP(S) tool-runtime endpoint exposing /health, /run, and optional /service lifecycle routes.",
+      supportedPackageTypes: ["external-package"],
+    };
+  }
+}
+
 export function compiledModulePath(modulePath: string): string {
   return modulePath
     .replace(/^src\//, "dist/")
@@ -177,4 +215,187 @@ function safePackagePath(root: string, ref: string): string {
 
 function firstExisting(paths: string[]): string | undefined {
   return paths.find((path) => existsSync(path));
+}
+
+function externalHttpProxyTool(
+  metadata: ToolModuleMetadata,
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+): Tool {
+  return {
+    name: metadata.name,
+    displayName: metadata.displayName,
+    version: metadata.version,
+    description: metadata.description,
+    capabilities: [...metadata.capabilities],
+    inputSchema: metadata.inputSchema,
+    outputSchema: metadata.outputSchema,
+    startupMode: metadata.startupMode,
+    requiredConfigurationKeys: metadata.requiredConfigurationKeys,
+    requiredSecretHandles: metadata.requiredSecretHandles,
+    settingsSchema: metadata.settingsSchema,
+    storage: metadata.storage,
+    docsMarkdown: metadata.docsMarkdown,
+    examples: metadata.examples,
+    async healthcheck() {
+      return fetchHealth(fetchImpl, baseUrl);
+    },
+    async run(input, context) {
+      const response = await postJson(fetchImpl, `${baseUrl}/run`, {
+        input,
+        context: executionContextPayload(context),
+      }, context?.signal);
+      return parseToolResult(response);
+    },
+    async startService(context) {
+      await postJson(fetchImpl, `${baseUrl}/service/start`, {
+        context: serviceContextPayload(context),
+      }, context.signal);
+      return externalHttpServiceHandle(fetchImpl, baseUrl, context);
+    },
+  };
+}
+
+function externalHttpServiceHandle(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  context: ToolServiceContext,
+): ToolServiceHandle {
+  return {
+    async stop() {
+      await postJson(fetchImpl, `${baseUrl}/service/stop`, {
+        context: serviceContextPayload(context),
+      });
+    },
+    async healthcheck() {
+      return fetchHealth(fetchImpl, baseUrl, context.signal);
+    },
+  };
+}
+
+async function fetchHealth(fetchImpl: typeof fetch, baseUrl: string, signal?: AbortSignal): Promise<ToolHealth> {
+  const response = await fetchImpl(`${baseUrl}/health`, {
+    method: "GET",
+    headers: { accept: "application/json" },
+    signal,
+  });
+  const body = await readJsonResponse(response);
+  if (!response.ok) {
+    return {
+      ok: false,
+      detail: responseDetail(body) ?? `External tool runtime healthcheck failed with HTTP ${response.status}.`,
+    };
+  }
+  if (isRecord(body) && typeof body.ok === "boolean" && typeof body.detail === "string") {
+    return { ok: body.ok, detail: body.detail };
+  }
+  return { ok: true, detail: "External tool runtime healthcheck passed." };
+}
+
+async function postJson(
+  fetchImpl: typeof fetch,
+  url: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const response = await fetchImpl(url, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const parsed = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(responseDetail(parsed) ?? `External tool runtime call failed with HTTP ${response.status}.`);
+  }
+  return parsed;
+}
+
+async function readJsonResponse(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text.trim()) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function parseToolResult(value: unknown): ToolResult {
+  if (!isRecord(value)) {
+    return { ok: true, content: value === undefined ? "" : String(value), data: value };
+  }
+  const ok = typeof value.ok === "boolean" ? value.ok : true;
+  const content = typeof value.content === "string"
+    ? value.content
+    : value.data === undefined
+      ? JSON.stringify(value)
+      : JSON.stringify(value.data);
+  return {
+    ok,
+    content,
+    data: value.data,
+  };
+}
+
+function executionContextPayload(context: ToolExecutionContext | undefined): Record<string, unknown> | undefined {
+  if (!context) return undefined;
+  return compactRecord({
+    instanceId: context.instanceId,
+    requesterUserId: context.requesterUserId,
+    threadId: context.threadId,
+    runId: context.runId,
+    spanId: context.spanId,
+    parentSpanId: context.parentSpanId,
+    toolName: context.toolName,
+    capability: context.capability,
+    caller: context.caller,
+    now: context.now.toISOString(),
+  });
+}
+
+function serviceContextPayload(context: ToolServiceContext): Record<string, unknown> {
+  return compactRecord({
+    toolName: context.toolName,
+    now: context.now.toISOString(),
+    baseUrl: context.baseUrl,
+  });
+}
+
+function compactRecord(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
+function responseDetail(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (!isRecord(value)) return undefined;
+  if (typeof value.detail === "string") return value.detail;
+  if (typeof value.error === "string") return value.error;
+  if (typeof value.message === "string") return value.message;
+  return undefined;
+}
+
+function normalizeBaseUrl(value: string): string {
+  const url = new URL(value);
+  url.pathname = url.pathname.replace(/\/+$/, "");
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/$/, "");
+}
+
+function isHttpUrl(value: string | undefined): value is string {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

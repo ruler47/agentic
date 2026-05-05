@@ -338,10 +338,13 @@ tool is close, but change these details" without losing the original QA evidence
 `agentic.tool-package.v1` manifest into the registry. The Tools page exposes the same
 collapsed import form. Local-path manifests can later be loaded by the current compiled
 module loader; pre-built source-bundle manifests can load from `TOOL_PACKAGE_ROOT` when
-they contain `dist/index.js` or `index.js`; package references without an installed
-runner, such as external packages or OCI images, are stored as disabled metadata until a
-generic package runner can execute them. Import triggers a generated-tool reload, so
-loadable package manifests can become available immediately after registration.
+they contain `dist/index.js` or `index.js`; external-package manifests whose `package.ref`
+is an HTTP(S) URL load through the external HTTP package runner. That external runtime
+must expose `GET /health`, `POST /run`, and optional service lifecycle routes. Package
+references without an installed runner, such as npm package coordinates or OCI images,
+are stored as disabled metadata until a generic package runner can execute them. Import
+triggers a generated-tool reload, so loadable package manifests can become available
+immediately after registration.
 
 `GET /api/tool-package-runners` returns installed package runners, their supported package
 types, status, and root/configuration hints. The Diagnostics page surfaces the same

@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AddressInfo } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { createWebApp } from "../src/server/http.js";
 import { InMemoryConversationThreadStore } from "../src/conversations/inMemoryConversationThreadStore.js";
 import { InMemoryRunStore } from "../src/runs/inMemoryRunStore.js";
@@ -23,7 +24,11 @@ import { SkillMemory } from "../src/memory/skillMemory.js";
 import { InMemorySecretHandleStore } from "../src/secrets/secretHandleStore.js";
 import { ToolServiceSupervisor } from "../src/tools/toolServiceSupervisor.js";
 import { InMemoryToolServiceEventStore } from "../src/tools/toolServiceEventStore.js";
-import { LocalPathToolPackageRunner, SourceBundleToolPackageRunner } from "../src/tools/toolPackageRunner.js";
+import {
+  ExternalHttpToolPackageRunner,
+  LocalPathToolPackageRunner,
+  SourceBundleToolPackageRunner,
+} from "../src/tools/toolPackageRunner.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { loadGeneratedTools } from "../src/tools/generatedToolLoader.js";
 
@@ -1861,6 +1866,71 @@ test("web server imports and reloads loadable source-bundle package manifests", 
   }
 });
 
+test("web server imports and reloads external HTTP package manifests", async () => {
+  const runtimeServer = createHttpServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const bodyText = Buffer.concat(chunks).toString("utf8");
+    const body = bodyText ? JSON.parse(bodyText) : undefined;
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/health") {
+      response.end(JSON.stringify({ ok: true, detail: "external web runtime healthy" }));
+      return;
+    }
+    if (request.url === "/run") {
+      response.end(JSON.stringify({ ok: true, content: `web:${body.input.text}` }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  const runtimeUrl = await listenHttp(runtimeServer);
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  const toolRegistry = new ToolRegistry();
+  const runners = [new ExternalHttpToolPackageRunner()];
+  let server: ReturnType<typeof createWebApp> | undefined;
+
+  try {
+    server = createWebApp({
+      agent: new FakeAgent() as unknown as UniversalAgent,
+      runStore: new InMemoryRunStore(),
+      publicDir,
+      toolRegistry,
+      toolMetadataStore,
+      toolPackageRunners: runners,
+      reloadGeneratedTools: async () => {
+        await loadGeneratedTools(toolRegistry, toolMetadataStore, process.cwd(), runners);
+      },
+    });
+    const baseUrl = await listen(server);
+    const importResponse = await fetch(`${baseUrl}/api/tools/package-manifests`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.external.webecho",
+        version: "1.0.0",
+        description: "External HTTP package echo.",
+        capabilities: ["external-echo"],
+        startupMode: "on-demand",
+        package: { type: "external-package", ref: runtimeUrl },
+      }),
+    });
+    const body = await importResponse.json();
+    const output = await toolRegistry.get("generated.external.webecho")?.run({ text: "loaded" });
+
+    assert.equal(importResponse.status, 201);
+    assert.equal(body.tool.status, "available");
+    assert.equal(body.tool.lastHealthDetail, "external web runtime healthy");
+    assert.equal(output?.content, "web:loaded");
+  } finally {
+    if (server) await close(server);
+    await closeHttp(runtimeServer);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server reloads generated tools on operator request", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   const toolMetadataStore = new InMemoryToolMetadataStore();
@@ -2325,6 +2395,21 @@ async function listen(server: ReturnType<typeof createWebApp>): Promise<string> 
 }
 
 async function close(server: ReturnType<typeof createWebApp>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+async function listenHttp(server: ReturnType<typeof createHttpServer>): Promise<string> {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function closeHttp(server: ReturnType<typeof createHttpServer>): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => {
       if (error) reject(error);

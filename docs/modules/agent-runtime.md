@@ -257,8 +257,13 @@ runners are:
 - `SourceBundleToolPackageRunner`, which loads pre-built out-of-tree packages from
   `TOOL_PACKAGE_ROOT` (default `tool-packages`) when a manifest declares
   `package.type="source-bundle"` and `package.ref` stays inside that package root.
+- `ExternalHttpToolPackageRunner`, which loads `external-package` manifests whose
+  `package.ref` is an HTTP(S) runtime URL. It proxies `GET /health`, `POST /run`, and
+  optional service lifecycle calls through `POST /service/start` and
+  `POST /service/stop`.
 
-Future external-package and OCI runners can use the same extension point.
+Future OCI runners can use the same extension point by launching a container that exposes
+the same HTTP runtime contract.
 
 Local-path loading is deliberately constrained:
 
@@ -268,7 +273,8 @@ Local-path loading is deliberately constrained:
 - exported name/version/capabilities must match `tool_modules`;
 - healthcheck must pass before the tool is registered in `ToolRegistry`;
 - failed imports, mismatches, or failed healthchecks update registry status to `failed`.
-- imported package manifests with no installed runner (`oci-image` or `external-package`)
+- imported package manifests with no installed runner (`oci-image`, or non-HTTP
+  external package references such as npm coordinates)
   are not marked failed during startup; they remain disabled metadata until a package
   runner/supervisor can execute that reference type. Tests prove that a registered
   external runner can load such a manifest without changing the core loader.

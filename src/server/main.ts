@@ -39,7 +39,11 @@ import { PostgresToolBuildRequestStore } from "../tools/postgresToolBuildRequest
 import { InMemoryToolMigrationStore } from "../tools/toolMigrationStore.js";
 import { PostgresToolMigrationStore } from "../tools/postgresToolMigrationStore.js";
 import { loadGeneratedTools } from "../tools/generatedToolLoader.js";
-import { LocalPathToolPackageRunner, SourceBundleToolPackageRunner } from "../tools/toolPackageRunner.js";
+import {
+  ExternalHttpToolPackageRunner,
+  LocalPathToolPackageRunner,
+  SourceBundleToolPackageRunner,
+} from "../tools/toolPackageRunner.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import {
   DeterministicToolBehaviorReviewer,
@@ -95,6 +99,7 @@ const toolMigrationStore = pool
 const toolPackageRunners = [
   new LocalPathToolPackageRunner(),
   new SourceBundleToolPackageRunner(),
+  new ExternalHttpToolPackageRunner(),
 ];
 const generatedToolResults = await loadGeneratedTools(tools, toolMetadataStore, process.cwd(), toolPackageRunners);
 const loadedGeneratedTools = generatedToolResults.filter((result) => result.loaded);

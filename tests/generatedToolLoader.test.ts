@@ -3,10 +3,13 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
+import { AddressInfo } from "node:net";
 import { loadGeneratedTools, compiledModulePath } from "../src/tools/generatedToolLoader.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import { ToolPackageRunner } from "../src/tools/toolPackageRunner.js";
+import { ToolServiceSupervisor } from "../src/tools/toolServiceSupervisor.js";
 
 test("compiledModulePath maps source tool modules to built JavaScript modules", () => {
   assert.equal(
@@ -257,3 +260,163 @@ test("loadGeneratedTools rejects source-bundle refs outside the package root", a
   assert.equal(stored?.status, "failed");
   assert.equal(registry.get("generated.bundle.unsafe"), undefined);
 });
+
+test("loadGeneratedTools proxies external-package HTTP runtimes", async () => {
+  const calls: Array<{ path: string; body?: unknown }> = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const bodyText = Buffer.concat(chunks).toString("utf8");
+    const body = bodyText ? JSON.parse(bodyText) : undefined;
+    calls.push({ path: request.url ?? "", body });
+
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/health") {
+      response.end(JSON.stringify({ ok: true, detail: "external runtime healthy" }));
+      return;
+    }
+    if (request.url === "/run") {
+      response.end(JSON.stringify({
+        ok: true,
+        content: `external:${body.input.text}`,
+        data: { contextTool: body.context.toolName },
+      }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  const baseUrl = await listen(server);
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+
+  try {
+    await metadata.registerGenerated({
+      name: "generated.external.echo",
+      version: "1.0.0",
+      description: "External HTTP echo.",
+      capabilities: ["external-echo"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.external.echo",
+        version: "1.0.0",
+        description: "External HTTP echo.",
+        capabilities: ["external-echo"],
+        startupMode: "on-demand",
+        package: { type: "external-package", ref: baseUrl },
+      },
+    });
+
+    const results = await loadGeneratedTools(registry, metadata);
+    const [stored] = await metadata.list();
+    const output = await registry.get("generated.external.echo")?.run(
+      { text: "hello" },
+      { toolName: "generated.external.echo", now: new Date("2026-05-05T12:00:00.000Z") },
+    );
+
+    assert.equal(results[0]?.loaded, true);
+    assert.equal(stored?.status, "available");
+    assert.equal(stored?.lastHealthDetail, "external runtime healthy");
+    assert.equal(output?.content, "external:hello");
+    assert.deepEqual(output?.data, { contextTool: "generated.external.echo" });
+    assert.deepEqual(calls.map((call) => call.path), ["/health", "/run"]);
+  } finally {
+    await close(server);
+  }
+});
+
+test("loadGeneratedTools keeps non-HTTP external packages disabled until a runner exists", async () => {
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+  await metadata.registerGenerated({
+    name: "generated.remote.npmnormalize",
+    version: "1.0.0",
+    description: "Portable npm package reference.",
+    capabilities: ["text-normalization"],
+    packageManifest: {
+      schemaVersion: "agentic.tool-package.v1",
+      name: "generated.remote.npmnormalize",
+      version: "1.0.0",
+      description: "Portable npm package reference.",
+      capabilities: ["text-normalization"],
+      startupMode: "on-demand",
+      package: { type: "external-package", ref: "npm:@agentic-tools/remote-normalize@1.0.0" },
+    },
+  });
+
+  const results = await loadGeneratedTools(registry, metadata);
+  const [stored] = await metadata.list();
+
+  assert.equal(results[0]?.loaded, false);
+  assert.match(results[0]?.detail ?? "", /No generated-tool runner/);
+  assert.equal(stored?.status, "disabled");
+  assert.equal(registry.get("generated.remote.npmnormalize"), undefined);
+});
+
+test("external-package HTTP runners expose always-on service lifecycle handles", async () => {
+  const calls: string[] = [];
+  const server = createServer(async (request, response) => {
+    calls.push(request.url ?? "");
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/health") {
+      response.end(JSON.stringify({ ok: true, detail: "external service healthy" }));
+      return;
+    }
+    if (request.url === "/service/start" || request.url === "/service/stop") {
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  const baseUrl = await listen(server);
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+
+  try {
+    await metadata.registerGenerated({
+      name: "generated.external.listener",
+      version: "1.0.0",
+      description: "External HTTP listener.",
+      capabilities: ["external-listener"],
+      startupMode: "always-on",
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.external.listener",
+        version: "1.0.0",
+        description: "External HTTP listener.",
+        capabilities: ["external-listener"],
+        startupMode: "always-on",
+        package: { type: "external-package", ref: baseUrl },
+      },
+    });
+
+    await loadGeneratedTools(registry, metadata);
+    const supervisor = new ToolServiceSupervisor(registry);
+    const started = await supervisor.start("generated.external.listener");
+    const heartbeat = await supervisor.heartbeat("generated.external.listener");
+    const stopped = await supervisor.stop("generated.external.listener");
+
+    assert.equal(started.status, "running");
+    assert.equal(heartbeat.lastHealthOk, true);
+    assert.equal(stopped.status, "stopped");
+    assert.deepEqual(calls, ["/health", "/service/start", "/health", "/health", "/service/stop"]);
+  } finally {
+    await close(server);
+  }
+});
+
+function listen(server: ReturnType<typeof createServer>): Promise<string> {
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address() as AddressInfo;
+      resolve(`http://127.0.0.1:${address.port}`);
+    });
+  });
+}
+
+function close(server: ReturnType<typeof createServer>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}

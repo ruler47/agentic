@@ -398,12 +398,14 @@ Remaining registry persistence:
   row plus version history. `ToolPackageRunner` now gives the loader a pluggable execution
   boundary: local-path packages load through the first runner, and pre-built
   source-bundle packages can load from `TOOL_PACKAGE_ROOT` without living in the main
-  committed generated-tools directory. Tests also prove non-local manifests can be loaded
-  by adding an external runner. Runner inventory is visible through the API and
-  Diagnostics page, and operators can explicitly reload generated tools after updating a
-  source-bundle on disk. Remaining work is production OCI/external-package runners,
-  package runner process/container supervision, and richer runner UI controls. DONE for
-  API/UI package import/export.
+  committed generated-tools directory. External-package manifests whose `package.ref` is
+  an HTTP(S) runtime URL now load through a proxy runner that calls `/health`, `/run`, and
+  optional service lifecycle routes. Tests also prove custom non-local manifests can be
+  loaded by adding a runner. Runner inventory is visible through the API and Diagnostics
+  page, and operators can explicitly reload generated tools after updating a
+  source-bundle on disk. Remaining work is production OCI/container runner startup,
+  npm/external package install/sandboxing, runner process supervision, and richer runner
+  UI controls. DONE for API/UI package import/export.
   The API/UI can now import portable `agentic.tool-package.v1` manifests into the
   registry and export existing generated package manifests. Non-local package references
   are intentionally registered as disabled metadata until the runner/supervisor layer can
