@@ -176,6 +176,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /function activateToolVersion/);
   assert.match(app, /function filterToolsForView/);
   assert.match(app, /function renderToolVersionPicker/);
+  assert.match(app, /function formatToolPromotionEvidence/);
+  assert.match(app, /Promotion evidence/);
   assert.match(app, /function renderMarkdown/);
   assert.match(app, /function renderInlineMarkdown/);
   assert.match(app, /function normalizeInlineMath/);
@@ -208,6 +210,7 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".run-workspace",
     ".trace-layout",
     ".trace-filters",
+    ".promotion-evidence",
     ".trace-run-item",
     ".graph-edge",
     ".graph-legend",

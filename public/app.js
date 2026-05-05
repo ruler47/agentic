@@ -2276,6 +2276,9 @@ function toolMatchesSearch(tool, query) {
     ...(tool.requiredConfigurationKeys ?? []),
     ...(tool.requiredSecretHandles ?? []),
     tool.docsMarkdown,
+    tool.promotionEvidence?.summary,
+    tool.promotionEvidence?.buildRequestId,
+    tool.promotionEvidence?.packageRef,
     JSON.stringify(tool.inputSchema ?? {}),
     JSON.stringify(tool.outputSchema ?? {}),
     ...(tool.examples ?? []).flatMap((example) => [
@@ -2288,6 +2291,10 @@ function toolMatchesSearch(tool, query) {
       version.status,
       version.active ? "active" : "",
       version.lastHealthDetail,
+      version.changeSummary,
+      version.promotionEvidence?.summary,
+      version.promotionEvidence?.buildRequestId,
+      version.promotionEvidence?.packageRef,
     ]),
   ];
   return haystack.some((value) => String(value ?? "").toLowerCase().includes(query));
@@ -2346,6 +2353,7 @@ function renderToolDetail(tool) {
       ${contextBlock("Settings", formatToolSettings(tool))}
       ${contextBlock("Storage", formatToolStorage(tool))}
       ${contextBlock("Migrations", formatToolMigrations(tool))}
+      ${contextBlock("Promotion evidence", formatToolPromotionEvidence(tool.promotionEvidence))}
       ${contextBlock("Telemetry", formatToolTelemetry(tool))}
       ${contextBlock("Examples", formatToolExamples(tool))}
       ${contextBlock("Schema", formatToolSchemas(tool))}
@@ -2480,6 +2488,7 @@ function renderToolVersionHistory(tool) {
               `${version.failureCount ?? 0} failed`,
               version.requiredSecretHandles?.length ? `secrets: ${version.requiredSecretHandles.join(", ")}` : "no secrets",
             ].join(" · ");
+            const promotion = version.promotionEvidence ? formatToolPromotionEvidence(version.promotionEvidence) : "";
             return `
               <article class="version-history-card ${version.active ? "active" : ""}">
                 <div class="version-history-header">
@@ -2489,6 +2498,7 @@ function renderToolVersionHistory(tool) {
                 <p>${escapeHtml(version.changeSummary || version.description || "No changelog recorded for this version.")}</p>
                 <small>${escapeHtml(telemetry)}</small>
                 <small>${escapeHtml(version.modulePath || "No module path")}${version.testPath ? ` · ${escapeHtml(version.testPath)}` : ""}</small>
+                ${promotion ? `<small class="promotion-evidence">${escapeHtml(promotion)}</small>` : ""}
                 ${version.lastHealthDetail ? `<small>${escapeHtml(version.lastHealthDetail)}</small>` : ""}
               </article>
             `;
@@ -2559,6 +2569,26 @@ function formatToolMigrations(tool) {
       const applied = migration.appliedAt ? ` · applied ${formatRelative(migration.appliedAt)}` : "";
       return `${migration.migrationId} · ${migration.toolVersion} · ${status}${applied}`;
     })
+    .join("\n");
+}
+
+function formatToolPromotionEvidence(evidence) {
+  if (!evidence) return "No promotion evidence recorded yet.";
+  const qa = evidence.qaReport ?? {};
+  const checks = Array.isArray(qa.checks) ? qa.checks : [];
+  const reviews = Array.isArray(qa.reviews) ? qa.reviews : [];
+  return [
+    evidence.status ? `Status: ${evidence.status}` : undefined,
+    evidence.promotedAt ? `Promoted: ${formatRelative(evidence.promotedAt)}` : undefined,
+    evidence.summary ? `Summary: ${evidence.summary}` : undefined,
+    evidence.buildRequestId ? `Build request: ${evidence.buildRequestId}` : undefined,
+    evidence.packageRef ? `Package: ${evidence.packageRef}` : undefined,
+    evidence.migrationIds?.length ? `Migrations: ${evidence.migrationIds.join(", ")}` : undefined,
+    qa.summary ? `QA: ${qa.summary}` : undefined,
+    checks.length ? `Checks: ${checks.join("; ")}` : undefined,
+    reviews.length ? `Reviews: ${reviews.map((review) => `${review.kind ?? "review"} ${review.decision ?? ""}`).join(", ")}` : undefined,
+  ]
+    .filter(Boolean)
     .join("\n");
 }
 

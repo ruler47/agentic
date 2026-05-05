@@ -251,12 +251,15 @@ imports compiled project-local modules whose exported Tool contract matches the 
 metadata. Metadata may include a `changeSummary`/changelog explaining why the version was
 created, what changed, and which request or feedback drove it. Generated metadata may
 also include a portable `packageManifest` for future import/export and out-of-process
-runner execution.
+runner execution. Generated metadata may also include `promotionEvidence`, which links
+the active version to its Tool Build request, QA summary/checks/reviews, package ref,
+promotion timestamp, and storage migration ids.
 
 `GET /api/tools/generated-modules/:name/versions` returns the version history for a
 generated tool, including active status, module/test paths, capabilities, required secret
-handles, changelog, health detail, and per-version usage counters. The Tools inspector
-uses this to show a compact version history below the active-version selector.
+handles, changelog, promotion evidence, health detail, and per-version usage counters.
+The Tools inspector uses this to show a compact version history below the active-version
+selector.
 
 `GET /api/tools/generated-modules/:name/package-manifest` returns the active generated
 tool's portable package manifest when one exists. This is the first API surface for
@@ -328,10 +331,12 @@ and schemas. Generated tool detail panels expose delete, active-version selectio
 "Request change / new version" form. That rework form creates a normal Tool Build request
 with `replacesToolName` and `replacesVersion`, so fixes and behavior changes follow the
 same Builder → QA → Registrar → promotion path as missing capabilities. The same inspector
-shows per-version changelog cards so operators can see what changed before activating or
-rolling back a generated version. Tool cards also show the matching always-on service
-runtime when one exists, including running/stopped state and heartbeat age, so the
-operator does not need to open Channels just to see whether a bot/listener is active.
+shows per-version changelog and promotion-evidence cards so operators can see what
+changed, which QA/reviews promoted it, and which package/migrations are linked before
+activating or rolling back a generated version. Tool cards also show the matching
+always-on service runtime when one exists, including running/stopped state and heartbeat
+age, so the operator does not need to open Channels just to see whether a bot/listener is
+active.
 
 `GET /api/tool-build-requests/:id` and `PATCH /api/tool-build-requests/:id` provide the
 builder lifecycle handoff. Builder, QA, and Registrar agents can mark a request as

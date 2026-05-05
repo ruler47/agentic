@@ -944,6 +944,13 @@ textarea {
   word-break: break-word;
 }
 
+.promotion-evidence {
+  border-left: 2px solid rgba(53, 230, 193, 0.38);
+  color: var(--secondary);
+  padding-left: 8px;
+  white-space: pre-line;
+}
+
 .context-block a {
   color: var(--accent);
   text-decoration: none;

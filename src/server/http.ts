@@ -49,6 +49,7 @@ import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import {
   generatedToolInputFromPackageManifest,
   ToolMetadataStore,
+  type ToolModulePromotionEvidence,
   toolToMetadata,
 } from "../tools/toolMetadataStore.js";
 import { normalizeToolPackageManifest } from "../tools/toolPackage.js";
@@ -3804,6 +3805,7 @@ function parseGeneratedToolModuleInput(value: unknown) {
     storage: parseOptionalStorageContract(candidate.storage),
     docsMarkdown: parseOptionalText(candidate.docsMarkdown),
     changeSummary: parseOptionalText(candidate.changeSummary),
+    promotionEvidence: parseOptionalPromotionEvidence(candidate.promotionEvidence),
     examples: parseOptionalToolExamples(candidate.examples),
     packageManifest:
       candidate.packageManifest === undefined
@@ -3819,6 +3821,32 @@ function parseToolPackageManifestImport(value: unknown) {
       : value;
   const manifest = normalizeToolPackageManifest(body);
   return generatedToolInputFromPackageManifest(manifest);
+}
+
+function parseOptionalPromotionEvidence(value: unknown): ToolModulePromotionEvidence | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("promotionEvidence must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  const status = candidate.status === "promoted" ? "promoted" : undefined;
+  const promotedAt = parseOptionalText(candidate.promotedAt);
+  const summary = parseOptionalText(candidate.summary);
+  if (!status) throw new Error("promotionEvidence.status must be promoted");
+  if (!promotedAt) throw new Error("promotionEvidence.promotedAt is required");
+  if (!summary) throw new Error("promotionEvidence.summary is required");
+  return {
+    status: "promoted",
+    promotedAt,
+    summary,
+    buildRequestId: parseOptionalText(candidate.buildRequestId),
+    qaReport:
+      candidate.qaReport && typeof candidate.qaReport === "object" && !Array.isArray(candidate.qaReport)
+        ? candidate.qaReport as Record<string, unknown>
+        : undefined,
+    packageRef: parseOptionalText(candidate.packageRef),
+    migrationIds: parseOptionalStringArray(candidate.migrationIds, "promotionEvidence.migrationIds"),
+  };
 }
 
 function parseOptionalStorageContract(value: unknown) {

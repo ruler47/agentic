@@ -1758,6 +1758,19 @@ test("web server registers generated tool metadata with conflict checks", async 
         modulePath: "src/tools/generated/browser-screenshotTool.ts",
         testPath: "tests/generated/browser-screenshotTool.test.ts",
         changeSummary: "Initial generated screenshot module.",
+        promotionEvidence: {
+          status: "promoted",
+          promotedAt: "2026-05-04T10:00:00.000Z",
+          summary: "Initial screenshot QA passed.",
+          buildRequestId: "toolbuild-browser-screenshot",
+          qaReport: {
+            ok: true,
+            summary: "QA passed.",
+            checks: ["module test", "package manifest"],
+          },
+          packageRef: "src/tools/generated/browser-screenshotTool.ts",
+          migrationIds: [],
+        },
         packageManifest: {
           schemaVersion: "agentic.tool-package.v1",
           name: "generated.browser.screenshot",
@@ -1803,8 +1816,10 @@ test("web server registers generated tool metadata with conflict checks", async 
     assert.equal(conflictResponse.status, 400);
     assert.equal(tools.tools[0].source, "generated");
     assert.equal(tools.tools[0].packageManifest.package.type, "local-path");
+    assert.equal(tools.tools[0].promotionEvidence.buildRequestId, "toolbuild-browser-screenshot");
     assert.equal(versions.versions[0].version, "1.0.0");
     assert.match(versions.versions[0].changeSummary, /Initial generated screenshot/);
+    assert.equal(versions.versions[0].promotionEvidence.summary, "Initial screenshot QA passed.");
     assert.equal(manifest.manifest.name, "generated.browser.screenshot");
     assert.equal(deleteResponse.status, 200);
     assert.equal(afterDelete.tools.length, 0);
