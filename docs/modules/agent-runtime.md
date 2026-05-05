@@ -261,9 +261,13 @@ runners are:
   `package.ref` is an HTTP(S) runtime URL. It proxies `GET /health`, `POST /run`, and
   optional service lifecycle calls through `POST /service/start` and
   `POST /service/stop`.
+- `OciImageToolPackageRunner`, which is disabled by default and becomes available when
+  `TOOL_OCI_RUNNER=enabled`. It starts a Docker container for `package.type="oci-image"`,
+  publishes internal port `TOOL_OCI_INTERNAL_PORT` (default `8080`), waits for the same
+  `/health` contract, and then proxies runtime calls through the external HTTP adapter.
 
-Future OCI runners can use the same extension point by launching a container that exposes
-the same HTTP runtime contract.
+Future package runners can use the same extension point for npm packages, sandboxed
+process pools, or remote execution platforms.
 
 Local-path loading is deliberately constrained:
 
@@ -273,11 +277,18 @@ Local-path loading is deliberately constrained:
 - exported name/version/capabilities must match `tool_modules`;
 - healthcheck must pass before the tool is registered in `ToolRegistry`;
 - failed imports, mismatches, or failed healthchecks update registry status to `failed`.
-- imported package manifests with no installed runner (`oci-image`, or non-HTTP
-  external package references such as npm coordinates)
+- imported package manifests with no installed runner (for example non-HTTP external
+  package references such as npm coordinates, or OCI images while the OCI runner is
+  disabled)
   are not marked failed during startup; they remain disabled metadata until a package
   runner/supervisor can execute that reference type. Tests prove that a registered
   external runner can load such a manifest without changing the core loader.
+
+The first OCI runner is intentionally conservative: it starts one HTTP runtime container
+per loaded package and delegates tool semantics to that container. It does not yet pull
+images, rotate containers, stream container logs, enforce resource limits, or pass
+runtime secrets into containers. Those belong to the next runner-supervisor hardening
+phase.
 
 This gives the future Tool Builder a safe promotion path: write TypeScript, run QA, register
 metadata, rebuild/restart, then let the loader promote the tool after contract validation.

@@ -4,6 +4,7 @@ import {
   compiledModulePath,
   ExternalHttpToolPackageRunner,
   LocalPathToolPackageRunner,
+  OciImageToolPackageRunner,
   SourceBundleToolPackageRunner,
   ToolPackageRunner,
 } from "./toolPackageRunner.js";
@@ -22,6 +23,7 @@ export async function loadGeneratedTools(
     new LocalPathToolPackageRunner(),
     new SourceBundleToolPackageRunner(),
     new ExternalHttpToolPackageRunner(),
+    new OciImageToolPackageRunner(),
   ],
 ): Promise<GeneratedToolLoadResult[]> {
   const modules = (await metadataStore.list()).filter((item) => item.source === "generated");

@@ -42,6 +42,7 @@ import { loadGeneratedTools } from "../tools/generatedToolLoader.js";
 import {
   ExternalHttpToolPackageRunner,
   LocalPathToolPackageRunner,
+  OciImageToolPackageRunner,
   SourceBundleToolPackageRunner,
 } from "../tools/toolPackageRunner.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
@@ -100,6 +101,7 @@ const toolPackageRunners = [
   new LocalPathToolPackageRunner(),
   new SourceBundleToolPackageRunner(),
   new ExternalHttpToolPackageRunner(),
+  new OciImageToolPackageRunner(),
 ];
 const generatedToolResults = await loadGeneratedTools(tools, toolMetadataStore, process.cwd(), toolPackageRunners);
 const loadedGeneratedTools = generatedToolResults.filter((result) => result.loaded);

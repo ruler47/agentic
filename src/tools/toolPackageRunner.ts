@@ -1,9 +1,13 @@
 import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
 import { resolve, relative, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { Tool, ToolExecutionContext, ToolHealth, ToolResult, ToolServiceContext, ToolServiceHandle } from "./tool.js";
 import { ToolModuleMetadata } from "./toolMetadataStore.js";
 import { ToolPackageReferenceType } from "./toolPackage.js";
+
+const execFileAsync = promisify(execFile);
 
 export type ToolPackageLoadResult = {
   loaded: boolean;
@@ -25,6 +29,11 @@ export type ToolPackageRunnerInfo = {
   detail: string;
   supportedPackageTypes: ToolPackageReferenceType[];
   root?: string;
+};
+
+export type OciContainerRuntime = {
+  start(input: { image: string; internalPort: number; toolName: string }): Promise<{ containerId: string; baseUrl: string }>;
+  stop(containerId: string): Promise<void>;
 };
 
 export class LocalPathToolPackageRunner implements ToolPackageRunner {
@@ -157,6 +166,119 @@ export class ExternalHttpToolPackageRunner implements ToolPackageRunner {
       detail: "Loads external-package manifests whose package.ref is an HTTP(S) tool-runtime endpoint exposing /health, /run, and optional /service lifecycle routes.",
       supportedPackageTypes: ["external-package"],
     };
+  }
+}
+
+export type OciImageToolPackageRunnerOptions = {
+  enabled?: boolean;
+  internalPort?: number;
+  startupTimeoutMs?: number;
+  pollIntervalMs?: number;
+  runtime?: OciContainerRuntime;
+  fetchImpl?: typeof fetch;
+};
+
+export class OciImageToolPackageRunner implements ToolPackageRunner {
+  readonly type = "oci-image";
+  private readonly enabled: boolean;
+  private readonly internalPort: number;
+  private readonly startupTimeoutMs: number;
+  private readonly pollIntervalMs: number;
+  private readonly runtime: OciContainerRuntime;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(options: OciImageToolPackageRunnerOptions = {}) {
+    this.enabled = options.enabled ?? process.env.TOOL_OCI_RUNNER === "enabled";
+    this.internalPort = options.internalPort ?? Number(process.env.TOOL_OCI_INTERNAL_PORT ?? 8080);
+    this.startupTimeoutMs = options.startupTimeoutMs ?? Number(process.env.TOOL_OCI_STARTUP_TIMEOUT_MS ?? 15_000);
+    this.pollIntervalMs = options.pollIntervalMs ?? Number(process.env.TOOL_OCI_POLL_INTERVAL_MS ?? 250);
+    this.runtime = options.runtime ?? new DockerCliContainerRuntime();
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  canLoad(metadata: ToolModuleMetadata): boolean {
+    return this.enabled && metadata.packageManifest?.package.type === "oci-image";
+  }
+
+  async load(metadata: ToolModuleMetadata): Promise<ToolPackageLoadResult> {
+    const ref = metadata.packageManifest?.package.ref;
+    if (!ref) {
+      const detail = "OCI package manifest has no package.ref.";
+      return { loaded: false, detail, health: { ok: false, detail } };
+    }
+
+    let container: { containerId: string; baseUrl: string } | undefined;
+    try {
+      container = await this.runtime.start({
+        image: ref,
+        internalPort: this.internalPort,
+        toolName: metadata.name,
+      });
+      const baseUrl = normalizeBaseUrl(container.baseUrl);
+      const health = await waitForHealthyRuntime(
+        this.fetchImpl,
+        baseUrl,
+        this.startupTimeoutMs,
+        this.pollIntervalMs,
+      );
+      if (!health.ok) {
+        await this.runtime.stop(container.containerId);
+        return { loaded: false, detail: health.detail, health };
+      }
+
+      attachProcessCleanup(this.runtime, container.containerId);
+      return {
+        loaded: true,
+        detail: `Loaded ${metadata.name} from OCI image ${ref} at ${baseUrl}`,
+        tool: externalHttpProxyTool(metadata, baseUrl, this.fetchImpl),
+        health,
+      };
+    } catch (error) {
+      if (container) await bestEffortStop(this.runtime, container.containerId);
+      const detail = error instanceof Error ? error.message : String(error);
+      return { loaded: false, detail, health: { ok: false, detail } };
+    }
+  }
+
+  describe(): ToolPackageRunnerInfo {
+    return {
+      type: this.type,
+      status: this.enabled ? "available" : "disabled",
+      detail: this.enabled
+        ? `Starts OCI image packages with Docker and proxies their HTTP runtime on internal port ${this.internalPort}.`
+        : "Disabled by default. Set TOOL_OCI_RUNNER=enabled to start OCI image packages through Docker.",
+      supportedPackageTypes: ["oci-image"],
+    };
+  }
+}
+
+export class DockerCliContainerRuntime implements OciContainerRuntime {
+  async start(input: { image: string; internalPort: number; toolName: string }): Promise<{ containerId: string; baseUrl: string }> {
+    const { stdout: idOutput } = await execFileAsync("docker", [
+      "run",
+      "--rm",
+      "-d",
+      "--label",
+      `agentic.tool=${input.toolName}`,
+      "-p",
+      `127.0.0.1::${input.internalPort}`,
+      input.image,
+    ]);
+    const containerId = idOutput.trim();
+    if (!containerId) throw new Error("Docker did not return a container id.");
+
+    try {
+      const { stdout: portOutput } = await execFileAsync("docker", ["port", containerId, `${input.internalPort}/tcp`]);
+      const baseUrl = dockerPortOutputToBaseUrl(portOutput);
+      return { containerId, baseUrl };
+    } catch (error) {
+      await this.stop(containerId);
+      throw error;
+    }
+  }
+
+  async stop(containerId: string): Promise<void> {
+    await execFileAsync("docker", ["stop", containerId]);
   }
 }
 
@@ -376,6 +498,55 @@ function responseDetail(value: unknown): string | undefined {
   if (typeof value.error === "string") return value.error;
   if (typeof value.message === "string") return value.message;
   return undefined;
+}
+
+async function waitForHealthyRuntime(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  timeoutMs: number,
+  pollIntervalMs: number,
+): Promise<ToolHealth> {
+  const startedAt = Date.now();
+  let lastDetail = "External runtime did not become healthy before timeout.";
+  while (Date.now() - startedAt <= timeoutMs) {
+    try {
+      const health = await fetchHealth(fetchImpl, baseUrl);
+      if (health.ok) return health;
+      lastDetail = health.detail;
+    } catch (error) {
+      lastDetail = error instanceof Error ? error.message : String(error);
+    }
+    await delay(pollIntervalMs);
+  }
+  return { ok: false, detail: lastDetail };
+}
+
+function dockerPortOutputToBaseUrl(value: string): string {
+  const firstLine = value.split(/\r?\n/).find((line) => line.trim());
+  if (!firstLine) throw new Error("Docker did not publish an HTTP runtime port.");
+  const match = firstLine.trim().match(/^(.*):(\d+)$/);
+  if (!match) throw new Error(`Could not parse Docker published port: ${firstLine}`);
+  const host = match[1] === "0.0.0.0" || match[1] === "::" ? "127.0.0.1" : match[1];
+  return `http://${host}:${match[2]}`;
+}
+
+function attachProcessCleanup(runtime: OciContainerRuntime, containerId: string): void {
+  const cleanup = () => {
+    void bestEffortStop(runtime, containerId);
+  };
+  process.once("exit", cleanup);
+}
+
+async function bestEffortStop(runtime: OciContainerRuntime, containerId: string): Promise<void> {
+  try {
+    await runtime.stop(containerId);
+  } catch {
+    // Best-effort cleanup only; failed stop should not mask the original load failure.
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeBaseUrl(value: string): string {

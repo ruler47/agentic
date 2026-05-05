@@ -8,7 +8,7 @@ import { AddressInfo } from "node:net";
 import { loadGeneratedTools, compiledModulePath } from "../src/tools/generatedToolLoader.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
-import { ToolPackageRunner } from "../src/tools/toolPackageRunner.js";
+import { OciImageToolPackageRunner, ToolPackageRunner } from "../src/tools/toolPackageRunner.js";
 import { ToolServiceSupervisor } from "../src/tools/toolServiceSupervisor.js";
 
 test("compiledModulePath maps source tool modules to built JavaScript modules", () => {
@@ -401,6 +401,140 @@ test("external-package HTTP runners expose always-on service lifecycle handles",
     assert.equal(heartbeat.lastHealthOk, true);
     assert.equal(stopped.status, "stopped");
     assert.deepEqual(calls, ["/health", "/service/start", "/health", "/health", "/service/stop"]);
+  } finally {
+    await close(server);
+  }
+});
+
+test("loadGeneratedTools proxies OCI image packages through the container HTTP runtime", async () => {
+  const calls: Array<{ path: string; body?: unknown }> = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const bodyText = Buffer.concat(chunks).toString("utf8");
+    const body = bodyText ? JSON.parse(bodyText) : undefined;
+    calls.push({ path: request.url ?? "", body });
+
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/health") {
+      response.end(JSON.stringify({ ok: true, detail: "oci runtime healthy" }));
+      return;
+    }
+    if (request.url === "/run") {
+      response.end(JSON.stringify({
+        ok: true,
+        content: `oci:${body.input.value}`,
+        data: { contextTool: body.context.toolName },
+      }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  const baseUrl = await listen(server);
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+  const started: unknown[] = [];
+
+  try {
+    await metadata.registerGenerated({
+      name: "generated.oci.echo",
+      version: "1.0.0",
+      description: "OCI echo.",
+      capabilities: ["oci-echo"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.oci.echo",
+        version: "1.0.0",
+        description: "OCI echo.",
+        capabilities: ["oci-echo"],
+        startupMode: "on-demand",
+        package: { type: "oci-image", ref: "registry.local/agentic/echo:1.0.0" },
+      },
+    });
+
+    const runner = new OciImageToolPackageRunner({
+      enabled: true,
+      runtime: {
+        async start(input) {
+          started.push(input);
+          return { containerId: "container-echo", baseUrl };
+        },
+        async stop() {},
+      },
+    });
+    const results = await loadGeneratedTools(registry, metadata, process.cwd(), [runner]);
+    const output = await registry.get("generated.oci.echo")?.run(
+      { value: "hello" },
+      { toolName: "generated.oci.echo", now: new Date("2026-05-05T12:00:00.000Z") },
+    );
+    const [stored] = await metadata.list();
+
+    assert.equal(results[0]?.loaded, true);
+    assert.deepEqual(started, [{
+      image: "registry.local/agentic/echo:1.0.0",
+      internalPort: 8080,
+      toolName: "generated.oci.echo",
+    }]);
+    assert.equal(stored?.status, "available");
+    assert.equal(stored?.lastHealthDetail, "oci runtime healthy");
+    assert.equal(output?.content, "oci:hello");
+    assert.deepEqual(output?.data, { contextTool: "generated.oci.echo" });
+    assert.deepEqual(calls.map((call) => call.path), ["/health", "/run"]);
+  } finally {
+    await close(server);
+  }
+});
+
+test("loadGeneratedTools stops OCI containers when their HTTP runtime fails QA health", async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ ok: false, detail: "runtime not ready" }));
+  });
+  const baseUrl = await listen(server);
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+  const stopped: string[] = [];
+
+  try {
+    await metadata.registerGenerated({
+      name: "generated.oci.unhealthy",
+      version: "1.0.0",
+      description: "Unhealthy OCI tool.",
+      capabilities: ["oci-unhealthy"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.oci.unhealthy",
+        version: "1.0.0",
+        description: "Unhealthy OCI tool.",
+        capabilities: ["oci-unhealthy"],
+        startupMode: "on-demand",
+        package: { type: "oci-image", ref: "registry.local/agentic/unhealthy:1.0.0" },
+      },
+    });
+
+    const runner = new OciImageToolPackageRunner({
+      enabled: true,
+      startupTimeoutMs: 1,
+      pollIntervalMs: 1,
+      runtime: {
+        async start() {
+          return { containerId: "container-unhealthy", baseUrl };
+        },
+        async stop(containerId) {
+          stopped.push(containerId);
+        },
+      },
+    });
+    const results = await loadGeneratedTools(registry, metadata, process.cwd(), [runner]);
+    const [stored] = await metadata.list();
+
+    assert.equal(results[0]?.loaded, false);
+    assert.equal(results[0]?.detail, "runtime not ready");
+    assert.deepEqual(stopped, ["container-unhealthy"]);
+    assert.equal(stored?.status, "failed");
+    assert.equal(stored?.lastHealthDetail, "runtime not ready");
+    assert.equal(registry.get("generated.oci.unhealthy"), undefined);
   } finally {
     await close(server);
   }

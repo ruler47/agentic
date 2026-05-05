@@ -400,12 +400,15 @@ Remaining registry persistence:
   source-bundle packages can load from `TOOL_PACKAGE_ROOT` without living in the main
   committed generated-tools directory. External-package manifests whose `package.ref` is
   an HTTP(S) runtime URL now load through a proxy runner that calls `/health`, `/run`, and
-  optional service lifecycle routes. Tests also prove custom non-local manifests can be
-  loaded by adding a runner. Runner inventory is visible through the API and Diagnostics
-  page, and operators can explicitly reload generated tools after updating a
-  source-bundle on disk. Remaining work is production OCI/container runner startup,
-  npm/external package install/sandboxing, runner process supervision, and richer runner
-  UI controls. DONE for API/UI package import/export.
+  optional service lifecycle routes. OCI-image manifests can now be executed by an
+  explicitly enabled Docker runner (`TOOL_OCI_RUNNER=enabled`) when the container exposes
+  the same HTTP runtime contract. Tests also prove custom non-local manifests can be
+  loaded by adding a runner, and unhealthy OCI runtimes are stopped instead of promoted.
+  Runner inventory is visible through the API and Diagnostics page, and operators can
+  explicitly reload generated tools after updating a source-bundle on disk. Remaining
+  work is npm/external package install/sandboxing, production resource/log supervision for
+  containers, secret/config injection into package runtimes, and richer runner UI
+  controls. DONE for API/UI package import/export and first OCI HTTP proxy runner.
   The API/UI can now import portable `agentic.tool-package.v1` manifests into the
   registry and export existing generated package manifests. Non-local package references
   are intentionally registered as disabled metadata until the runner/supervisor layer can

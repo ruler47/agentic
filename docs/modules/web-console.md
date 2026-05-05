@@ -340,11 +340,12 @@ collapsed import form. Local-path manifests can later be loaded by the current c
 module loader; pre-built source-bundle manifests can load from `TOOL_PACKAGE_ROOT` when
 they contain `dist/index.js` or `index.js`; external-package manifests whose `package.ref`
 is an HTTP(S) URL load through the external HTTP package runner. That external runtime
-must expose `GET /health`, `POST /run`, and optional service lifecycle routes. Package
-references without an installed runner, such as npm package coordinates or OCI images,
-are stored as disabled metadata until a generic package runner can execute them. Import
-triggers a generated-tool reload, so loadable package manifests can become available
-immediately after registration.
+must expose `GET /health`, `POST /run`, and optional service lifecycle routes. OCI image
+manifests can load through the Docker runner when `TOOL_OCI_RUNNER=enabled`; Diagnostics
+shows it as disabled otherwise. Package references without an installed runner, such as
+npm package coordinates or OCI images while the runner is disabled, are stored as disabled
+metadata until a generic package runner can execute them. Import triggers a generated-tool
+reload, so loadable package manifests can become available immediately after registration.
 
 `GET /api/tool-package-runners` returns installed package runners, their supported package
 types, status, and root/configuration hints. The Diagnostics page surfaces the same

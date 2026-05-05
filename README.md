@@ -234,9 +234,12 @@ compiled TypeScript runner, and pre-built `source-bundle` packages can be loaded
 `TOOL_PACKAGE_ROOT` (default `tool-packages`) via `dist/index.js` or `index.js`.
 `external-package` manifests whose `package.ref` is an HTTP(S) URL load through the
 external HTTP package runner. That runtime must expose `GET /health`, `POST /run`, and
-optional `POST /service/start` / `POST /service/stop` for always-on tools. OCI runners can
-later start containers that expose the same HTTP contract. Runner diagnostics are exposed
-through `GET /api/tool-package-runners` and the Diagnostics page.
+optional `POST /service/start` / `POST /service/stop` for always-on tools. `oci-image`
+manifests can use the same HTTP runtime contract when `TOOL_OCI_RUNNER=enabled`; the
+Docker runner starts the image, publishes internal port `TOOL_OCI_INTERNAL_PORT` (default
+`8080`), waits for `/health`, and then proxies `/run` and optional service lifecycle
+calls. Runner diagnostics are exposed through `GET /api/tool-package-runners` and the
+Diagnostics page.
 Operators can call `POST /api/tools/reload-generated` or use the Diagnostics action to
 reload generated/source-bundle packages without restarting the app.
 
