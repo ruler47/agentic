@@ -290,7 +290,12 @@ can compile against a package-local interface instead of importing Agentic inter
 basic Tool types. When a package workspace exists, `MetadataToolRegistrar` persists the
 active generated version as a `source-bundle` package manifest. Reloading generated tools
 then goes through `SourceBundleToolPackageRunner` and imports the package-built
-`dist/index.js` entrypoint.
+`dist/index.js` entrypoint. Generated package folders also include
+`runtime/server.ts`, which exposes the portable HTTP runtime contract used by
+`ExternalHttpToolPackageRunner` and the OCI runner: `GET /health`, `POST /run`, plus
+optional `POST /service/start` and `POST /service/stop`. The package Dockerfile runs the
+compiled server by default, so the same generated source-bundle can be imported in-process
+today and containerized later without changing its tool implementation.
 When a package workspace is present, the QA report lists its `tool.package.json` alongside
 the legacy generated module and test artifacts, so later promotion stages can trace which
 portable package snapshot was reviewed. `validateToolPackageWorkspace` also runs as part

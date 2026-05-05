@@ -634,7 +634,10 @@ For documentation-only changes:
   performs package-workspace QA before returning a passing report: manifest/scaffold
   checks, package-local TypeScript build, and package-local tests. When a package
   workspace is present, `MetadataToolRegistrar` persists the active version as a
-  `source-bundle` package manifest so reloads use the out-of-tree bundle.
+  `source-bundle` package manifest so reloads use the out-of-tree bundle. Generated
+  packages also include a package-local HTTP runtime server (`GET /health`, `POST /run`,
+  optional service lifecycle routes) and Dockerfile entrypoint so the same package can be
+  promoted later to an external HTTP or OCI runtime without rewriting tool code.
 - Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
   needs database access, it must declare storage requirements/migrations and receive a
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,

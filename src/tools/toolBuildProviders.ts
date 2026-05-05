@@ -171,11 +171,16 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
         examples: output.examples,
       },
       readmeMarkdown: packageWorkspaceReadme(request, output),
+      dockerfile: packageWorkspaceDockerfile(),
       packageJson: packageWorkspacePackageJson(request, output),
       files: [
         {
           path: "index.ts",
           content: packageWorkspaceEntrypointSource(output.modulePath),
+        },
+        {
+          path: "runtime/server.ts",
+          content: packageWorkspaceHttpServerSource(),
         },
         {
           path: "src/tools/tool.ts",
@@ -230,12 +235,101 @@ function packageWorkspacePackageJson(request: ToolBuildRequest, output: ToolBuil
     type: "module",
     scripts: {
       build: "tsc -p tsconfig.json",
-      start: "node dist/index.js",
+      start: "node dist/runtime/server.js",
       test: "node --test \"dist/tests/**/*.test.js\"",
     },
     ...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
     devDependencies,
   };
+}
+
+function packageWorkspaceDockerfile(): string {
+  return [
+    "FROM node:22-alpine",
+    "WORKDIR /app",
+    "COPY package*.json ./",
+    "RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi",
+    "COPY dist ./dist",
+    "EXPOSE 8080",
+    "CMD [\"node\", \"dist/runtime/server.js\"]",
+    "",
+  ].join("\n");
+}
+
+function packageWorkspaceHttpServerSource(): string {
+  return `import { createServer } from "node:http";
+import type { IncomingMessage } from "node:http";
+import { tool } from "../index.js";
+
+type JsonRecord = Record<string, unknown>;
+
+const port = Number(process.env.PORT ?? "8080");
+
+const server = createServer(async (request, response) => {
+  try {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    response.setHeader("content-type", "application/json");
+
+    if (request.method === "GET" && url.pathname === "/health") {
+      const health = tool.healthcheck ? await tool.healthcheck() : { ok: true, detail: "No healthcheck registered." };
+      response.statusCode = health.ok ? 200 : 503;
+      response.end(JSON.stringify(health));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/run") {
+      const body = await readJsonBody(request);
+      const result = await tool.run(asRecord(body.input), asRecord(body.context));
+      response.statusCode = result.ok ? 200 : 500;
+      response.end(JSON.stringify(result));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/service/start") {
+      const body = await readJsonBody(request);
+      const result = tool.startService
+        ? await tool.startService(asRecord(body.context))
+        : { ok: false, content: "Tool does not expose startService." };
+      response.statusCode = result.ok ? 200 : 400;
+      response.end(JSON.stringify(result));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/service/stop") {
+      const body = await readJsonBody(request);
+      const result = tool.stopService
+        ? await tool.stopService(asRecord(body.context))
+        : { ok: false, content: "Tool does not expose stopService." };
+      response.statusCode = result.ok ? 200 : 400;
+      response.end(JSON.stringify(result));
+      return;
+    }
+
+    response.statusCode = 404;
+    response.end(JSON.stringify({ ok: false, error: "Not found" }));
+  } catch (error) {
+    response.statusCode = 500;
+    response.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+  }
+});
+
+server.listen(port, "0.0.0.0", () => {
+  console.log(JSON.stringify({ event: "tool-runtime-listening", tool: tool.name, port }));
+});
+
+async function readJsonBody(request: IncomingMessage): Promise<JsonRecord> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  const text = Buffer.concat(chunks).toString("utf8").trim();
+  if (!text) return {};
+  const parsed = JSON.parse(text) as unknown;
+  return asRecord(parsed);
+}
+
+function asRecord(value: unknown): JsonRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
+}
+`;
 }
 
 function packageToolContractSource(): string {

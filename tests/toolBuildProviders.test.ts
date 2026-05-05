@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { AddressInfo } from "node:net";
@@ -81,18 +82,22 @@ test("GeneratedToolFileBuilder can mirror generated output into an out-of-tree p
     assert.equal(packageManifestPath, "tools/generated.browser.screenshot/1.0.0/tool.package.json");
     assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/tsconfig.json"));
     assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/index.ts"));
+    assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/runtime/server.ts"));
     assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/src/tools/tool.ts"));
     assert.ok(output.packageWorkspace?.files.includes("tools/generated.browser.screenshot/1.0.0/src/tools/generated/browser-screenshotTool.ts"));
 
     const packageManifest = JSON.parse(await readFile(join(projectRoot, packageManifestPath), "utf8"));
     const packageJson = JSON.parse(await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/package.json"), "utf8"));
+    const dockerfile = await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/Dockerfile"), "utf8");
     const packageReadme = await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/README.md"), "utf8");
     const packageToolContract = await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/src/tools/tool.ts"), "utf8");
     assert.equal(packageManifest.package.type, "source-bundle");
     assert.equal(packageManifest.package.ref, "generated.browser.screenshot/1.0.0");
     assert.equal(packageManifest.name, "generated.browser.screenshot");
     assert.equal(packageJson.scripts.build, "tsc -p tsconfig.json");
+    assert.equal(packageJson.scripts.start, "node dist/runtime/server.js");
     assert.equal(packageJson.dependencies["@playwright/test"], "^1.59.1");
+    assert.match(dockerfile, /dist\/runtime\/server\.js/);
     assert.match(await readFile(join(projectRoot, "tools/generated.browser.screenshot/1.0.0/index.ts"), "utf8"), /browser-screenshotTool\.js/);
     assert.match(packageReadme, /Source Snapshot/);
     assert.match(packageToolContract, /export type Tool =/);
@@ -552,6 +557,31 @@ test("package workspace promotion loads generated tools through source-bundle ru
     const result = await registry.get("generated.api.demolookup")?.run({
       url: `http://127.0.0.1:${address.port}/lookup`,
     });
+    const runtimePort = await freePort();
+    const runtime = spawn(process.execPath, ["dist/runtime/server.js"], {
+      cwd: join(projectRoot, "tools/generated.api.demolookup/1.0.0"),
+      env: { ...process.env, PORT: String(runtimePort) },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const runtimeOutput: Buffer[] = [];
+    runtime.stdout.on("data", (chunk) => runtimeOutput.push(Buffer.from(chunk)));
+    runtime.stderr.on("data", (chunk) => runtimeOutput.push(Buffer.from(chunk)));
+    try {
+      await waitForHealth(
+        `http://127.0.0.1:${runtimePort}/health`,
+        () => Buffer.concat(runtimeOutput).toString("utf8"),
+      );
+      const runtimeResponse = await fetch(`http://127.0.0.1:${runtimePort}/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: { url: `http://127.0.0.1:${address.port}/lookup` } }),
+      });
+      const runtimeResult = await runtimeResponse.json() as { ok?: boolean; content?: string };
+      assert.equal(runtimeResult.ok, true);
+      assert.match(runtimeResult.content ?? "", /200/);
+    } finally {
+      runtime.kill("SIGTERM");
+    }
 
     assert.equal(stored?.packageManifest?.package.type, "source-bundle");
     assert.equal(results[0]?.loaded, true, JSON.stringify(results[0], null, 2));
@@ -563,6 +593,28 @@ test("package workspace promotion loads generated tools through source-bundle ru
     await rm(projectRoot, { recursive: true, force: true });
   }
 });
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return address.port;
+}
+
+async function waitForHealth(url: string, diagnostic: () => string = () => ""): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < 5000) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return;
+    } catch {
+      // Runtime is still starting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for tool runtime health: ${url}\n${diagnostic()}`);
+}
 
 test("MetadataToolRegistrar preserves provider-specific capabilities and secret handles", async () => {
   const requestStore = new InMemoryToolBuildRequestStore();

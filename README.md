@@ -244,7 +244,9 @@ a passing report: manifest/scaffold validation, package-local TypeScript build, 
 package-local tests. When a verified package workspace exists, the registrar now records
 the active generated version as a `source-bundle` package manifest, so reloads use the
 out-of-tree package entrypoint instead of treating `src/tools/generated` as the only
-runtime source.
+runtime source. Generated package folders also include a small HTTP runtime server and
+Dockerfile entrypoint: `GET /health`, `POST /run`, and optional service lifecycle routes
+map to the same tool contract, which is the handoff toward independently hosted tools.
 `external-package` manifests whose `package.ref` is an HTTP(S) URL load through the
 external HTTP package runner. That runtime must expose `GET /health`, `POST /run`, and
 optional `POST /service/start` / `POST /service/stop` for always-on tools. `oci-image`
