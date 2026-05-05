@@ -405,7 +405,8 @@ Remaining registry persistence:
   the same HTTP runtime contract. Tests also prove custom non-local manifests can be
   loaded by adding a runner, unhealthy OCI runtimes are stopped instead of promoted, and
   HTTP/OCI runtimes receive only their declared `requiredConfigurationKeys` and
-  `requiredSecretHandles` as scoped runtime envelopes.
+  `requiredSecretHandles` as scoped runtime envelopes. Missing required runtime values now
+  fail before the external runtime is called.
   Runner inventory is visible through the API and Diagnostics page, and operators can
   explicitly reload generated tools after updating a source-bundle on disk. Remaining
   work is npm/external package install/sandboxing, production resource/log supervision for

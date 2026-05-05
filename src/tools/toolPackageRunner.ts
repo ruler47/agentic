@@ -468,7 +468,14 @@ async function executionContextPayload(
   metadata: ToolModuleMetadata,
   context: ToolExecutionContext | undefined,
 ): Promise<Record<string, unknown> | undefined> {
-  if (!context) return undefined;
+  const configurationEnvelope = await resolvedConfigurationEnvelope(
+    metadata.requiredConfigurationKeys,
+    context?.resolveConfiguration,
+  );
+  const secretEnvelope = await resolvedSecretEnvelope(metadata.requiredSecretHandles, context?.resolveSecret);
+  assertResolvedRuntimeRequirements(configurationEnvelope, secretEnvelope);
+  if (!context) return compactRecord({ ...configurationEnvelope, ...secretEnvelope });
+
   return compactRecord({
     instanceId: context.instanceId,
     requesterUserId: context.requesterUserId,
@@ -480,8 +487,8 @@ async function executionContextPayload(
     capability: context.capability,
     caller: context.caller,
     now: context.now.toISOString(),
-    ...(await resolvedConfigurationEnvelope(metadata.requiredConfigurationKeys, context.resolveConfiguration)),
-    ...(await resolvedSecretEnvelope(metadata.requiredSecretHandles, context.resolveSecret)),
+    ...configurationEnvelope,
+    ...secretEnvelope,
   });
 }
 
@@ -489,13 +496,43 @@ async function serviceContextPayload(
   metadata: ToolModuleMetadata,
   context: ToolServiceContext,
 ): Promise<Record<string, unknown>> {
+  const configurationEnvelope = await resolvedConfigurationEnvelope(
+    metadata.requiredConfigurationKeys,
+    context.resolveConfiguration,
+  );
+  const secretEnvelope = await resolvedSecretEnvelope(metadata.requiredSecretHandles, context.resolveSecret);
+  assertResolvedRuntimeRequirements(configurationEnvelope, secretEnvelope);
+
   return compactRecord({
     toolName: context.toolName,
     now: context.now.toISOString(),
     baseUrl: context.baseUrl,
-    ...(await resolvedConfigurationEnvelope(metadata.requiredConfigurationKeys, context.resolveConfiguration)),
-    ...(await resolvedSecretEnvelope(metadata.requiredSecretHandles, context.resolveSecret)),
+    ...configurationEnvelope,
+    ...secretEnvelope,
   });
+}
+
+function assertResolvedRuntimeRequirements(
+  configurationEnvelope: Record<string, unknown>,
+  secretEnvelope: Record<string, unknown>,
+): void {
+  const missingConfiguration = Array.isArray(configurationEnvelope.missingConfigurationKeys)
+    ? configurationEnvelope.missingConfigurationKeys
+    : [];
+  const missingSecrets = Array.isArray(secretEnvelope.missingSecretHandles)
+    ? secretEnvelope.missingSecretHandles
+    : [];
+  if (missingConfiguration.length || missingSecrets.length) {
+    const parts = [
+      missingConfiguration.length
+        ? `configuration: ${missingConfiguration.join(", ")}`
+        : undefined,
+      missingSecrets.length
+        ? `secret handles: ${missingSecrets.join(", ")}`
+        : undefined,
+    ].filter(Boolean);
+    throw new Error(`Missing required runtime values for external tool package (${parts.join("; ")}).`);
+  }
 }
 
 async function resolvedConfigurationEnvelope(

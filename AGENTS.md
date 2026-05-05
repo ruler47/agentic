@@ -595,7 +595,8 @@ For documentation-only changes:
   through the Docker runner when `TOOL_OCI_RUNNER=enabled` and the container exposes
   `/health` and `/run`; HTTP/OCI runtimes receive only declared
   `requiredConfigurationKeys` and `requiredSecretHandles` through scoped runtime
-  envelopes; npm-style external packages remain roadmap work.
+  envelopes; missing required runtime values fail before calling the external runtime;
+  npm-style external packages remain roadmap work.
 - Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
   needs database access, it must declare storage requirements/migrations and receive a
   scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,

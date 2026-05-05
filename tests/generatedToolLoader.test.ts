@@ -370,6 +370,61 @@ test("loadGeneratedTools keeps non-HTTP external packages disabled until a runne
   assert.equal(registry.get("generated.remote.npmnormalize"), undefined);
 });
 
+test("external-package HTTP runners block calls with unresolved required runtime values", async () => {
+  const calls: string[] = [];
+  const server = createServer(async (request, response) => {
+    calls.push(request.url ?? "");
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/health") {
+      response.end(JSON.stringify({ ok: true, detail: "external runtime healthy" }));
+      return;
+    }
+    if (request.url === "/run") {
+      response.end(JSON.stringify({ ok: true, content: "should-not-run" }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  const baseUrl = await listen(server);
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+
+  try {
+    await metadata.registerGenerated({
+      name: "generated.external.requires",
+      version: "1.0.0",
+      description: "External tool requiring runtime values.",
+      capabilities: ["external-requires"],
+      requiredConfigurationKeys: ["REQUIRED_EXTERNAL_BASE_URL"],
+      requiredSecretHandles: ["secret.external.required"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.external.requires",
+        version: "1.0.0",
+        description: "External tool requiring runtime values.",
+        capabilities: ["external-requires"],
+        startupMode: "on-demand",
+        requiredConfigurationKeys: ["REQUIRED_EXTERNAL_BASE_URL"],
+        requiredSecretHandles: ["secret.external.required"],
+        package: { type: "external-package", ref: baseUrl },
+      },
+    });
+
+    await loadGeneratedTools(registry, metadata);
+    await assert.rejects(
+      () => registry.get("generated.external.requires")!.run(
+        { text: "hello" },
+        { toolName: "generated.external.requires", now: new Date("2026-05-05T12:00:00.000Z") },
+      ),
+      /Missing required runtime values.*REQUIRED_EXTERNAL_BASE_URL.*secret\.external\.required/,
+    );
+    assert.deepEqual(calls, ["/health"]);
+  } finally {
+    await close(server);
+  }
+});
+
 test("external-package HTTP runners expose always-on service lifecycle handles", async () => {
   const calls: Array<{ path: string; body?: unknown }> = [];
   const server = createServer(async (request, response) => {

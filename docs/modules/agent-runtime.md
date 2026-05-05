@@ -298,6 +298,9 @@ receive only declared runtime envelopes:
 Undeclared config/secrets are never forwarded by the package runner. Broader transport
 policy, container-level environment injection, and redacted runtime logging belong to the
 next runner-supervisor hardening phase.
+If a required configuration key or secret handle cannot be resolved, the package runner
+fails before calling the external runtime. This keeps broken configuration visible in the
+run/tool lifecycle instead of leaking partial requests to a package process.
 
 This gives the future Tool Builder a safe promotion path: write TypeScript, run QA, register
 metadata, rebuild/restart, then let the loader promote the tool after contract validation.
