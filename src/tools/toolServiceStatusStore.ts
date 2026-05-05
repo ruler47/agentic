@@ -17,6 +17,10 @@ export type ToolServiceStatus = {
   consecutiveFailureCount: number;
   autoRestartEnabled?: boolean;
   maxAutoRestarts?: number;
+  restartBackoffMs?: number;
+  restartRequiresApproval?: boolean;
+  nextRestartAt?: string;
+  pendingRestartApproval?: boolean;
   lastFailureAt?: string;
   lastRestartAt?: string;
   lastRestartReason?: string;

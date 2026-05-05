@@ -220,7 +220,12 @@ in `tool_service_logs` for starts, stops, restarts, heartbeats, and startup
 reconciliation, and new lifecycle records are streamed through an in-process SSE channel.
 Each service can also override the default restart policy through
 `PATCH /api/tool-services/:name/restart-policy`, which stores whether failed heartbeats
-should auto-restart and the maximum auto-restart count for that specific service.
+should auto-restart, the maximum auto-restart count, an optional restart backoff in
+milliseconds, and whether automatic recovery must pause for operator approval. Approval
+gates are intentionally service-local for now: a failed heartbeat records
+`pendingRestartApproval=true` and waits for an explicit operator restart instead of
+silently recovering. A future unified Approval Inbox should reuse this state rather than
+invent a provider-specific workflow.
 Tools may also implement `startService(context)` to run an in-process service loop under
 the supervisor. The context provides the tool name, abort signal, internal base URL,
 optional fetch implementation, secret resolver, and lifecycle logger. The supervisor

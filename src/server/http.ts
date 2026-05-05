@@ -1162,6 +1162,8 @@ async function routeRequest(
         metadata: {
           autoRestartEnabled: service.autoRestartEnabled,
           maxAutoRestarts: service.maxAutoRestarts,
+          restartBackoffMs: service.restartBackoffMs,
+          restartRequiresApproval: service.restartRequiresApproval,
         },
       });
       sendJson(response, 200, { service });
@@ -3178,28 +3180,39 @@ function parseToolServiceOutboxAckInput(value: unknown): {
 function parseToolServiceRestartPolicyInput(value: unknown): {
   autoRestartEnabled?: boolean;
   maxAutoRestarts?: number;
+  restartBackoffMs?: number;
+  restartRequiresApproval?: boolean;
 } {
   if (!isRecord(value)) throw new Error("restart policy input must be an object");
   const autoRestartEnabled = value.autoRestartEnabled;
   if (autoRestartEnabled !== undefined && typeof autoRestartEnabled !== "boolean") {
     throw new Error("autoRestartEnabled must be a boolean");
   }
-  const maxAutoRestarts = value.maxAutoRestarts;
-  if (maxAutoRestarts === undefined || maxAutoRestarts === null || maxAutoRestarts === "") {
-    return { autoRestartEnabled };
+  const restartRequiresApproval = value.restartRequiresApproval;
+  if (restartRequiresApproval !== undefined && typeof restartRequiresApproval !== "boolean") {
+    throw new Error("restartRequiresApproval must be a boolean");
   }
-  const parsed = typeof maxAutoRestarts === "number"
-    ? maxAutoRestarts
-    : typeof maxAutoRestarts === "string"
-      ? Number.parseInt(maxAutoRestarts, 10)
-      : Number.NaN;
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error("maxAutoRestarts must be a non-negative integer");
-  }
+  const maxAutoRestarts = parseOptionalNonNegativeInteger(value.maxAutoRestarts, "maxAutoRestarts");
+  const restartBackoffMs = parseOptionalNonNegativeInteger(value.restartBackoffMs, "restartBackoffMs");
   return {
     autoRestartEnabled,
-    maxAutoRestarts: Math.floor(parsed),
+    maxAutoRestarts,
+    restartBackoffMs,
+    restartRequiresApproval,
   };
+}
+
+function parseOptionalNonNegativeInteger(value: unknown, fieldName: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = typeof value === "number"
+    ? value
+    : typeof value === "string"
+      ? Number.parseInt(value, 10)
+      : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${fieldName} must be a non-negative integer`);
+  }
+  return Math.floor(parsed);
 }
 
 function parseToolServiceInboundInput(value: unknown, toolName: string) {

@@ -701,12 +701,15 @@ Remaining Phase 3 gaps:
   readiness and reports exit code/signal plus bootstrap output.
 - Add provider-neutral always-on restart policy and lifecycle diagnostics. DONE for
   persisted desired/runtime state, heartbeat health, restart count, consecutive failures,
-  last failure/restart metadata, bounded auto-restart after failed heartbeat, and
-  per-service restart policy overrides through API/UI. Remaining work: richer backoff
-  schedules and operator approval gates for sensitive service restarts. Source-bundle
+  last failure/restart metadata, bounded auto-restart after failed heartbeat,
+  per-service restart policy overrides through API/UI, optional restart backoff, and a
+  service-local operator approval gate for sensitive service restarts. Source-bundle
   HTTP process runtimes now bridge child stdout/stderr into lifecycle logs/SSE.
   Heartbeats now also refuse false-green status for service tools whose runtime failed to
   start: the supervisor retries `startService` instead of accepting static module health.
+  Remaining work: connect service restart approval gates to the unified Approvals inbox,
+  add richer exponential/jittered schedules, and preserve approval decisions in policy
+  audit analytics.
 - Add a `ToolExecutionContext` injected into every tool call with scoped DB client,
   secret resolver, artifact store, audit writer, logger, and cancellation signal. PARTIAL:
   registry calls now inject provenance, secret resolver, audit writer, logger, caller,

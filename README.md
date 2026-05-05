@@ -270,11 +270,14 @@ Operators can call `POST /api/tools/reload-generated` or use the Diagnostics act
 reload generated/source-bundle packages without restarting the app.
 Always-on tools are supervised through the same provider-neutral lifecycle API. The
 supervisor tracks desired state, heartbeat health, restart count, consecutive failures,
-last failure, and last restart reason. A failed heartbeat can trigger a bounded
-auto-restart policy (`TOOL_SERVICE_AUTO_RESTART_ON_FAILED_HEARTBEAT`, disabled only when
-set to `disabled`; `TOOL_SERVICE_MAX_AUTO_RESTARTS`, default `3`) before the service is
-left failed for operator review. Operators can override that policy per service through
-`PATCH /api/tool-services/:name/restart-policy` or the Channels/Tool Detail UI.
+last failure, next scheduled restart, pending approval, and last restart reason. A failed
+heartbeat can trigger a bounded auto-restart policy
+(`TOOL_SERVICE_AUTO_RESTART_ON_FAILED_HEARTBEAT`, disabled only when set to `disabled`;
+`TOOL_SERVICE_MAX_AUTO_RESTARTS`, default `3`) before the service is left failed for
+operator review. Operators can override that policy per service through
+`PATCH /api/tool-services/:name/restart-policy` or the Channels/Tool Detail UI,
+including `restartBackoffMs` for delayed recovery and `restartRequiresApproval` for
+sensitive services that must wait for a manual restart/approval.
 Source-bundle HTTP process runtimes forward child `stdout`/`stderr` into the same
 lifecycle log stream, so isolated tools can be debugged without shelling into their
 process.

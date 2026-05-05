@@ -247,6 +247,105 @@ test("ToolServiceSupervisor stores per-service restart policy overrides", async 
   assert.equal(stopped, 0);
 });
 
+test("ToolServiceSupervisor schedules failed heartbeat restarts after backoff", async () => {
+  const registry = new ToolRegistry();
+  const statusStore = new InMemoryToolServiceStatusStore();
+  let started = 0;
+  let stopped = 0;
+  registry.register(serviceTool({
+    async startService() {
+      started += 1;
+      const instance = started;
+      let healthchecks = 0;
+      return {
+        stop() {
+          stopped += 1;
+        },
+        async healthcheck() {
+          healthchecks += 1;
+          if (instance === 1 && healthchecks > 1) {
+            return { ok: false, detail: "runtime transport failed" };
+          }
+          return { ok: true, detail: `runtime healthy ${instance}` };
+        },
+      };
+    },
+  }));
+  const supervisor = new ToolServiceSupervisor(registry, statusStore, undefined, {}, {
+    maxAutoRestartsPerService: 2,
+  });
+
+  const policy = await supervisor.updateRestartPolicy("service.echo", {
+    restartBackoffMs: 60_000,
+  });
+  await supervisor.start("service.echo");
+  const scheduled = await supervisor.heartbeat("service.echo");
+  const stillWaiting = await supervisor.heartbeat("service.echo");
+  const stored = await statusStore.get("service.echo");
+  assert.ok(stored?.nextRestartAt);
+  await statusStore.set({ ...stored, nextRestartAt: new Date(Date.now() - 1000).toISOString() });
+  const restarted = await supervisor.heartbeat("service.echo");
+
+  assert.equal(policy.restartBackoffMs, 60_000);
+  assert.equal(scheduled.status, "failed");
+  assert.equal(scheduled.restartCount, 0);
+  assert.ok(scheduled.nextRestartAt);
+  assert.equal(stillWaiting.status, "failed");
+  assert.equal(stillWaiting.restartCount, 0);
+  assert.equal(restarted.status, "running");
+  assert.equal(restarted.detail, "runtime healthy 2");
+  assert.equal(restarted.restartCount, 1);
+  assert.equal(restarted.lastRestartReason, "failed-heartbeat");
+  assert.equal(started, 2);
+  assert.equal(stopped, 1);
+});
+
+test("ToolServiceSupervisor can hold failed heartbeat restarts for operator approval", async () => {
+  const registry = new ToolRegistry();
+  let started = 0;
+  let stopped = 0;
+  registry.register(serviceTool({
+    async startService() {
+      started += 1;
+      const instance = started;
+      let healthchecks = 0;
+      return {
+        stop() {
+          stopped += 1;
+        },
+        async healthcheck() {
+          healthchecks += 1;
+          if (instance === 1 && healthchecks > 1) {
+            return { ok: false, detail: "runtime credential expired" };
+          }
+          return { ok: true, detail: `runtime healthy ${instance}` };
+        },
+      };
+    },
+  }));
+  const supervisor = new ToolServiceSupervisor(registry);
+
+  const policy = await supervisor.updateRestartPolicy("service.echo", {
+    restartRequiresApproval: true,
+  });
+  await supervisor.start("service.echo");
+  const pending = await supervisor.heartbeat("service.echo");
+  const stillPending = await supervisor.heartbeat("service.echo");
+  const manuallyRestarted = await supervisor.restart("service.echo");
+
+  assert.equal(policy.restartRequiresApproval, true);
+  assert.equal(pending.status, "failed");
+  assert.equal(pending.pendingRestartApproval, true);
+  assert.equal(pending.detail, "Auto-restart requires operator approval.");
+  assert.equal(stillPending.pendingRestartApproval, true);
+  assert.equal(stillPending.restartCount, 0);
+  assert.equal(manuallyRestarted.status, "running");
+  assert.equal(manuallyRestarted.pendingRestartApproval, false);
+  assert.equal(manuallyRestarted.restartCount, 1);
+  assert.equal(started, 2);
+  assert.equal(stopped, 1);
+});
+
 test("ToolServiceSupervisor stops all active service runtimes", async () => {
   const registry = new ToolRegistry();
   let stopped = 0;

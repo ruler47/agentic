@@ -2370,6 +2370,8 @@ function renderToolServiceControls(service) {
         <span>${escapeHtml(service.desiredState)}</span>
         <span>${escapeHtml(service.lastHeartbeatAt ? formatRelative(service.lastHeartbeatAt) : "no heartbeat")}</span>
         <span>${escapeHtml(`${service.consecutiveFailureCount ?? 0} failures`)}</span>
+        ${service.pendingRestartApproval ? `<span class="status-pill blocked">restart approval</span>` : ""}
+        ${service.nextRestartAt ? `<span>${escapeHtml(`restart ${formatFutureRelative(service.nextRestartAt)}`)}</span>` : ""}
       </div>
       ${service.lastRestartAt ? `<small class="status-note">Last restart ${escapeHtml(formatRelative(service.lastRestartAt))}${service.lastRestartReason ? ` · ${escapeHtml(service.lastRestartReason)}` : ""}</small>` : ""}
       <p>${escapeHtml(service.detail || "No service detail.")}</p>
@@ -2386,18 +2388,34 @@ function renderToolServiceControls(service) {
 function renderServiceRestartPolicyForm(service) {
   const autoRestartEnabled = service.autoRestartEnabled ?? true;
   const maxAutoRestarts = service.maxAutoRestarts ?? 3;
+  const restartBackoffMs = service.restartBackoffMs ?? 0;
+  const restartRequiresApproval = Boolean(service.restartRequiresApproval);
+  const policyParts = [
+    autoRestartEnabled ? "auto" : "manual",
+    `max ${maxAutoRestarts}`,
+    restartBackoffMs > 0 ? `backoff ${formatDuration(restartBackoffMs)}` : "no backoff",
+    restartRequiresApproval ? "approval" : "no approval",
+  ];
   return `
     <details class="service-policy-editor">
-      <summary>Restart policy: ${autoRestartEnabled ? "auto" : "manual"} · max ${escapeHtml(String(maxAutoRestarts))}</summary>
+      <summary>Restart policy: ${escapeHtml(policyParts.join(" · "))}</summary>
       <form data-action="update-tool-service-policy" class="inline-edit-form">
         <input type="hidden" name="toolName" value="${escapeHtml(service.toolName)}" />
         <label class="checkbox-line">
           <input type="checkbox" name="autoRestartEnabled" ${autoRestartEnabled ? "checked" : ""} />
           Auto-restart after failed heartbeat
         </label>
+        <label class="checkbox-line">
+          <input type="checkbox" name="restartRequiresApproval" ${restartRequiresApproval ? "checked" : ""} />
+          Require operator approval before auto-restart
+        </label>
         <label>
           Max auto restarts
           <input type="number" name="maxAutoRestarts" min="0" step="1" value="${escapeHtml(String(maxAutoRestarts))}" />
+        </label>
+        <label>
+          Restart backoff, ms
+          <input type="number" name="restartBackoffMs" min="0" step="1000" value="${escapeHtml(String(restartBackoffMs))}" />
         </label>
         <button type="submit" class="ghost-button">Save policy</button>
       </form>
@@ -3145,6 +3163,8 @@ function renderServiceCard(service) {
         <span>${escapeHtml(service.lastHeartbeatAt ? `heartbeat ${formatRelative(service.lastHeartbeatAt)}` : "no heartbeat")}</span>
         <span>${escapeHtml(`${service.restartCount ?? 0} restarts`)}</span>
         <span>${escapeHtml(`${service.consecutiveFailureCount ?? 0} failures`)}</span>
+        ${service.pendingRestartApproval ? `<span class="status-pill blocked">restart approval</span>` : ""}
+        ${service.nextRestartAt ? `<span>${escapeHtml(`restart ${formatFutureRelative(service.nextRestartAt)}`)}</span>` : ""}
       </div>
       ${service.lastRestartAt ? `<small class="status-note">Last restart ${escapeHtml(formatRelative(service.lastRestartAt))}${service.lastRestartReason ? ` · ${escapeHtml(service.lastRestartReason)}` : ""}</small>` : ""}
       <small class="status-note">${escapeHtml(service.detail || "No service detail.")}</small>
@@ -3969,12 +3989,15 @@ async function updateToolServiceRestartPolicy(form) {
     return;
   }
   const maxAutoRestarts = Number.parseInt(String(data.get("maxAutoRestarts") ?? "3"), 10);
+  const restartBackoffMs = Number.parseInt(String(data.get("restartBackoffMs") ?? "0"), 10);
   try {
     const result = await fetchJson(`/api/tool-services/${encodeURIComponent(toolName)}/restart-policy`, {
       method: "PATCH",
       body: JSON.stringify({
         autoRestartEnabled: data.get("autoRestartEnabled") === "on",
         maxAutoRestarts: Number.isFinite(maxAutoRestarts) ? Math.max(0, maxAutoRestarts) : 3,
+        restartBackoffMs: Number.isFinite(restartBackoffMs) ? Math.max(0, restartBackoffMs) : 0,
+        restartRequiresApproval: data.get("restartRequiresApproval") === "on",
       }),
     });
     state.toolServices = [
@@ -4837,6 +4860,16 @@ function formatRelative(value) {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
   return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+function formatFutureRelative(value) {
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "unknown";
+  const diff = timestamp - Date.now();
+  if (diff <= 0) return "now";
+  if (diff < 60_000) return `in ${Math.ceil(diff / 1000)}s`;
+  if (diff < 3_600_000) return `in ${Math.ceil(diff / 60_000)}m`;
+  return `in ${Math.ceil(diff / 3_600_000)}h`;
 }
 
 function updateLiveTimers() {

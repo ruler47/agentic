@@ -178,8 +178,12 @@ state, and write audit events without hardcoding Telegram, Slack, webhooks, or a
 channel type. State persists through `tool_service_statuses` when Postgres is configured;
 the app reconciles desired-running services on startup by refreshing their health status.
 `PATCH /api/tool-services/:name/restart-policy` stores per-service auto-restart
-overrides (`autoRestartEnabled`, `maxAutoRestarts`) so one fragile integration can be
-handled manually without disabling bounded recovery for every other service.
+overrides (`autoRestartEnabled`, `maxAutoRestarts`, `restartBackoffMs`,
+`restartRequiresApproval`) so one fragile or sensitive integration can be handled
+manually or delayed without disabling bounded recovery for every other service. When
+approval is required, a failed heartbeat leaves the service in a pending restart approval
+state; the existing `restart` action is the operator approval path until the general
+Approvals inbox is wired into service lifecycle decisions.
 `GET /api/tool-services/logs` returns recent lifecycle log records written by the
 supervisor for starts, stops, restarts, heartbeats, and startup reconciliation.
 `GET /api/tool-services/logs/events` is an SSE stream that emits `service-log` events for

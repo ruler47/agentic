@@ -21,6 +21,8 @@ export type ToolServiceSupervisorOptions = {
 export type ToolServiceRestartPolicyInput = {
   autoRestartEnabled?: boolean;
   maxAutoRestarts?: number;
+  restartBackoffMs?: number;
+  restartRequiresApproval?: boolean;
 };
 
 export class ToolServiceSupervisor {
@@ -112,6 +114,8 @@ export class ToolServiceSupervisor {
       startedAt: health.ok ? (starting.startedAt ?? nextNow) : starting.startedAt,
       consecutiveFailureCount: health.ok ? 0 : starting.consecutiveFailureCount + 1,
       lastFailureAt: health.ok ? starting.lastFailureAt : nextNow,
+      nextRestartAt: health.ok ? undefined : starting.nextRestartAt,
+      pendingRestartApproval: health.ok ? false : starting.pendingRestartApproval,
       updatedAt: nextNow,
     });
     if (!health.ok) {
@@ -132,6 +136,8 @@ export class ToolServiceSupervisor {
       detail: "Stopped by operator.",
       stoppedAt: now,
       consecutiveFailureCount: 0,
+      nextRestartAt: undefined,
+      pendingRestartApproval: false,
       updatedAt: now,
     });
     await this.logLifecycle(toolName, "info", "Service stopped by operator.", next);
@@ -166,6 +172,8 @@ export class ToolServiceSupervisor {
       stoppedAt: new Date().toISOString(),
       lastRestartAt: new Date().toISOString(),
       lastRestartReason: "manual",
+      nextRestartAt: undefined,
+      pendingRestartApproval: false,
       updatedAt: new Date().toISOString(),
     });
     await this.logLifecycle(toolName, "info", "Service restart requested.", await this.statusFor(toolName));
@@ -182,6 +190,10 @@ export class ToolServiceSupervisor {
       maxAutoRestarts: input.maxAutoRestarts === undefined
         ? undefined
         : normalizeMaxAutoRestarts(input.maxAutoRestarts, this.maxAutoRestartsPerService),
+      restartBackoffMs: input.restartBackoffMs === undefined
+        ? undefined
+        : normalizeNonNegativeInteger(input.restartBackoffMs, 0),
+      restartRequiresApproval: input.restartRequiresApproval,
       updatedAt: now,
     });
     await this.logLifecycle(toolName, "info", "Service restart policy updated.", next);
@@ -193,6 +205,17 @@ export class ToolServiceSupervisor {
     const existing = await this.statusFor(toolName);
     if (existing.desiredState !== "running") {
       return { ...existing, displayName: tool.displayName, description: tool.description };
+    }
+    if (existing.pendingRestartApproval) {
+      return { ...existing, displayName: tool.displayName, description: tool.description };
+    }
+    if (existing.nextRestartAt) {
+      const nextRestartAtMs = Date.parse(existing.nextRestartAt);
+      if (Number.isFinite(nextRestartAtMs) && nextRestartAtMs > Date.now()) {
+        return { ...existing, displayName: tool.displayName, description: tool.description };
+      }
+      await this.logLifecycle(toolName, "warn", "Service restart backoff elapsed; auto-restart requested.", existing);
+      return this.autoRestartAfterHeartbeatFailure(toolName, existing, tool.displayName, tool.description);
     }
     if (tool.startService && !this.activeServices.has(toolName)) {
       await this.logLifecycle(
@@ -220,7 +243,7 @@ export class ToolServiceSupervisor {
     await this.logLifecycle(toolName, health.ok ? "info" : "error", "Service heartbeat completed.", next);
     if (!health.ok && this.shouldAutoRestart(next)) {
       await this.logLifecycle(toolName, "warn", "Service heartbeat failed; auto-restart requested by restart policy.", next);
-      return this.autoRestartAfterHeartbeatFailure(toolName, next, tool.displayName, tool.description);
+      return this.handleRestartPolicyAfterHeartbeatFailure(toolName, next, tool.displayName, tool.description);
     }
     return { ...next, displayName: tool.displayName, description: tool.description };
   }
@@ -306,13 +329,49 @@ export class ToolServiceSupervisor {
     );
   }
 
-  private async autoRestartAfterHeartbeatFailure(
+  private async handleRestartPolicyAfterHeartbeatFailure(
     toolName: string,
     failed: StoredToolServiceStatus,
     displayName: string | undefined,
     description: string,
   ): Promise<ToolServiceStatus> {
     await this.stopRuntime(toolName, "Service runtime stopped after failed heartbeat before auto-restart.");
+    if (failed.restartRequiresApproval) {
+      const now = new Date().toISOString();
+      const pending = await this.write({
+        ...failed,
+        status: "failed",
+        detail: "Auto-restart requires operator approval.",
+        pendingRestartApproval: true,
+        nextRestartAt: undefined,
+        updatedAt: now,
+      });
+      await this.logLifecycle(toolName, "warn", "Service auto-restart is waiting for operator approval.", pending);
+      return { ...pending, displayName, description };
+    }
+    const backoffMs = normalizeNonNegativeInteger(failed.restartBackoffMs, 0);
+    if (backoffMs > 0) {
+      const nowMs = Date.now();
+      const scheduled = await this.write({
+        ...failed,
+        status: "failed",
+        detail: `Auto-restart scheduled after ${backoffMs} ms backoff.`,
+        nextRestartAt: new Date(nowMs + backoffMs).toISOString(),
+        pendingRestartApproval: false,
+        updatedAt: new Date(nowMs).toISOString(),
+      });
+      await this.logLifecycle(toolName, "warn", "Service auto-restart scheduled after backoff.", scheduled);
+      return { ...scheduled, displayName, description };
+    }
+    return this.autoRestartAfterHeartbeatFailure(toolName, failed, displayName, description);
+  }
+
+  private async autoRestartAfterHeartbeatFailure(
+    toolName: string,
+    failed: StoredToolServiceStatus,
+    displayName: string | undefined,
+    description: string,
+  ): Promise<ToolServiceStatus> {
     const now = new Date().toISOString();
     await this.write({
       ...failed,
@@ -320,6 +379,8 @@ export class ToolServiceSupervisor {
       desiredState: "running",
       detail: "Auto-restarting after failed heartbeat.",
       restartCount: failed.restartCount + 1,
+      nextRestartAt: undefined,
+      pendingRestartApproval: false,
       lastRestartAt: now,
       lastRestartReason: "failed-heartbeat",
       updatedAt: now,
@@ -403,6 +464,11 @@ export class ToolServiceSupervisor {
 }
 
 function normalizeMaxAutoRestarts(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
+}
+
+function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   return Math.max(0, Math.floor(value));
 }
