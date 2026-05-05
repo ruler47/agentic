@@ -259,6 +259,12 @@ rollback transaction before promotion continues. Without that env var, the runne
 performs manifest-level storage QA and records pending migration metadata for later
 isolated execution.
 
+Generated registrations also persist promotion evidence on both the active
+`tool_modules` record and the matching `tool_module_versions` row. The evidence captures
+the Tool Build request id, promoted timestamp, QA summary/checks/reviews, package ref,
+and storage migration ids. This keeps the active version explainable after restart while
+full transactional promotion is still being hardened.
+
 The worker is enabled by default in `src/server/main.ts`. Set
 `TOOL_BUILD_WORKER=disabled` for a fully manual queue, or tune polling/batch size with
 `TOOL_BUILD_WORKER_INTERVAL_MS` and `TOOL_BUILD_WORKER_BATCH_SIZE`.

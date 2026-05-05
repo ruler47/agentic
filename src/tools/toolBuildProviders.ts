@@ -14,7 +14,7 @@ import {
   ToolBuildQaReport,
   ToolBuildRequest,
 } from "./toolBuildRequestStore.js";
-import { ToolMetadataStore } from "./toolMetadataStore.js";
+import { ToolMetadataStore, type ToolModulePromotionEvidence } from "./toolMetadataStore.js";
 import { ToolExample, ToolSchema, ToolStartupMode, ToolStorageContract } from "./tool.js";
 import {
   integrationDocsMarkdown,
@@ -624,6 +624,7 @@ export class MetadataToolRegistrar implements ToolRegistrar {
         ? packageWorkspaceManifest(request, output, output.packageWorkspace.packageRef)
         : output.packageManifest,
       changeSummary: output.changeSummary ?? formatToolVersionChangeSummary(request, output),
+      promotionEvidence: promotionEvidenceFromBuild(request, output, qaReport),
     };
 
     if (request.replacesVersion) {
@@ -669,6 +670,30 @@ export class MetadataToolRegistrar implements ToolRegistrar {
       });
     }
   }
+}
+
+function promotionEvidenceFromBuild(
+  request: ToolBuildRequest,
+  output: ToolBuildOutput,
+  qaReport?: ToolBuildQaReport,
+): ToolModulePromotionEvidence {
+  return {
+    status: "promoted",
+    promotedAt: new Date().toISOString(),
+    summary: qaReport?.summary ?? output.summary,
+    buildRequestId: request.id,
+    qaReport: qaReport
+      ? {
+          ok: qaReport.ok,
+          summary: qaReport.summary,
+          checks: qaReport.checks,
+          artifacts: qaReport.artifacts,
+          reviews: qaReport.reviews,
+        }
+      : undefined,
+    packageRef: output.packageWorkspace?.packageRef ?? output.packageManifest?.package.ref,
+    migrationIds: output.storage?.migrations,
+  };
 }
 
 function packageWorkspaceManifest(

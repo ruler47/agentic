@@ -685,6 +685,11 @@ For documentation-only changes:
   them twice inside a rollback transaction when QA is given an isolated Postgres pool.
   Server wiring uses `TOOL_BUILD_MIGRATION_QA_DATABASE_URL` as that optional isolated
   pool; never point it at the primary application database.
+- Generated tool promotion records must carry durable `promotionEvidence` on the active
+  `tool_modules` row and matching `tool_module_versions` row. It links the promoted
+  version to the Tool Build request, QA summary/checks/reviews, package ref, and storage
+  migration ids. This is the current bridge toward fully transactional promotion; keep it
+  updated whenever registrar behavior changes.
 - Destructive database operations requested through a tool bug/rework flow must become
   explicit auditable capabilities with exact scope, dry-run preview, policy/approval
   checks, and audit events. Do not satisfy them by running arbitrary one-off SQL.

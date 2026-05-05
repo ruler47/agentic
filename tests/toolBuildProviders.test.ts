@@ -485,6 +485,8 @@ test("MetadataToolRegistrar registers generated provider output", async () => {
   assert.ok(metadata?.capabilities.includes("browser-screenshot"));
   assert.ok(!metadata?.capabilities.includes("api-http-json"));
   assert.equal(metadata?.modulePath, request.contract.modulePath);
+  assert.equal(metadata?.promotionEvidence?.buildRequestId, request.id);
+  assert.equal(metadata?.promotionEvidence?.summary, "Generated module.");
 });
 
 test("MetadataToolRegistrar promotes package workspace manifests when available", async () => {
@@ -551,12 +553,16 @@ test("MetadataToolRegistrar records pending migration manifests with QA evidence
     },
   );
   const [migration] = await migrationStore.list({ toolName: "generated.custom.inboundService" });
+  const [metadata] = await metadataStore.list();
 
   assert.equal(migration?.status, "pending");
   assert.equal(migration?.migrationId, "001_create_service_runtime_tables");
   assert.match(migration?.checksum ?? "", /^sha256:[a-f0-9]{64}$/);
   assert.deepEqual(migration?.qaReport?.checks, ["isolated package build", "storage contract checked"]);
   assert.match(migration?.rollbackNotes ?? "", /Pending isolated database execution/);
+  assert.equal(metadata?.promotionEvidence?.buildRequestId, request.id);
+  assert.equal(metadata?.promotionEvidence?.qaReport?.summary, "Generated service passed QA.");
+  assert.deepEqual(metadata?.versions?.[0]?.promotionEvidence?.migrationIds, ["001_create_service_runtime_tables"]);
 });
 
 test("validateToolStorageMigrationContract rejects raw SQL permissions before promotion QA", () => {

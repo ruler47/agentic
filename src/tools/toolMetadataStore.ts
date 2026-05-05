@@ -4,6 +4,16 @@ import type { ToolPackageManifest } from "./toolPackage.js";
 export type ToolModuleSource = "builtin" | "generated";
 export type ToolModuleStatus = "available" | "disabled" | "failed";
 
+export type ToolModulePromotionEvidence = {
+  status: "promoted";
+  promotedAt: string;
+  summary: string;
+  buildRequestId?: string;
+  qaReport?: Record<string, unknown>;
+  packageRef?: string;
+  migrationIds?: string[];
+};
+
 export type ToolModuleVersionSummary = {
   version: string;
   active: boolean;
@@ -15,6 +25,7 @@ export type ToolModuleVersionSummary = {
   testPath?: string;
   requiredSecretHandles?: string[];
   changeSummary?: string;
+  promotionEvidence?: ToolModulePromotionEvidence;
   packageManifest?: ToolPackageManifest;
   lastHealthDetail?: string;
   successCount?: number;
@@ -43,6 +54,7 @@ export type ToolModuleMetadata = {
   storage?: ToolStorageContract;
   docsMarkdown?: string;
   changeSummary?: string;
+  promotionEvidence?: ToolModulePromotionEvidence;
   examples: ToolExample[];
   packageManifest?: ToolPackageManifest;
   successCount: number;
@@ -70,6 +82,7 @@ export type GeneratedToolModuleInput = {
   storage?: ToolStorageContract;
   docsMarkdown?: string;
   changeSummary?: string;
+  promotionEvidence?: ToolModulePromotionEvidence;
   examples?: ToolExample[];
   packageManifest?: ToolPackageManifest;
 };
@@ -201,6 +214,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       storage: input.storage ?? existing?.storage,
       docsMarkdown: input.docsMarkdown ?? existing?.docsMarkdown,
       changeSummary: input.changeSummary ?? existing?.changeSummary,
+      promotionEvidence: input.promotionEvidence ?? existing?.promotionEvidence,
       examples: input.examples ?? existing?.examples ?? [],
       packageManifest: input.packageManifest ?? existing?.packageManifest,
       successCount: existing?.successCount ?? 0,
@@ -242,6 +256,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       storage: input.storage,
       docsMarkdown: input.docsMarkdown,
       changeSummary: input.changeSummary,
+      promotionEvidence: input.promotionEvidence,
       examples: input.examples ?? [],
       packageManifest: input.packageManifest,
       successCount: existing.successCount,
@@ -293,6 +308,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
         testPath: module.testPath,
         requiredSecretHandles: [...(module.requiredSecretHandles ?? [])],
         changeSummary: module.changeSummary,
+        promotionEvidence: module.promotionEvidence ? cloneJson(module.promotionEvidence) : undefined,
         packageManifest: module.packageManifest ? cloneJson(module.packageManifest) : undefined,
         lastHealthDetail: module.lastHealthDetail,
         successCount: module.successCount,
@@ -366,6 +382,7 @@ function cloneModule(module: ToolModuleMetadata): ToolModuleMetadata {
     requiredSecretHandles: [...(module.requiredSecretHandles ?? [])],
     settingsSchema: module.settingsSchema ? { ...module.settingsSchema } : undefined,
     storage: module.storage ? cloneJson(module.storage) : undefined,
+    promotionEvidence: module.promotionEvidence ? cloneJson(module.promotionEvidence) : undefined,
     examples: (module.examples ?? []).map((example) => cloneJson(example)),
     packageManifest: module.packageManifest ? cloneJson(module.packageManifest) : undefined,
     successCount: module.successCount ?? 0,

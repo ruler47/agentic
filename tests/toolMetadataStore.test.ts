@@ -110,6 +110,18 @@ test("InMemoryToolMetadataStore registers generated modules with conflict checks
       permissions: ["select", "insert", "delete"],
     },
     docsMarkdown: "Capture browser screenshots from arbitrary URLs.",
+    promotionEvidence: {
+      status: "promoted",
+      promotedAt: "2026-05-04T10:00:00.000Z",
+      summary: "Initial generated module passed isolated QA.",
+      buildRequestId: "tbr-browser-screenshot",
+      qaReport: {
+        ok: true,
+        summary: "QA passed.",
+        checks: ["typecheck", "smoke"],
+      },
+      migrationIds: ["001_create_sessions"],
+    },
   });
   await store.registerGenerated({
     name: "generated.browser.screenshot",
@@ -125,6 +137,8 @@ test("InMemoryToolMetadataStore registers generated modules with conflict checks
   assert.equal(generated.status, "disabled");
   assert.deepEqual(generated.requiredSecretHandles, ["secret.browser.proxy"]);
   assert.equal(generated.storage?.tables?.[0], "sessions");
+  assert.equal(generated.promotionEvidence?.buildRequestId, "tbr-browser-screenshot");
+  assert.deepEqual(generated.versions?.[0]?.promotionEvidence?.migrationIds, ["001_create_sessions"]);
   await assert.rejects(
     () =>
       store.registerGenerated({
@@ -204,6 +218,13 @@ test("InMemoryToolMetadataStore promotes generated replacements only after versi
     modulePath: "src/tools/generated/browser-screenshotTool.ts",
     testPath: "tests/generated/browser-screenshotTool.test.ts",
     changeSummary: "Adds stricter artifact QA and screenshot test coverage.",
+    promotionEvidence: {
+      status: "promoted",
+      promotedAt: "2026-05-04T11:00:00.000Z",
+      summary: "Replacement passed artifact QA.",
+      buildRequestId: "tbr-browser-screenshot-v2",
+      packageRef: "generated.browser.screenshot/1.1.0",
+    },
   });
   const [stored] = await store.list();
 
@@ -213,6 +234,7 @@ test("InMemoryToolMetadataStore promotes generated replacements only after versi
   assert.equal(stored?.versions?.[0]?.version, "1.1.0");
   assert.equal(stored?.versions?.[0]?.active, true);
   assert.match(stored?.versions?.[0]?.changeSummary ?? "", /stricter artifact QA/);
+  assert.equal(stored?.versions?.[0]?.promotionEvidence?.packageRef, "generated.browser.screenshot/1.1.0");
   assert.deepEqual(stored?.versions?.[0]?.capabilities, ["browser-screenshot", "artifact-generation"]);
   assert.deepEqual(await store.listVersions("generated.browser.screenshot"), stored?.versions);
   assert.equal((await store.activateVersion("generated.browser.screenshot", "1.1.0")).version, "1.1.0");
@@ -247,9 +269,9 @@ test("PostgresToolMetadataStore registerGenerated binds every insert column", as
         return { rows: [] };
       }
       if (text.includes("insert into tool_modules")) {
-        assert.match(text, /examples, package_manifest, source, status, updated_at/);
-        assert.match(text, /\$17,\s*\$18,\s*'generated',\s*'disabled',\s*\$19/);
-        assert.equal(params?.length, 19);
+        assert.match(text, /promotion_evidence, examples, package_manifest, source, status, updated_at/);
+        assert.match(text, /\$17,\s*\$18,\s*\$19,\s*'generated',\s*'disabled',\s*\$20/);
+        assert.equal(params?.length, 20);
         return {
           rows: [
             {
@@ -269,8 +291,9 @@ test("PostgresToolMetadataStore registerGenerated binds every insert column", as
               storage_contract: params?.[13],
               docs_markdown: params?.[14],
               change_summary: params?.[15],
-              examples: JSON.parse(String(params?.[16] ?? "[]")),
-              package_manifest: params?.[17] ? JSON.parse(String(params?.[17])) : null,
+              promotion_evidence: params?.[16] ? JSON.parse(String(params?.[16])) : null,
+              examples: JSON.parse(String(params?.[17] ?? "[]")),
+              package_manifest: params?.[18] ? JSON.parse(String(params?.[18])) : null,
               source: "generated",
               status: "disabled",
               last_health_ok: null,
@@ -299,6 +322,13 @@ test("PostgresToolMetadataStore registerGenerated binds every insert column", as
     testPath: "tests/generated/pdf-reportTool.test.ts",
     docsMarkdown: "Use this tool to create a PDF artifact.",
     examples: [{ title: "Report", input: { title: "Hello" } }],
+    promotionEvidence: {
+      status: "promoted",
+      promotedAt: "2026-05-04T10:00:00.000Z",
+      summary: "PDF tool passed QA.",
+      buildRequestId: "tbr-pdf",
+      packageRef: "src/tools/generated/pdf-reportTool.ts",
+    },
     packageManifest: {
       schemaVersion: "agentic.tool-package.v1",
       name: "generated.pdf.report",
@@ -313,6 +343,7 @@ test("PostgresToolMetadataStore registerGenerated binds every insert column", as
   assert.equal(registered.name, "generated.pdf.report");
   assert.equal(registered.displayName, "PDF Report");
   assert.equal(registered.packageManifest?.package.type, "local-path");
+  assert.equal(registered.promotionEvidence?.buildRequestId, "tbr-pdf");
   assert.equal(queries.some((query) => query.text === "commit"), true);
 });
 

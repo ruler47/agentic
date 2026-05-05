@@ -259,6 +259,10 @@ The target contract is:
   contract, and generated registrations now record pending migration manifests with
   checksum plus QA evidence using an idempotent `(tool, version, migration)` key; pending
   for isolated execution and transactional promotion;
+- the active generated tool row and its version-history row carry `promotionEvidence`:
+  build request id, QA summary/checks/reviews, package ref, promoted timestamp, and
+  migration ids. This makes promotion decisions inspectable after restart while the
+  stricter all-or-nothing source/migration/activation transaction is still being built;
 - tool runtime receives a constrained `ToolExecutionContext` with secret resolver, audit
   writer, logger, provenance, cancellation signal, and a portable
   `artifacts.saveGenerated(...)` writer for output files. When Postgres is configured,

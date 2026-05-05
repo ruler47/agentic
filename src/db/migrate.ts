@@ -393,6 +393,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         storage_contract jsonb,
         docs_markdown text,
         change_summary text,
+        promotion_evidence jsonb,
         examples jsonb not null default '[]',
         package_manifest jsonb,
         success_count integer not null default 0 check (success_count >= 0),
@@ -417,6 +418,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table tool_modules add column if not exists storage_contract jsonb;`);
     await pool.query(`alter table tool_modules add column if not exists docs_markdown text;`);
     await pool.query(`alter table tool_modules add column if not exists change_summary text;`);
+    await pool.query(`alter table tool_modules add column if not exists promotion_evidence jsonb;`);
     await pool.query(`
       update tool_modules
       set change_summary = 'Generated tool metadata existed before changelog tracking; inspect docs, tests, and linked Tool Build requests for the original change context.'
@@ -529,6 +531,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         storage_contract jsonb,
         docs_markdown text,
         change_summary text,
+        promotion_evidence jsonb,
         examples jsonb not null default '[]',
         package_manifest jsonb,
         success_count integer not null default 0 check (success_count >= 0),
@@ -540,6 +543,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       );
     `);
     await pool.query(`alter table tool_module_versions add column if not exists change_summary text;`);
+    await pool.query(`alter table tool_module_versions add column if not exists promotion_evidence jsonb;`);
     await pool.query(`alter table tool_module_versions add column if not exists package_manifest jsonb;`);
 
     await pool.query(`
@@ -548,13 +552,13 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         input_schema, output_schema, module_path, test_path, source, status,
         last_health_ok, last_health_detail, required_configuration_keys,
         required_secret_handles, settings_schema, storage_contract, docs_markdown,
-        change_summary, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at, updated_at
+        change_summary, promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at, updated_at
       )
       select name, version, true, display_name, description, capabilities, startup_mode,
              input_schema, output_schema, module_path, test_path, source, status,
              last_health_ok, last_health_detail, required_configuration_keys,
              required_secret_handles, settings_schema, storage_contract, docs_markdown,
-             change_summary, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at, updated_at
+             change_summary, promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at, updated_at
       from tool_modules
       where source = 'generated'
       on conflict (name, version) do nothing;

@@ -737,7 +737,12 @@ Remaining Phase 3 gaps:
   rollback transaction when an isolated pool is provided; wiring an actual disposable
   Postgres container/pool into the default builder remains.
 - Promote tool versions transactionally: migration metadata, tool metadata, generated
-  source bundle, QA evidence, and registry activation should move together.
+  source bundle, QA evidence, and registry activation should move together. PARTIAL:
+  active generated metadata and version-history rows now persist `promotionEvidence`
+  linking the promoted version to its build request, QA summary/checks/reviews, package
+  ref, timestamp, and migration ids. Remaining work is one all-or-nothing promotion
+  boundary that applies/records migrations, activates the package, reloads runtime, and
+  rolls back cleanly if any step fails.
 - Add safe database maintenance actions from Trace Lab/Tool Detail/Tool Builds: the agent
   can create an auditable request to delete, repair, backfill, or compact records related
   to a source run/thread/tool, but execution must support dry-run preview, policy
