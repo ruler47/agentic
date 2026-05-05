@@ -354,8 +354,12 @@ export type ToolSchema = Record<string, unknown>;
 export type ToolStartupMode = "on-demand" | "always-on" | "ephemeral";
 
 export type ToolStorageContract = {
+  schema?: string;
   tables?: string[];
-  migrations?: Array<Record<string, unknown>>;
+  migrations?: string[];
+  retention?: string;
+  permissions?: string[];
+  destructiveCapabilities?: string[];
   notes?: string;
 };
 
@@ -1124,8 +1128,10 @@ function genericServiceStorageContract(toolName: string): ToolStorageContract {
     tables: ["service_events", "service_offsets", "service_delivery_attempts"],
     migrations: ["001_create_service_runtime_tables"],
     retention: "Runtime events should be retained according to instance artifact/audit policy.",
-    permissions: ["select", "insert", "update", "delete-own-runtime-records"],
-    destructiveCapabilities: ["delete runtime events for this generated integration only"],
+    permissions: ["tool-db:read", "tool-db:write"],
+    destructiveCapabilities: [
+      "delete runtime events for this generated integration only through an approved maintenance capability",
+    ],
   };
 }
 

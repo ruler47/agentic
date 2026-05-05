@@ -673,6 +673,9 @@ For documentation-only changes:
   Agentic's artifact-store implementation. The scoped DB client is also intentionally
   narrow: runtime calls require declared storage permissions, allow only one read/write
   statement, and reject DDL, deletes, transactions, session changes, and maintenance.
+  Generated service storage contracts must use the runtime permission names
+  `tool-db:read` and `tool-db:write`; raw SQL verbs such as `select`/`insert` are
+  implementation details, not registry permissions.
 - Tool-owned migrations must be versioned, idempotent, QA-tested in an isolated database,
   and promoted only with the tool version they belong to. Record the applied migration,
   checksum, QA evidence, and rollback/repair notes in persistent metadata.

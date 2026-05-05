@@ -213,6 +213,8 @@ test("GeneratedToolFileBuilder creates provider-neutral always-on service module
       "service-runtime",
     ]);
     assert.deepEqual(output.storage?.tables, ["service_events", "service_offsets", "service_delivery_attempts"]);
+    assert.deepEqual(output.storage?.permissions, ["tool-db:read", "tool-db:write"]);
+    assert.match(output.storage?.destructiveCapabilities?.join("\n") ?? "", /approved maintenance capability/);
     assert.equal(output.settingsSchema?.type, "object");
     assert.match(output.docsMarkdown ?? "", /Integration contract/);
     assert.equal(output.examples?.length, 2);

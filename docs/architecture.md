@@ -246,7 +246,8 @@ The target contract is:
 
 - a tool version can declare storage needs: schema namespace, tables, indexes,
   constraints, retention policy, backup/export expectations, and required database
-  permissions;
+  permissions. Generated service tools use the same `tool-db:read` / `tool-db:write`
+  permission names that the scoped runtime DB client enforces;
 - migrations are generated as TypeScript/SQL assets linked to the tool version, not hidden
   inside `run(input)`;
 - Tool QA runs those migrations in an isolated database, proves they are idempotent, and
