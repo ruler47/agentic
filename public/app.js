@@ -60,6 +60,7 @@ const state = {
   toolServiceLogs: [],
   toolServiceEvents: [],
   toolMigrations: [],
+  toolPromotions: [],
   buildRequests: [],
   secretHandles: [],
   tiers: [],
@@ -394,6 +395,7 @@ async function refreshData(options = {}) {
       toolServices,
       toolServiceLogs,
       toolServiceEvents,
+      toolPromotions,
       tiers,
       modelProviders,
       modelCatalog,
@@ -414,6 +416,7 @@ async function refreshData(options = {}) {
       fetchJson("/api/tool-services").then((data) => data.services ?? []),
       fetchJson("/api/tool-services/logs?limit=80").then((data) => data.logs ?? []),
       fetchJson("/api/tool-service-events?limit=80").then((data) => data.events ?? []),
+      fetchJson("/api/tool-promotions").then((data) => data.promotions ?? []),
       fetchJson("/api/settings/model-tiers").then((data) => data.tiers ?? []),
       fetchJson("/api/model-providers").then((data) => data.providers ?? []),
       fetchJson("/api/models/catalog").catch(() => undefined),
@@ -436,6 +439,7 @@ async function refreshData(options = {}) {
       toolServices,
       toolServiceLogs,
       toolServiceEvents,
+      toolPromotions,
       tiers,
       modelProviders,
       modelCatalog,
@@ -500,6 +504,7 @@ function dataFingerprint(data) {
     toolServices: data.toolServices,
     toolServiceLogs: data.toolServiceLogs,
     toolServiceEvents: data.toolServiceEvents,
+    toolPromotions: data.toolPromotions,
     tiers: data.tiers,
     modelProviders: data.modelProviders,
     modelCatalog: data.modelCatalog,
@@ -2296,6 +2301,13 @@ function toolMatchesSearch(tool, query) {
       version.promotionEvidence?.buildRequestId,
       version.promotionEvidence?.packageRef,
     ]),
+    ...promotionJournalForTool(tool.name).flatMap((promotion) => [
+      promotion.summary,
+      promotion.buildRequestId,
+      promotion.packageRef,
+      promotion.toolVersion,
+      ...(promotion.migrationIds ?? []),
+    ]),
   ];
   return haystack.some((value) => String(value ?? "").toLowerCase().includes(query));
 }
@@ -2354,6 +2366,7 @@ function renderToolDetail(tool) {
       ${contextBlock("Storage", formatToolStorage(tool))}
       ${contextBlock("Migrations", formatToolMigrations(tool))}
       ${contextBlock("Promotion evidence", formatToolPromotionEvidence(tool.promotionEvidence))}
+      ${renderToolPromotionJournal(tool)}
       ${contextBlock("Telemetry", formatToolTelemetry(tool))}
       ${contextBlock("Examples", formatToolExamples(tool))}
       ${contextBlock("Schema", formatToolSchemas(tool))}
@@ -2590,6 +2603,48 @@ function formatToolPromotionEvidence(evidence) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function promotionJournalForTool(toolName) {
+  return (state.toolPromotions ?? [])
+    .filter((promotion) => promotion.toolName === toolName)
+    .sort((a, b) => String(b.promotedAt ?? "").localeCompare(String(a.promotedAt ?? "")));
+}
+
+function renderToolPromotionJournal(tool) {
+  if (tool.source !== "generated") return "";
+  const promotions = promotionJournalForTool(tool.name);
+  return `
+    <section class="context-block promotion-journal-block">
+      <h4>Promotion journal</h4>
+      ${promotions.length
+        ? `
+          <div class="promotion-journal-list">
+            ${promotions.slice(0, 6).map(renderPromotionJournalEntry).join("")}
+          </div>
+        `
+        : `<p>No promotion journal entries yet. Future generated versions will append registrar decisions here.</p>`}
+    </section>
+  `;
+}
+
+function renderPromotionJournalEntry(promotion) {
+  const qa = promotion.qaReport ?? {};
+  const checks = Array.isArray(qa.checks) ? qa.checks : [];
+  return `
+    <article class="promotion-journal-entry">
+      <div class="version-history-header">
+        <strong>v${escapeHtml(promotion.toolVersion ?? "unknown")}</strong>
+        <span>${escapeHtml(promotion.status ?? "promoted")}</span>
+      </div>
+      <p>${escapeHtml(promotion.summary || qa.summary || "No promotion summary recorded.")}</p>
+      <small>${escapeHtml(promotion.promotedAt ? `Promoted ${formatRelative(promotion.promotedAt)}` : "No promotion time")}</small>
+      ${promotion.buildRequestId ? `<small>Build request: ${escapeHtml(promotion.buildRequestId)}</small>` : ""}
+      ${promotion.packageRef ? `<small>Package: ${escapeHtml(promotion.packageRef)}</small>` : ""}
+      ${promotion.migrationIds?.length ? `<small>Migrations: ${escapeHtml(promotion.migrationIds.join(", "))}</small>` : ""}
+      ${checks.length ? `<small class="promotion-evidence">Checks: ${escapeHtml(checks.slice(0, 4).join("; "))}</small>` : ""}
+    </article>
+  `;
 }
 
 function formatToolTelemetry(tool) {

@@ -742,9 +742,10 @@ Remaining Phase 3 gaps:
   linking the promoted version to its build request, QA summary/checks/reviews, package
   ref, timestamp, and migration ids. Generated promotions are also appended to a
   `tool_promotions` journal, and the server exposes `GET /api/tool-promotions` for
-  operator/audit surfaces. Remaining work is one all-or-nothing promotion boundary that
-  applies/records migrations, activates the package, reloads runtime, and rolls back
-  cleanly if any step fails.
+  operator/audit surfaces. The Tools inspector now shows the journal beside each generated
+  tool, separating active state from append-only registrar decisions. Remaining work is
+  one all-or-nothing promotion boundary that applies/records migrations, activates the
+  package, reloads runtime, and rolls back cleanly if any step fails.
 - Add safe database maintenance actions from Trace Lab/Tool Detail/Tool Builds: the agent
   can create an auditable request to delete, repair, backfill, or compact records related
   to a source run/thread/tool, but execution must support dry-run preview, policy

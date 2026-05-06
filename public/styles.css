@@ -951,6 +951,26 @@ textarea {
   white-space: pre-line;
 }
 
+.promotion-journal-list {
+  display: grid;
+  gap: 10px;
+}
+
+.promotion-journal-entry {
+  display: grid;
+  gap: 7px;
+  border: 1px solid rgba(53, 230, 193, 0.14);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(53, 230, 193, 0.055), rgba(96, 165, 250, 0.025));
+  padding: 12px;
+}
+
+.promotion-journal-entry p,
+.promotion-journal-entry small {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .context-block a {
   color: var(--accent);
   text-decoration: none;
