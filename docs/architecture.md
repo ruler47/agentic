@@ -258,7 +258,7 @@ The target contract is:
   applied migration version in `tool_migrations`; DONE for the metadata/API/audit
   contract, and generated registrations now record pending migration manifests with
   checksum plus QA evidence using an idempotent `(tool, version, migration)` key; pending
-  for isolated execution and transactional promotion;
+  for isolated execution as part of the runtime activation step;
 - the active generated tool row and its version-history row carry `promotionEvidence`:
   build request id, QA summary/checks/reviews, package ref, promoted timestamp, and
   migration ids. This makes promotion decisions inspectable after restart while the
@@ -268,8 +268,12 @@ The target contract is:
   selectable versions; `tool_promotions` records the decision trail that future rollback,
   diff, approval, and audit screens can consume;
 - generated registrations go through `ToolPromotionCoordinator`, which centralizes
-  metadata, migration-manifest, and journal writes as the explicit boundary that will be
-  replaced by a true Postgres transaction in the next promotion hardening step;
+  metadata, migration-manifest, and journal writes. When Postgres is configured,
+  `PostgresToolPromotionCoordinator` runs those writes through one database client and
+  one transaction, so metadata, pending migration manifests, and promotion journal entries
+  commit or roll back together. The remaining promotion hardening is to include generated
+  package activation, actual migration execution, runtime reload/restart, and rollback
+  in the same auditable promotion saga;
 - tool runtime receives a constrained `ToolExecutionContext` with secret resolver, audit
   writer, logger, provenance, cancellation signal, and a portable
   `artifacts.saveGenerated(...)` writer for output files. When Postgres is configured,

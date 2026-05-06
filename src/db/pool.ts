@@ -11,3 +11,5 @@ export function createPool(connectionString = process.env.DATABASE_URL): pg.Pool
 }
 
 export type PgPool = pg.Pool;
+export type PgClient = pg.PoolClient;
+export type PgQueryExecutor = Pick<pg.Pool | pg.PoolClient, "query">;

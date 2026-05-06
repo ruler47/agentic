@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { PgPool } from "../db/pool.js";
+import { PgQueryExecutor } from "../db/pool.js";
 import {
   ToolPromotionCreateInput,
   ToolPromotionListOptions,
@@ -24,7 +24,7 @@ type ToolPromotionRow = {
 };
 
 export class PostgresToolPromotionStore implements ToolPromotionStore {
-  constructor(private readonly pool: PgPool) {}
+  constructor(private readonly pool: PgQueryExecutor) {}
 
   async list(options: ToolPromotionListOptions = {}): Promise<ToolPromotionRecord[]> {
     const filters: string[] = [];

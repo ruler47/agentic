@@ -40,6 +40,7 @@ import { InMemoryToolMigrationStore } from "../tools/toolMigrationStore.js";
 import { PostgresToolMigrationStore } from "../tools/postgresToolMigrationStore.js";
 import { InMemoryToolPromotionStore } from "../tools/toolPromotionStore.js";
 import { PostgresToolPromotionStore } from "../tools/postgresToolPromotionStore.js";
+import { PostgresToolPromotionCoordinator } from "../tools/postgresToolPromotionCoordinator.js";
 import { loadGeneratedTools } from "../tools/generatedToolLoader.js";
 import {
   ExternalHttpToolPackageRunner,
@@ -174,7 +175,12 @@ const toolBuildWorkflow = new ToolBuildWorkflow(
     },
   ),
   new CommandToolQaRunner(process.cwd(), { migrationQaPool: toolBuildMigrationQaPool }),
-  new MetadataToolRegistrar(toolMetadataStore, toolMigrationStore, toolPromotionStore),
+  new MetadataToolRegistrar(
+    toolMetadataStore,
+    toolMigrationStore,
+    toolPromotionStore,
+    pool ? new PostgresToolPromotionCoordinator(pool) : undefined,
+  ),
   {
     reviewers: [
       new DeterministicToolCodeReviewer(),

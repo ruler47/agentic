@@ -222,6 +222,9 @@ Generated storage contracts are checked before promotion. If
 `TOOL_BUILD_MIGRATION_QA_DATABASE_URL` points at a disposable Postgres database, the Tool
 Builder also executes generated storage migration plans twice inside a rollback
 transaction to prove basic idempotency before registration continues.
+When Postgres is configured, generated-tool promotion writes active metadata, pending
+migration manifests, and the append-only promotion journal through one database
+transaction, so those registry records commit or roll back together.
 
 Tool contracts are also persisted in Postgres when the Docker stack is running. The
 `tool_modules` catalog stores version, capabilities, schemas, source, status, required

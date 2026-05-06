@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { PgPool } from "../db/pool.js";
+import { PgQueryExecutor } from "../db/pool.js";
 import {
   ToolMigrationCreateInput,
   ToolMigrationListOptions,
@@ -25,7 +25,7 @@ type ToolMigrationRow = {
 };
 
 export class PostgresToolMigrationStore implements ToolMigrationStore {
-  constructor(private readonly pool: PgPool) {}
+  constructor(private readonly pool: PgQueryExecutor) {}
 
   async list(options: ToolMigrationListOptions = {}): Promise<ToolMigrationRecord[]> {
     const filters: string[] = [];

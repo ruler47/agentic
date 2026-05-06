@@ -598,14 +598,16 @@ export function validateToolStorageMigrationContract(storage?: ToolStorageContra
 }
 
 export class MetadataToolRegistrar implements ToolRegistrar {
-  private readonly promotionCoordinator: ToolPromotionCoordinator;
+  private readonly promotionCoordinator: Pick<ToolPromotionCoordinator, "promote">;
 
   constructor(
     metadataStore: ToolMetadataStore,
     migrationStore?: ToolMigrationStore,
     promotionStore?: ToolPromotionStore,
+    promotionCoordinator?: Pick<ToolPromotionCoordinator, "promote">,
   ) {
-    this.promotionCoordinator = new ToolPromotionCoordinator(metadataStore, migrationStore, promotionStore);
+    this.promotionCoordinator =
+      promotionCoordinator ?? new ToolPromotionCoordinator(metadataStore, migrationStore, promotionStore);
   }
 
   async register(request: ToolBuildRequest, output: ToolBuildOutput, qaReport?: ToolBuildQaReport): Promise<string> {

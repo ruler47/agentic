@@ -293,6 +293,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/tools/toolPromotionCoordinator.ts](src/tools/toolPromotionCoordinator.ts) -
   explicit generated-tool promotion boundary for metadata, migration manifests, and
   promotion journal evidence.
+- [src/tools/postgresToolPromotionCoordinator.ts](src/tools/postgresToolPromotionCoordinator.ts)
+  - Postgres transaction wrapper for generated-tool metadata, migration-manifest, and
+  promotion-journal writes.
 - [src/tools/toolBuildRequestStore.ts](src/tools/toolBuildRequestStore.ts) - Tool Builder
   request/contract/lifecycle/QA criteria model.
 - [src/tools/postgresToolBuildRequestStore.ts](src/tools/postgresToolBuildRequestStore.ts)
@@ -702,9 +705,11 @@ For documentation-only changes:
 - Generated promotions are also appended to `tool_promotions`. Treat `tool_modules` as
   the current active state and `tool_promotions` as the operator journal of promotion
   decisions.
-- Keep generated-tool registration logic behind `ToolPromotionCoordinator` so the next
-  phase can replace the current multi-store writes with a true Postgres transaction
-  without changing Tool Builder providers.
+- Keep generated-tool registration logic behind `ToolPromotionCoordinator`. When Postgres
+  is configured, `PostgresToolPromotionCoordinator` wraps metadata, migration-manifest,
+  and promotion-journal writes in one database transaction. Remaining promotion hardening
+  is package activation, migration execution, runtime reload/restart, and rollback as one
+  promotion saga.
 - Destructive database operations requested through a tool bug/rework flow must become
   explicit auditable capabilities with exact scope, dry-run preview, policy/approval
   checks, and audit events. Do not satisfy them by running arbitrary one-off SQL.

@@ -1,4 +1,4 @@
-import { PgPool } from "../db/pool.js";
+import { PgQueryExecutor } from "../db/pool.js";
 import { Tool, ToolHealth, ToolSchema, ToolStartupMode } from "./tool.js";
 import {
   GeneratedToolReplacementInput,
@@ -47,7 +47,10 @@ type ToolModuleVersionRow = ToolModuleRow & {
 };
 
 export class PostgresToolMetadataStore implements ToolMetadataStore {
-  constructor(private readonly pool: PgPool) {}
+  constructor(
+    private readonly pool: PgQueryExecutor,
+    private readonly options: { autoTransactionWrites?: boolean } = {},
+  ) {}
 
   async list(): Promise<ToolModuleMetadata[]> {
     const rows = await this.pool.query<ToolModuleRow>(`
@@ -192,7 +195,8 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
   }
 
   async registerGenerated(input: GeneratedToolModuleInput): Promise<ToolModuleMetadata> {
-    await this.pool.query("begin");
+    const autoTransaction = this.options.autoTransactionWrites ?? true;
+    if (autoTransaction) await this.pool.query("begin");
     try {
       const existing = await this.pool.query<ToolModuleRow>(
         `
@@ -279,17 +283,18 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         ],
       );
       await this.upsertVersionRow(input, rows.rows[0], true);
-      await this.pool.query("commit");
+      if (autoTransaction) await this.pool.query("commit");
 
       return mapRow(rows.rows[0]);
     } catch (error) {
-      await this.pool.query("rollback");
+      if (autoTransaction) await this.pool.query("rollback");
       throw error;
     }
   }
 
   async promoteReplacement(input: GeneratedToolReplacementInput): Promise<ToolModuleMetadata> {
-    await this.pool.query("begin");
+    const autoTransaction = this.options.autoTransactionWrites ?? true;
+    if (autoTransaction) await this.pool.query("begin");
     try {
       const existing = await this.pool.query<ToolModuleRow>(
         `
@@ -365,11 +370,11 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         ],
       );
       await this.upsertVersionRow(input, rows.rows[0], true);
-      await this.pool.query("commit");
+      if (autoTransaction) await this.pool.query("commit");
 
       return mapRow(rows.rows[0]);
     } catch (error) {
-      await this.pool.query("rollback");
+      if (autoTransaction) await this.pool.query("rollback");
       throw error;
     }
   }
