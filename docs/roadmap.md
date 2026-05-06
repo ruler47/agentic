@@ -796,8 +796,11 @@ Remaining Phase 3 gaps:
   runtime already does this for missing capabilities. Artifact-producing tool failures
   and semantic artifact QA failures now create contextual versioned rework requests with
   source span id, tool name/version, input/output summaries, and `replacesVersion` for
-  generated tools. Remaining work is waiting for the QA-approved promoted replacement,
-  reloading the registry, and retrying the tool call once in the same run.
+  generated tools. If a synchronous build/activation path makes a reworked tool version
+  available in the registry during the same run, the agent now performs one bounded retry
+  of the artifact tool call. Remaining work is waiting asynchronously for a background
+  QA-approved promoted replacement, reloading the registry, and resuming/retrying the run
+  after the background worker finishes.
 - Next roadmap focus after the background worker: scoped semantic memory with group,
   user, and thread facts; review queue; confidence; accepted/rejected fact lifecycle.
 

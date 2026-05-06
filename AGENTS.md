@@ -637,7 +637,9 @@ For documentation-only changes:
   failure context, and promotion decision. Artifact-producing tool failures and semantic
   artifact QA failures create contextual Tool Build rework requests with source span id,
   tool name/version, input/output summary, `replacesToolName`, and `replacesVersion` when
-  a generated tool is the source.
+  a generated tool is the source. If the reworked version becomes available in the
+  registry synchronously, the agent may retry the failed artifact tool call once; do not
+  add unbounded rework/retry loops.
 - Generated tool versions are persisted in `tool_module_versions`. `tool_modules`
   represents the active version, while older registered versions remain available for
   inspection and explicit activation through the Tools UI/API.

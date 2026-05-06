@@ -1619,6 +1619,7 @@ export class UniversalAgent {
     artifactTitle: string,
     toolExecutionContext?: BaseToolExecutionContext,
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
+    reworkRetryKeys = new Set<string>(),
   ): Promise<AgentArtifact | undefined> {
     const spanId = createSpanId(`tool-${tool.name}`);
     const startedAt = new Date();
@@ -1656,7 +1657,7 @@ export class UniversalAgent {
         durationMs: elapsedMs(startedAt),
         payload: sanitizeToolPayload(toolResult),
       });
-      await this.handleInsufficientToolCapability(
+      const buildRequest = await this.handleInsufficientToolCapability(
         {
           tool,
           capability,
@@ -1670,6 +1671,26 @@ export class UniversalAgent {
         parentSpanId,
         requestToolBuild,
       );
+      const replacementTool = this.findReworkedTool(tool, capability, reworkRetryKeys);
+      if (buildRequest && replacementTool) {
+        reworkRetryKeys.add(toolIdentity(tool));
+        return this.retryArtifactToolAfterRework(
+          replacementTool,
+          input,
+          capability,
+          detail,
+          emit,
+          parentSpanId,
+          saveArtifact,
+          isData,
+          toArtifact,
+          artifactActor,
+          artifactTitle,
+          toolExecutionContext,
+          requestToolBuild,
+          reworkRetryKeys,
+        );
+      }
       return undefined;
     }
 
@@ -1713,7 +1734,7 @@ export class UniversalAgent {
           durationMs: elapsedMs(artifactStartedAt),
           payload: { artifact: sanitizeArtifactInput(artifactInput), artifactQa },
         });
-        await this.handleInsufficientToolCapability(
+        const buildRequest = await this.handleInsufficientToolCapability(
           {
             tool,
             capability,
@@ -1727,6 +1748,26 @@ export class UniversalAgent {
           artifactSpanId,
           requestToolBuild,
         );
+        const replacementTool = this.findReworkedTool(tool, capability, reworkRetryKeys);
+        if (buildRequest && replacementTool) {
+          reworkRetryKeys.add(toolIdentity(tool));
+          return this.retryArtifactToolAfterRework(
+            replacementTool,
+            input,
+            capability,
+            detail,
+            emit,
+            parentSpanId,
+            saveArtifact,
+            isData,
+            toArtifact,
+            artifactActor,
+            artifactTitle,
+            toolExecutionContext,
+            requestToolBuild,
+            reworkRetryKeys,
+          );
+        }
         return undefined;
       }
       artifactInput = {
@@ -1764,6 +1805,73 @@ export class UniversalAgent {
     });
 
     return artifact;
+  }
+
+  private findReworkedTool(tool: Tool, capability: string, reworkRetryKeys: Set<string>): Tool | undefined {
+    const failedToolKey = toolIdentity(tool);
+    const sameNameTool = this.tools.get(tool.name);
+    if (sameNameTool && toolIdentity(sameNameTool) !== failedToolKey && !reworkRetryKeys.has(toolIdentity(sameNameTool))) {
+      return sameNameTool;
+    }
+
+    return this.tools
+      .findByCapability(capability)
+      .find(
+        (candidate) =>
+          candidate.name.startsWith("generated.") &&
+          toolIdentity(candidate) !== failedToolKey &&
+          !reworkRetryKeys.has(toolIdentity(candidate)),
+      );
+  }
+
+  private async retryArtifactToolAfterRework<TData>(
+    tool: Tool,
+    input: Record<string, unknown>,
+    capability: string,
+    detail: string,
+    emit: AgentEventEmitter,
+    parentSpanId: string,
+    saveArtifact: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
+    isData: (data: unknown) => data is TData,
+    toArtifact: (data: TData) => ArtifactCreateInput,
+    artifactActor: string,
+    artifactTitle: string,
+    toolExecutionContext: BaseToolExecutionContext | undefined,
+    requestToolBuild: ((request: ToolBuildRequestInput) => Promise<ToolBuildRequest>) | undefined,
+    reworkRetryKeys: Set<string>,
+  ): Promise<AgentArtifact | undefined> {
+    const retryStartedAt = new Date();
+    await emit({
+      spanId: createSpanId(`tool-retry-${capability}`),
+      parentSpanId,
+      type: "tool-build-requested",
+      actor: "tool-builder",
+      activity: "tool",
+      status: "completed",
+      title: `Retrying with reworked tool: ${tool.name}`,
+      detail: `${tool.name}${tool.version ? `@${tool.version}` : ""}`,
+      startedAt: retryStartedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(retryStartedAt),
+      payload: { tool: tool.name, version: tool.version, capability },
+    });
+
+    return this.runArtifactTool(
+      tool,
+      input,
+      capability,
+      detail,
+      emit,
+      parentSpanId,
+      saveArtifact,
+      isData,
+      toArtifact,
+      artifactActor,
+      artifactTitle,
+      toolExecutionContext,
+      requestToolBuild,
+      reworkRetryKeys,
+    );
   }
 
   private async handleMissingToolCapability(
@@ -3241,6 +3349,10 @@ function safeArtifactSlug(value: string): string {
 
 function capitalize(value: string): string {
   return value.slice(0, 1).toUpperCase() + value.slice(1);
+}
+
+function toolIdentity(tool: Tool): string {
+  return `${tool.name}@${tool.version ?? "unknown"}`;
 }
 
 function sanitizeToolPayload(value: unknown): unknown {
