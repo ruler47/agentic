@@ -2653,6 +2653,17 @@ textarea {
   padding-top: 10px;
 }
 
+.qa-evidence-list,
+.build-review-list {
+  display: grid;
+  gap: 4px;
+}
+
+.qa-evidence-list {
+  border-left: 2px solid rgba(53, 230, 193, 0.38);
+  padding-left: 10px;
+}
+
 .rework-form {
   display: grid;
   gap: 8px;

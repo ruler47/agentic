@@ -551,7 +551,8 @@ Next implementation tasks:
   the background `ToolBuildWorker`, which atomically claims the oldest `requested` card and
   reloads/activates generated tools before final `registered` status when the workflow is
   configured with an activation runner. If activation fails, the request stays `blocked`
-  with activation QA evidence and the registered tool name for repair.
+  with activation QA evidence and the registered tool name for repair. The Tool Builds UI
+  now surfaces activation pass/fail checks directly on each card and in the preview.
 - Keep Tool Build and rework request forms stable during live UI refresh. DONE: soft
   background refresh defers rendering while an operator has an open tool-build, span bug,
   or tool rework form, and universal QA/change prompts are placeholders rather than

@@ -179,8 +179,10 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /function formatToolPromotionEvidence/);
   assert.match(app, /function renderToolPromotionJournal/);
   assert.match(app, /function promotionJournalForTool/);
+  assert.match(app, /function renderToolBuildQaEvidence/);
   assert.match(app, /Promotion evidence/);
   assert.match(app, /Promotion journal/);
+  assert.match(app, /QA and activation checks/);
   assert.match(app, /\/api\/tool-promotions/);
   assert.match(app, /function renderMarkdown/);
   assert.match(app, /function renderInlineMarkdown/);

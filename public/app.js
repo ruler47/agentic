@@ -2818,12 +2818,14 @@ function renderBuildCard(request) {
       ${request.feedback ? `<small class="status-note">Latest feedback: ${escapeHtml(request.feedback)}</small>` : ""}
       ${request.statusDetail ? `<small class="status-note">Status detail: ${escapeHtml(request.statusDetail)}</small>` : ""}
       ${request.qaReport ? `<small class="status-note">QA: ${escapeHtml(request.qaReport.summary)}</small>` : ""}
+      ${renderToolBuildQaEvidence(request.qaReport)}
       ${renderToolBuildReviews(request.qaReport?.reviews)}
       <details class="build-preview" data-panel-id="build-preview:${escapeHtml(request.id)}" ${panelOpenAttr(`build-preview:${request.id}`)}>
         <summary>Preview</summary>
         ${contextBlock("Tool contract", `${request.contract?.toolName ?? "pending"}\n${request.contract?.modulePath ?? "module pending"}\n${request.contract?.testPath ?? "test pending"}`)}
         ${contextBlock("Run mode", request.contract?.startupMode ?? "on-demand")}
         ${contextBlock("QA criteria", (request.contract?.qaCriteria ?? request.qaCriteria ?? []).join("\n") || "No QA criteria.")}
+        ${request.qaReport ? contextBlock("QA and activation checks", (request.qaReport.checks ?? []).join("\n") || "No checks recorded.") : ""}
       </details>
       <div class="card-actions">
         ${["requested", "qa_failed", "blocked"].includes(request.status)
@@ -2841,6 +2843,20 @@ function renderBuildCard(request) {
         </form>
       </details>
     </article>
+  `;
+}
+
+function renderToolBuildQaEvidence(qaReport) {
+  if (!qaReport || !Array.isArray(qaReport.checks) || qaReport.checks.length === 0) return "";
+  const activationChecks = qaReport.checks.filter((check) => /^activation (pass|fail):/i.test(String(check)));
+  if (activationChecks.length === 0) return "";
+
+  return `
+    <div class="qa-evidence-list">
+      ${activationChecks
+        .map((check) => `<small class="status-note">${escapeHtml(check)}</small>`)
+        .join("")}
+    </div>
   `;
 }
 
