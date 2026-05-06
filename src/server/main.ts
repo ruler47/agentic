@@ -38,6 +38,8 @@ import { InMemoryToolBuildRequestStore } from "../tools/toolBuildRequestStore.js
 import { PostgresToolBuildRequestStore } from "../tools/postgresToolBuildRequestStore.js";
 import { InMemoryToolMigrationStore } from "../tools/toolMigrationStore.js";
 import { PostgresToolMigrationStore } from "../tools/postgresToolMigrationStore.js";
+import { InMemoryToolPromotionStore } from "../tools/toolPromotionStore.js";
+import { PostgresToolPromotionStore } from "../tools/postgresToolPromotionStore.js";
 import { loadGeneratedTools } from "../tools/generatedToolLoader.js";
 import {
   ExternalHttpToolPackageRunner,
@@ -106,6 +108,9 @@ const toolBuildRequestStore = pool
 const toolMigrationStore = pool
   ? new PostgresToolMigrationStore(pool)
   : new InMemoryToolMigrationStore();
+const toolPromotionStore = pool
+  ? new PostgresToolPromotionStore(pool)
+  : new InMemoryToolPromotionStore();
 const toolPackageRunners = [
   new LocalPathToolPackageRunner(),
   new SourceBundleHttpProcessToolPackageRunner(),
@@ -169,7 +174,7 @@ const toolBuildWorkflow = new ToolBuildWorkflow(
     },
   ),
   new CommandToolQaRunner(process.cwd(), { migrationQaPool: toolBuildMigrationQaPool }),
-  new MetadataToolRegistrar(toolMetadataStore, toolMigrationStore),
+  new MetadataToolRegistrar(toolMetadataStore, toolMigrationStore, toolPromotionStore),
   {
     reviewers: [
       new DeterministicToolCodeReviewer(),
@@ -238,6 +243,7 @@ const server = createWebApp({
   toolRegistry: tools,
   toolMetadataStore,
   toolMigrationStore,
+  toolPromotionStore,
   toolBuildRequestStore,
   toolBuildWorkflow,
   toolServiceSupervisor,

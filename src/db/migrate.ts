@@ -601,6 +601,33 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     `);
 
     await pool.query(`
+      create table if not exists tool_promotions (
+        id text primary key,
+        tool_name text not null,
+        tool_version text not null,
+        status text not null check (status in ('promoted')),
+        promoted_at timestamptz not null,
+        build_request_id text,
+        qa_report jsonb,
+        package_ref text,
+        migration_ids text[] not null default '{}',
+        summary text not null,
+        created_at timestamptz not null
+      );
+    `);
+
+    await pool.query(`
+      create index if not exists tool_promotions_tool_version_idx
+      on tool_promotions(tool_name, tool_version, promoted_at desc);
+    `);
+
+    await pool.query(`
+      create index if not exists tool_promotions_build_request_idx
+      on tool_promotions(build_request_id, promoted_at desc)
+      where build_request_id is not null;
+    `);
+
+    await pool.query(`
       create table if not exists tool_build_requests (
         id text primary key,
         capability text not null,

@@ -19,6 +19,7 @@ import { LlmToolBuildProvider } from "../src/tools/llmToolBuildProvider.js";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import { InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
+import { InMemoryToolPromotionStore } from "../src/tools/toolPromotionStore.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { loadGeneratedTools } from "../src/tools/generatedToolLoader.js";
 import { validateAndBuildToolPackageWorkspace } from "../src/tools/toolPackageWorkspaceQa.js";
@@ -524,6 +525,7 @@ test("MetadataToolRegistrar records pending migration manifests with QA evidence
   const requestStore = new InMemoryToolBuildRequestStore();
   const metadataStore = new InMemoryToolMetadataStore();
   const migrationStore = new InMemoryToolMigrationStore();
+  const promotionStore = new InMemoryToolPromotionStore();
   const request = await requestStore.create({
     capability: "custom-inbound-service",
     displayName: "Custom Inbound Service",
@@ -531,7 +533,7 @@ test("MetadataToolRegistrar records pending migration manifests with QA evidence
     desiredToolName: "generated.custom.inboundService",
     startupMode: "always-on",
   });
-  const registrar = new MetadataToolRegistrar(metadataStore, migrationStore);
+  const registrar = new MetadataToolRegistrar(metadataStore, migrationStore, promotionStore);
 
   await registrar.register(
     request,
@@ -554,6 +556,7 @@ test("MetadataToolRegistrar records pending migration manifests with QA evidence
   );
   const [migration] = await migrationStore.list({ toolName: "generated.custom.inboundService" });
   const [metadata] = await metadataStore.list();
+  const [promotion] = await promotionStore.list({ toolName: "generated.custom.inboundService" });
 
   assert.equal(migration?.status, "pending");
   assert.equal(migration?.migrationId, "001_create_service_runtime_tables");
@@ -563,6 +566,9 @@ test("MetadataToolRegistrar records pending migration manifests with QA evidence
   assert.equal(metadata?.promotionEvidence?.buildRequestId, request.id);
   assert.equal(metadata?.promotionEvidence?.qaReport?.summary, "Generated service passed QA.");
   assert.deepEqual(metadata?.versions?.[0]?.promotionEvidence?.migrationIds, ["001_create_service_runtime_tables"]);
+  assert.equal(promotion?.buildRequestId, request.id);
+  assert.equal(promotion?.summary, "Generated service passed QA.");
+  assert.deepEqual(promotion?.migrationIds, ["001_create_service_runtime_tables"]);
 });
 
 test("validateToolStorageMigrationContract rejects raw SQL permissions before promotion QA", () => {

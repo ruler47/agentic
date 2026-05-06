@@ -407,6 +407,10 @@ checksum, status, applied actor/time, QA report, and rollback notes. This endpoi
 durable operator/registrar handoff; generated tools should not run hidden ad hoc SQL from
 inside `run(input)`.
 
+`GET /api/tool-promotions` lists generated tool promotion journal entries. Optional query
+filters are `toolName` and `buildRequestId`. Each entry links the promoted version to the
+Tool Build request, QA evidence, package ref, migration ids, and promotion timestamp.
+
 The server also runs a background Tool Builder worker by default. It claims the oldest
 `requested` card atomically, moves it to `building`, executes the same workflow used by
 the manual run endpoint, and reloads generated tools after registration. Operators can

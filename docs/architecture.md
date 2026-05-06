@@ -263,6 +263,10 @@ The target contract is:
   build request id, QA summary/checks/reviews, package ref, promoted timestamp, and
   migration ids. This makes promotion decisions inspectable after restart while the
   stricter all-or-nothing source/migration/activation transaction is still being built;
+- every generated promotion is appended to `tool_promotions`, a separate promotion
+  journal. `tool_modules` remains the current active state; `tool_module_versions` keeps
+  selectable versions; `tool_promotions` records the decision trail that future rollback,
+  diff, approval, and audit screens can consume;
 - tool runtime receives a constrained `ToolExecutionContext` with secret resolver, audit
   writer, logger, provenance, cancellation signal, and a portable
   `artifacts.saveGenerated(...)` writer for output files. When Postgres is configured,

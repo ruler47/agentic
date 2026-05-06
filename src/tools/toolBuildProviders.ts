@@ -25,6 +25,7 @@ import type { ToolPackageManifest } from "./toolPackage.js";
 import { ToolPackageWorkspaceStore } from "./toolPackageWorkspaceStore.js";
 import { validateAndBuildToolPackageWorkspace } from "./toolPackageWorkspaceQa.js";
 import { createToolMigrationChecksum, ToolMigrationStore } from "./toolMigrationStore.js";
+import { ToolPromotionStore } from "./toolPromotionStore.js";
 import {
   runToolStorageMigrationPlanQa,
   type ToolStorageMigrationQueryExecutor,
@@ -599,10 +600,12 @@ export class MetadataToolRegistrar implements ToolRegistrar {
   constructor(
     private readonly metadataStore: ToolMetadataStore,
     private readonly migrationStore?: ToolMigrationStore,
+    private readonly promotionStore?: ToolPromotionStore,
   ) {}
 
   async register(request: ToolBuildRequest, output: ToolBuildOutput, qaReport?: ToolBuildQaReport): Promise<string> {
     const toolName = request.contract.toolName;
+    const promotionEvidence = promotionEvidenceFromBuild(request, output, qaReport);
     const input = {
       name: toolName,
       displayName: output.displayName ?? request.displayName ?? request.contract.displayName,
@@ -624,7 +627,7 @@ export class MetadataToolRegistrar implements ToolRegistrar {
         ? packageWorkspaceManifest(request, output, output.packageWorkspace.packageRef)
         : output.packageManifest,
       changeSummary: output.changeSummary ?? formatToolVersionChangeSummary(request, output),
-      promotionEvidence: promotionEvidenceFromBuild(request, output, qaReport),
+      promotionEvidence,
     };
 
     if (request.replacesVersion) {
@@ -637,6 +640,7 @@ export class MetadataToolRegistrar implements ToolRegistrar {
     }
 
     await this.recordStorageMigrationManifests(request, output, qaReport);
+    await this.recordPromotion(request, promotionEvidence);
 
     return toolName;
   }
@@ -669,6 +673,25 @@ export class MetadataToolRegistrar implements ToolRegistrar {
         rollbackNotes: "Pending isolated database execution and transactional promotion.",
       });
     }
+  }
+
+  private async recordPromotion(
+    request: ToolBuildRequest,
+    evidence: ToolModulePromotionEvidence,
+  ): Promise<void> {
+    if (!this.promotionStore) return;
+
+    await this.promotionStore.create({
+      toolName: request.contract.toolName,
+      toolVersion: request.contract.version,
+      status: evidence.status,
+      promotedAt: new Date(evidence.promotedAt),
+      buildRequestId: evidence.buildRequestId,
+      qaReport: evidence.qaReport,
+      packageRef: evidence.packageRef,
+      migrationIds: evidence.migrationIds,
+      summary: evidence.summary,
+    });
   }
 }
 

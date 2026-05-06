@@ -286,6 +286,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   migration metadata contract and in-memory implementation.
 - [src/tools/postgresToolMigrationStore.ts](src/tools/postgresToolMigrationStore.ts) -
   Postgres-backed `tool_migrations` catalog for versioned tool storage changes.
+- [src/tools/toolPromotionStore.ts](src/tools/toolPromotionStore.ts) - generated tool
+  promotion journal contract and in-memory implementation.
+- [src/tools/postgresToolPromotionStore.ts](src/tools/postgresToolPromotionStore.ts) -
+  Postgres-backed `tool_promotions` journal.
 - [src/tools/toolBuildRequestStore.ts](src/tools/toolBuildRequestStore.ts) - Tool Builder
   request/contract/lifecycle/QA criteria model.
 - [src/tools/postgresToolBuildRequestStore.ts](src/tools/postgresToolBuildRequestStore.ts)
@@ -437,6 +441,7 @@ For documentation-only changes:
 - `tests/webServer.test.ts` covers provider-neutral always-on tool service event
   recording, API listing, payload redaction, and audit emission.
 - `tests/toolMigrationStore.test.ts` covers tool-owned migration metadata lifecycle.
+- `tests/toolPromotionStore.test.ts` covers generated tool promotion journal entries.
 - `tests/toolBuildWorkflow.test.ts` covers Builder/QA/Registrar orchestration and failed
   QA registration blocking.
 - `tests/toolBuildProviders.test.ts` covers provider-backed TypeScript generation and
@@ -690,6 +695,9 @@ For documentation-only changes:
   version to the Tool Build request, QA summary/checks/reviews, package ref, and storage
   migration ids. This is the current bridge toward fully transactional promotion; keep it
   updated whenever registrar behavior changes.
+- Generated promotions are also appended to `tool_promotions`. Treat `tool_modules` as
+  the current active state and `tool_promotions` as the operator journal of promotion
+  decisions.
 - Destructive database operations requested through a tool bug/rework flow must become
   explicit auditable capabilities with exact scope, dry-run preview, policy/approval
   checks, and audit events. Do not satisfy them by running arbitrary one-off SQL.

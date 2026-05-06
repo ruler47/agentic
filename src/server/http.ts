@@ -67,6 +67,7 @@ import {
   ToolMigrationStore,
   validateToolMigrationStatus,
 } from "../tools/toolMigrationStore.js";
+import { ToolPromotionStore } from "../tools/toolPromotionStore.js";
 import { AgentArtifact, AgentEvent, AgentRunResult, ArtifactUploadInput } from "../types.js";
 
 export type WebAppOptions = {
@@ -77,6 +78,7 @@ export type WebAppOptions = {
   toolRegistry?: Pick<ToolRegistry, "list"> & Partial<Pick<ToolRegistry, "unregister">>;
   toolMetadataStore?: ToolMetadataStore;
   toolMigrationStore?: ToolMigrationStore;
+  toolPromotionStore?: ToolPromotionStore;
   toolBuildRequestStore?: ToolBuildRequestStore;
   toolBuildWorkflow?: ToolBuildWorkflow;
   toolServiceSupervisor?: ToolServiceSupervisor;
@@ -1241,6 +1243,20 @@ async function routeRequest(
             status: status ? validateToolMigrationStatus(status) : undefined,
           })
         : [],
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/tool-promotions") {
+    if (!options.toolPromotionStore) {
+      sendJson(response, 200, { promotions: [] });
+      return;
+    }
+    sendJson(response, 200, {
+      promotions: await options.toolPromotionStore.list({
+        toolName: url.searchParams.get("toolName") ?? undefined,
+        buildRequestId: url.searchParams.get("buildRequestId") ?? undefined,
+      }),
     });
     return;
   }

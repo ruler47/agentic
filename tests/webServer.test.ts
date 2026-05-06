@@ -16,6 +16,7 @@ import { LocalArtifactStore } from "../src/artifacts/artifactStore.js";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import { InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
+import { InMemoryToolPromotionStore } from "../src/tools/toolPromotionStore.js";
 import { ToolBuildWorkflow } from "../src/tools/toolBuildWorkflow.js";
 import { InMemoryAuditEventStore } from "../src/audit/inMemoryAuditEventStore.js";
 import { InMemoryGroupProfileStore } from "../src/instance/groupProfileStore.js";
@@ -2120,6 +2121,41 @@ test("web server records tool migration metadata with audit events", async () =>
     assert.equal(listed.migrations.length, 1);
     assert.equal(listed.migrations[0].migrationId, "001_create_cache");
     assert.equal(audit.events.some((event: { action: string }) => event.action === "tool_migration.recorded"), true);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server exposes tool promotion journal entries", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const toolPromotionStore = new InMemoryToolPromotionStore();
+  await toolPromotionStore.create({
+    toolName: "generated.api.client",
+    toolVersion: "1.2.0",
+    promotedAt: new Date("2026-05-04T10:00:00.000Z"),
+    buildRequestId: "toolbuild-1",
+    qaReport: { ok: true, checks: ["isolated build"] },
+    packageRef: "generated.api.client/1.2.0",
+    migrationIds: ["001_create_cache"],
+    summary: "Generated API client passed QA.",
+  });
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolPromotionStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const listed = await (await fetch(`${baseUrl}/api/tool-promotions?toolName=generated.api.client`)).json();
+
+    assert.equal(listed.promotions.length, 1);
+    assert.equal(listed.promotions[0].buildRequestId, "toolbuild-1");
+    assert.deepEqual(listed.promotions[0].migrationIds, ["001_create_cache"]);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
