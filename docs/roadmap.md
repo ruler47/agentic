@@ -793,9 +793,11 @@ Remaining Phase 3 gaps:
   signals. Runtime semantic artifact QA now treats `blocked_or_loader` screenshot
   failures as external blockers rather than automatic tool rework requests, records an
   explicit trace event for the limitation, and creates/updates accepted global failure
-  memory for the blocked host/tool. Remaining work: classify ambiguous issues with a
-  local LLM before build creation and expose durable limitation memories more clearly in
-  the UI.
+  memory for the blocked host/tool. DONE for first UI visibility: Memory now has a
+  `Known Limitations` filter, metric, warning styling, and detail guidance for
+  `external-blocker` memories. Remaining work: classify ambiguous issues with a local LLM
+  before build creation and add cross-links from the rejected artifact/span directly to
+  the limitation memory.
 - Let agents request a versioned tool improvement, wait for the QA-approved promoted
   replacement, reload the registry, and retry the tool call once when a current tool is
   close but insufficient. PARTIAL: prompts now require workers to identify reusable tool

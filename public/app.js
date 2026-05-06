@@ -1757,6 +1757,7 @@ function renderMemoryPage() {
   const accepted = state.memories.filter((memory) => normalizeMemoryStatus(memory.status) === "accepted");
   const rejected = state.memories.filter((memory) => normalizeMemoryStatus(memory.status) === "rejected");
   const archived = state.memories.filter((memory) => normalizeMemoryStatus(memory.status) === "archived");
+  const limitations = state.memories.filter(isExternalBlockerMemory);
   return `
     <section class="memory-layout">
       <section class="page-stack">
@@ -1773,6 +1774,7 @@ function renderMemoryPage() {
             ${miniInsight("Accepted", String(accepted.length))}
             ${miniInsight("Review queue", String(reviewQueue.length))}
             ${miniInsight("Blocked proposals", String(state.memoryReviews.filter((review) => review.status === "blocked").length))}
+            ${miniInsight("Known limitations", String(limitations.length))}
             ${miniInsight("Rejected", String(rejected.length))}
             ${miniInsight("Archived", String(archived.length))}
           </div>
@@ -1781,6 +1783,7 @@ function renderMemoryPage() {
           ${renderMemoryFilterTab("all", "All Memory", state.memories.length)}
           ${renderMemoryFilterTab("proposed", "Review Queue", reviewQueue.length)}
           ${renderMemoryFilterTab("accepted", "Accepted", accepted.length)}
+          ${renderMemoryFilterTab("limitations", "Known Limitations", limitations.length)}
           ${renderMemoryFilterTab("rejected", "Rejected", rejected.length)}
           ${renderMemoryFilterTab("archived", "Archived", archived.length)}
         </div>
@@ -1851,14 +1854,17 @@ function renderMemoryScopeSections(memories) {
 
 function renderMemoryCard(memory) {
   const status = normalizeMemoryStatus(memory.status);
+  const isLimitation = isExternalBlockerMemory(memory);
   const retrievalImpact =
-    status === "accepted"
+    isLimitation
+      ? "known external limitation"
+      : status === "accepted"
       ? "available to matching runs"
       : status === "proposed"
         ? "waiting for review"
         : "excluded from retrieval";
   return `
-    <article class="knowledge-card ${state.selectedMemoryId === memory.id ? "selected" : ""}" data-action="select-memory" data-memory-id="${memory.id}" tabindex="0">
+    <article class="knowledge-card ${isLimitation ? "limitation-memory" : ""} ${state.selectedMemoryId === memory.id ? "selected" : ""}" data-action="select-memory" data-memory-id="${memory.id}" tabindex="0">
       <div class="card-topline">
         <span>${escapeHtml(formatMemoryScope(memory))}</span>
         <span>${formatRelative(memory.createdAt)}</span>
@@ -1866,6 +1872,7 @@ function renderMemoryCard(memory) {
       <h3>${escapeHtml(memory.title)}</h3>
       <p>${escapeHtml(memory.summary)}</p>
       <div class="tag-row">
+        ${isLimitation ? `<span class="warning-chip">external blocker</span>` : ""}
         <span>${escapeHtml(status)}</span>
         <span>${formatConfidence(memory.confidence)}</span>
         <span>${escapeHtml(memory.sensitivity ?? "normal")}</span>
@@ -1891,6 +1898,7 @@ function renderMemoryDetail(memory) {
         <span>${formatRelative(memory.createdAt)}</span>
       </div>
       ${contextBlock("Retrieval impact", memoryRetrievalImpact(memory))}
+      ${isExternalBlockerMemory(memory) ? contextBlock("Known limitation", "The agent should try another public evidence strategy first. If no useful public source is available, it should explain the external blocker instead of asking to rebuild the tool.") : ""}
       ${renderMemoryProposalReview(memory)}
       ${renderMemoryPolicySimulation(memory)}
       ${contextBlock("Summary", memory.summary || "No summary.")}
@@ -1997,7 +2005,12 @@ function normalizeMemoryStatus(status) {
 
 function filterMemoriesForView(memories) {
   if (state.memoryFilter === "all") return memories;
+  if (state.memoryFilter === "limitations") return memories.filter(isExternalBlockerMemory);
   return memories.filter((memory) => normalizeMemoryStatus(memory.status) === state.memoryFilter);
+}
+
+function isExternalBlockerMemory(memory) {
+  return (memory.tags ?? []).includes("external-blocker");
 }
 
 function memoryScopeOf(memory) {

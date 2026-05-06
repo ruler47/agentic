@@ -116,6 +116,11 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /Tool request created/);
   assert.match(app, /navigate\("tool-builds"\)/);
   assert.match(app, /function renderMemoryDetail/);
+  assert.match(app, /Known Limitations/);
+  assert.match(app, /function isExternalBlockerMemory/);
+  assert.match(app, /external blocker/);
+  assert.match(styles, /\.knowledge-card\.limitation-memory/);
+  assert.match(styles, /\.warning-chip/);
   assert.match(app, /\/api\/memories\/review-queue/);
   assert.match(app, /function renderMemoryProposalReview/);
   assert.match(app, /Blocked proposals/);

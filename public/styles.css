@@ -2400,6 +2400,27 @@ textarea {
   background: rgba(53, 230, 193, 0.06);
 }
 
+.knowledge-card.limitation-memory {
+  border-color: rgba(251, 191, 36, 0.22);
+  background:
+    linear-gradient(135deg, rgba(251, 191, 36, 0.075), transparent 42%),
+    rgba(21, 30, 43, 0.62);
+}
+
+.knowledge-card.limitation-memory:hover,
+.knowledge-card.limitation-memory.selected {
+  border-color: rgba(251, 191, 36, 0.42);
+  background:
+    linear-gradient(135deg, rgba(251, 191, 36, 0.12), transparent 46%),
+    rgba(21, 30, 43, 0.82);
+}
+
+.tag-row span.warning-chip {
+  border-color: rgba(251, 191, 36, 0.28);
+  background: rgba(251, 191, 36, 0.1);
+  color: var(--amber);
+}
+
 .tool-runtime-strip {
   align-items: center;
   background: rgba(255, 255, 255, 0.035);
