@@ -201,10 +201,14 @@ The first code-level slice of this target is `ToolPackageManifest`, a portable
 import/export contract for source bundles, OCI images, external packages, and local-path
 development tools. Future registry entries should be able to point at these manifests
 instead of only compiled files under `src/tools/generated`. Generated service providers
-now emit a local-path manifest with schemas, docs, examples, settings, secret handles,
-storage, and startup mode. The active generated module and each version row now persist
+now emit manifests with schemas, docs, examples, settings, secret handles, storage, and
+startup mode. New server-side Tool Builds write source-bundle packages under the
+gitignored `tools/<system-name>/<version>` workspace by default instead of writing new
+code into `src/tools/generated`. The active generated module and each version row persist
 that manifest in Postgres, so registry metadata survives restart and can later be
-exported/imported. Executing manifests through an external runner is still roadmap work.
+exported/imported. Source-bundles can be loaded from the package workspace and, in the web
+server, prefer a package-local HTTP process runner that calls `dist/runtime/server.js`
+instead of importing generated code into the Agentic process.
 
 The second code-level slice is a provider-neutral always-on service generator. Tool
 Builder can now create TypeScript modules with `startupMode=always-on`, `startService`,
@@ -350,9 +354,11 @@ instance should add LLM code/behavior reviewers before promotion.
 The registry also has a portable package-manifest import/export layer. Generated tools
 can expose `agentic.tool-package.v1` manifests through the API, and operators can import
 the same manifest shape back into the registry. Local-path packages remain compatible
-with the current compiled-module loader; source-bundle, OCI-image, and external-package
-references are stored as disabled package metadata until the generic out-of-process
-runner exists.
+with the compiled-module loader for legacy development; source-bundle packages can run
+from the out-of-tree package workspace, external HTTP packages proxy to their declared
+runtime URL, and OCI-image packages can be executed by the opt-in Docker runner when they
+expose the standard `/health` and `/run` contract. Production-grade supervision, resource
+limits, log redaction, and image build/publish flows remain roadmap work.
 
 The target flow also supports admin-provided API documentation and credentials. The agent
 should read the docs, propose a reusable TypeScript module contract, build tests, run QA,

@@ -21,8 +21,7 @@ services:
       - "3000:3000"
     volumes:
       - ./workspace:/app/workspace
-      - ./src/tools/generated:/app/src/tools/generated
-      - ./tests/generated:/app/tests/generated
+      - ./tools:/app/tools
     depends_on:
       postgres:
         condition: service_healthy

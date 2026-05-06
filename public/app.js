@@ -61,6 +61,7 @@ const state = {
   toolServiceEvents: [],
   toolMigrations: [],
   toolPromotions: [],
+  toolSettings: [],
   buildRequests: [],
   secretHandles: [],
   tiers: [],
@@ -139,6 +140,9 @@ document.addEventListener("submit", (event) => {
   }
   if (form.dataset.action === "update-tool-service-policy") {
     void updateToolServiceRestartPolicy(form);
+  }
+  if (form.dataset.action === "save-tool-settings") {
+    void saveToolRuntimeSettings(form);
   }
   if (form.dataset.action === "import-tool-package") {
     void importToolPackageManifest(form);
@@ -390,6 +394,7 @@ async function refreshData(options = {}) {
       tools,
       toolPackageRunners,
       toolMigrations,
+      toolSettings,
       buildRequests,
       secretHandles,
       toolServices,
@@ -411,6 +416,7 @@ async function refreshData(options = {}) {
       fetchJson("/api/tools").then((data) => data.tools ?? []),
       fetchJson("/api/tool-package-runners").then((data) => data.runners ?? []),
       fetchJson("/api/tool-migrations").then((data) => data.migrations ?? []),
+      fetchJson("/api/tool-settings").then((data) => data.settings ?? []),
       fetchJson("/api/tool-build-requests").then((data) => data.requests ?? []),
       fetchJson("/api/secret-handles").then((data) => data.secretHandles ?? []),
       fetchJson("/api/tool-services").then((data) => data.services ?? []),
@@ -434,6 +440,7 @@ async function refreshData(options = {}) {
       tools,
       toolPackageRunners,
       toolMigrations,
+      toolSettings,
       buildRequests,
       secretHandles,
       toolServices,
@@ -499,6 +506,7 @@ function dataFingerprint(data) {
     tools: data.tools,
     toolPackageRunners: data.toolPackageRunners,
     toolMigrations: data.toolMigrations,
+    toolSettings: data.toolSettings,
     buildRequests: data.buildRequests,
     secretHandles: data.secretHandles,
     toolServices: data.toolServices,
@@ -2393,7 +2401,7 @@ function renderToolDetail(tool) {
       ${contextBlock("Startup mode", tool.startupMode ?? "default")}
       ${service ? renderToolServiceControls(service) : ""}
       ${contextBlock("Health", formatToolHealth(tool))}
-      ${contextBlock("Settings", formatToolSettings(tool))}
+      ${renderToolRuntimeSettings(tool)}
       ${contextBlock("Storage", formatToolStorage(tool))}
       ${contextBlock("Migrations", formatToolMigrations(tool))}
       ${contextBlock("Promotion evidence", formatToolPromotionEvidence(tool.promotionEvidence))}
@@ -2577,6 +2585,143 @@ function formatToolSettings(tool) {
     config.length ? `Configuration keys:\n${config.map((item) => `- ${item}`).join("\n")}` : "No required configuration keys.",
     secrets.length ? `Secret handles:\n${secrets.map((item) => `- ${item}`).join("\n")}` : "No required secret handles.",
   ].join("\n\n");
+}
+
+function renderToolRuntimeSettings(tool) {
+  const settings = toolSettingsFor(tool.name);
+  const configured = new Map(settings.map((setting) => [setting.key, setting]));
+  const schemaKeys = Object.keys(tool.settingsSchema?.properties ?? {});
+  const requiredKeys = tool.requiredConfigurationKeys ?? [];
+  const keys = uniqueStrings([
+    ...requiredKeys,
+    ...schemaKeys,
+    ...settings.map((setting) => setting.key),
+  ]);
+  const secrets = tool.requiredSecretHandles ?? [];
+  const configuredRequiredCount = requiredKeys.filter((key) => configured.has(key)).length;
+  const missingRequiredCount = Math.max(0, requiredKeys.length - configuredRequiredCount);
+  return `
+    <section class="context-block tool-settings-block">
+      <h4>Runtime settings</h4>
+      <p class="context-note">Non-secret values used by this tool at runtime. Put API keys, bot tokens, and passwords into Secret Handles instead.</p>
+      <div class="tool-settings-summary">
+        <span>${configured.size} saved setting${configured.size === 1 ? "" : "s"}</span>
+        <span class="${missingRequiredCount ? "warn" : "ok"}">${missingRequiredCount ? `${missingRequiredCount} required missing` : "required config ready"}</span>
+        <span>${secrets.length} secret handle${secrets.length === 1 ? "" : "s"} declared</span>
+      </div>
+      <form data-action="save-tool-settings" class="tool-settings-form">
+        <input type="hidden" name="toolName" value="${escapeHtml(tool.name)}" />
+        <div class="settings-form-section">
+          <strong>Configuration values</strong>
+        ${keys.length
+          ? keys.map((key) => {
+              const setting = configured.get(key);
+              const required = requiredKeys.includes(key);
+              const schemaHint = settingSchemaHint(tool.settingsSchema, key);
+              return `
+                <label>
+                  <span>${escapeHtml(key)}${required ? " *" : ""}${setting ? ` · ${escapeHtml(formatRelative(setting.updatedAt))}` : ""}</span>
+                  ${renderRuntimeSettingInput(tool.settingsSchema, key, setting?.value ?? "", schemaHint)}
+                  <small>${required ? "Required by tool contract." : "Optional override. Leave blank to remove a saved value."}</small>
+                </label>
+              `;
+            }).join("")
+          : `<p class="context-note">This tool does not declare required configuration keys yet. Add an optional key below if the runtime needs one.</p>`}
+        </div>
+        <div class="inline-form two-column-form">
+          <label>
+            Optional key
+            <input name="customKey" placeholder="PROVIDER_BASE_URL" />
+          </label>
+          <label>
+            Optional value
+            <input name="customValue" placeholder="https://api.example.com" />
+          </label>
+        </div>
+        <button type="submit" class="ghost-button">Save runtime settings</button>
+      </form>
+      <div class="settings-form-section">
+        <strong>Secret handles</strong>
+        <div class="secret-handle-strip">
+          ${secrets.length
+            ? secrets.map((handle) => {
+                const secret = state.secretHandles.find((item) => item.handle === handle);
+                return `<span class="${secret ? "available" : "missing"}">${escapeHtml(handle)}${secret ? ` · ${escapeHtml(secret.provider)}` : " · missing"}</span>`;
+              }).join("")
+            : "<span>No required secret handles</span>"}
+        </div>
+      </div>
+      ${renderToolSettingsSchema(tool.settingsSchema)}
+    </section>
+  `;
+}
+
+function toolSettingsFor(toolName) {
+  return (state.toolSettings ?? []).filter((setting) => setting.toolName === toolName);
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.filter(Boolean).map((value) => String(value)))].sort((a, b) => a.localeCompare(b));
+}
+
+function settingSchemaHint(schema, key) {
+  const property = schema?.properties?.[key];
+  if (!property || typeof property !== "object") return "";
+  return property.description || property.default || property.format || property.type || "";
+}
+
+function renderRuntimeSettingInput(schema, key, value, placeholder) {
+  const property = schema?.properties?.[key];
+  const shape = property && typeof property === "object" ? property : {};
+  const name = `setting:${key}`;
+  const enumValues = Array.isArray(shape.enum) ? shape.enum.map(String) : [];
+  if (enumValues.length) {
+    return `
+      <select name="${escapeHtml(name)}">
+        <option value="">Not configured</option>
+        ${enumValues.map((item) => `<option value="${escapeHtml(item)}" ${String(value) === item ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
+      </select>
+    `;
+  }
+  if (shape.type === "boolean") {
+    return `
+      <select name="${escapeHtml(name)}">
+        <option value="">Not configured</option>
+        <option value="true" ${String(value).toLowerCase() === "true" ? "selected" : ""}>true</option>
+        <option value="false" ${String(value).toLowerCase() === "false" ? "selected" : ""}>false</option>
+      </select>
+    `;
+  }
+  if (shape.type === "number" || shape.type === "integer") {
+    const step = shape.type === "integer" ? "1" : "any";
+    const min = typeof shape.minimum === "number" ? ` min="${escapeHtml(String(shape.minimum))}"` : "";
+    const max = typeof shape.maximum === "number" ? ` max="${escapeHtml(String(shape.maximum))}"` : "";
+    return `<input type="number" step="${step}"${min}${max} name="${escapeHtml(name)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder || "Runtime value")}" />`;
+  }
+  const inputType = shape.format === "uri" || shape.format === "url" ? "url" : "text";
+  return `<input type="${inputType}" name="${escapeHtml(name)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder || "Runtime value")}" />`;
+}
+
+function renderToolSettingsSchema(schema) {
+  const properties = Object.entries(schema?.properties ?? {});
+  if (!properties.length) return "";
+  return `
+    <details class="settings-schema-preview">
+      <summary>Declared settings schema</summary>
+      <div class="settings-schema-list">
+        ${properties.map(([key, property]) => {
+          const shape = typeof property === "object" && property ? property : {};
+          return `
+            <div>
+              <strong>${escapeHtml(key)}</strong>
+              <span>${escapeHtml([shape.type, shape.format].filter(Boolean).join(" · ") || "value")}</span>
+              ${shape.description ? `<p>${escapeHtml(shape.description)}</p>` : ""}
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </details>
+  `;
 }
 
 function formatToolStorage(tool) {
@@ -4371,6 +4516,74 @@ async function runToolBuild(buildId) {
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);
     render();
+  }
+}
+
+async function saveToolRuntimeSettings(form) {
+  const formData = new FormData(form);
+  const toolName = String(formData.get("toolName") ?? "");
+  const current = toolSettingsFor(toolName);
+  const currentKeys = new Set(current.map((setting) => setting.key));
+  const updates = [];
+  const deletes = [];
+  for (const [name, value] of formData.entries()) {
+    if (!String(name).startsWith("setting:")) continue;
+    const key = String(name).slice("setting:".length);
+    const text = String(value ?? "").trim();
+    if (text) updates.push({ toolName, key, value: text });
+    else if (currentKeys.has(key)) deletes.push({ toolName, key });
+  }
+  const customKey = String(formData.get("customKey") ?? "").trim();
+  const customValue = String(formData.get("customValue") ?? "").trim();
+  if (customKey || customValue) {
+    if (!customKey || !customValue) {
+      state.error = "Optional runtime setting needs both key and value.";
+      render();
+      return;
+    }
+    updates.push({ toolName, key: customKey, value: customValue });
+  }
+
+  setComposerBusy(form, true);
+  try {
+    const validation = await fetchJson("/api/tool-settings/validate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        toolName,
+        settings: Object.fromEntries(updates.map((item) => [item.key, item.value])),
+        deleteKeys: deletes.map((item) => item.key),
+      }),
+    });
+    if (!validation.ok) {
+      state.error = `Tool settings need attention: ${(validation.issues ?? []).join(" ")}`;
+      render();
+      return;
+    }
+    for (const item of updates) {
+      await fetchJson("/api/tool-settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(item),
+      });
+    }
+    for (const item of deletes) {
+      await fetchJson(`/api/tool-settings/${encodeURIComponent(item.toolName)}/${encodeURIComponent(item.key)}`, {
+        method: "DELETE",
+      });
+    }
+    const refreshed = await fetchJson("/api/tool-settings");
+    state.toolSettings = refreshed.settings ?? state.toolSettings;
+    state.notice = {
+      title: "Tool settings saved",
+      body: `${toolName} runtime settings updated. ${(validation.warnings ?? []).join(" ") || "Secrets still resolve through Secret Handles."}`,
+    };
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  } finally {
+    setComposerBusy(form, false);
   }
 }
 

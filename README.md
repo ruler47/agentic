@@ -241,26 +241,29 @@ registered as disabled metadata until a runner can execute their package referen
 Generated package execution goes through `ToolPackageRunner`: local-path packages use the
 compiled TypeScript runner, and pre-built `source-bundle` packages can be loaded from the
 out-of-tree tool package workspace `TOOL_PACKAGE_WORKSPACE_ROOT` (default `tools`, which
-is gitignored) or legacy `TOOL_PACKAGE_ROOT`/`tool-packages`, via `dist/index.js` or
-`index.js`. `ToolPackageWorkspaceStore` writes portable package folders with
+is gitignored) or legacy `TOOL_PACKAGE_ROOT`/`tool-packages`. `ToolPackageWorkspaceStore`
+writes portable package folders with
 `tool.package.json`, README, Dockerfile, package metadata, TypeScript build config,
 source, and tests outside the main application source so generated capabilities can move
-toward independent services. The server mirrors Tool Build output into that workspace by
-default; set `TOOL_BUILD_PACKAGE_WORKSPACE=disabled` to keep only the legacy local-path
-generated module output. Mirrored packages include a minimal package-local Tool contract
-for generated TypeScript modules, and command QA performs package checks before returning
-a passing report: manifest/scaffold validation, package-local TypeScript build, and
-package-local tests. When a verified package workspace exists, the registrar now records
-the active generated version as a `source-bundle` package manifest, so reloads use the
-out-of-tree package entrypoint instead of treating `src/tools/generated` as the only
-runtime source. Generated package folders also include a small HTTP runtime server and
-Dockerfile entrypoint: `GET /health`, `POST /run`, and optional service lifecycle routes
-map to the same tool contract, which is the handoff toward independently hosted tools.
-By default source-bundles are still imported through `dist/index.js`, but setting
-`TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or `TOOL_SOURCE_BUNDLE_RUNNER=http-process`
-makes the loader start the package-local `dist/runtime/server.js` as a separate local
-Node HTTP process for each on-demand call, or as a service lifecycle process for
-always-on tools. `TOOL_SOURCE_BUNDLE_STARTUP_TIMEOUT_MS` and
+toward independent services. New server-side Tool Builds write into that workspace by
+default and skip new `src/tools/generated`/`tests/generated` project-file writes. Set
+`TOOL_BUILD_LEGACY_PROJECT_FILES=enabled` to keep writing legacy project files as a
+temporary bridge, or set `TOOL_BUILD_PACKAGE_WORKSPACE=disabled` to fall back to the old
+local-path flow. Package builds include a minimal package-local Tool contract for
+generated TypeScript modules, and command QA performs package checks before returning a
+passing report: manifest/scaffold validation, package-local TypeScript build, and
+package-local tests. When a verified package workspace exists, the registrar records the
+active generated version as a `source-bundle` package manifest, so reloads use the
+out-of-tree package instead of treating `src/tools/generated` as the runtime source.
+Generated package folders also include a small HTTP runtime server and Dockerfile
+entrypoint: `GET /health`, `POST /run`, and optional service lifecycle routes map to the
+same tool contract, which is the handoff toward independently hosted tools.
+The web server prefers the package-local HTTP process runner for source-bundles unless
+`TOOL_SOURCE_BUNDLE_HTTP_RUNNER=disabled` or `TOOL_SOURCE_BUNDLE_RUNNER=in-process`. The
+generic loader remains opt-in through `TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or
+`TOOL_SOURCE_BUNDLE_RUNNER=http-process`. The runner starts
+`dist/runtime/server.js` as a separate local Node HTTP process for each on-demand call, or
+as a service lifecycle process for always-on tools. `TOOL_SOURCE_BUNDLE_STARTUP_TIMEOUT_MS` and
 `TOOL_SOURCE_BUNDLE_POLL_INTERVAL_MS` tune readiness waits, and
 `TOOL_SOURCE_BUNDLE_CALL_TIMEOUT_MS` bounds `/run` and service lifecycle calls so a
 broken runtime cannot hang a job indefinitely. This is the local-process bridge before
@@ -277,6 +280,13 @@ scoped runtime envelopes. Runner diagnostics are exposed through
 `GET /api/tool-package-runners` and the Diagnostics page.
 Operators can call `POST /api/tools/reload-generated` or use the Diagnostics action to
 reload generated/source-bundle packages without restarting the app.
+Tool runtime settings are separate from secrets. Non-secret values such as provider URLs,
+feature flags, and rate-limit hints are stored per tool in `tool_runtime_settings`,
+managed through the Tools detail UI and `/api/tool-settings`, audited on save/delete, and
+resolved before falling back to process environment variables. API keys, bot tokens, and
+passwords still belong in `secret_handles`. `POST /api/tool-settings/validate` previews
+required/missing values and validates string/number/integer/boolean/enum/URL constraints
+from the tool's `settingsSchema` before operators save changes.
 Always-on tools are supervised through the same provider-neutral lifecycle API. The
 supervisor tracks desired state, heartbeat health, restart count, consecutive failures,
 last failure, next scheduled restart, pending approval, and last restart reason. A failed

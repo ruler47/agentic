@@ -59,6 +59,12 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /data-action="reload-generated-tools"/);
   assert.match(app, /\/api\/tools\/reload-generated/);
   assert.match(app, /\/api\/secret-handles/);
+  assert.match(app, /\/api\/tool-settings/);
+  assert.match(app, /\/api\/tool-settings\/validate/);
+  assert.match(app, /data-action="save-tool-settings"/);
+  assert.match(app, /function saveToolRuntimeSettings/);
+  assert.match(app, /function renderRuntimeSettingInput/);
+  assert.match(app, /Runtime settings/);
   assert.match(app, /function createSecretHandle/);
   assert.match(app, /function deleteSecretHandle/);
   assert.match(app, /data-action="create-secret-handle"/);
@@ -255,6 +261,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".memory-edit-form",
     ".tools-layout",
     ".tool-runtime-strip",
+    ".tool-settings-summary",
+    ".settings-schema-preview",
     ".helper-panel",
     ".model-catalog-grid",
     ".model-pill",

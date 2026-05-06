@@ -38,7 +38,7 @@ export type ToolExecutionContext = {
   now: Date;
   signal?: AbortSignal;
   resolveSecret?: (handle: string) => Promise<string | undefined>;
-  resolveConfiguration?: (key: string) => Promise<string | undefined>;
+  resolveConfiguration?: (key: string, toolName?: string) => Promise<string | undefined>;
   audit?: (event: {
     action: string;
     targetType: string;
@@ -65,7 +65,7 @@ export type ToolServiceContext = {
   baseUrl?: string;
   fetch?: typeof fetch;
   resolveSecret?: (handle: string) => Promise<string | undefined>;
-  resolveConfiguration?: (key: string) => Promise<string | undefined>;
+  resolveConfiguration?: (key: string, toolName?: string) => Promise<string | undefined>;
   logger?: {
     info(message: string, metadata?: Record<string, unknown>): void;
     warn(message: string, metadata?: Record<string, unknown>): void;

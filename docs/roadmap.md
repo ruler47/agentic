@@ -145,7 +145,7 @@ This is a product/architecture estimate, not a ticket counter.
 - Current coordinator prototype: about 74% complete. It can delegate, review, synthesize,
   call tools, create artifacts, and persist runs, but it is still centrally planned rather
   than a fully recursive society of agents.
-- Operator UI: about 61% complete. The shell, Dashboard, Runs, Conversations, Trace Lab,
+- Operator UI: about 63% complete. The shell, Dashboard, Runs, Conversations, Trace Lab,
   Memory, Artifacts, Tools, Tool Builds, Models, Group Profile, Settings, and Diagnostics
   have useful surfaces; several pages still need deeper interactions and tighter
   analytics.
@@ -337,8 +337,15 @@ Tool contract:
 - healthcheck; DONE
 - required configuration keys and secret handles; DONE for registry/API/UI metadata.
 - operator-editable settings, provider URLs, limits, and feature flags; PARTIAL:
-  settings schemas are persisted and shown, but concrete editable per-tool setting values
-  are still pending.
+  settings schemas are persisted and shown, concrete non-secret per-tool runtime settings
+  are now stored through `tool_runtime_settings`, exposed via API/UI, audited on
+  save/delete, and resolved at runtime before falling back to process env. The Tools
+  detail page now groups runtime values, required secret handles, and declared
+  `settingsSchema` hints so operators can see what is configured and what is missing.
+  The UI renders typed controls for enum, boolean, number/integer, URL, and text schema
+  fields, and `POST /api/tool-settings/validate` previews missing required values plus
+  schema issues before save. Remaining work is bulk import/export, richer rate-limit and
+  feature-flag presets, config diff/history, and policy gates for sensitive settings.
 - declared storage contract: schema namespace, table ownership, migrations, retention,
   backup/export notes, and required database permissions; DONE for registry/API/UI
   metadata.
@@ -405,7 +412,11 @@ Remaining registry persistence:
   committed generated-tools directory. `ToolPackageWorkspaceStore` can now write
   portable package folders with `tool.package.json`, README, Dockerfile, package metadata,
   TypeScript build config, source, and tests under that workspace while rejecting path
-  traversal and non-source-bundle manifests. External-package manifests whose
+  traversal and non-source-bundle manifests. New server-side Tool Builds now write the
+  package workspace by default and skip new `src/tools/generated`/`tests/generated`
+  project-file writes unless `TOOL_BUILD_LEGACY_PROJECT_FILES=enabled` is explicitly set;
+  `TOOL_BUILD_PACKAGE_WORKSPACE=disabled` remains the temporary legacy fallback.
+  External-package manifests whose
   `package.ref` is
   an HTTP(S) runtime URL now load through a proxy runner that calls `/health`, `/run`, and
   optional service lifecycle routes. OCI-image manifests can now be executed by an
@@ -421,8 +432,9 @@ Remaining registry persistence:
   install/sandboxing, production resource/log supervision for containers, redacted runtime
   logging, container-level config/secret injection policies, and richer runner UI
   controls. DONE for API/UI package import/export, package workspace writing,
-  package-local build/test QA, active source-bundle promotion, package-local HTTP runtime
-  scaffold, opt-in local HTTP process runner for source-bundles, source-bundle
+  package-local build/test QA, active source-bundle promotion, package-only Builder/QA
+  flow without project-file writes, package-local HTTP runtime scaffold, local HTTP
+  process runner for source-bundles, source-bundle
   always-on lifecycle smoke, bounded source-bundle runtime calls, and first OCI HTTP
   proxy runner.
   The API/UI can now import portable `agentic.tool-package.v1` manifests into the
@@ -668,7 +680,11 @@ Remaining Phase 3 gaps:
 - Add version diff/changelog UI for tool replacement requests, showing what the new
   version adds compared with the previous version and why the previous version failed.
 - Add tool-level settings UI for required env variables, secret handles, provider URLs,
-  rate limits, and feature flags declared by each tool contract.
+  rate limits, and feature flags declared by each tool contract. PARTIAL: Tools detail now
+  shows editable non-secret runtime settings for declared configuration keys and optional
+  custom keys, stores them durably, and keeps secret handles separate. Remaining work:
+  typed controls from schema, provider URL/rate-limit grouping, diff/audit previews, and
+  validation smoke before saving.
 - Represent operator-created Tool Build/Rework requests as root runs. DONE for direct
   Tool Build requests: when a request is created without an existing `sourceRunId`, the
   server creates a completed root run with `tool-build-requested` trace context and links
@@ -692,23 +708,22 @@ Remaining Phase 3 gaps:
   multiple workers/containers. The first implementation can use a local runner process and
   generated bundle directory, but the contract must also support OCI/container execution.
   PARTIAL: the app can now write source-bundle package workspaces outside the main repo
-  under gitignored `tools/<name>/<version>` folders, mirror Tool Builder output into that
-  workspace by default, include a package-local minimal Tool contract for generated
-  TypeScript modules, include the sidecar package manifest in QA evidence, run structural
-  package-workspace QA plus package-local build/test during command QA, persist verified
-  package workspaces as the active `source-bundle` manifest, reload pre-built
-  source-bundles from that workspace, optionally execute source-bundles through their
-  package-local HTTP runtime as a separate local Node process
-  (`TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or
-  `TOOL_SOURCE_BUNDLE_RUNNER=http-process`), proxy external HTTP packages, and optionally
-  run OCI HTTP packages. Generated package folders now include an HTTP runtime server and
-  Dockerfile entrypoint, and the local-process runner can execute that runtime without
-  importing generated package code into the Agentic process. Remaining work is stronger
-  production supervision, richer resource limits, log streaming/redaction, and
-  packaging/building those source-bundles as external services or OCI images. DONE for
-  source-bundle local process on-demand calls, always-on service lifecycle, and bounded
-  runtime call timeouts. The local process runner also detects runtimes that exit before
-  readiness and reports exit code/signal plus bootstrap output.
+  under gitignored `tools/<name>/<version>` folders, make that package workspace the
+  default Tool Build output, skip new legacy project-file writes unless explicitly enabled,
+  include a package-local minimal Tool contract for generated TypeScript modules, include
+  the sidecar package manifest in QA evidence, run structural package-workspace QA plus
+  package-local build/test during command QA, persist verified package workspaces as the
+  active `source-bundle` manifest, reload pre-built source-bundles from that workspace,
+  prefer package-local HTTP process execution in the web server, proxy external HTTP
+  packages, and optionally run OCI HTTP packages. Generated package folders now include an
+  HTTP runtime server and Dockerfile entrypoint, and the local-process runner can execute
+  that runtime without importing generated package code into the Agentic process.
+  Remaining work is stronger production supervision, richer resource limits, log
+  streaming/redaction, and packaging/building those source-bundles as external services or
+  OCI images. DONE for package-only Builder/QA, source-bundle local process on-demand
+  calls, always-on service lifecycle, and bounded runtime call timeouts. The local process
+  runner also detects runtimes that exit before readiness and reports exit code/signal plus
+  bootstrap output.
 - Add provider-neutral always-on restart policy and lifecycle diagnostics. DONE for
   persisted desired/runtime state, heartbeat health, restart count, consecutive failures,
   last failure/restart metadata, bounded auto-restart after failed heartbeat,

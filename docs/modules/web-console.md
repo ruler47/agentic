@@ -368,6 +368,29 @@ as a scoped runtime envelope. Declared `requiredConfigurationKeys` are handled t
 way for non-secret settings. Undeclared config values and undeclared secrets are never
 forwarded by the package runner.
 
+Tool runtime settings:
+
+```text
+GET /api/tool-settings
+GET /api/tool-settings?toolName=<tool>
+POST /api/tool-settings/validate
+PUT /api/tool-settings
+DELETE /api/tool-settings/:toolName/:key
+```
+
+`PUT /api/tool-settings` accepts `{ toolName, key, value }` for non-secret runtime
+configuration such as provider URLs, feature flags, and rate-limit hints. Values are
+stored in `tool_runtime_settings`, audited on save/delete, shown in the Tools detail
+inspector, and resolved for tool execution before falling back to process environment
+variables. Secrets remain separate: API keys, bot tokens, and passwords must use
+`secret_handles`, not runtime settings. The Tools detail inspector groups saved
+configuration values, missing required config, declared secret handles, and
+`settingsSchema` hints so operators can configure a tool without reading its generated
+source. `POST /api/tool-settings/validate` accepts `{ toolName, settings, deleteKeys }`
+and returns `{ ok, issues, warnings, preview }`; it validates required configuration keys
+plus string, URL, number, integer, boolean, enum, length, and pattern constraints declared
+by the tool's `settingsSchema`.
+
 `GET /api/tool-package-runners` returns installed package runners, their supported package
 types, status, and root/configuration hints. The Diagnostics page surfaces the same
 inventory so operators can tell whether an imported package is disabled because the tool
@@ -383,11 +406,14 @@ audit events. Installed tools that are marked `failed` expose a Tools-page "Rewo
 form that creates a fresh durable build request with the failure details prefilled.
 
 `POST /api/tool-build-requests/:id/run` executes the configured self-service build
-workflow. The current workflow writes provider-generated TypeScript source and tests,
-runs isolated generated-tool tests plus isolated build, performs promotion tests/build in
-the real project after isolated QA passes, registers QA-passed metadata, and reloads
-generated tools into the active registry. Failed QA or review reports can be returned to
-the builder for bounded retry attempts before a request becomes `qa_failed`.
+workflow. The server workflow writes provider-generated TypeScript source and tests into
+the gitignored package workspace (`tools/<system-name>/<version>`) by default, runs
+package-workspace structural/build/test QA in an isolated copy, registers the QA-passed
+source-bundle manifest, and reloads generated tools into the active registry. Legacy
+project-file writes to `src/tools/generated` and `tests/generated` happen only when
+`TOOL_BUILD_LEGACY_PROJECT_FILES=enabled` is set, or when the package workspace is
+disabled for a temporary fallback. Failed QA or review reports can be returned to the
+builder for bounded retry attempts before a request becomes `qa_failed`.
 
 `GET /api/secret-handles` and `POST /api/secret-handles` expose the credential reference
 registry used by Tool Builds, generated tools, always-on modules, and future remote model

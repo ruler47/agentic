@@ -432,6 +432,21 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table tool_modules add column if not exists last_failure_at timestamptz;`);
 
     await pool.query(`
+      create table if not exists tool_runtime_settings (
+        tool_name text not null,
+        key text not null,
+        value text not null,
+        updated_at timestamptz not null,
+        primary key (tool_name, key)
+      );
+    `);
+
+    await pool.query(`
+      create index if not exists tool_runtime_settings_tool_name_idx
+      on tool_runtime_settings(tool_name, updated_at desc);
+    `);
+
+    await pool.query(`
       create table if not exists tool_service_statuses (
         tool_name text primary key,
         status text not null check (status in ('stopped', 'starting', 'running', 'failed')),

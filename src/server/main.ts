@@ -21,6 +21,8 @@ import { InMemoryModelTierSettingsStore } from "../settings/modelTierSettings.js
 import { PostgresModelTierSettingsStore } from "../settings/postgresModelTierSettings.js";
 import { InMemoryModelProviderStore } from "../settings/modelProviderStore.js";
 import { PostgresModelProviderStore } from "../settings/postgresModelProviderStore.js";
+import { InMemoryToolRuntimeSettingsStore } from "../settings/toolRuntimeSettings.js";
+import { PostgresToolRuntimeSettingsStore } from "../settings/postgresToolRuntimeSettings.js";
 import { createWebApp } from "./http.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { FileReadTool, FileWriteTool } from "../tools/fileTools.js";
@@ -75,7 +77,7 @@ import {
 } from "../tools/toolBuildProviders.js";
 import { ToolPackageWorkspaceStore } from "../tools/toolPackageWorkspaceStore.js";
 import { LlmToolBuildProvider } from "../tools/llmToolBuildProvider.js";
-import { createToolScopedDbContextProvider } from "../tools/toolScopedDb.js";
+import { createScopedToolDbClient } from "../tools/toolScopedDb.js";
 
 const port = Number(process.env.PORT ?? "3000");
 const publicDir = resolve("public");
@@ -87,9 +89,6 @@ const textEmbeddingProvider = createTextEmbeddingProviderFromEnv();
 const skillMemory = pool ? new PostgresSkillMemory(pool, textEmbeddingProvider) : new SkillMemory();
 console.log(`Memory embedding provider: ${textEmbeddingProvider.name} (${textEmbeddingProvider.dimensions}d).`);
 const tools = new ToolRegistry();
-if (pool) {
-  tools.setRuntimeContextProvider(createToolScopedDbContextProvider(pool));
-}
 tools.register(new WebSearchTool());
 tools.register(new TelegramBotServiceTool());
 tools.register(new FileReadTool());
@@ -113,12 +112,23 @@ const toolMigrationStore = pool
 const toolPromotionStore = pool
   ? new PostgresToolPromotionStore(pool)
   : new InMemoryToolPromotionStore();
+const secretHandleStore = pool ? new PostgresSecretHandleStore(pool) : new InMemorySecretHandleStore();
+const toolRuntimeSettings = pool
+  ? new PostgresToolRuntimeSettingsStore(pool)
+  : new InMemoryToolRuntimeSettingsStore();
+tools.setRuntimeContextProvider(({ tool }) => ({
+  db: pool ? createScopedToolDbClient(pool, tool) : undefined,
+  resolveSecret: secretHandleStore.resolve ? (handle) => secretHandleStore.resolve!(handle) : undefined,
+  resolveConfiguration: async (key) => (await toolRuntimeSettings.resolve(tool.name, key)) ?? process.env[key],
+}));
+const sourceBundleHttpRunnerEnabled = process.env.TOOL_SOURCE_BUNDLE_HTTP_RUNNER !== "disabled" &&
+  process.env.TOOL_SOURCE_BUNDLE_RUNNER !== "in-process";
 const toolPackageRunners = [
-  new LocalPathToolPackageRunner(),
-  new SourceBundleHttpProcessToolPackageRunner(),
+  new SourceBundleHttpProcessToolPackageRunner({ enabled: sourceBundleHttpRunnerEnabled }),
   new SourceBundleToolPackageRunner(),
   new ExternalHttpToolPackageRunner(),
   new OciImageToolPackageRunner(),
+  new LocalPathToolPackageRunner(),
 ];
 const generatedToolResults = await loadGeneratedTools(tools, toolMetadataStore, process.cwd(), toolPackageRunners);
 const loadedGeneratedTools = generatedToolResults.filter((result) => result.loaded);
@@ -149,14 +159,14 @@ const toolServiceLogStore = pool
 const toolServiceEventStore = pool
   ? new PostgresToolServiceEventStore(pool)
   : new InMemoryToolServiceEventStore();
-const secretHandleStore = pool ? new PostgresSecretHandleStore(pool) : new InMemorySecretHandleStore();
 const modelTierSettings = pool
   ? new PostgresModelTierSettingsStore(pool)
   : new InMemoryModelTierSettingsStore();
 const toolServiceSupervisor = new ToolServiceSupervisor(tools, toolServiceStatusStore, toolServiceLogStore, {
   baseUrl: process.env.AGENTIC_INTERNAL_BASE_URL ?? `http://127.0.0.1:${port}`,
   resolveSecret: secretHandleStore.resolve ? (handle) => secretHandleStore.resolve!(handle) : undefined,
-  resolveConfiguration: async (key) => process.env[key],
+  resolveConfiguration: async (key, toolName) =>
+    (toolName ? await toolRuntimeSettings.resolve(toolName, key) : undefined) ?? process.env[key],
 }, {
   restartOnFailedHeartbeat: process.env.TOOL_SERVICE_AUTO_RESTART_ON_FAILED_HEARTBEAT !== "disabled",
   maxAutoRestartsPerService: Number(process.env.TOOL_SERVICE_MAX_AUTO_RESTARTS ?? 3),
@@ -181,6 +191,8 @@ const toolBuildWorkflow = new ToolBuildWorkflow(
     {
       packageWorkspaceStore: new ToolPackageWorkspaceStore(),
       writePackageWorkspace: process.env.TOOL_BUILD_PACKAGE_WORKSPACE !== "disabled",
+      writeProjectFiles: process.env.TOOL_BUILD_PACKAGE_WORKSPACE === "disabled" ||
+        process.env.TOOL_BUILD_LEGACY_PROJECT_FILES === "enabled",
     },
   ),
   new CommandToolQaRunner(process.cwd(), { migrationQaPool: toolBuildMigrationQaPool }),
@@ -268,6 +280,7 @@ const server = createWebApp({
   reloadGeneratedTools,
   modelTierSettings,
   modelProviderStore,
+  toolRuntimeSettings,
   artifactStore,
   auditEventStore,
   groupProfileStore,

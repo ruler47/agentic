@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   BrowserScreenshotToolBuildProvider,
+  CommandToolQaRunner,
   DocumentArtifactToolBuildProvider,
   GeneratedToolFileBuilder,
   GenericApiToolBuildProvider,
@@ -22,6 +23,7 @@ import { InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
 import { InMemoryToolPromotionStore } from "../src/tools/toolPromotionStore.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { loadGeneratedTools } from "../src/tools/generatedToolLoader.js";
+import { SourceBundleHttpProcessToolPackageRunner } from "../src/tools/toolPackageRunner.js";
 import { validateAndBuildToolPackageWorkspace } from "../src/tools/toolPackageWorkspaceQa.js";
 import { ToolPackageWorkspaceStore } from "../src/tools/toolPackageWorkspaceStore.js";
 
@@ -107,6 +109,81 @@ test("GeneratedToolFileBuilder can mirror generated output into an out-of-tree p
     assert.equal(output.modulePath, "src/tools/generated/browser-screenshotTool.ts");
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("GeneratedToolFileBuilder can create package-only tools without writing project generated files", async () => {
+  const projectRoot = process.cwd();
+  const unique = `isolated${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
+  const capability = `api.${unique}.lookup`;
+  const desiredToolName = `generated.api.${unique}`;
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const metadataStore = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+  const request = await requestStore.create({
+    capability,
+    displayName: "Isolated API Lookup",
+    reason: "Create a reusable HTTP JSON API client from API documentation.",
+    desiredToolName,
+    requiredInputs: ["url"],
+    requiredOutputs: ["status", "json"],
+  });
+  const builder = new GeneratedToolFileBuilder(
+    [new GenericApiToolBuildProvider()],
+    projectRoot,
+    {
+      packageWorkspaceStore: new ToolPackageWorkspaceStore(projectRoot, "tools"),
+      writeProjectFiles: false,
+    },
+  );
+  const server = createServer((_, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ value: "package-only-ok" }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+
+  try {
+    const output = await builder.build(request);
+    assert.ok(output.packageWorkspace);
+    await assert.rejects(() => readFile(join(projectRoot, output.modulePath), "utf8"));
+    await assert.rejects(() => readFile(join(projectRoot, output.testPath), "utf8"));
+
+    const qa = await new CommandToolQaRunner(projectRoot).run(request, output);
+    assert.equal(qa.ok, true, JSON.stringify(qa, null, 2));
+    assert.match(qa.summary, /package-workspace/);
+
+    const packageQa = await validateAndBuildToolPackageWorkspace(
+      projectRoot,
+      output.packageWorkspace,
+      { linkNodeModulesFrom: projectRoot },
+    );
+    assert.equal(packageQa.ok, true, JSON.stringify(packageQa, null, 2));
+
+    const registrar = new MetadataToolRegistrar(metadataStore);
+    await registrar.register(request, output, qa);
+
+    const results = await loadGeneratedTools(registry, metadataStore, projectRoot, [
+      new SourceBundleHttpProcessToolPackageRunner({
+        enabled: true,
+        packageRoot: "tools",
+        startupTimeoutMs: 5000,
+        pollIntervalMs: 50,
+      }),
+    ]);
+    assert.equal(results[0]?.loaded, true, JSON.stringify(results[0], null, 2));
+    assert.match(results[0]?.detail ?? "", /HTTP process runtime/);
+
+    const result = await registry.get(desiredToolName)?.run({
+      url: `http://127.0.0.1:${address.port}/lookup`,
+    });
+    assert.equal(result?.ok, true);
+    assert.match(result?.content ?? "", /200/);
+    assert.match(JSON.stringify(result?.data), /package-only-ok/);
+  } finally {
+    server.close();
+    await rm(join(projectRoot, "tools", desiredToolName, request.contract.version), { recursive: true, force: true });
+    await rm(join(projectRoot, "tools", desiredToolName), { recursive: true, force: true });
   }
 });
 

@@ -113,6 +113,7 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
     private readonly options: {
       packageWorkspaceStore?: ToolPackageWorkspaceStore;
       writePackageWorkspace?: boolean;
+      writeProjectFiles?: boolean;
     } = {},
   ) {}
 
@@ -123,10 +124,17 @@ export class GeneratedToolFileBuilder implements ToolBuilder {
     }
 
     const output = await provider.build(request, context);
-    for (const file of output.files) {
-      const absolutePath = safeProjectPath(this.projectRoot, file.path);
-      await mkdir(dirname(absolutePath), { recursive: true });
-      await writeFile(absolutePath, file.content, "utf8");
+    const shouldWriteProjectFiles = this.options.writeProjectFiles ?? true;
+    if (!shouldWriteProjectFiles && !this.options.packageWorkspaceStore) {
+      throw new Error("GeneratedToolFileBuilder cannot disable project file writes without a package workspace store.");
+    }
+
+    if (shouldWriteProjectFiles) {
+      for (const file of output.files) {
+        const absolutePath = safeProjectPath(this.projectRoot, file.path);
+        await mkdir(dirname(absolutePath), { recursive: true });
+        await writeFile(absolutePath, file.content, "utf8");
+      }
     }
 
     const packageWorkspace = await this.writePackageWorkspace(request, output);
@@ -381,7 +389,7 @@ export type ToolExecutionContext = {
     error?: (message: string, data?: unknown) => void;
   };
   resolveSecret?: (handle: string) => Promise<string | undefined> | string | undefined;
-  resolveConfiguration?: (key: string) => Promise<string | undefined> | string | undefined;
+  resolveConfiguration?: (key: string, toolName?: string) => Promise<string | undefined> | string | undefined;
   [key: string]: unknown;
 };
 
@@ -460,6 +468,39 @@ export class IsolatedCommandToolQaRunner implements ToolQaRunner {
 
     const isolatedRoot = await createIsolatedQaWorkspace(this.projectRoot);
     try {
+      if (output.packageWorkspace) {
+        await copyPackageWorkspaceSnapshot(this.projectRoot, isolatedRoot, output.packageWorkspace.files);
+        const packageQa = await validateAndBuildToolPackageWorkspace(isolatedRoot, output.packageWorkspace);
+        checks.push(...packageQa.checks.map((check) => `package workspace: ${check}`));
+        if (!packageQa.ok) {
+          return {
+            ok: false,
+            summary: packageQa.summary,
+            checks,
+          };
+        }
+      }
+
+      if (!existsSync(resolve(isolatedRoot, output.testPath))) {
+        if (output.packageWorkspace) {
+          return {
+            ok: true,
+            summary: `Generated tool ${request.contract.toolName} passed package-workspace isolated QA.`,
+            checks,
+            artifacts: [
+              output.modulePath,
+              output.testPath,
+              output.packageWorkspace.manifestPath,
+            ],
+          };
+        }
+        return {
+          ok: false,
+          summary: `Generated tool tests were not written at ${output.testPath}.`,
+          checks: [...checks, `missing generated test file: ${output.testPath}`],
+        };
+      }
+
       const isolatedTestResult = await runCommand(
         "npx",
         ["tsx", "--test", output.testPath],
@@ -485,6 +526,19 @@ export class IsolatedCommandToolQaRunner implements ToolQaRunner {
       }
     } finally {
       await rm(isolatedRoot, { recursive: true, force: true });
+    }
+
+    if (output.packageWorkspace && !existsSync(resolve(this.projectRoot, output.testPath))) {
+      return {
+        ok: true,
+        summary: `Generated tool ${request.contract.toolName} passed package-workspace QA.`,
+        checks,
+        artifacts: [
+          output.modulePath,
+          output.testPath,
+          output.packageWorkspace.manifestPath,
+        ],
+      };
     }
 
     const testResult = await runCommand(
@@ -951,6 +1005,15 @@ async function createIsolatedQaWorkspace(projectRoot: string): Promise<string> {
   }
 
   return isolatedRoot;
+}
+
+async function copyPackageWorkspaceSnapshot(projectRoot: string, isolatedRoot: string, files: string[]): Promise<void> {
+  for (const file of files) {
+    const source = safeProjectPath(projectRoot, file);
+    const target = safeProjectPath(isolatedRoot, file);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(source, target);
+  }
 }
 
 function runCommand(command: string, args: string[], cwd: string, timeoutMs = 120_000): Promise<CommandResult> {

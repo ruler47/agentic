@@ -89,6 +89,9 @@ export class ToolServiceSupervisor {
           toolName,
           now: new Date(),
           signal: controller.signal,
+          resolveConfiguration: this.serviceContext.resolveConfiguration
+            ? (key) => this.serviceContext.resolveConfiguration!(key, toolName)
+            : undefined,
           logger: this.loggerFor(toolName),
         });
         active = { controller, handle };

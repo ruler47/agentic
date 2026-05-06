@@ -139,8 +139,8 @@ export class LlmToolBuildReviewer implements ToolBuildReviewer {
     output: ToolBuildOutput,
     qaReport: ToolBuildQaReport,
   ): Promise<Message[]> {
-    const moduleSource = await readProjectFilePreview(this.projectRoot, output.modulePath, this.maxFileChars);
-    const testSource = await readProjectFilePreview(this.projectRoot, output.testPath, this.maxFileChars);
+    const moduleSource = await readGeneratedOutputPreview(this.projectRoot, output, output.modulePath, this.maxFileChars);
+    const testSource = await readGeneratedOutputPreview(this.projectRoot, output, output.testPath, this.maxFileChars);
     return [
       {
         role: "system",
@@ -249,6 +249,21 @@ async function readProjectFilePreview(projectRoot: string, path: string, maxChar
   const content = await readFile(absolutePath, "utf8");
   if (content.length <= maxChars) return content;
   return `${content.slice(0, maxChars)}\n\n/* truncated: ${content.length - maxChars} chars omitted */`;
+}
+
+async function readGeneratedOutputPreview(
+  projectRoot: string,
+  output: ToolBuildOutput,
+  path: string,
+  maxChars: number,
+): Promise<string> {
+  try {
+    return await readProjectFilePreview(projectRoot, path, maxChars);
+  } catch (error) {
+    const packagePath = output.packageWorkspace?.files.find((file) => file.endsWith(`/${path}`));
+    if (!packagePath) throw error;
+    return readProjectFilePreview(projectRoot, packagePath, maxChars);
+  }
 }
 
 function normalizeDecision(value: unknown): ToolBuildReviewDecision | undefined {

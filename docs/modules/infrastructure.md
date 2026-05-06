@@ -67,6 +67,7 @@ Current tables:
 - `tool_modules`
 - `tool_build_requests`
 - `tool_migrations`
+- `tool_runtime_settings`
 - `tool_service_statuses`
 - `tool_service_logs`
 - `tool_service_events`
@@ -272,9 +273,12 @@ connections or hiding SQL inside tool runtime calls.
 The app image includes Chromium, TypeScript source, tests, and `tsconfig` files in the
 runtime layer so self-service generated tools can be written, tested, built, registered,
 and loaded inside Docker. `CHROMIUM_PATH=/usr/bin/chromium` is configured for generated
-browser screenshot tools. Docker Compose bind-mounts `./src/tools/generated` and
-`./tests/generated` into the app container so generated TypeScript modules and their tests
-survive container recreation.
+browser screenshot tools. Docker Compose bind-mounts `./tools` into `/app/tools` so
+source-bundle packages under `tools/<system-name>/<version>` survive container
+recreation without writing new generated code into the main `src/` tree. The legacy
+`src/tools/generated` and `tests/generated` paths are still available for older local-path
+tools, but new server-side Tool Builds use the package workspace unless
+`TOOL_BUILD_LEGACY_PROJECT_FILES=enabled` or `TOOL_BUILD_PACKAGE_WORKSPACE=disabled`.
 
 ### Telegram
 

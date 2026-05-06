@@ -901,9 +901,121 @@ textarea {
   flex: 1;
 }
 
+.inline-form label,
+.tool-settings-form label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.two-column-form {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.7fr) minmax(180px, 1fr);
+  align-items: end;
+}
+
+.tool-settings-form {
+  display: grid;
+  gap: 12px;
+}
+
+.tool-settings-summary,
+.secret-handle-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tool-settings-summary span,
+.secret-handle-strip span {
+  border: 1px solid var(--border-muted);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--secondary);
+  padding: 6px 9px;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.tool-settings-summary .ok,
+.secret-handle-strip .available {
+  border-color: rgba(53, 230, 193, 0.22);
+  background: rgba(53, 230, 193, 0.08);
+  color: var(--accent);
+}
+
+.tool-settings-summary .warn,
+.secret-handle-strip .missing {
+  border-color: rgba(245, 158, 11, 0.26);
+  background: rgba(245, 158, 11, 0.08);
+  color: #fbbf24;
+}
+
+.settings-form-section {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 12px;
+}
+
+.settings-form-section > strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.tool-settings-form small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tool-settings-form label > span {
+  color: var(--secondary);
+  font-size: 12px;
+  font-weight: 780;
+}
+
 .context-note {
   color: var(--muted);
   font-size: 13px;
+}
+
+.settings-schema-preview {
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 12px;
+}
+
+.settings-schema-preview summary {
+  cursor: pointer;
+  color: var(--secondary);
+  font-weight: 780;
+}
+
+.settings-schema-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.settings-schema-list div {
+  border-top: 1px solid var(--border-muted);
+  padding-top: 10px;
+}
+
+.settings-schema-list strong {
+  display: block;
+  color: var(--text);
+}
+
+.settings-schema-list span,
+.settings-schema-list p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 3px 0 0;
 }
 
 .version-history-list {

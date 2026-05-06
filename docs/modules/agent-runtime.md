@@ -307,30 +307,34 @@ target for generated TypeScript packages; later the same folder can be built int
 image, uploaded to object storage, exported, imported into another Agentic instance, or
 run as an external HTTP service.
 
-`GeneratedToolFileBuilder` can mirror every provider-produced module/test pair into that
-workspace while still returning the current local-path output for promotion. This sidecar
-is enabled in the server by default and can be disabled with
-`TOOL_BUILD_PACKAGE_WORKSPACE=disabled`. Mirrored packages include a package-local
-`index.ts` entrypoint and minimal local `src/tools/tool.ts` contract so generated modules
-can compile against a package-local interface instead of importing Agentic internals for
-basic Tool types. When a package workspace exists, `MetadataToolRegistrar` persists the
-active generated version as a `source-bundle` package manifest. Reloading generated tools
-then goes through `SourceBundleToolPackageRunner` and imports the package-built
-`dist/index.js` entrypoint. Generated package folders also include
+`GeneratedToolFileBuilder` writes every provider-produced module/test pair into that
+workspace in the web server by default, while skipping new legacy writes to
+`src/tools/generated` and `tests/generated`. Set `TOOL_BUILD_LEGACY_PROJECT_FILES=enabled`
+to write the old project-local files as a temporary bridge, or set
+`TOOL_BUILD_PACKAGE_WORKSPACE=disabled` to fall back to the legacy local-path flow.
+Package builds include a package-local `index.ts` entrypoint and minimal local
+`src/tools/tool.ts` contract so generated modules can compile against a package-local
+interface instead of importing Agentic internals for basic Tool types. When a package
+workspace exists, `MetadataToolRegistrar` persists the active generated version as a
+`source-bundle` package manifest. Reloading generated tools in the web server now prefers
+the package-local HTTP process runner, so source-bundles can run through
+`dist/runtime/server.js` in a separate local Node process instead of being imported into
+the app process. Generated package folders also include
 `runtime/server.ts`, which exposes the portable HTTP runtime contract used by
 `ExternalHttpToolPackageRunner` and the OCI runner: `GET /health`, `POST /run`, plus
 optional `POST /service/start` and `POST /service/stop`. The package Dockerfile runs the
 compiled server by default, so the same generated source-bundle can be imported in-process
 today and containerized later without changing its tool implementation.
 `SourceBundleHttpProcessToolPackageRunner` is the intermediate execution mode for that
-same package-local runtime. It is disabled by default; set
-`TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or `TOOL_SOURCE_BUNDLE_RUNNER=http-process` to
-make source-bundle packages start `dist/runtime/server.js` as a separate local Node HTTP
-process instead of importing `dist/index.js` into the app process. On-demand tools get a
-fresh bounded process per call; always-on tools get a process-backed service handle that
-proxies `/service/start`, `/health`, and `/service/stop`. This keeps the package portable
-without requiring Docker during local development, while preserving the same HTTP
-contract used by external and OCI runners. Runtime calls are bounded by
+same package-local runtime. The generic loader keeps it opt-in
+(`TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or `TOOL_SOURCE_BUNDLE_RUNNER=http-process`),
+while the web server enables it by default unless
+`TOOL_SOURCE_BUNDLE_HTTP_RUNNER=disabled` or `TOOL_SOURCE_BUNDLE_RUNNER=in-process`.
+On-demand tools get a fresh bounded process per call; always-on tools get a
+process-backed service handle that proxies `/service/start`, `/health`, and
+`/service/stop`. This keeps the package portable without requiring Docker during local
+development, while preserving the same HTTP contract used by external and OCI runners.
+Runtime calls are bounded by
 `TOOL_SOURCE_BUNDLE_CALL_TIMEOUT_MS` (default 60 seconds), so a package that becomes
 healthy and then hangs on `/run` or lifecycle calls is aborted and the local process is
 stopped. If the process exits before it ever becomes healthy, the runner reports the exit

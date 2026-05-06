@@ -38,6 +38,10 @@ import {
   ModelProviderStore,
   ModelProviderUpdateInput,
 } from "../settings/modelProviderStore.js";
+import {
+  normalizeToolRuntimeSettingInput,
+  ToolRuntimeSettingsStore,
+} from "../settings/toolRuntimeSettings.js";
 import { ToolSchema, ToolStartupMode } from "../tools/tool.js";
 import { ToolRegistry } from "../tools/registry.js";
 import {
@@ -48,6 +52,7 @@ import {
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import {
   generatedToolInputFromPackageManifest,
+  type ToolModuleMetadata,
   ToolMetadataStore,
   type ToolModulePromotionEvidence,
   toolToMetadata,
@@ -87,6 +92,7 @@ export type WebAppOptions = {
   reloadGeneratedTools?: () => Promise<void>;
   modelTierSettings?: ModelTierSettingsStore;
   modelProviderStore?: ModelProviderStore;
+  toolRuntimeSettings?: ToolRuntimeSettingsStore;
   secretHandleStore?: SecretHandleStore;
   artifactStore?: ArtifactStore;
   conversationStore?: ConversationThreadStore;
@@ -626,6 +632,110 @@ async function routeRequest(
     sendJson(response, 200, {
       tools: metadata,
     });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/tool-settings") {
+    sendJson(response, 200, {
+      settings: options.toolRuntimeSettings
+        ? await options.toolRuntimeSettings.list(url.searchParams.get("toolName") ?? undefined)
+        : [],
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/tool-settings/validate") {
+    if (!options.toolRuntimeSettings) {
+      sendJson(response, 503, { error: "Tool runtime settings store is not configured" });
+      return;
+    }
+
+    try {
+      const body = await readJsonBody<unknown>(request);
+      const validation = await validateToolRuntimeSettingsRequest(options, body);
+      sendJson(response, 200, validation);
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid tool runtime setting validation request",
+      });
+    }
+    return;
+  }
+
+  if (request.method === "PUT" && url.pathname === "/api/tool-settings") {
+    if (!options.toolRuntimeSettings) {
+      sendJson(response, 503, { error: "Tool runtime settings store is not configured" });
+      return;
+    }
+
+    try {
+      const body = await readJsonBody<unknown>(request);
+      if (!isRecord(body)) throw new Error("tool setting must be an object");
+      const candidate = body;
+      const input = normalizeToolRuntimeSettingInput({
+        toolName: parseRequiredText(candidate.toolName, "toolName"),
+        key: parseRequiredText(candidate.key, "key"),
+        value: parseRequiredText(candidate.value, "value"),
+      });
+      const metadata = await findToolMetadata(options, input.toolName);
+      const validationIssues = validateToolSettingValue(metadata, input.key, input.value);
+      if (validationIssues.length) {
+        sendJson(response, 400, { error: validationIssues[0], issues: validationIssues });
+        return;
+      }
+      const setting = await options.toolRuntimeSettings.set(input);
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool.setting_updated",
+        targetType: "tool",
+        targetId: setting.toolName,
+        status: "success",
+        summary: `Updated runtime setting ${setting.key} for ${setting.toolName}`,
+        metadata: sanitizeAuditMetadata({ key: setting.key }),
+      });
+      sendJson(response, 200, { setting });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid tool runtime setting request",
+      });
+    }
+    return;
+  }
+
+  const toolSettingDeleteMatch = url.pathname.match(/^\/api\/tool-settings\/([^/]+)\/([^/]+)$/);
+  if (request.method === "DELETE" && toolSettingDeleteMatch) {
+    if (!options.toolRuntimeSettings) {
+      sendJson(response, 503, { error: "Tool runtime settings store is not configured" });
+      return;
+    }
+
+    try {
+      const toolName = decodeURIComponent(toolSettingDeleteMatch[1] ?? "");
+      const key = decodeURIComponent(toolSettingDeleteMatch[2] ?? "");
+      const deleted = await options.toolRuntimeSettings.delete(toolName, key);
+      if (!deleted) {
+        sendJson(response, 404, { error: "Tool runtime setting was not found" });
+        return;
+      }
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool.setting_deleted",
+        targetType: "tool",
+        targetId: toolName,
+        status: "success",
+        summary: `Deleted runtime setting ${key} for ${toolName}`,
+        metadata: sanitizeAuditMetadata({ key }),
+      });
+      sendJson(response, 200, { deleted: true, toolName, key });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid tool runtime setting delete request",
+      });
+    }
     return;
   }
 
@@ -2584,7 +2694,10 @@ async function executeRun(
         resolveSecret: options.secretHandleStore?.resolve
           ? (handle) => options.secretHandleStore!.resolve!(handle)
           : undefined,
-        resolveConfiguration: async (key) => process.env[key],
+        resolveConfiguration: async (key, toolName) =>
+          (toolName && options.toolRuntimeSettings
+            ? await options.toolRuntimeSettings.resolve(toolName, key)
+            : undefined) ?? process.env[key],
         audit: async (event) => {
           await recordAudit(options, {
             instanceId: run?.instanceId,
@@ -3130,6 +3243,166 @@ function parseRequiredText(value: unknown, field: string): string {
     throw new Error(`${field} is required`);
   }
   return value.trim();
+}
+
+async function validateToolRuntimeSettingsRequest(options: WebAppOptions, value: unknown): Promise<{
+  ok: boolean;
+  toolName: string;
+  issues: string[];
+  warnings: string[];
+  preview: Array<{
+    key: string;
+    configured: boolean;
+    required: boolean;
+    declared: boolean;
+    type?: string;
+  }>;
+}> {
+  if (!isRecord(value)) throw new Error("tool settings validation request must be an object");
+  if (!options.toolRuntimeSettings) throw new Error("Tool runtime settings store is not configured");
+  const toolName = normalizeToolRuntimeSettingInput({
+    toolName: parseRequiredText(value.toolName, "toolName"),
+    key: "DUMMY_KEY",
+    value: "dummy",
+  }).toolName;
+  const requestedSettings = parseRuntimeSettingsMap(value.settings);
+  const deleteKeys = parseOptionalStringArray(value.deleteKeys, "deleteKeys") ?? [];
+  const metadata = await findToolMetadata(options, toolName);
+  const existing = new Map((await options.toolRuntimeSettings.list(toolName)).map((item) => [item.key, item.value]));
+  for (const key of deleteKeys) {
+    const normalized = normalizeToolRuntimeSettingInput({ toolName, key, value: "dummy" });
+    existing.delete(normalized.key);
+  }
+  for (const [key, settingValue] of Object.entries(requestedSettings)) {
+    const normalized = normalizeToolRuntimeSettingInput({ toolName, key, value: settingValue });
+    existing.set(normalized.key, normalized.value);
+  }
+
+  const issues: string[] = [];
+  const warnings: string[] = [];
+  if (!metadata) {
+    warnings.push(`No tool metadata found for ${toolName}; only key/value shape was validated.`);
+  }
+  const requiredKeys = new Set(metadata?.requiredConfigurationKeys ?? []);
+  const schemaProperties = metadata?.settingsSchema?.properties ?? {};
+  for (const key of requiredKeys) {
+    if (!existing.has(key)) issues.push(`${key} is required by ${toolName}.`);
+  }
+  for (const [key, settingValue] of existing.entries()) {
+    issues.push(...validateToolSettingValue(metadata, key, settingValue));
+    if (metadata && !requiredKeys.has(key) && !Object.prototype.hasOwnProperty.call(schemaProperties, key)) {
+      warnings.push(`${key} is not declared by ${toolName}; it will be treated as an optional runtime override.`);
+    }
+  }
+
+  const previewKeys = new Set([
+    ...requiredKeys,
+    ...Object.keys(schemaProperties),
+    ...existing.keys(),
+  ]);
+  const preview = [...previewKeys].sort((a, b) => a.localeCompare(b)).map((key) => {
+    const property = schemaProperty(metadata?.settingsSchema, key);
+    return {
+      key,
+      configured: existing.has(key),
+      required: requiredKeys.has(key),
+      declared: Boolean(property),
+      type: settingPropertyType(property),
+    };
+  });
+  return {
+    ok: issues.length === 0,
+    toolName,
+    issues,
+    warnings,
+    preview,
+  };
+}
+
+async function findToolMetadata(options: WebAppOptions, toolName: string): Promise<ToolModuleMetadata | undefined> {
+  if (options.toolMetadataStore) {
+    return (await options.toolMetadataStore.list()).find((tool) => tool.name === toolName);
+  }
+  return (options.toolRegistry?.list() ?? []).map((tool) => toolToMetadata(tool)).find((tool) => tool.name === toolName);
+}
+
+function parseRuntimeSettingsMap(value: unknown): Record<string, string> {
+  if (value === undefined) return {};
+  if (!isRecord(value)) throw new Error("settings must be an object");
+  const parsed: Record<string, string> = {};
+  for (const [key, rawValue] of Object.entries(value)) {
+    if (typeof rawValue !== "string") throw new Error(`settings.${key} must be a string`);
+    if (rawValue.trim() === "") continue;
+    parsed[key] = rawValue;
+  }
+  return parsed;
+}
+
+function validateToolSettingValue(metadata: ToolModuleMetadata | undefined, key: string, value: string): string[] {
+  const property = schemaProperty(metadata?.settingsSchema, key);
+  if (!property) return [];
+  const issues: string[] = [];
+  const type = settingPropertyType(property);
+  if (Array.isArray(property.enum) && !property.enum.map(String).includes(value)) {
+    issues.push(`${key} must be one of: ${property.enum.map(String).join(", ")}.`);
+  }
+  if (type === "boolean" && !/^(true|false|1|0|yes|no|on|off)$/i.test(value)) {
+    issues.push(`${key} must be a boolean value.`);
+  }
+  if (type === "number" || type === "integer") {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      issues.push(`${key} must be a number.`);
+    } else {
+      if (type === "integer" && !Number.isInteger(parsed)) issues.push(`${key} must be an integer.`);
+      if (typeof property.minimum === "number" && parsed < property.minimum) {
+        issues.push(`${key} must be at least ${property.minimum}.`);
+      }
+      if (typeof property.maximum === "number" && parsed > property.maximum) {
+        issues.push(`${key} must be at most ${property.maximum}.`);
+      }
+    }
+  }
+  if (type === "string" || !type) {
+    if (typeof property.minLength === "number" && value.length < property.minLength) {
+      issues.push(`${key} must be at least ${property.minLength} characters.`);
+    }
+    if (typeof property.maxLength === "number" && value.length > property.maxLength) {
+      issues.push(`${key} must be at most ${property.maxLength} characters.`);
+    }
+    if (typeof property.pattern === "string") {
+      try {
+        if (!new RegExp(property.pattern).test(value)) issues.push(`${key} does not match its required pattern.`);
+      } catch {
+        issues.push(`${key} has an invalid schema pattern.`);
+      }
+    }
+    if ((property.format === "uri" || property.format === "url") && !looksLikeUrl(value)) {
+      issues.push(`${key} must be a valid URL.`);
+    }
+  }
+  return issues;
+}
+
+function schemaProperty(schema: ToolSchema | undefined, key: string): Record<string, unknown> | undefined {
+  const property = schema?.properties?.[key];
+  return property && typeof property === "object" && !Array.isArray(property)
+    ? property as Record<string, unknown>
+    : undefined;
+}
+
+function settingPropertyType(property: Record<string, unknown> | undefined): string | undefined {
+  const rawType = property?.type;
+  return typeof rawType === "string" ? rawType : undefined;
+}
+
+function looksLikeUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function parseToolServiceEventInput(value: unknown): ToolServiceEventInput {

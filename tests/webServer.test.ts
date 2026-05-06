@@ -10,6 +10,7 @@ import { InMemoryConversationThreadStore } from "../src/conversations/inMemoryCo
 import { InMemoryRunStore } from "../src/runs/inMemoryRunStore.js";
 import { InMemoryModelTierSettingsStore } from "../src/settings/modelTierSettings.js";
 import { InMemoryModelProviderStore } from "../src/settings/modelProviderStore.js";
+import { InMemoryToolRuntimeSettingsStore } from "../src/settings/toolRuntimeSettings.js";
 import { AgentArtifact, AgentEventSink, AgentRunResult, ArtifactCreateInput } from "../src/types.js";
 import { UniversalAgent } from "../src/agents/universalAgent.js";
 import { LocalArtifactStore } from "../src/artifacts/artifactStore.js";
@@ -25,6 +26,7 @@ import { SkillMemory } from "../src/memory/skillMemory.js";
 import { InMemorySecretHandleStore } from "../src/secrets/secretHandleStore.js";
 import { ToolServiceSupervisor } from "../src/tools/toolServiceSupervisor.js";
 import { InMemoryToolServiceEventStore } from "../src/tools/toolServiceEventStore.js";
+import { Tool } from "../src/tools/tool.js";
 import {
   ExternalHttpToolPackageRunner,
   LocalPathToolPackageRunner,
@@ -2277,6 +2279,135 @@ test("web server manages secret handles without accepting raw secret values", as
     assert.equal(audit.events.some((event: { action: string }) => event.action === "secret_handle.deleted"), true);
   } finally {
     await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server manages tool runtime settings", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  const toolRuntimeSettings = new InMemoryToolRuntimeSettingsStore();
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolRuntimeSettings,
+    auditEventStore: new InMemoryAuditEventStore(),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const saveResponse = await fetch(`${baseUrl}/api/tool-settings`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        toolName: "generated.api.lookup",
+        key: "PROVIDER_BASE_URL",
+        value: "https://api.example.test",
+      }),
+    });
+    const saved = await saveResponse.json() as { setting: { toolName: string; key: string; value: string } };
+    const listed = await (await fetch(`${baseUrl}/api/tool-settings?toolName=generated.api.lookup`)).json() as {
+      settings: Array<{ toolName: string; key: string; value: string }>;
+    };
+    const deleteResponse = await fetch(
+      `${baseUrl}/api/tool-settings/${encodeURIComponent("generated.api.lookup")}/${encodeURIComponent("PROVIDER_BASE_URL")}`,
+      { method: "DELETE" },
+    );
+    const afterDelete = await (await fetch(`${baseUrl}/api/tool-settings?toolName=generated.api.lookup`)).json() as {
+      settings: Array<{ toolName: string; key: string; value: string }>;
+    };
+
+    assert.equal(saveResponse.status, 200);
+    assert.equal(saved.setting.value, "https://api.example.test");
+    assert.equal(listed.settings[0]?.key, "PROVIDER_BASE_URL");
+    assert.equal(await toolRuntimeSettings.resolve("generated.api.lookup", "PROVIDER_BASE_URL"), undefined);
+    assert.equal(deleteResponse.status, 200);
+    assert.equal(afterDelete.settings.length, 0);
+  } finally {
+    server.close();
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server validates tool runtime settings against declared schemas", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  const toolRuntimeSettings = new InMemoryToolRuntimeSettingsStore();
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  const configurableTool: Tool = {
+    name: "generated.api.configurable",
+    version: "1.0.0",
+    description: "Configurable API client",
+    capabilities: ["api-client"],
+    requiredConfigurationKeys: ["PROVIDER_BASE_URL"],
+    settingsSchema: {
+      type: "object",
+      properties: {
+        PROVIDER_BASE_URL: { type: "string", format: "uri" },
+        MAX_RESULTS: { type: "integer", minimum: 1, maximum: 50 },
+        ENABLE_CACHE: { type: "boolean" },
+      },
+    },
+    async run() {
+      return { ok: true, content: "ok" };
+    },
+  };
+  await toolMetadataStore.syncBuiltins([configurableTool]);
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolRuntimeSettings,
+    toolMetadataStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const missingRequired = await (await fetch(`${baseUrl}/api/tool-settings/validate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ toolName: "generated.api.configurable", settings: { MAX_RESULTS: "10" } }),
+    })).json() as { ok: boolean; issues: string[] };
+    const badUrlResponse = await fetch(`${baseUrl}/api/tool-settings`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        toolName: "generated.api.configurable",
+        key: "PROVIDER_BASE_URL",
+        value: "not-a-url",
+      }),
+    });
+    const validPreview = await (await fetch(`${baseUrl}/api/tool-settings/validate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        toolName: "generated.api.configurable",
+        settings: {
+          PROVIDER_BASE_URL: "https://api.example.test",
+          MAX_RESULTS: "25",
+          ENABLE_CACHE: "true",
+        },
+      }),
+    })).json() as { ok: boolean; issues: string[]; preview: Array<{ key: string; configured: boolean }> };
+    const valueAfterBadSave = await toolRuntimeSettings.resolve("generated.api.configurable", "PROVIDER_BASE_URL");
+    const saveResponse = await fetch(`${baseUrl}/api/tool-settings`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        toolName: "generated.api.configurable",
+        key: "PROVIDER_BASE_URL",
+        value: "https://api.example.test",
+      }),
+    });
+
+    assert.equal(missingRequired.ok, false);
+    assert.match(missingRequired.issues.join(" "), /PROVIDER_BASE_URL is required/);
+    assert.equal(badUrlResponse.status, 400);
+    assert.equal(valueAfterBadSave, undefined);
+    assert.equal(validPreview.ok, true);
+    assert.equal(validPreview.preview.find((item) => item.key === "ENABLE_CACHE")?.configured, true);
+    assert.equal(saveResponse.status, 200);
+  } finally {
+    server.close();
     await rm(publicDir, { recursive: true, force: true });
   }
 });

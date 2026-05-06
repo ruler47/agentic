@@ -125,10 +125,17 @@ Generated tool package workspace:
 
 - `TOOL_PACKAGE_WORKSPACE_ROOT` defaults to `tools`.
 - `TOOL_PACKAGE_ROOT` can point at a specific legacy/custom source-bundle package root.
-- `TOOL_BUILD_PACKAGE_WORKSPACE=disabled` disables Builder sidecar package workspace
-  writing while keeping the legacy local-path generated module flow.
+- New server-side Tool Builds write package workspaces by default and do not write new
+  generated module/test files into `src/tools/generated` or `tests/generated`.
+- `TOOL_BUILD_LEGACY_PROJECT_FILES=enabled` temporarily restores legacy project-file
+  writes in addition to the package workspace.
+- `TOOL_BUILD_PACKAGE_WORKSPACE=disabled` disables package workspace writing and falls
+  back to the legacy local-path generated module flow.
 - `SourceBundleToolPackageRunner` searches `TOOL_PACKAGE_ROOT`,
   `TOOL_PACKAGE_WORKSPACE_ROOT`, default `tools`, and legacy `tool-packages`.
+- The web server prefers `SourceBundleHttpProcessToolPackageRunner` for source-bundles
+  unless `TOOL_SOURCE_BUNDLE_HTTP_RUNNER=disabled` or
+  `TOOL_SOURCE_BUNDLE_RUNNER=in-process`.
 - `TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or
   `TOOL_SOURCE_BUNDLE_RUNNER=http-process` makes generated source-bundles execute through
   their package-local `dist/runtime/server.js` HTTP runtime as a separate local Node
@@ -337,6 +344,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   policy contract and in-memory implementation.
 - [src/settings/postgresModelTierSettings.ts](src/settings/postgresModelTierSettings.ts)
   - Postgres-backed model tier policy.
+- [src/settings/toolRuntimeSettings.ts](src/settings/toolRuntimeSettings.ts) - non-secret
+  per-tool runtime settings contract and in-memory implementation.
+- [src/settings/postgresToolRuntimeSettings.ts](src/settings/postgresToolRuntimeSettings.ts)
+  - Postgres-backed `tool_runtime_settings` store.
 - [src/secrets/secretHandleStore.ts](src/secrets/secretHandleStore.ts) - secret-handle
   metadata contract, validation, raw-secret rejection, and in-memory resolver for env refs.
 - [src/secrets/postgresSecretHandleStore.ts](src/secrets/postgresSecretHandleStore.ts) -
@@ -621,6 +632,12 @@ For documentation-only changes:
   same requester user or an explicit private-memory grant.
 - Built-in and future generated tool contracts should be synced into `tool_modules` so
   source/status/health/version metadata survives restarts.
+- Non-secret tool runtime settings live in `tool_runtime_settings` and are exposed in the
+  Tools UI/API. Runtime resolution checks tool-specific settings first and then falls
+  back to process env. Validate settings against the tool's `settingsSchema` before
+  saving; typed UI controls and `/api/tool-settings/validate` should stay aligned with
+  schema semantics. API keys, bot tokens, passwords, and other secret material must stay
+  in `secret_handles`, never in runtime settings.
 - Portable generated tool packages use `agentic.tool-package.v1`. The API/UI can import
   package manifests into registry metadata and export generated package manifests.
   Non-local package refs are metadata-only/disabled until a generic runner exists.
@@ -680,10 +697,10 @@ For documentation-only changes:
   `tools/<system-name>/<version>` with manifest, README, Dockerfile, package metadata,
   TypeScript build config, source, and tests. It is the preferred next target for Tool
   Builder output before containerization.
-- Server-side `GeneratedToolFileBuilder` mirrors generated module/test output into the
-  package workspace by default while retaining the legacy local-path promotion output.
-  This bridge can be disabled with `TOOL_BUILD_PACKAGE_WORKSPACE=disabled`. Mirrored
-  packages include a package-local `index.ts` entrypoint and minimal package-local
+- Server-side `GeneratedToolFileBuilder` writes generated module/test output into the
+  package workspace by default and skips legacy project-file writes unless
+  `TOOL_BUILD_LEGACY_PROJECT_FILES=enabled` is set. Package builds include a package-local
+  `index.ts` entrypoint and minimal package-local
   `src/tools/tool.ts` contract so generated source can compile against portable Tool
   types instead of reading Agentic internals. QA reports include the sidecar
   `tool.package.json` path when one was written, and `IsolatedCommandToolQaRunner`

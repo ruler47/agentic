@@ -774,6 +774,7 @@ async function executionContextPayload(
   const configurationEnvelope = await resolvedConfigurationEnvelope(
     metadata.requiredConfigurationKeys,
     context?.resolveConfiguration,
+    metadata.name,
   );
   const secretEnvelope = await resolvedSecretEnvelope(metadata.requiredSecretHandles, context?.resolveSecret);
   assertResolvedRuntimeRequirements(configurationEnvelope, secretEnvelope);
@@ -802,6 +803,7 @@ async function serviceContextPayload(
   const configurationEnvelope = await resolvedConfigurationEnvelope(
     metadata.requiredConfigurationKeys,
     context.resolveConfiguration,
+    metadata.name,
   );
   const secretEnvelope = await resolvedSecretEnvelope(metadata.requiredSecretHandles, context.resolveSecret);
   assertResolvedRuntimeRequirements(configurationEnvelope, secretEnvelope);
@@ -840,7 +842,8 @@ function assertResolvedRuntimeRequirements(
 
 async function resolvedConfigurationEnvelope(
   keys: string[] | undefined,
-  resolveConfiguration: ((key: string) => Promise<string | undefined>) | undefined,
+  resolveConfiguration: ((key: string, toolName?: string) => Promise<string | undefined>) | undefined,
+  toolName: string,
 ): Promise<Record<string, unknown>> {
   const requestedKeys = [...new Set(keys ?? [])];
   if (!requestedKeys.length) return {};
@@ -851,7 +854,7 @@ async function resolvedConfigurationEnvelope(
   const configuration: Record<string, string> = {};
   const missingConfigurationKeys: string[] = [];
   for (const key of requestedKeys) {
-    const value = await resolveConfiguration(key);
+    const value = await resolveConfiguration(key, toolName);
     if (value === undefined) missingConfigurationKeys.push(key);
     else configuration[key] = value;
   }
