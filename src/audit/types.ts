@@ -25,6 +25,8 @@ export type AuditAction =
   | "tool_build.stopped"
   | "tool_build.deleted"
   | "tool_build.registered"
+  | "tool_investigation.created"
+  | "tool_investigation.updated"
   | "tool_migration.recorded"
   | "conversation_thread.deleted"
   | "group_profile.updated"

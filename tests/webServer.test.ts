@@ -15,6 +15,7 @@ import { AgentArtifact, AgentEventSink, AgentRunResult, ArtifactCreateInput } fr
 import { UniversalAgent } from "../src/agents/universalAgent.js";
 import { LocalArtifactStore } from "../src/artifacts/artifactStore.js";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
+import { InMemoryToolInvestigationStore } from "../src/tools/toolInvestigationStore.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import { InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
 import { InMemoryToolPromotionStore } from "../src/tools/toolPromotionStore.js";
@@ -1749,6 +1750,169 @@ test("web server rejects contextual tool requests that clearly target another in
     assert.match(body.error, /Selected tool browser\.operate does not appear to match/);
     assert.match(body.error, /closer to channel\.telegram\.bot/);
     assert.equal((await toolBuildRequestStore.list()).length, 0);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server exposes durable tool investigation tickets", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const toolInvestigationStore = new InMemoryToolInvestigationStore();
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolInvestigationStore,
+    toolBuildRequestStore,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createResponse = await fetch(`${baseUrl}/api/tool-investigations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source: "trace_span",
+        title: "browser.screenshot returned a loader page",
+        operatorComment: "Cloudflare blocker, needs investigation before rebuild",
+        runId: "run-77",
+        spanId: "span-abc",
+        toolName: "browser.screenshot",
+        toolVersion: "1.2.0",
+        artifactIds: ["art-1", "art-2"],
+        contextBundle: {
+          taskPrompt: "Capture proof of pricing page",
+          actor: "browser.screenshot",
+          activity: "tool",
+          status: "failed",
+          inputSummary: "https://example.com/pricing",
+          outputSummary: "Just a moment... loader page",
+          error: "Loader page detected",
+          artifactQa: { reason: "loader-page", score: 0.1 },
+          toolSettingsSummary: {
+            baseUrl: "https://provider.example",
+            apiKey: "SHOULD-NEVER-LEAK-1234",
+            headers: { authorization: "Bearer SECRET-TOKEN" },
+          },
+          relatedArtifactRefs: [
+            { id: "art-1", filename: "loader.png", mimeType: "image/png", url: "/artifacts/art-1" },
+          ],
+          notes: ["Reproduce locally first"],
+        },
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+    const createdBody = await createResponse.json();
+    const created = createdBody.investigation;
+    assert.equal(created.status, "open");
+    assert.equal(created.toolName, "browser.screenshot");
+    assert.deepEqual(created.artifactIds, ["art-1", "art-2"]);
+    assert.equal(
+      created.contextBundle.toolSettingsSummary.apiKey,
+      "[redacted]",
+      "secret-shaped keys must not be exposed in stored context",
+    );
+    assert.equal(
+      created.contextBundle.toolSettingsSummary.headers.authorization,
+      "[redacted]",
+    );
+    const serialized = JSON.stringify(createdBody);
+    assert.doesNotMatch(serialized, /SHOULD-NEVER-LEAK-1234/);
+    assert.doesNotMatch(serialized, /SECRET-TOKEN/);
+
+    const listResponse = await fetch(`${baseUrl}/api/tool-investigations`);
+    const listBody = await listResponse.json();
+    assert.equal(listResponse.status, 200);
+    assert.equal(listBody.investigations.length, 1);
+
+    const detailResponse = await fetch(
+      `${baseUrl}/api/tool-investigations/${encodeURIComponent(created.id)}`,
+    );
+    assert.equal(detailResponse.status, 200);
+    const detailBody = await detailResponse.json();
+    assert.equal(detailBody.investigation.id, created.id);
+
+    const linkBadResponse = await fetch(
+      `${baseUrl}/api/tool-investigations/${encodeURIComponent(created.id)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ linkedBuildRequestId: "missing-build" }),
+      },
+    );
+    assert.equal(linkBadResponse.status, 400);
+
+    const buildRequest = await toolBuildRequestStore.create({
+      capability: "browser-screenshot",
+      reason: "rebuild after investigation triage",
+    });
+
+    const patchResponse = await fetch(
+      `${baseUrl}/api/tool-investigations/${encodeURIComponent(created.id)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          status: "linked_to_build",
+          operatorComment: "Linked to rebuild after triage.",
+          linkedBuildRequestId: buildRequest.id,
+        }),
+      },
+    );
+    assert.equal(patchResponse.status, 200);
+    const patched = (await patchResponse.json()).investigation;
+    assert.equal(patched.status, "linked_to_build");
+    assert.equal(patched.linkedBuildRequestId, buildRequest.id);
+
+    const missingResponse = await fetch(`${baseUrl}/api/tool-investigations/missing`);
+    assert.equal(missingResponse.status, 404);
+
+    const invalidResponse = await fetch(`${baseUrl}/api/tool-investigations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "no source" }),
+    });
+    assert.equal(invalidResponse.status, 400);
+
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+    const actions = audit.events.map((event: { action: string }) => event.action);
+    assert.ok(actions.includes("tool_investigation.created"));
+    assert.ok(actions.includes("tool_investigation.updated"));
+    const auditSerialized = JSON.stringify(audit);
+    assert.doesNotMatch(auditSerialized, /SHOULD-NEVER-LEAK-1234/);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server returns 503 for tool investigations when the store is not configured", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const list = await fetch(`${baseUrl}/api/tool-investigations`);
+    assert.equal(list.status, 503);
+
+    const create = await fetch(`${baseUrl}/api/tool-investigations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: "manual", title: "Test" }),
+    });
+    assert.equal(create.status, 503);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

@@ -38,6 +38,8 @@ import { InMemoryToolMetadataStore } from "../tools/toolMetadataStore.js";
 import { PostgresToolMetadataStore } from "../tools/postgresToolMetadataStore.js";
 import { InMemoryToolBuildRequestStore } from "../tools/toolBuildRequestStore.js";
 import { PostgresToolBuildRequestStore } from "../tools/postgresToolBuildRequestStore.js";
+import { InMemoryToolInvestigationStore } from "../tools/toolInvestigationStore.js";
+import { PostgresToolInvestigationStore } from "../tools/postgresToolInvestigationStore.js";
 import { InMemoryToolMigrationStore } from "../tools/toolMigrationStore.js";
 import { PostgresToolMigrationStore } from "../tools/postgresToolMigrationStore.js";
 import { InMemoryToolPromotionStore } from "../tools/toolPromotionStore.js";
@@ -106,6 +108,9 @@ tools.setUsageReporter((event) =>
 const toolBuildRequestStore = pool
   ? new PostgresToolBuildRequestStore(pool)
   : new InMemoryToolBuildRequestStore();
+const toolInvestigationStore = pool
+  ? new PostgresToolInvestigationStore(pool)
+  : new InMemoryToolInvestigationStore();
 const toolMigrationStore = pool
   ? new PostgresToolMigrationStore(pool)
   : new InMemoryToolMigrationStore();
@@ -273,6 +278,7 @@ const server = createWebApp({
   toolMigrationStore,
   toolPromotionStore,
   toolBuildRequestStore,
+  toolInvestigationStore,
   toolBuildWorkflow,
   toolServiceSupervisor,
   toolServiceEventStore,

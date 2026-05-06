@@ -114,10 +114,21 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /Dependency: waits for upstream result/);
   assert.match(app, /Calls a failed span/);
   assert.match(app, /function renderSpanToolRequestForm/);
-  assert.match(app, /function spanArtifactQaContext/);
-  assert.match(app, /Rejected artifact QA:/);
+  assert.match(app, /function renderInvestigationModal/);
+  assert.match(app, /function buildSpanInvestigationDraft/);
+  assert.match(app, /function createInvestigation/);
+  assert.match(app, /function promoteInvestigationToBuild/);
+  assert.match(app, /function renderToolInvestigationsSection/);
+  assert.match(app, /function renderInvestigationCard/);
+  assert.match(app, /data-action="open-investigation-modal"/);
+  assert.match(app, /data-action="create-investigation"/);
+  assert.match(app, /data-action="close-investigation-modal"/);
+  assert.match(app, /data-action="promote-investigation-to-build"/);
+  assert.match(app, /data-action="update-investigation-status"/);
+  assert.match(app, /\/api\/tool-investigations/);
+  assert.match(app, /Tool Investigation Ticket/);
+  assert.match(app, /Tool Investigations/);
   assert.match(app, /function renderNotice/);
-  assert.match(app, /function inferCapabilityFromSpan/);
   assert.match(app, /sourceSpanId/);
   assert.match(app, /Tool request created/);
   assert.match(app, /navigate\("tool-builds"\)/);
@@ -270,13 +281,17 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".kanban-board",
     ".secret-handle-strip",
     ".empty-state",
+    ".investigation-modal",
+    ".investigation-modal-overlay",
+    ".investigation-card",
+    ".investigation-grid",
+    ".span-investigation-actions",
   ]) {
     assert.match(styles, new RegExp(componentClass.replace(".", "\\.")));
   }
 
   assert.match(styles, /@keyframes skeleton/);
   assert.match(styles, /@keyframes running-pulse/);
-  assert.match(styles, /\.span-request-box\[open\]/);
   assert.match(styles, /\.run-status-bar h2\s*{[\s\S]*white-space: normal/);
   assert.match(styles, /\.inspector-panel\s*{[\s\S]*max-height: calc\(100vh - 112px\)/);
   assert.match(styles, /\.inspector-panel\s*{[\s\S]*overflow: auto/);

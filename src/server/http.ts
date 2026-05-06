@@ -49,6 +49,16 @@ import {
   ToolBuildRequestStore,
   ToolBuildReviewReport,
 } from "../tools/toolBuildRequestStore.js";
+import {
+  TOOL_INVESTIGATION_SOURCES,
+  TOOL_INVESTIGATION_STATUSES,
+  ToolInvestigationContextBundle,
+  ToolInvestigationCreateInput,
+  ToolInvestigationSource,
+  ToolInvestigationStatus,
+  ToolInvestigationStore,
+  ToolInvestigationUpdateInput,
+} from "../tools/toolInvestigationStore.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import {
   generatedToolInputFromPackageManifest,
@@ -85,6 +95,7 @@ export type WebAppOptions = {
   toolMigrationStore?: ToolMigrationStore;
   toolPromotionStore?: ToolPromotionStore;
   toolBuildRequestStore?: ToolBuildRequestStore;
+  toolInvestigationStore?: ToolInvestigationStore;
   toolBuildWorkflow?: ToolBuildWorkflow;
   toolServiceSupervisor?: ToolServiceSupervisor;
   toolServiceEventStore?: ToolServiceEventStore;
@@ -1656,6 +1667,118 @@ async function routeRequest(
       await options.reloadGeneratedTools?.();
     }
     sendJson(response, 200, result);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/tool-investigations") {
+    if (!options.toolInvestigationStore) {
+      sendJson(response, 503, { error: "Tool investigation store is not configured" });
+      return;
+    }
+    sendJson(response, 200, {
+      investigations: await options.toolInvestigationStore.list(),
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/tool-investigations") {
+    if (!options.toolInvestigationStore) {
+      sendJson(response, 503, { error: "Tool investigation store is not configured" });
+      return;
+    }
+
+    try {
+      const input = parseToolInvestigationCreateInput(await readJsonBody<unknown>(request));
+      const investigation = await options.toolInvestigationStore.create(input);
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool_investigation.created",
+        targetType: "tool_investigation",
+        targetId: investigation.id,
+        status: "pending",
+        runId: investigation.runId,
+        summary: `Tool investigation opened: ${investigation.title}`,
+        metadata: sanitizeAuditMetadata({
+          source: investigation.source,
+          toolName: investigation.toolName,
+          toolVersion: investigation.toolVersion,
+          spanId: investigation.spanId,
+          artifactIds: investigation.artifactIds,
+        }),
+      });
+      sendJson(response, 201, { investigation });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid tool investigation",
+      });
+    }
+    return;
+  }
+
+  const toolInvestigationMatch = url.pathname.match(/^\/api\/tool-investigations\/([^/]+)$/);
+  if (request.method === "GET" && toolInvestigationMatch) {
+    if (!options.toolInvestigationStore) {
+      sendJson(response, 503, { error: "Tool investigation store is not configured" });
+      return;
+    }
+    const investigation = await options.toolInvestigationStore.get(
+      decodeURIComponent(toolInvestigationMatch[1] ?? ""),
+    );
+    if (!investigation) {
+      sendJson(response, 404, { error: "Tool investigation not found" });
+      return;
+    }
+    sendJson(response, 200, { investigation });
+    return;
+  }
+
+  if (request.method === "PATCH" && toolInvestigationMatch) {
+    if (!options.toolInvestigationStore) {
+      sendJson(response, 503, { error: "Tool investigation store is not configured" });
+      return;
+    }
+
+    try {
+      const id = decodeURIComponent(toolInvestigationMatch[1] ?? "");
+      const update = parseToolInvestigationUpdateInput(await readJsonBody<unknown>(request));
+      const previous = await options.toolInvestigationStore.get(id);
+      if (!previous) {
+        sendJson(response, 404, { error: "Tool investigation not found" });
+        return;
+      }
+
+      if (update.linkedBuildRequestId && options.toolBuildRequestStore) {
+        const build = await options.toolBuildRequestStore.get(update.linkedBuildRequestId);
+        if (!build) {
+          sendJson(response, 400, { error: "linkedBuildRequestId does not match any tool build request" });
+          return;
+        }
+      }
+
+      const investigation = await options.toolInvestigationStore.update(id, update);
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool_investigation.updated",
+        targetType: "tool_investigation",
+        targetId: investigation.id,
+        status: "success",
+        runId: investigation.runId,
+        summary: `Tool investigation updated: ${investigation.title} (${investigation.status})`,
+        metadata: sanitizeAuditMetadata({
+          previousStatus: previous.status,
+          status: investigation.status,
+          linkedBuildRequestId: investigation.linkedBuildRequestId,
+        }),
+      });
+      sendJson(response, 200, { investigation });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid tool investigation update";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
     return;
   }
 
@@ -4040,6 +4163,109 @@ function parseToolBuildRequestStatusUpdate(value: unknown) {
       typeof candidate.registeredToolName === "string" ? candidate.registeredToolName.trim() : undefined,
     qaReport: parseOptionalQaReport(candidate.qaReport),
   };
+}
+
+function parseToolInvestigationCreateInput(value: unknown): ToolInvestigationCreateInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("tool investigation must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  const source = candidate.source;
+  if (typeof source !== "string" || !TOOL_INVESTIGATION_SOURCES.includes(source as ToolInvestigationSource)) {
+    throw new Error(
+      `source is required and must be one of ${TOOL_INVESTIGATION_SOURCES.join(", ")}`,
+    );
+  }
+  const title = parseRequiredText(candidate.title, "title");
+  return {
+    source: source as ToolInvestigationSource,
+    title,
+    operatorComment: parseOptionalText(candidate.operatorComment),
+    runId: parseOptionalText(candidate.runId),
+    spanId: parseOptionalText(candidate.spanId),
+    toolName: parseOptionalText(candidate.toolName),
+    toolVersion: parseOptionalText(candidate.toolVersion),
+    artifactIds: parseOptionalStringArray(candidate.artifactIds, "artifactIds"),
+    contextBundle: parseToolInvestigationContextBundle(candidate.contextBundle),
+  };
+}
+
+function parseToolInvestigationUpdateInput(value: unknown): ToolInvestigationUpdateInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("tool investigation update must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  const update: ToolInvestigationUpdateInput = {};
+  if (candidate.status !== undefined) {
+    if (
+      typeof candidate.status !== "string" ||
+      !TOOL_INVESTIGATION_STATUSES.includes(candidate.status as ToolInvestigationStatus)
+    ) {
+      throw new Error(`status must be one of ${TOOL_INVESTIGATION_STATUSES.join(", ")}`);
+    }
+    update.status = candidate.status as ToolInvestigationStatus;
+  }
+  if (candidate.operatorComment !== undefined) {
+    update.operatorComment = parseOptionalText(candidate.operatorComment);
+  }
+  if (candidate.linkedBuildRequestId !== undefined) {
+    if (candidate.linkedBuildRequestId === null) {
+      update.linkedBuildRequestId = null;
+    } else {
+      const parsed = parseOptionalText(candidate.linkedBuildRequestId);
+      update.linkedBuildRequestId = parsed === undefined ? null : parsed;
+    }
+  }
+  if (candidate.artifactIds !== undefined) {
+    update.artifactIds = parseOptionalStringArray(candidate.artifactIds, "artifactIds") ?? [];
+  }
+  if (candidate.contextBundle !== undefined) {
+    update.contextBundle = parseToolInvestigationContextBundle(candidate.contextBundle);
+  }
+  return update;
+}
+
+function parseToolInvestigationContextBundle(value: unknown): ToolInvestigationContextBundle | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("contextBundle must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  const bundle: ToolInvestigationContextBundle = {
+    taskPrompt: parseOptionalText(candidate.taskPrompt),
+    runTitle: parseOptionalText(candidate.runTitle),
+    actor: parseOptionalText(candidate.actor),
+    activity: parseOptionalText(candidate.activity),
+    status: parseOptionalText(candidate.status),
+    caller: parseOptionalText(candidate.caller),
+    inputSummary: parseOptionalText(candidate.inputSummary),
+    outputSummary: parseOptionalText(candidate.outputSummary),
+    error: parseOptionalText(candidate.error),
+  };
+  if (isRecord(candidate.artifactQa)) bundle.artifactQa = sanitizeObject(candidate.artifactQa);
+  if (isRecord(candidate.toolSettingsSummary)) {
+    bundle.toolSettingsSummary = sanitizeObject(candidate.toolSettingsSummary);
+  }
+  if (Array.isArray(candidate.relatedArtifactRefs)) {
+    const refs: { id?: string; filename?: string; mimeType?: string; url?: string }[] = [];
+    for (const ref of candidate.relatedArtifactRefs) {
+      if (!ref || typeof ref !== "object" || Array.isArray(ref)) continue;
+      const refRecord = ref as Record<string, unknown>;
+      refs.push({
+        id: parseOptionalText(refRecord.id),
+        filename: parseOptionalText(refRecord.filename),
+        mimeType: parseOptionalText(refRecord.mimeType),
+        url: parseOptionalText(refRecord.url),
+      });
+    }
+    bundle.relatedArtifactRefs = refs;
+  }
+  if (Array.isArray(candidate.notes)) {
+    const notes = parseOptionalStringArray(candidate.notes, "contextBundle.notes");
+    if (notes && notes.length > 0) bundle.notes = notes;
+  }
+  if (isRecord(candidate.extra)) bundle.extra = sanitizeObject(candidate.extra);
+  return bundle;
 }
 
 function parseOptionalQaReport(value: unknown): ToolBuildQaReport | undefined {

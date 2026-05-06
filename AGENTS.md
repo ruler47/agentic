@@ -307,6 +307,11 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   request/contract/lifecycle/QA criteria model.
 - [src/tools/postgresToolBuildRequestStore.ts](src/tools/postgresToolBuildRequestStore.ts)
   - Postgres-backed `tool_build_requests` queue.
+- [src/tools/toolInvestigationStore.ts](src/tools/toolInvestigationStore.ts) - Tool
+  Investigation Ticket model and in-memory store with secret-aware context bundle
+  sanitization.
+- [src/tools/postgresToolInvestigationStore.ts](src/tools/postgresToolInvestigationStore.ts)
+  - Postgres-backed `tool_investigations` table.
 - [src/tools/toolBuildWorkflow.ts](src/tools/toolBuildWorkflow.ts) - reusable Builder/QA/
   review/Registrar orchestration flow for missing tool capabilities.
 - [src/tools/toolBuildReviewers.ts](src/tools/toolBuildReviewers.ts) - deterministic and
@@ -452,6 +457,8 @@ For documentation-only changes:
 - `tests/generatedToolLoader.test.ts` covers compiled generated tool loading and contract
   rejection.
 - `tests/toolMetadataStore.test.ts` covers tool metadata and Tool Build Queue lifecycle.
+- `tests/toolInvestigationStore.test.ts` covers Tool Investigation Ticket lifecycle and
+  context-bundle secret redaction.
 - `tests/toolServiceSupervisor.test.ts` covers generic always-on tool lifecycle state,
   status-store persistence across supervisor instances, reconciliation, and lifecycle
   logs.
@@ -605,9 +612,19 @@ For documentation-only changes:
   an artifact, persist the compact check names, decisions, reasons, and matched signals so
   UI/API users can understand why the file is usable and future rework requests can inherit
   the evidence.
-- Future Trace Lab "Create tool request / bug" actions should carry selected span context
-  into Tool Builder: run/span IDs, actor, tool name/version/capability, input/output
-  summaries, artifacts, QA evidence, and the operator's comment.
+- The Trace Lab "Create tool request / bug" inspector action opens a Tool Investigation
+  Ticket modal instead of submitting a build request directly. The modal previews the
+  attached run/span/tool/artifact context, accepts an operator comment, and creates a
+  `tool_investigation` ticket through `POST /api/tool-investigations`. Tool Build/rework
+  requests are created later from the Tool Builds page, where each ticket exposes a
+  one-click "Promote to Tool Build request" that links the resulting build id back to the
+  ticket. Do not silently retarget another tool from fuzzy text — when the selected span
+  has no clear matching registered tool, save the ticket with `source: "manual"` and let
+  the operator triage it.
+- Tool Investigation context bundles never store raw secrets. The store sanitizes any key
+  matching `secret`, `token`, `password`, `apiKey`, `api_key`, `credential`, or
+  `authorization` to `"[redacted]"` before persistence. Promotion to a Tool Build request
+  must continue to use scoped secret handles for credentials.
 - Conversation deletion is destructive: `DELETE /api/conversation-threads/:id` deletes the
   thread, its messages, all runs with that `threadId`, and their trace events/artifact
   metadata through run cascades. Keep UI copy explicit about the blast radius.

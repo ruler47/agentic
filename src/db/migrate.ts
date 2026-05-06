@@ -688,6 +688,42 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     `);
 
     await pool.query(`
+      create table if not exists tool_investigations (
+        id text primary key,
+        status text not null check (status in ('open', 'triaged', 'linked_to_build', 'closed')),
+        source text not null check (source in ('trace_span', 'tool_detail', 'artifact', 'manual')),
+        title text not null,
+        operator_comment text,
+        run_id text references runs(id) on delete set null,
+        span_id text,
+        tool_name text,
+        tool_version text,
+        artifact_ids text[] not null default '{}',
+        linked_build_request_id text references tool_build_requests(id) on delete set null,
+        context_bundle jsonb not null default '{}'::jsonb,
+        created_at timestamptz not null,
+        updated_at timestamptz not null
+      );
+    `);
+
+    await pool.query(`
+      create index if not exists tool_investigations_status_created_at_idx
+      on tool_investigations(status, created_at desc);
+    `);
+
+    await pool.query(`
+      create index if not exists tool_investigations_tool_name_idx
+      on tool_investigations(tool_name, created_at desc)
+      where tool_name is not null;
+    `);
+
+    await pool.query(`
+      create index if not exists tool_investigations_run_id_idx
+      on tool_investigations(run_id, created_at desc)
+      where run_id is not null;
+    `);
+
+    await pool.query(`
       create table if not exists secret_handles (
         handle text primary key,
         label text not null,

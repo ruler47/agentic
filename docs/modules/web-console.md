@@ -158,6 +158,10 @@ POST /api/tool-build-requests
 GET /api/tool-build-requests/:id
 PATCH /api/tool-build-requests/:id
 POST /api/tool-build-requests/:id/run
+GET /api/tool-investigations
+POST /api/tool-investigations
+GET /api/tool-investigations/:id
+PATCH /api/tool-investigations/:id
 GET /api/secret-handles
 POST /api/secret-handles
 GET /api/secret-handles/:handle
@@ -753,11 +757,15 @@ Trace Lab:
 - Graph edges use solid lines for direct parent calls and dashed lines for dependency
   waits. Edges pointing into failed spans stay red, including their arrow heads, so failed
   branches are visible without hover.
-- The future "Create tool request / bug" inspector action should carry selected-span
-  context into a bug/rework form: run/span ids, actor/activity, tool name/capability,
-  input/output summaries, artifacts, QA evidence, reviewer notes, and operator feedback.
-  A classifier should decide whether this becomes a tool rework, prompt/planning issue,
-  credential/policy issue, external site limitation, or memory note.
+- The "Create tool request / bug" inspector action opens a Tool Investigation Ticket
+  modal (see "Tool Investigations" below). The modal previews the run/span/tool/artifact
+  context that will be attached to the ticket, lets the operator add a comment, and
+  creates a durable investigation through `POST /api/tool-investigations`. The modal does
+  not silently retarget another tool when the selected span does not match a registered
+  tool by exact actor/payload — it warns the operator and stores the ticket as `manual`
+  for triage. A future LLM triage classifier should decide whether the resulting build
+  request, if any, becomes a tool rework, prompt/planning issue, credential/policy issue,
+  external site limitation, or memory note.
 - Tool Builds shows the durable build queue by lifecycle state. `requested` means a real
   request exists and is waiting for the background worker to claim it; operators can also
   trigger the workflow from the card, stop/delete the card, inspect a contract preview, or
@@ -852,6 +860,11 @@ Tool Builds:
 - builder/QA/registrar lifecycle;
 - generated source/test artifacts;
 - QA reports and retry history.
+- a top "Tool Investigations" panel that lists open and linked investigations created
+  from Trace Lab/tool/artifact failures. Each card shows status, source, matched
+  tool/run/span, operator comment, and a one-click "Promote to Tool Build request" action
+  that creates a build request through `POST /api/tool-build-requests` and links the
+  resulting build id back to the investigation as `linked_to_build`.
 
 Policies:
 
@@ -861,6 +874,50 @@ Policies:
 - approval requirements;
 - Telegram whitelist rules;
 - inter-instance federation policies.
+
+## Tool Investigations
+
+Tool Investigation Tickets are the durable failure-context layer between Trace Lab/Tools
+/Artifacts and the Tool Build queue. They preserve enough context that a future agent or
+operator can repair the right tool without losing the original signal.
+
+A ticket has:
+
+- `id`, `status` (`open` | `triaged` | `linked_to_build` | `closed`), `source`
+  (`trace_span` | `tool_detail` | `artifact` | `manual`);
+- `title` and optional `operatorComment`;
+- optional `runId`, `spanId`, `toolName`, `toolVersion`, and `artifactIds`;
+- optional `linkedBuildRequestId` once the investigation has been promoted;
+- a structured `contextBundle` with task prompt, run title, actor, activity, status,
+  caller, input/output summaries, error, artifact QA evidence, sanitized tool settings,
+  related artifact references, and triage notes;
+- `createdAt`/`updatedAt` timestamps.
+
+Sensitive keys (`secret`, `token`, `password`, `apiKey`, `api_key`, `credential`,
+`authorization`) inside the context bundle are replaced with `"[redacted]"` before
+storage, both in-memory and in Postgres. Tool Build requests created from an
+investigation must continue to use scoped secret handles; the investigation itself never
+holds raw credential material.
+
+API:
+
+- `GET /api/tool-investigations` — list recent tickets (descending `createdAt`).
+- `POST /api/tool-investigations` — create a ticket. Required fields: `source`, `title`.
+  Returns 201 with `{ investigation }`.
+- `GET /api/tool-investigations/:id` — fetch a single ticket. 404 when missing.
+- `PATCH /api/tool-investigations/:id` — update `status`, `operatorComment`,
+  `linkedBuildRequestId`, `artifactIds`, or `contextBundle`. The server rejects a
+  `linkedBuildRequestId` that does not correspond to an existing tool build request.
+All endpoints return 503 if the investigation store is not configured.
+
+The Trace Lab span inspector replaces the previous inline tool-build form with a modal
+that shows what context will be attached, asks for an operator comment, creates the
+investigation, and shows the created ticket id on success. When the selected span has no
+clear matching registered tool (by exact actor/payload), the modal renders a warning and
+saves the ticket as `manual` instead of guessing a target tool. The Tool Builds page
+exposes the same tickets as a top "Tool Investigations" panel with a one-click "Promote
+to Tool Build request" action that creates a build through the existing tool-build API
+and links the build id back to the investigation.
 
 ## Always-On Tool UX
 

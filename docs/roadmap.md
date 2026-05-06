@@ -313,6 +313,56 @@ Remaining memory gaps:
 - Memory policy simulation currently uses the selected run context and deterministic
   rules. It is not yet connected to editable role/policy records or audit decisions.
 
+## Phase 1.5: Tool Investigation Tickets
+
+Status: partially implemented.
+
+A Tool Investigation Ticket is a durable, reviewable record of a failure context that an
+operator (or, eventually, an agent) wants to study before patching anything. It is the
+layer between "something looks wrong in Trace Lab / Tools / Artifacts" and "create a Tool
+Build / rework request".
+
+How it differs from a Tool Build Request:
+
+- A Tool Build Request is a contract for *building or rebuilding* a tool. It carries
+  builder/QA/registrar lifecycle, schemas, generated module/test paths, and registration
+  evidence.
+- A Tool Investigation Ticket is a contract for *understanding the failure first*. It
+  preserves run/span/artifact context, operator commentary, and matched-tool context so
+  the rebuild request that comes out of it is targeted instead of guessed.
+- Multiple investigations can feed one Tool Build Request, and one investigation can be
+  closed without ever becoming a build request (e.g. when the root cause is an external
+  blocker, prompt issue, or memory note).
+
+Implementation tasks:
+
+- Add `tool_investigations` Postgres table and an in-memory store fallback. DONE.
+- Add `GET/POST/PATCH /api/tool-investigations` and `GET /api/tool-investigations/:id`. DONE.
+- Sanitize secret-shaped keys (secret/token/password/apiKey/credential/authorization)
+  inside the stored context bundle so investigation evidence cannot leak credentials. DONE.
+- Replace the silent "Create tool request / bug" inline form in the Trace Lab span
+  inspector with a modal that previews the attached context, asks for an operator comment,
+  creates a ticket, and shows the created ticket id. DONE.
+- Show open investigations on the Tool Builds page with status, source, linked
+  tool/run/span, and a one-click "Promote to Tool Build request" action that links the
+  resulting build back to the investigation as `linked_to_build`. DONE for the easy path
+  through the existing `POST /api/tool-build-requests`. Future work: server-side
+  `POST /api/tool-investigations/:id/promote` so promotion becomes a single audited
+  transaction, and an LLM triage assistant that classifies an investigation as tool logic,
+  tool contract, prompt/planning issue, credential/policy issue, external blocker, or
+  memory note before the operator promotes it.
+- Audit `tool_investigation.created` and `tool_investigation.updated` events through the
+  existing audit log. DONE.
+
+Remaining gaps:
+
+- Tool Detail and Artifact pages should expose the same "Create investigation" entry
+  point for failures discovered outside Trace Lab.
+- Investigations should accept additional triage notes, evidence attachments, and review
+  decisions before being promoted to a build.
+- Memory writes from a closed investigation (when the root cause is external) should
+  pre-fill a proposed memory in the review queue with conservative scope/wording.
+
 ## Phase 2: Tool Registry
 
 Status: partially implemented.

@@ -63,6 +63,9 @@ const state = {
   toolPromotions: [],
   toolSettings: [],
   buildRequests: [],
+  investigations: [],
+  investigationModal: undefined,
+  investigationModalNotice: undefined,
   secretHandles: [],
   tiers: [],
   modelProviders: [],
@@ -128,6 +131,9 @@ document.addEventListener("submit", (event) => {
   }
   if (form.dataset.action === "create-tool-build-request") {
     void createToolBuildRequest(form);
+  }
+  if (form.dataset.action === "create-investigation") {
+    void createInvestigation(form);
   }
   if (form.dataset.action === "rework-tool-build") {
     void reworkToolBuild(form);
@@ -204,6 +210,8 @@ document.addEventListener("click", (event) => {
     serviceToolName,
     serviceAction,
     eventId,
+    investigationId,
+    investigationStatus,
   } = action.dataset;
   if (actionName === "navigate" && route) {
     navigate(route);
@@ -305,6 +313,21 @@ document.addEventListener("click", (event) => {
   if (actionName === "allow-event-identity" && eventId) {
     void allowEventIdentity(eventId);
   }
+  if (actionName === "open-investigation-modal" && spanId) {
+    openInvestigationModalForSpan(spanId);
+  }
+  if (actionName === "close-investigation-modal") {
+    closeInvestigationModal();
+  }
+  if (actionName === "stop-propagation") {
+    event.stopPropagation();
+  }
+  if (actionName === "promote-investigation-to-build" && investigationId) {
+    void promoteInvestigationToBuild(investigationId);
+  }
+  if (actionName === "update-investigation-status" && investigationId && investigationStatus) {
+    void updateInvestigation(investigationId, { status: investigationStatus });
+  }
 });
 
 document.addEventListener("pointerover", (event) => {
@@ -396,6 +419,7 @@ async function refreshData(options = {}) {
       toolMigrations,
       toolSettings,
       buildRequests,
+      investigations,
       secretHandles,
       toolServices,
       toolServiceLogs,
@@ -418,6 +442,9 @@ async function refreshData(options = {}) {
       fetchJson("/api/tool-migrations").then((data) => data.migrations ?? []),
       fetchJson("/api/tool-settings").then((data) => data.settings ?? []),
       fetchJson("/api/tool-build-requests").then((data) => data.requests ?? []),
+      fetchJson("/api/tool-investigations")
+        .then((data) => data.investigations ?? [])
+        .catch(() => []),
       fetchJson("/api/secret-handles").then((data) => data.secretHandles ?? []),
       fetchJson("/api/tool-services").then((data) => data.services ?? []),
       fetchJson("/api/tool-services/logs?limit=80").then((data) => data.logs ?? []),
@@ -442,6 +469,7 @@ async function refreshData(options = {}) {
       toolMigrations,
       toolSettings,
       buildRequests,
+      investigations,
       secretHandles,
       toolServices,
       toolServiceLogs,
@@ -508,6 +536,7 @@ function dataFingerprint(data) {
     toolMigrations: data.toolMigrations,
     toolSettings: data.toolSettings,
     buildRequests: data.buildRequests,
+    investigations: data.investigations,
     secretHandles: data.secretHandles,
     toolServices: data.toolServices,
     toolServiceLogs: data.toolServiceLogs,
@@ -562,6 +591,7 @@ function render() {
         </main>
       </div>
     </div>
+    ${renderInvestigationModal()}
   `;
   hydrateAfterRender();
 }
@@ -1533,72 +1563,74 @@ function selfCheckFromPayload(payload) {
 }
 
 function renderSpanToolRequestForm(node) {
-  const relatedTool = findToolForSpan(node);
-  const capability = relatedTool?.capabilities?.[0] ?? inferCapabilityFromSpan(node);
-  const activeVersion = relatedTool
-    ? normalizeToolVersions(relatedTool).find((version) => version.active)?.version ?? relatedTool.version
-    : "";
-  const reason = [
-    `Trace span needs operator review or tool improvement.`,
-    `Run: ${activeRun()?.id ?? "unknown"}`,
-    `Span: ${node.spanId}`,
-    `Title: ${node.title}`,
-    `Actor: ${node.actor}`,
-    `Activity: ${node.activity}`,
-    `Status: ${node.status}`,
-    node.parentTitle ? `Called by: ${node.parentTitle}` : "",
-    node.detail ? `Observed output/error:\n${truncate(node.detail, 1200)}` : "",
-    spanArtifactQaContext(node),
-    `Context note: classify whether this is tool logic, tool contract, prompt/planning, site limitation, credential/policy limitation, or an external blocker before rebuilding.`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-
   return `
-    <details class="rework-box span-request-box" data-panel-id="span-tool-request:${escapeHtml(node.spanId)}" ${panelOpenAttr(`span-tool-request:${node.spanId}`)}>
-      <summary>Create tool request / bug from this span</summary>
-      <form data-action="create-tool-build-request" class="rework-form">
-        <input type="hidden" name="sourceRunId" value="${escapeHtml(activeRun()?.id ?? "")}" />
-        <input type="hidden" name="sourceSpanId" value="${escapeHtml(node.spanId)}" />
-        <input type="hidden" name="taskSummary" value="${escapeHtml(activeRun()?.task ?? "")}" />
-        <input type="hidden" name="capability" value="${escapeHtml(capability)}" />
-        <input type="hidden" name="displayName" value="${escapeHtml(relatedTool?.displayName || relatedTool?.name || "")}" />
-        <input type="hidden" name="desiredToolName" value="${escapeHtml(relatedTool?.name || "")}" />
-        <input type="hidden" name="replacesToolName" value="${escapeHtml(relatedTool?.name || "")}" />
-        <input type="hidden" name="replacesVersion" value="${escapeHtml(activeVersion || "")}" />
-        <input type="hidden" name="startupMode" value="${escapeHtml(relatedTool?.startupMode || "on-demand")}" />
-        <input type="hidden" name="feedback" value="${escapeHtml(reason)}" />
-        <label>
-          <span>Context and requested fix</span>
-          <textarea name="reason" placeholder="${escapeHtml(reason)}" required></textarea>
-        </label>
-        <label>
-          <span>QA criteria</span>
-          <textarea name="qaCriteria" rows="3" placeholder="Reproduce the observed failure.
-Add a regression test for the corrected behavior.
-Prove the produced result is useful evidence and does not leak credentials."></textarea>
-        </label>
-        <button type="submit" class="ghost-button">Create contextual request</button>
-      </form>
-    </details>
+    <div class="span-investigation-actions">
+      <button
+        type="button"
+        class="ghost-button"
+        data-action="open-investigation-modal"
+        data-investigation-source="trace_span"
+        data-span-id="${escapeHtml(node.spanId)}"
+      >Create tool request / bug</button>
+      <small class="status-note">Opens a Tool Investigation Ticket so the failure context is preserved before any rebuild.</small>
+    </div>
   `;
 }
 
-function spanArtifactQaContext(node) {
-  const artifactQa = node.payload?.artifactQa;
-  if (!artifactQa || typeof artifactQa !== "object") return "";
-  const artifact = node.payload?.artifact;
-  const lines = [
-    "Rejected artifact QA:",
-    artifact?.filename ? `Artifact: ${artifact.filename}` : "",
-    artifact?.mimeType ? `Mime type: ${artifact.mimeType}` : "",
-    typeof artifactQa.reason === "string" ? `Reason: ${artifactQa.reason}` : "",
-    typeof artifactQa.score === "number" ? `Score: ${Math.round(artifactQa.score * 100)}%` : "",
-    Array.isArray(artifactQa.signals) && artifactQa.signals.length
-      ? `Signals: ${artifactQa.signals.slice(0, 8).join("; ")}`
-      : "",
-  ].filter(Boolean);
-  return lines.length > 1 ? lines.join("\n") : "";
+function buildSpanInvestigationDraft(node) {
+  const run = activeRun();
+  const relatedTool = findToolForSpan(node);
+  const activeVersion = relatedTool
+    ? normalizeToolVersions(relatedTool).find((version) => version.active)?.version ?? relatedTool.version
+    : "";
+  const matchedToolName = relatedTool?.name ?? "";
+  const titleParts = [node.title, relatedTool ? `(${relatedTool.displayName || relatedTool.name})` : ""].filter(Boolean);
+  const title = titleParts.join(" ") || `Span ${node.spanId} needs investigation`;
+  const inputSummary = node.parentTitle ? `Called by ${node.parentTitle}` : "Root coordinator span.";
+  const outputSummary = node.detail ? truncate(node.detail, 1600) : undefined;
+  const artifactRefs = artifactsFromPayload(node.payload).map((artifact) => ({
+    id: artifact?.id,
+    filename: artifact?.filename,
+    mimeType: artifact?.mimeType,
+    url: artifact?.url,
+  }));
+  const artifactQaSummary = node.payload?.artifactQa && typeof node.payload.artifactQa === "object"
+    ? node.payload.artifactQa
+    : undefined;
+  const notes = [];
+  if (!relatedTool) {
+    notes.push(
+      "No installed tool clearly matches this span actor/payload. The investigation is saved as `manual` so an operator can triage it before any rework.",
+    );
+  }
+  return {
+    source: "trace_span",
+    title,
+    matchedToolName,
+    matchedToolVersion: activeVersion,
+    runId: run?.id ?? "",
+    spanId: node.spanId,
+    artifactIds: artifactRefs.map((ref) => ref.id).filter(Boolean),
+    contextBundle: {
+      taskPrompt: run?.task,
+      runTitle: run?.task,
+      actor: node.actor,
+      activity: node.activity,
+      status: node.status,
+      caller: node.parentTitle,
+      inputSummary,
+      outputSummary,
+      error: node.status === "failed" ? truncate(node.detail ?? "", 1200) || node.title : undefined,
+      artifactQa: artifactQaSummary,
+      relatedArtifactRefs: artifactRefs,
+      notes,
+    },
+    warnings: relatedTool
+      ? []
+      : [
+          "Could not match this span to a registered tool by exact actor/payload. The investigation will be saved as a manual ticket. Triage and link it to the right tool/build request before rework.",
+        ],
+  };
 }
 
 function findToolForSpan(node) {
@@ -1610,6 +1642,232 @@ function findToolForSpan(node) {
     .filter(Boolean)
     .map(String);
   return state.tools.find((tool) => candidates.includes(tool.name));
+}
+
+function openInvestigationModalForSpan(spanId) {
+  const run = activeRun();
+  const events = run?.events ?? [];
+  const node = events.length ? buildTraceNodes(events).find((entry) => entry.spanId === spanId) : undefined;
+  if (!node) {
+    state.notice = {
+      title: "Span not found",
+      body: "Could not load span context. Reopen the run in Trace Lab and try again.",
+    };
+    render();
+    return;
+  }
+  state.investigationModal = buildSpanInvestigationDraft(node);
+  state.investigationModalNotice = undefined;
+  render();
+}
+
+function closeInvestigationModal() {
+  state.investigationModal = undefined;
+  state.investigationModalNotice = undefined;
+  render();
+}
+
+function renderInvestigationModal() {
+  const draft = state.investigationModal;
+  if (!draft) return "";
+  const notice = state.investigationModalNotice;
+  const noticeBlock = notice
+    ? `<div class="investigation-modal-notice ${escapeHtml(notice.kind ?? "info")}">
+         <strong>${escapeHtml(notice.title ?? "Investigation")}</strong>
+         <span>${escapeHtml(notice.body ?? "")}</span>
+         ${notice.investigationId
+            ? `<small>Ticket id: <code>${escapeHtml(notice.investigationId)}</code></small>`
+            : ""}
+       </div>`
+    : "";
+  const warnings = (draft.warnings ?? []).map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
+  const matchedTool = draft.matchedToolName
+    ? `<div><dt>Matched tool</dt><dd><code>${escapeHtml(draft.matchedToolName)}</code>${draft.matchedToolVersion ? ` v${escapeHtml(draft.matchedToolVersion)}` : ""}</dd></div>`
+    : `<div><dt>Matched tool</dt><dd class="muted">none — manual investigation</dd></div>`;
+  const contextRows = renderInvestigationContextPreview(draft.contextBundle);
+  const artifactRefRows = (draft.contextBundle.relatedArtifactRefs ?? [])
+    .map((ref) => `<li><strong>${escapeHtml(ref.filename ?? ref.id ?? "artifact")}</strong> <small>${escapeHtml(ref.mimeType ?? "")}</small></li>`)
+    .join("");
+  return `
+    <div class="investigation-modal-overlay" data-action="close-investigation-modal">
+      <div class="investigation-modal" role="dialog" aria-modal="true" aria-labelledby="investigation-modal-title" data-action="stop-propagation">
+        <header class="investigation-modal-header">
+          <div>
+            <span class="eyebrow">Tool Investigation Ticket</span>
+            <h2 id="investigation-modal-title">${escapeHtml(draft.title)}</h2>
+            <p class="muted">A durable ticket preserves the failure context. Promote it to a Tool Build / rework after triage.</p>
+          </div>
+          <button type="button" class="ghost-button" data-action="close-investigation-modal">Close</button>
+        </header>
+        ${warnings ? `<section class="investigation-modal-warnings"><strong>Heads up</strong><ul>${warnings}</ul></section>` : ""}
+        ${noticeBlock}
+        <section class="investigation-modal-context">
+          <h3>Context that will be attached</h3>
+          <dl class="investigation-context-grid">
+            <div><dt>Source</dt><dd>${escapeHtml(draft.source)}</dd></div>
+            <div><dt>Run</dt><dd>${escapeHtml(draft.runId || "—")}</dd></div>
+            <div><dt>Span</dt><dd>${escapeHtml(draft.spanId || "—")}</dd></div>
+            ${matchedTool}
+            ${contextRows}
+          </dl>
+          ${artifactRefRows ? `<details><summary>Related artifacts (${(draft.contextBundle.relatedArtifactRefs ?? []).length})</summary><ul>${artifactRefRows}</ul></details>` : ""}
+          <small class="muted">Sensitive keys (secret, token, password, apiKey, credential, authorization) are redacted server-side before storage.</small>
+        </section>
+        <form data-action="create-investigation" class="investigation-modal-form">
+          <input type="hidden" name="source" value="${escapeHtml(draft.source)}" />
+          <input type="hidden" name="title" value="${escapeHtml(draft.title)}" />
+          <input type="hidden" name="runId" value="${escapeHtml(draft.runId)}" />
+          <input type="hidden" name="spanId" value="${escapeHtml(draft.spanId)}" />
+          <input type="hidden" name="toolName" value="${escapeHtml(draft.matchedToolName)}" />
+          <input type="hidden" name="toolVersion" value="${escapeHtml(draft.matchedToolVersion ?? "")}" />
+          <input type="hidden" name="artifactIds" value="${escapeHtml((draft.artifactIds ?? []).join(","))}" />
+          <input type="hidden" name="contextBundle" value="${escapeHtml(JSON.stringify(draft.contextBundle))}" />
+          <label>
+            <span>Operator comment</span>
+            <textarea name="operatorComment" rows="4" placeholder="Why this needs investigation, what was expected, what to verify before rebuilding the tool."></textarea>
+          </label>
+          <div class="investigation-modal-actions">
+            <button type="button" class="ghost-button" data-action="close-investigation-modal">Cancel</button>
+            <button type="submit" class="primary-button">Create investigation</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderInvestigationContextPreview(bundle) {
+  if (!bundle) return "";
+  const rows = [];
+  if (bundle.actor) rows.push(`<div><dt>Actor</dt><dd>${escapeHtml(bundle.actor)}</dd></div>`);
+  if (bundle.activity) rows.push(`<div><dt>Activity</dt><dd>${escapeHtml(bundle.activity)}</dd></div>`);
+  if (bundle.status) rows.push(`<div><dt>Status</dt><dd>${escapeHtml(bundle.status)}</dd></div>`);
+  if (bundle.caller) rows.push(`<div><dt>Caller</dt><dd>${escapeHtml(bundle.caller)}</dd></div>`);
+  if (bundle.taskPrompt) rows.push(`<div><dt>Task prompt</dt><dd>${escapeHtml(truncate(bundle.taskPrompt, 200))}</dd></div>`);
+  if (bundle.inputSummary) rows.push(`<div><dt>Input summary</dt><dd>${escapeHtml(truncate(bundle.inputSummary, 240))}</dd></div>`);
+  if (bundle.outputSummary) rows.push(`<div><dt>Output summary</dt><dd>${escapeHtml(truncate(bundle.outputSummary, 320))}</dd></div>`);
+  if (bundle.error) rows.push(`<div><dt>Error</dt><dd>${escapeHtml(truncate(bundle.error, 320))}</dd></div>`);
+  if (bundle.artifactQa) rows.push(`<div><dt>Artifact QA</dt><dd><code>${escapeHtml(JSON.stringify(bundle.artifactQa).slice(0, 240))}</code></dd></div>`);
+  return rows.join("");
+}
+
+async function createInvestigation(form) {
+  const formData = new FormData(form);
+  const artifactIdsRaw = String(formData.get("artifactIds") ?? "");
+  const artifactIds = artifactIdsRaw
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  let contextBundle;
+  try {
+    contextBundle = JSON.parse(String(formData.get("contextBundle") ?? "{}"));
+  } catch {
+    contextBundle = {};
+  }
+  const payload = {
+    source: String(formData.get("source") ?? "manual"),
+    title: String(formData.get("title") ?? "").trim() || "Untitled investigation",
+    operatorComment: String(formData.get("operatorComment") ?? "").trim() || undefined,
+    runId: String(formData.get("runId") ?? "").trim() || undefined,
+    spanId: String(formData.get("spanId") ?? "").trim() || undefined,
+    toolName: String(formData.get("toolName") ?? "").trim() || undefined,
+    toolVersion: String(formData.get("toolVersion") ?? "").trim() || undefined,
+    artifactIds,
+    contextBundle,
+  };
+  setComposerBusy(form, true);
+  try {
+    const data = await fetchJson("/api/tool-investigations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    state.investigations = [data.investigation, ...state.investigations.filter((item) => item.id !== data.investigation.id)];
+    state.investigationModalNotice = {
+      kind: "success",
+      title: "Investigation created",
+      body: "Open Tool Builds to triage and promote it to a build/rework request when ready.",
+      investigationId: data.investigation.id,
+    };
+    render();
+  } catch (error) {
+    state.investigationModalNotice = {
+      kind: "error",
+      title: "Could not create investigation",
+      body: error instanceof Error ? error.message : String(error),
+    };
+    render();
+  } finally {
+    setComposerBusy(form, false);
+  }
+}
+
+async function updateInvestigation(id, update) {
+  try {
+    const data = await fetchJson(`/api/tool-investigations/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(update),
+    });
+    state.investigations = state.investigations.map((item) => (item.id === id ? data.investigation : item));
+    render();
+    return data.investigation;
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+    return undefined;
+  }
+}
+
+async function promoteInvestigationToBuild(id) {
+  const investigation = state.investigations.find((item) => item.id === id);
+  if (!investigation) return;
+  const run = activeRun();
+  const reasonLines = [
+    `Promoted from Tool Investigation ${investigation.id}.`,
+    investigation.title ? `Title: ${investigation.title}` : "",
+    investigation.operatorComment ? `Operator comment: ${investigation.operatorComment}` : "",
+    investigation.contextBundle?.taskPrompt ? `Task: ${investigation.contextBundle.taskPrompt}` : "",
+    investigation.contextBundle?.error ? `Observed error: ${investigation.contextBundle.error}` : "",
+    investigation.contextBundle?.outputSummary ? `Observed output: ${investigation.contextBundle.outputSummary}` : "",
+  ].filter(Boolean);
+  const reason = reasonLines.join("\n");
+  const tool = investigation.toolName ? state.tools.find((item) => item.name === investigation.toolName) : undefined;
+  const buildPayload = {
+    displayName: tool?.displayName || investigation.toolName || investigation.title,
+    reason,
+    sourceRunId: investigation.runId || run?.id || undefined,
+    sourceSpanId: investigation.spanId || undefined,
+    taskSummary: investigation.contextBundle?.taskPrompt || undefined,
+    desiredToolName: investigation.toolName || undefined,
+    replacesToolName: investigation.toolName || undefined,
+    replacesVersion: investigation.toolVersion || undefined,
+    startupMode: tool?.startupMode || undefined,
+    feedback: investigation.operatorComment || undefined,
+  };
+  try {
+    const data = await fetchJson("/api/tool-build-requests", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(buildPayload),
+    });
+    state.buildRequests = [data.request, ...state.buildRequests.filter((item) => item.id !== data.request.id)];
+    const updated = await updateInvestigation(id, {
+      status: "linked_to_build",
+      linkedBuildRequestId: data.request.id,
+    });
+    state.notice = {
+      title: "Investigation linked to Tool Build",
+      body: `${data.request.capability} is now in the Tool Builds queue (${data.request.id}).`,
+      route: "tool-builds",
+      actionLabel: "Open queue",
+    };
+    render();
+    return updated;
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
 }
 
 function renderConversationsList() {
@@ -2955,6 +3213,7 @@ function renderToolBuildsPage() {
           </div>
         </form>
       </details>
+      ${renderToolInvestigationsSection()}
       <section class="kanban-board">
         ${columns
           .map(
@@ -2972,6 +3231,67 @@ function renderToolBuildsPage() {
           .join("")}
       </section>
     </section>
+  `;
+}
+
+function renderToolInvestigationsSection() {
+  const investigations = state.investigations ?? [];
+  const open = investigations.filter((item) => item.status !== "closed" && item.status !== "linked_to_build");
+  const linked = investigations.filter((item) => item.status === "linked_to_build");
+  return `
+    <section class="surface-panel investigations-panel" data-panel-id="tool-investigations">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Reviewable failure context</span>
+          <h2>Tool Investigations</h2>
+          <p>Investigations are durable tickets created from Trace Lab when a tool/span/artifact fails. They preserve context before any rebuild so the right tool can be improved instead of patched blindly.</p>
+        </div>
+        <span class="context-chip">${open.length} open · ${linked.length} linked</span>
+      </div>
+      ${investigations.length
+        ? `<div class="investigation-grid">${investigations.map(renderInvestigationCard).join("")}</div>`
+        : `<p class="muted">No investigations yet. Open Trace Lab, select a span, and click <em>Create tool request / bug</em>.</p>`}
+    </section>
+  `;
+}
+
+function renderInvestigationCard(investigation) {
+  const tool = investigation.toolName ? state.tools.find((item) => item.name === investigation.toolName) : undefined;
+  const canPromote = investigation.status === "open" || investigation.status === "triaged";
+  return `
+    <article class="investigation-card" data-investigation-id="${escapeHtml(investigation.id)}">
+      <div class="card-topline">
+        <span>${escapeHtml(formatStatusLabel(investigation.status))}</span>
+        <span>${formatRelative(investigation.updatedAt ?? investigation.createdAt)}</span>
+      </div>
+      <strong>${escapeHtml(investigation.title)}</strong>
+      <small class="status-note">Source: ${escapeHtml(investigation.source)}</small>
+      ${investigation.toolName
+        ? `<small class="status-note">Tool: <code>${escapeHtml(investigation.toolName)}</code>${investigation.toolVersion ? ` v${escapeHtml(investigation.toolVersion)}` : ""}${tool ? "" : " <em>(not currently registered)</em>"}</small>`
+        : `<small class="status-note muted">Tool: not matched (manual ticket)</small>`}
+      ${investigation.runId ? `<small class="status-note">Run: <code>${escapeHtml(investigation.runId)}</code></small>` : ""}
+      ${investigation.spanId ? `<small class="status-note">Span: <code>${escapeHtml(investigation.spanId)}</code></small>` : ""}
+      ${investigation.linkedBuildRequestId
+        ? `<small class="status-note">Linked build: <code>${escapeHtml(investigation.linkedBuildRequestId)}</code></small>`
+        : ""}
+      ${investigation.operatorComment
+        ? `<p class="investigation-comment">${escapeHtml(truncate(investigation.operatorComment, 360))}</p>`
+        : ""}
+      <div class="card-actions">
+        ${canPromote
+          ? `<button type="button" class="ghost-button" data-action="promote-investigation-to-build" data-investigation-id="${escapeHtml(investigation.id)}">Promote to Tool Build request</button>`
+          : ""}
+        ${investigation.status === "open"
+          ? `<button type="button" class="ghost-button" data-action="update-investigation-status" data-investigation-id="${escapeHtml(investigation.id)}" data-investigation-status="triaged">Mark triaged</button>`
+          : ""}
+        ${investigation.status !== "closed"
+          ? `<button type="button" class="ghost-button" data-action="update-investigation-status" data-investigation-id="${escapeHtml(investigation.id)}" data-investigation-status="closed">Close</button>`
+          : ""}
+        ${investigation.runId
+          ? `<button type="button" class="ghost-button" data-action="open-trace" data-run-id="${escapeHtml(investigation.runId)}">Open in Trace Lab</button>`
+          : ""}
+      </div>
+    </article>
   `;
 }
 
@@ -5224,19 +5544,6 @@ function traceGraphDepths(nodes) {
 
   for (const node of nodes) depthFor(node);
   return depthBySpan;
-}
-
-function inferCapabilityFromSpan(node) {
-  const payload = node.payload && typeof node.payload === "object" ? node.payload : {};
-  if (typeof payload.tool === "string") return payload.tool;
-  if (typeof payload.toolName === "string") return payload.toolName;
-  if (typeof payload.capability === "string") return payload.capability;
-  if (node.actor?.startsWith("web.search")) return "web-search";
-  if (node.actor?.includes("browser")) return "browser-operate";
-  if (node.activity === "tool") return node.actor || "tool-rework";
-  if (node.activity === "artifact") return "artifact-generation";
-  if (node.status === "failed") return `${node.activity || "agent"}-bug`;
-  return "agent-workflow-bug";
 }
 
 function dependencySpanIdsFor(node) {
