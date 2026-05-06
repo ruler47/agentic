@@ -3202,11 +3202,24 @@ textarea {
 
 .investigation-wait-row,
 .build-wait-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: stretch;
   gap: 8px;
   padding: 8px 12px;
+}
+
+.investigation-wait-row .status-note,
+.build-wait-row .status-note {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.investigation-wait-row .primary-button,
+.build-wait-row .primary-button {
+  width: 100%;
+  min-height: 38px;
+  white-space: normal;
 }
 
 .rework-wait-card {
