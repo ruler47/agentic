@@ -333,7 +333,7 @@ missing capability
   -> code and behavior review gates inspect contract safety and QA evidence
   -> optional LLM code/behavior reviewers inspect source previews and behavior evidence
   -> registrar validates metadata and registers the generated module
-  -> runtime reloads generated tools
+  -> activation runner reloads generated tools and records activation evidence
   -> original run can use the new tool
 ```
 

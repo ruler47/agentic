@@ -1541,7 +1541,7 @@ async function routeRequest(
       await ensureInlineCredentialSecret(buildRequest, options);
     }
     const result = await options.toolBuildWorkflow.runOnce(requestId);
-    if (result.request.status === "registered") {
+    if (result.request.status === "registered" && !result.activationReport) {
       await options.reloadGeneratedTools?.();
     }
     sendJson(response, 200, result);
@@ -2558,7 +2558,9 @@ async function executeRun(
 
             const result = await options.toolBuildWorkflow.runOnce(buildRequest.id);
             if (result.request.status === "registered") {
-              await options.reloadGeneratedTools?.();
+              if (!result.activationReport) {
+                await options.reloadGeneratedTools?.();
+              }
               await recordAudit(options, {
                 instanceId: run?.instanceId,
                 actorId: "tool-registrar",

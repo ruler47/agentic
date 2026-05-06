@@ -122,6 +122,118 @@ test("ToolBuildWorkflow records code and behavior review gates before registrati
   assert.ok(stored?.qaReport?.checks.some((check) => check.includes("code review pass")));
 });
 
+test("ToolBuildWorkflow activates generated tools before marking request registered", async () => {
+  const calls: string[] = [];
+  const store = new InMemoryToolBuildRequestStore();
+  const request = await store.create({
+    capability: "activated-tool",
+    reason: "Need a generated tool that is available immediately after registration.",
+  });
+
+  const workflow = new ToolBuildWorkflow(
+    store,
+    {
+      async build() {
+        calls.push("builder");
+        return {
+          modulePath: "src/tools/generated/activated-toolTool.ts",
+          testPath: "tests/generated/activated-toolTool.test.ts",
+          summary: "Created TypeScript module and tests.",
+        };
+      },
+    },
+    {
+      async run() {
+        calls.push("qa");
+        return { ok: true, summary: "QA passed.", checks: ["tests passed"] };
+      },
+    },
+    {
+      async register() {
+        calls.push("registrar");
+        return "generated.activated.tool";
+      },
+    },
+    {
+      activationRunner: {
+        async activate(_request, _output, registeredToolName) {
+          calls.push(`activate:${registeredToolName}`);
+          return {
+            ok: true,
+            summary: "Runtime reload found the generated tool.",
+            checks: ["reload completed", "tool health passed"],
+          };
+        },
+      },
+    },
+  );
+
+  const result = await workflow.runOnce(request.id);
+  const stored = await store.get(request.id);
+
+  assert.deepEqual(calls, ["builder", "qa", "registrar", "activate:generated.activated.tool"]);
+  assert.equal(result.request.status, "registered");
+  assert.equal(result.activationReport?.ok, true);
+  assert.match(stored?.statusDetail ?? "", /Registered and activated generated\.activated\.tool/);
+  assert.match(stored?.qaReport?.summary ?? "", /Activation passed/);
+  assert.ok(stored?.qaReport?.checks.some((check) => check.includes("activation pass: reload completed")));
+});
+
+test("ToolBuildWorkflow blocks registered metadata when activation fails", async () => {
+  const calls: string[] = [];
+  const store = new InMemoryToolBuildRequestStore();
+  const request = await store.create({
+    capability: "broken-runtime-tool",
+    reason: "Need blocked status if runtime reload fails.",
+  });
+
+  const workflow = new ToolBuildWorkflow(
+    store,
+    {
+      async build() {
+        calls.push("builder");
+        return {
+          modulePath: "src/tools/generated/broken-runtime-toolTool.ts",
+          testPath: "tests/generated/broken-runtime-toolTool.test.ts",
+          summary: "Created TypeScript module and tests.",
+        };
+      },
+    },
+    {
+      async run() {
+        calls.push("qa");
+        return { ok: true, summary: "QA passed.", checks: ["tests passed"] };
+      },
+    },
+    {
+      async register() {
+        calls.push("registrar");
+        return "generated.broken.runtime";
+      },
+    },
+    {
+      activationRunner: {
+        async activate() {
+          calls.push("activate");
+          throw new Error("runtime reload failed");
+        },
+      },
+    },
+  );
+
+  const result = await workflow.runOnce(request.id);
+  const stored = await store.get(request.id);
+
+  assert.deepEqual(calls, ["builder", "qa", "registrar", "activate"]);
+  assert.equal(result.request.status, "blocked");
+  assert.equal(result.registeredToolName, "generated.broken.runtime");
+  assert.equal(result.activationReport?.ok, false);
+  assert.match(stored?.statusDetail ?? "", /activation failed: runtime reload failed/);
+  assert.equal(stored?.registeredToolName, "generated.broken.runtime");
+  assert.equal(stored?.qaReport?.ok, false);
+  assert.ok(stored?.qaReport?.checks.some((check) => check.includes("activation fail")));
+});
+
 test("ToolBuildWorkflow returns failed review findings to builder before retry", async () => {
   const calls: string[] = [];
   const store = new InMemoryToolBuildRequestStore();
@@ -436,4 +548,55 @@ test("ToolBuildWorker claims requested builds and reloads registered tools", asy
   assert.equal(stored?.status, "registered");
   assert.equal(reloads, 1);
   assert.deepEqual(events, ["claimed:building", "completed:registered"]);
+});
+
+test("ToolBuildWorker does not double-reload when workflow activation already ran", async () => {
+  const store = new InMemoryToolBuildRequestStore();
+  const request = await store.create({
+    capability: "activated-by-workflow",
+    reason: "Workflow activation should own runtime reload.",
+  });
+  const workflow = new ToolBuildWorkflow(
+    store,
+    {
+      async build(claimed) {
+        return {
+          modulePath: claimed.contract.modulePath,
+          testPath: claimed.contract.testPath,
+          summary: "built by worker",
+        };
+      },
+    },
+    {
+      async run() {
+        return { ok: true, summary: "QA passed.", checks: ["targeted test passed"] };
+      },
+    },
+    {
+      async register() {
+        return "generated.activated.by.workflow";
+      },
+    },
+    {
+      activationRunner: {
+        async activate() {
+          return { ok: true, summary: "Workflow reload passed.", checks: ["workflow reload"] };
+        },
+      },
+    },
+  );
+  let workerReloads = 0;
+  const worker = new ToolBuildWorker(workflow, store, {
+    reloadGeneratedTools: async () => {
+      workerReloads += 1;
+    },
+  });
+
+  const tick = await worker.tick();
+  const stored = await store.get(request.id);
+
+  assert.equal(tick.results[0].request.status, "registered");
+  assert.equal(stored?.status, "registered");
+  assert.equal(workerReloads, 0);
+  assert.equal(tick.results[0].activationReport?.ok, true);
 });

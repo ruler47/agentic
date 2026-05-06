@@ -549,15 +549,17 @@ Next implementation tasks:
   creates focused tests, delegates QA, and registers only after QA passes. DONE for
   provider-backed builds through both manual `POST /api/tool-build-requests/:id/run` and
   the background `ToolBuildWorker`, which atomically claims the oldest `requested` card and
-  reloads generated tools after registration.
+  reloads/activates generated tools before final `registered` status when the workflow is
+  configured with an activation runner. If activation fails, the request stays `blocked`
+  with activation QA evidence and the registered tool name for repair.
 - Keep Tool Build and rework request forms stable during live UI refresh. DONE: soft
   background refresh defers rendering while an operator has an open tool-build, span bug,
   or tool rework form, and universal QA/change prompts are placeholders rather than
   silently submitted defaults.
 - Add a reusable Tool Builder workflow. DONE as `ToolBuildWorkflow`, with pluggable
-  Builder, QA Runner, Review, and Registrar interfaces plus tests proving failed QA or
-  review blocks registration and failed QA/review reports can be returned to the builder
-  for a bounded retry.
+  Builder, QA Runner, Review, Registrar, and Activation interfaces plus tests proving
+  failed QA/review blocks registration, activation happens before registered status, and
+  failed QA/review reports can be returned to the builder for a bounded retry.
 - Add a Tool QA runner that executes targeted tests plus capability-specific smoke checks
   in an isolated container/process and writes a structured QA report back to the queue.
   DONE for temporary workspace isolation, command timeouts, targeted tests, isolated build,
@@ -750,7 +752,9 @@ Remaining Phase 3 gaps:
   promotion-journal writes in one database transaction, with tests covering commit and
   rollback. Remaining work is expanding the transactional promotion boundary into a full
   saga that applies/records migrations, activates the generated package, reloads runtime,
-  and rolls back cleanly if any step fails.
+  and rolls back cleanly if any step fails. Runtime reload/activation is now represented
+  in the workflow status and QA report, but it is still not part of the same Postgres
+  transaction/package rollback boundary.
 - Add safe database maintenance actions from Trace Lab/Tool Detail/Tool Builds: the agent
   can create an auditable request to delete, repair, backfill, or compact records related
   to a source run/thread/tool, but execution must support dry-run preview, policy

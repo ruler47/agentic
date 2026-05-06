@@ -731,7 +731,10 @@ For documentation-only changes:
   details prefilled.
 - `ToolBuildWorkflow` supports bounded retries. Builders receive the previous generated
   output and failed QA/review report on retry attempts; registrars must only run after a
-  passing QA report plus all configured review gates.
+  passing QA report plus all configured review gates. When an activation runner is
+  configured, the workflow reloads/activates the generated runtime before marking the
+  request `registered`; activation failure leaves the request `blocked` with the
+  registered tool name and activation QA evidence.
 - Generated-tool promotion now has separate QA and review gates. `ToolBuildQaReport`
   may include `reviews` for code and behavior decisions; any `needs_revision` or `fail`
   review sends findings back into the next builder attempt or ends as `qa_failed` after
@@ -747,7 +750,8 @@ For documentation-only changes:
   as an additional review gate, not as a replacement for deterministic QA.
 - The background Tool Build worker claims the oldest `requested` queue item through
   `claimNextRequested`, marks it `building`, runs the same workflow as the manual API, and
-  reloads generated tools after registration. Disable it with `TOOL_BUILD_WORKER=disabled`
+  reloads generated tools after registration only when the workflow did not already run
+  activation. Disable it with `TOOL_BUILD_WORKER=disabled`
   or tune it with `TOOL_BUILD_WORKER_INTERVAL_MS` and `TOOL_BUILD_WORKER_BATCH_SIZE`.
 - Tool Build requests can be reworked through `POST /api/tool-build-requests/:id/rework`.
   Preserve the original request and create a new requested revision with operator feedback

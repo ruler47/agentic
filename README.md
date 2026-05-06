@@ -201,7 +201,9 @@ name.
 `POST /api/tool-build-requests/:id/run` executes the configured Builder -> QA -> Registrar
 workflow for a queued request. The web server also starts a background Tool Builder worker
 by default: it claims the oldest `requested` item, marks it `building`, runs the same QA
-workflow, registers only after QA passes, and reloads generated tools. Set
+workflow, registers only after QA passes, and reloads/activates generated tools before
+the request is marked `registered`; activation failure leaves the request `blocked` with
+QA evidence instead of pretending the tool is runnable. Set
 `TOOL_BUILD_WORKER=disabled` to keep the queue manual, or tune polling with
 `TOOL_BUILD_WORKER_INTERVAL_MS` and `TOOL_BUILD_WORKER_BATCH_SIZE`.
 Unknown/custom Tool Build requests can also use a guarded LLM-backed builder after the

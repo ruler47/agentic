@@ -56,14 +56,30 @@ export type ToolRegistrar = {
   register(request: ToolBuildRequest, output: ToolBuildOutput, qaReport?: ToolBuildQaReport): Promise<string>;
 };
 
+export type ToolBuildActivationReport = {
+  ok: boolean;
+  summary: string;
+  checks: string[];
+};
+
+export type ToolActivationRunner = {
+  activate(
+    request: ToolBuildRequest,
+    output: ToolBuildOutput,
+    registeredToolName: string,
+  ): Promise<ToolBuildActivationReport>;
+};
+
 export type ToolBuildWorkflowResult = {
   request: ToolBuildRequest;
   registeredToolName?: string;
+  activationReport?: ToolBuildActivationReport;
 };
 
 export type ToolBuildWorkflowOptions = {
   maxAttempts?: number;
   reviewers?: ToolBuildReviewer[];
+  activationRunner?: ToolActivationRunner;
 };
 
 export class ToolBuildWorkflow {
@@ -175,12 +191,30 @@ export class ToolBuildWorkflow {
         });
 
         const registeredToolName = await this.registrar.register(request, output, reviewedQaReport);
+        const activationReport = await this.runActivation(request, output, registeredToolName);
+        const finalQaReport = appendActivationReport(reviewedQaReport, activationReport);
+        if (activationReport && !activationReport.ok) {
+          return {
+            registeredToolName,
+            activationReport,
+            request: await this.requests.updateStatus(id, {
+              status: "blocked",
+              statusDetail: `Registered ${registeredToolName}, but activation failed: ${activationReport.summary}`,
+              qaReport: finalQaReport,
+              registeredToolName,
+            }),
+          };
+        }
+
         return {
           registeredToolName,
+          activationReport,
           request: await this.requests.updateStatus(id, {
             status: "registered",
-            statusDetail: `Registered ${registeredToolName}.`,
-            qaReport: reviewedQaReport,
+            statusDetail: activationReport
+              ? `Registered and activated ${registeredToolName}. ${activationReport.summary}`
+              : `Registered ${registeredToolName}.`,
+            qaReport: finalQaReport,
             registeredToolName,
           }),
         };
@@ -199,6 +233,24 @@ export class ToolBuildWorkflow {
           status: "blocked",
           statusDetail: error instanceof Error ? error.message : String(error),
         }),
+      };
+    }
+  }
+
+  private async runActivation(
+    request: ToolBuildRequest,
+    output: ToolBuildOutput,
+    registeredToolName: string,
+  ): Promise<ToolBuildActivationReport | undefined> {
+    if (!this.options.activationRunner) return undefined;
+
+    try {
+      return await this.options.activationRunner.activate(request, output, registeredToolName);
+    } catch (error) {
+      return {
+        ok: false,
+        summary: error instanceof Error ? error.message : String(error),
+        checks: ["runtime activation runner threw before confirming generated tool availability"],
       };
     }
   }
@@ -223,4 +275,23 @@ export class ToolBuildWorkflow {
       reviews,
     };
   }
+}
+
+function appendActivationReport(
+  qaReport: ToolBuildQaReport,
+  activationReport?: ToolBuildActivationReport,
+): ToolBuildQaReport {
+  if (!activationReport) return qaReport;
+
+  return {
+    ...qaReport,
+    ok: qaReport.ok && activationReport.ok,
+    summary: activationReport.ok
+      ? `${qaReport.summary} Activation passed: ${activationReport.summary}`
+      : `${qaReport.summary} Activation failed: ${activationReport.summary}`,
+    checks: [
+      ...qaReport.checks,
+      ...activationReport.checks.map((check) => `activation ${activationReport.ok ? "pass" : "fail"}: ${check}`),
+    ],
+  };
 }

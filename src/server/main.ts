@@ -194,6 +194,16 @@ const toolBuildWorkflow = new ToolBuildWorkflow(
           ]
         : []),
     ],
+    activationRunner: {
+      async activate(_request, _output, registeredToolName) {
+        await reloadGeneratedTools();
+        return {
+          ok: true,
+          summary: `Generated tool runtime reloaded for ${registeredToolName}.`,
+          checks: ["loadGeneratedTools completed after registrar promotion"],
+        };
+      },
+    },
   },
 );
 const toolBuildWorker = new ToolBuildWorker(toolBuildWorkflow, toolBuildRequestStore, {

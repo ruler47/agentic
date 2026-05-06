@@ -74,7 +74,7 @@ export class ToolBuildWorker {
         try {
           const workflowResult = await this.workflow.runClaimed(request);
           result.results.push(workflowResult);
-          if (workflowResult.request.status === "registered") {
+          if (workflowResult.request.status === "registered" && !workflowResult.activationReport) {
             await this.options.reloadGeneratedTools?.();
           }
           this.emit({
