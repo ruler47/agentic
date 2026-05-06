@@ -160,6 +160,18 @@ test("web UI keeps page-based workspace information architecture", async () => {
   // Background tool build worker copy: the wait panel now mentions auto-promotion so
   // operators know they don't have to PATCH the build manually.
   assert.match(app, /background Tool Builder worker picks up/);
+  // Phase 2 auto retry orchestrator surfaces:
+  //   * panel copy mentions automatic linked retry creation;
+  //   * a `Force auto retry` button hits the new `/auto-retry` endpoint;
+  //   * the endpoint path itself is wired into the SPA;
+  //   * wait cards distinguish auto vs manual retry runs through the auto retry helper.
+  assert.match(app, /auto retry orchestrator creates a linked retry run/);
+  assert.match(app, /Force auto retry/);
+  assert.match(app, /data-action="auto-retry-tool-rework-wait"/);
+  assert.match(app, /\/api\/tool-rework-waits\/[^"]*\/auto-retry/);
+  assert.match(app, /function autoRetryToolReworkWait/);
+  assert.match(app, /function isAutoRetryWait/);
+  assert.match(app, /Auto retry run/);
   assert.match(app, /function renderNotice/);
   assert.match(app, /sourceSpanId/);
   assert.match(app, /Tool request created/);

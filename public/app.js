@@ -336,6 +336,9 @@ document.addEventListener("click", (event) => {
   if (actionName === "create-retry-run-for-wait" && waitId) {
     void createRetryRunForWait(waitId);
   }
+  if (actionName === "auto-retry-tool-rework-wait" && waitId) {
+    void autoRetryToolReworkWait(waitId);
+  }
   if (actionName === "cancel-tool-rework-wait" && waitId) {
     void cancelToolReworkWait(waitId);
   }
@@ -1140,7 +1143,7 @@ function renderRunWaitPanel(run) {
         <div>
           <span class="eyebrow">Tool rework wait</span>
           <h2>Waiting for tool upgrade</h2>
-          <p>This run paused because a registered tool needs to be improved or rebuilt before retrying. The investigation/build queue below preserves the failure context. The background Tool Builder worker picks up the new build automatically; once it reaches <code>registered</code>, the wait flips to <em>promoted</em> and you can click <em>Create retry run</em> to spawn a linked retry run that executes through the standard run path, or <em>Mark ready for retry</em> to just close the wait and let an operator re-issue the task manually. Span-level recursive retry/replanning of only the failed step is still Phase 2 work.</p>
+          <p>This run paused because a registered tool needs to be improved or rebuilt before retrying. The investigation/build queue below preserves the failure context. The background Tool Builder worker picks up the new build automatically; once it reaches <code>registered</code>, the wait flips to <em>promoted</em> and the auto retry orchestrator creates a linked retry run when policy allows. You can still click <em>Create retry run</em> for an explicit manual retry, <em>Force auto retry</em> to re-evaluate the policy decision, or <em>Mark ready for retry</em> to just close the wait. Span-level recursive retry/replanning of only the failed step is still Phase 2 work.</p>
         </div>
         <span class="context-chip">${pending.length} active</span>
       </div>
@@ -1149,6 +1152,10 @@ function renderRunWaitPanel(run) {
       </div>
     </section>
   `;
+}
+
+function isAutoRetryWait(wait) {
+  return Boolean(wait?.reason && /Auto retry after tool rework promotion/i.test(wait.reason));
 }
 
 function renderRunWaitCard(wait) {
@@ -1160,6 +1167,7 @@ function renderRunWaitCard(wait) {
     : undefined;
   const canCreateRetry = wait.status === "promoted" && !wait.retryRunId;
   const canMarkReady = wait.status === "promoted";
+  const autoRetried = wait.retryRunId && isAutoRetryWait(wait);
   return `
     <article class="wait-card" data-wait-id="${escapeHtml(wait.id)}">
       <div class="card-topline">
@@ -1170,10 +1178,11 @@ function renderRunWaitCard(wait) {
       ${wait.toolVersion ? `<small class="status-note">Version: ${escapeHtml(wait.toolVersion)}${wait.promotedVersion ? ` → ${escapeHtml(wait.promotedVersion)}` : ""}</small>` : ""}
       ${investigation ? `<small class="status-note">Investigation: <code>${escapeHtml(investigation.id)}</code> (${escapeHtml(investigation.status)})</small>` : ""}
       ${build ? `<small class="status-note">Build: <code>${escapeHtml(build.id)}</code> (${escapeHtml(build.status)})</small>` : ""}
-      ${wait.retryRunId ? `<small class="status-note">Retry run: <code>${escapeHtml(wait.retryRunId)}</code></small>` : ""}
+      ${wait.retryRunId ? `<small class="status-note">${autoRetried ? "Auto retry run" : "Retry run"}: <code>${escapeHtml(wait.retryRunId)}</code></small>` : ""}
       <p class="wait-reason">${escapeHtml(truncate(wait.reason ?? "", 240))}</p>
       <div class="card-actions">
         ${canCreateRetry ? `<button type="button" class="primary-button" data-action="create-retry-run-for-wait" data-wait-id="${escapeHtml(wait.id)}">Create retry run</button>` : ""}
+        ${canCreateRetry ? `<button type="button" class="ghost-button" data-action="auto-retry-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Force auto retry</button>` : ""}
         ${wait.retryRunId ? `<button type="button" class="ghost-button" data-action="select-run" data-run-id="${escapeHtml(wait.retryRunId)}">Open retry run</button>` : ""}
         ${canMarkReady ? `<button type="button" class="ghost-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>` : ""}
         ${wait.status !== "resumed" && wait.status !== "cancelled" ? `<button type="button" class="ghost-button" data-action="cancel-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Cancel wait</button>` : ""}
@@ -2012,6 +2021,44 @@ async function resumeToolReworkWait(id) {
       body:
         `Wait ${data.wait.id} is now marked ready for retry: the run was returned to "failed" so an operator can re-issue it ` +
         `manually with the new tool version. The automatic recursive retry/resume engine ships in Phase 2.`,
+    };
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function autoRetryToolReworkWait(id) {
+  try {
+    const data = await fetchJson(`/api/tool-rework-waits/${encodeURIComponent(id)}/auto-retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (data.wait) {
+      state.toolReworkWaits = state.toolReworkWaits.map((item) =>
+        item.id === data.wait.id ? data.wait : item,
+      );
+    }
+    if (data.retryRun) {
+      state.runs = [
+        data.retryRun,
+        ...state.runs.filter((run) => run.id !== data.retryRun.id),
+      ];
+    }
+    const decision = data.status ?? "decision";
+    state.notice = {
+      title: `Auto retry decision: ${decision}`,
+      body: data.reason
+        ? data.reason
+        : decision === "created"
+          ? `Auto retry run ${data.retryRun?.id ?? ""} created.`
+          : decision === "already_exists"
+            ? `Auto retry run already exists; opened the existing run.`
+            : decision === "disabled"
+              ? `Auto retry policy is disabled. Use Create retry run for a manual handoff.`
+              : `Auto retry orchestrator returned ${decision}.`,
     };
     render();
   } catch (error) {

@@ -114,6 +114,14 @@ export type ToolImprovementCoordinatorDeps = {
   // (assignGeneratedToolName / validateContextualToolBuildTarget) before persisting.
   finalizeBuildRequestInput?: (input: ToolBuildRequestInput) => Promise<ToolBuildRequestInput>;
   backgroundBuildScheduler?: BackgroundBuildScheduler;
+  /**
+   * Fires once per wait that `notifyBuildRegistered` flips to `promoted`. The HTTP
+   * layer uses this to hand promoted waits to `ToolReworkAutoRetryCoordinator` so the
+   * retry-run handoff can be fully automatic without breaking manual /resume or
+   * /retry-run. Errors are swallowed inside `notifyBuildRegistered` so a misbehaving
+   * auto-retry hook cannot fail the build registration audit.
+   */
+  onWaitPromoted?: (wait: ToolReworkWaitRecord) => Promise<void> | void;
 };
 
 export class ToolImprovementCoordinator {
@@ -368,6 +376,15 @@ export class ToolImprovementCoordinator {
           toolName: next.toolName,
         },
       });
+      if (this.deps.onWaitPromoted) {
+        try {
+          await this.deps.onWaitPromoted(next);
+        } catch {
+          // The auto-retry hook is purely additive. A failure here must not break the
+          // build-registration audit chain that the operator UI depends on. The
+          // auto-retry coordinator records its own audit when it fails.
+        }
+      }
     }
   }
 

@@ -435,6 +435,19 @@ Implementation tasks:
   path the manual PATCH/`/run` endpoints already use, so a background-driven
   registration flips matching `ToolReworkWait` records to `promoted` automatically. The
   worker also joins a pending tick instead of double-claiming when ticks overlap. DONE.
+- Auto retry orchestrator: `ToolReworkAutoRetryCoordinator`
+  (`src/tools/toolReworkAutoRetryCoordinator.ts`) hangs off
+  `ToolImprovementCoordinator.notifyBuildRegistered` through an `onWaitPromoted` hook.
+  When enabled by policy, it inspects every freshly promoted wait, walks the
+  `parentRunId` chain to enforce `maxAutoRetriesPerRootRun`, refuses cancelled /
+  orphaned source runs, and delegates retry-run creation to the manual
+  `ToolReworkRetryCoordinator` so idempotency stays in one place. The new endpoint
+  `POST /api/tool-rework-waits/:id/auto-retry` lets operators force-evaluate the
+  policy decision and is idempotent. Policy defaults are
+  `{ enabled: true, maxAutoRetriesPerRootRun: 1 }`; `TOOL_REWORK_AUTO_RETRY=disabled`
+  and `TOOL_REWORK_AUTO_RETRY_MAX_DEPTH=N` tune them at boot. Audits are recorded as
+  `tool_rework_wait.auto_retry_decision` with `actorId=auto-retry-orchestrator`. The
+  manual `/resume` and `/retry-run` endpoints keep their existing semantics. DONE.
 - Retry-run skeleton: `ToolReworkRetryCoordinator`
   (`src/tools/toolReworkRetryCoordinator.ts`) turns a `promoted` wait into a real linked
   retry run. The new run inherits the original run's task and instance/user/channel/thread
@@ -454,8 +467,12 @@ Remaining work for Phase 2:
 - Span-level recursive retry / replanning: replace the run-level retry skeleton with an
   engine that re-plans only the failed step against the new tool version, producing
   scoped retry spans linked through `retryRunId`/`retrySpanId` instead of recomputing the
-  full task graph from scratch. `ToolReworkRetryCoordinator` is intentionally limited to
-  full-run retry; future recursive agents should layer span-level retry on top.
+  full task graph from scratch. `ToolReworkRetryCoordinator` and
+  `ToolReworkAutoRetryCoordinator` are intentionally limited to full-run retry; future
+  recursive agents should layer span-level retry on top.
+- Production policy UI: today the auto-retry policy is a boot-time env knob. A future
+  Policies page should expose `enabled` / `maxAutoRetriesPerRootRun` / per-source filters
+  and tie into the role-aware permission story.
 - Drive automatic wait creation directly from runtime tool failures (artifact tool retry
   flow, recursive agent escalation) — partially DONE through
   `ToolImprovementCoordinator.requestImprovement(source: "agent_runtime")`. The remaining

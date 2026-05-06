@@ -419,10 +419,28 @@ without any human intervention. The coordinator's `scheduleImmediate` fire-and-f
 handoff ignores scheduler errors so promote responses stay 201; the next interval tick
 remains a durable fallback.
 
-Once a wait reaches `promoted`, a separate
+Once a wait reaches `promoted`, two coordinators sit on top of it. The first is
+`ToolReworkAutoRetryCoordinator`
+([src/tools/toolReworkAutoRetryCoordinator.ts](../src/tools/toolReworkAutoRetryCoordinator.ts)),
+which is wired into `ToolImprovementCoordinator.notifyBuildRegistered` through an
+`onWaitPromoted` hook. When the policy is enabled, every newly promoted wait flows
+through the orchestrator; it inspects the source run, walks the `parentRunId` chain to
+count prior retry generations, refuses cancelled / orphaned source runs, refuses waits
+whose retryRunId already exists, and otherwise delegates retry-run creation to the
+manual `ToolReworkRetryCoordinator`. The decision is audited as
+`tool_rework_wait.auto_retry_decision` with `actorId=auto-retry-orchestrator`,
+`metadata.autoRetry=true`, `decision`, `retryDepth`, `policy`, and the linked
+build/investigation ids. The orchestrator is intentionally generic — it makes no
+capability-specific assumptions and never bypasses the underlying retry coordinator's
+idempotency. Policy comes from `WebAppOptions.toolReworkAutoRetryPolicy` (defaults to
+`{ enabled: true, maxAutoRetriesPerRootRun: 1 }`); operators tune it at boot through
+`TOOL_REWORK_AUTO_RETRY` and `TOOL_REWORK_AUTO_RETRY_MAX_DEPTH` env vars and force a
+re-evaluation through `POST /api/tool-rework-waits/:id/auto-retry`. When the policy is
+disabled, waits stay `promoted` for explicit operator action.
+
+The second coordinator,
 `ToolReworkRetryCoordinator`
-([src/tools/toolReworkRetryCoordinator.ts](../src/tools/toolReworkRetryCoordinator.ts))
-turns the rework lifecycle into a real retry attempt. It loads the wait, validates that
+([src/tools/toolReworkRetryCoordinator.ts](../src/tools/toolReworkRetryCoordinator.ts)), It loads the wait, validates that
 the build is registered, copies the original run's task plus instance/user/channel/thread
 provenance, and creates a new run linked through `parentRunId = sourceRunId`. The new run
 is also linked back to the wait through `wait.retryRunId`; the original run returns from

@@ -331,6 +331,18 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   runtime. Centralizes investigation + build + wait creation, marks the run as
   `waiting_tool_rework`, emits audit events, and exposes `notifyBuildRegistered` /
   `markReadyForRetry` so HTTP and agent runtime use the same auditable flow.
+- [src/tools/toolReworkAutoRetryCoordinator.ts](src/tools/toolReworkAutoRetryCoordinator.ts)
+  - automatic retry orchestrator. Hooks into
+  `ToolImprovementCoordinator.notifyBuildRegistered` through `onWaitPromoted` and turns
+  every freshly promoted `ToolReworkWait` into a linked retry run when policy allows.
+  Delegates retry-run creation to `ToolReworkRetryCoordinator` so idempotency stays in
+  one place; walks the `parentRunId` chain to enforce
+  `maxAutoRetriesPerRootRun`; refuses cancelled / orphaned source runs; uses an
+  in-process per-wait lock so fast double-calls cannot create duplicate retry runs.
+  Audits `tool_rework_wait.auto_retry_decision`. Policy comes from
+  `WebAppOptions.toolReworkAutoRetryPolicy`; defaults to enabled with depth 1, env
+  knobs `TOOL_REWORK_AUTO_RETRY` and `TOOL_REWORK_AUTO_RETRY_MAX_DEPTH`. Operator
+  endpoint: `POST /api/tool-rework-waits/:id/auto-retry`.
 - [src/tools/toolReworkRetryCoordinator.ts](src/tools/toolReworkRetryCoordinator.ts) -
   domain helper that turns a `promoted` `ToolReworkWait` into a linked retry run. Copies
   the original run's task and instance/user/channel/thread provenance, sets
@@ -501,6 +513,11 @@ For documentation-only changes:
   investigation -> coordinator nudges scheduler -> worker registers -> linked wait flips
   to `promoted` automatically -> retry-run endpoint becomes reachable, all without a
   manual PATCH and with secret-shaped audit metadata redacted.
+- `tests/toolReworkAutoRetryCoordinator.test.ts` covers the auto-retry orchestrator:
+  promoted wait creates a linked retry run, non-promoted/cancelled/orphan waits do not,
+  idempotency on second call, disabled policy stays manual, max-depth enforcement walks
+  the parent chain, fast double-call collapses through the per-wait lock, and manual
+  `/resume` semantics are unchanged.
 - `tests/toolReworkRetryCoordinator.test.ts` covers the retry-run skeleton: rejection of
   unknown / non-promoted / orphaned waits, creation of a linked retry run that inherits
   the original run's task and provenance, idempotency on the second call, and the
@@ -698,6 +715,15 @@ For documentation-only changes:
   `actorId="tool-build-worker"` and `metadata.backgroundWorker=true` for observability.
   Do not duplicate this handoff; if a new path needs to register a build, route the
   post-completion side effects through the same coordinator helpers.
+- Auto retry handoff: when `ToolImprovementCoordinator.notifyBuildRegistered` flips a
+  `ToolReworkWait` to `promoted`, it fires the configured `onWaitPromoted` hook. The
+  HTTP layer wires that hook to `ToolReworkAutoRetryCoordinator.tryAutoRetry`, which
+  inspects policy / source run / parent chain depth and (when allowed) reuses
+  `ToolReworkRetryCoordinator` to create a linked retry run. Operators can re-evaluate
+  the same decision through `POST /api/tool-rework-waits/:id/auto-retry`. Do not
+  bypass the orchestrator with bespoke retry logic; future capabilities should plug
+  in through this seam (with policy filters or richer triggers, but not duplicate
+  retry-run creation).
 - Retry-run handoff: when a `ToolReworkWait` reaches `promoted`, operators (and the
   future recursive engine) can either close the wait without spawning a retry through
   `POST /api/tool-rework-waits/:id/resume`, or create a linked retry run through
