@@ -407,7 +407,7 @@ export class ToolImprovementCoordinator {
     const reason =
       options.reason?.trim() ||
       `Operator marked run ${previous.runId} ready for retry after tool rework promotion. ` +
-        `Phase 2 will run the actual retry; until then the run returns to "failed" so the operator can re-issue it manually.`;
+        `The run returns to "failed" without creating a retry run; use Create retry run or auto-retry when a new attempt should execute.`;
     const wait = await this.deps.toolReworkWaitStore.update(waitId, {
       status: "resumed",
       reason,

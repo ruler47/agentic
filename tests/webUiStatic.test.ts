@@ -271,6 +271,12 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /function renderCompactArtifactLink/);
   assert.match(app, /inline-artifact-link/);
   assert.match(app, /data-action="run-tool-build"/);
+  assert.match(app, /function autoRetryToolReworkWait/);
+  assert.match(app, /data-action="auto-retry-tool-rework-wait"/);
+  assert.match(app, /Force auto retry/);
+  assert.match(app, /Auto retry run/);
+  assert.match(app, /let the auto-retry policy handle eligible promoted waits/);
+  assert.doesNotMatch(app, /automatic recursive retry\/resume engine ships in Phase 2/);
   assert.match(app, /Self-service capability queue/);
   assert.match(app, /"Workers", "Tools"/);
   assert.match(app, /Memory hits/);

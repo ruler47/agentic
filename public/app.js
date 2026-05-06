@@ -1135,17 +1135,19 @@ function renderRunWaitPanel(run) {
   if (!run) return "";
   const runWaits = waitsForRun(run.id);
   const pending = runWaits.filter((wait) => wait.status !== "resumed" && wait.status !== "cancelled" && wait.status !== "failed");
-  if (pending.length === 0 && run.status !== "waiting_tool_rework") return "";
-  const panelWaits = pending.length > 0 ? pending : runWaits.slice(0, 1);
+  const linkedRetryWaits = runWaits.filter((wait) => wait.retryRunId);
+  if (pending.length === 0 && linkedRetryWaits.length === 0 && run.status !== "waiting_tool_rework") return "";
+  const panelWaits = pending.length > 0 ? pending : linkedRetryWaits.length > 0 ? linkedRetryWaits : runWaits.slice(0, 1);
+  const hasActiveWait = pending.length > 0 || run.status === "waiting_tool_rework";
   return `
     <section class="surface-panel run-wait-panel">
       <div class="section-heading">
         <div>
           <span class="eyebrow">Tool rework wait</span>
-          <h2>Waiting for tool upgrade</h2>
-          <p>This run paused because a registered tool needs to be improved or rebuilt before retrying. The investigation/build queue below preserves the failure context. The background Tool Builder worker picks up the new build automatically; once it reaches <code>registered</code>, the wait flips to <em>promoted</em> and the auto retry orchestrator creates a linked retry run when policy allows. You can still click <em>Create retry run</em> for an explicit manual retry, <em>Force auto retry</em> to re-evaluate the policy decision, or <em>Mark ready for retry</em> to just close the wait. Span-level recursive retry/replanning of only the failed step is still Phase 2 work.</p>
+          <h2>${hasActiveWait ? "Waiting for tool upgrade" : "Tool upgrade retry created"}</h2>
+          <p>This run paused because a registered tool needs to be improved or rebuilt before retrying. The investigation/build queue below preserves the failure context. The background Tool Builder worker picks up the new build automatically; once it reaches <code>registered</code>, the wait flips to <em>promoted</em> and the auto retry orchestrator creates a linked retry run when policy allows. You can still click <em>Create retry run</em> for an explicit manual retry, <em>Force auto retry</em> to re-evaluate the policy decision, or <em>Mark ready for retry</em> to just close the wait. Span-level recursive retry/replanning of only the failed step is future work.</p>
         </div>
-        <span class="context-chip">${pending.length} active</span>
+        <span class="context-chip">${hasActiveWait ? `${pending.length} active` : `${panelWaits.length} linked`}</span>
       </div>
       <div class="wait-list">
         ${panelWaits.map(renderRunWaitCard).join("")}
@@ -2020,7 +2022,7 @@ async function resumeToolReworkWait(id) {
       title: "Tool rework wait closed (ready for retry)",
       body:
         `Wait ${data.wait.id} is now marked ready for retry: the run was returned to "failed" so an operator can re-issue it ` +
-        `manually with the new tool version. The automatic recursive retry/resume engine ships in Phase 2.`,
+        `manually, create a linked retry run, or let the auto-retry policy handle eligible promoted waits.`,
     };
     render();
   } catch (error) {

@@ -958,8 +958,8 @@ A wait record has:
 - `reason`;
 - optional `toolName`, `toolVersion`, `investigationId`, `buildRequestId`;
 - optional `promotedVersion` once the build registers;
-- optional `retryRunId` / `retrySpanId` once the wait is resumed (Phase 2 will populate
-  these automatically from the recursive retry engine);
+- optional `retryRunId` / `retrySpanId` once the wait is resumed by a manual retry run or
+  by the auto-retry orchestrator;
 - `createdAt`, `updatedAt`.
 
 API:
