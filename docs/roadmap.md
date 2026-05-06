@@ -759,9 +759,13 @@ Remaining Phase 3 gaps:
   rollback. Runtime activation now has a compensating rollback hook: if activation fails
   after registration, the workflow calls the activation runner rollback method when
   available, keeps the request `blocked`, and records `activation rollback pass/fail`
-  evidence in the QA report/UI. Remaining work is expanding the transactional promotion
-  boundary into a full saga that applies/records migrations, activates the generated
-  package, reloads runtime, and rolls back cleanly if any step fails. Runtime
+  evidence in the QA report/UI. DONE for the default runtime path: reloads unregister
+  previously loaded generated tools before loading current metadata, and the
+  metadata-backed activation runner reactivates `replacesVersion` or deletes failed
+  initial generated metadata before reloading again. Remaining work is expanding the
+  transactional promotion boundary into a full saga that applies/records migrations,
+  activates the generated package, reloads runtime, and rolls back cleanly if any step
+  fails. Runtime
   reload/activation is now represented in the workflow status and QA report, but it is
   still not part of the same Postgres
   transaction/package rollback boundary.

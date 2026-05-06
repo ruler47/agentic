@@ -56,6 +56,7 @@ import {
   LlmToolBuildReviewer,
 } from "../tools/toolBuildReviewers.js";
 import { ToolBuildWorker } from "../tools/toolBuildWorker.js";
+import { createMetadataToolActivationRunner } from "../tools/toolActivationRunner.js";
 import { ToolServiceSupervisor } from "../tools/toolServiceSupervisor.js";
 import { InMemoryToolServiceStatusStore } from "../tools/toolServiceStatusStore.js";
 import { PostgresToolServiceStatusStore } from "../tools/postgresToolServiceStatusStore.js";
@@ -121,12 +122,20 @@ const toolPackageRunners = [
 ];
 const generatedToolResults = await loadGeneratedTools(tools, toolMetadataStore, process.cwd(), toolPackageRunners);
 const loadedGeneratedTools = generatedToolResults.filter((result) => result.loaded);
+const loadedGeneratedToolNames = new Set(loadedGeneratedTools.map((result) => result.name));
 if (loadedGeneratedTools.length > 0) {
   console.log(`Loaded ${loadedGeneratedTools.length} generated tool(s).`);
 }
 const reloadGeneratedTools = async () => {
+  for (const name of loadedGeneratedToolNames) {
+    tools.unregister(name);
+  }
+  loadedGeneratedToolNames.clear();
   const results = await loadGeneratedTools(tools, toolMetadataStore, process.cwd(), toolPackageRunners);
   const loaded = results.filter((result) => result.loaded);
+  for (const result of loaded) {
+    loadedGeneratedToolNames.add(result.name);
+  }
   if (loaded.length > 0) {
     console.log(`Reloaded ${loaded.length} generated tool(s).`);
   }
@@ -194,16 +203,7 @@ const toolBuildWorkflow = new ToolBuildWorkflow(
           ]
         : []),
     ],
-    activationRunner: {
-      async activate(_request, _output, registeredToolName) {
-        await reloadGeneratedTools();
-        return {
-          ok: true,
-          summary: `Generated tool runtime reloaded for ${registeredToolName}.`,
-          checks: ["loadGeneratedTools completed after registrar promotion"],
-        };
-      },
-    },
+    activationRunner: createMetadataToolActivationRunner({ metadataStore: toolMetadataStore, reloadGeneratedTools }),
   },
 );
 const toolBuildWorker = new ToolBuildWorker(toolBuildWorkflow, toolBuildRequestStore, {

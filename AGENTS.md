@@ -737,6 +737,10 @@ For documentation-only changes:
   registered tool name and activation QA evidence. If the activation runner exposes a
   rollback hook, the workflow calls it before returning the blocked request and appends
   `activation rollback pass/fail` checks to the QA report.
+- Runtime generated-tool reloads track loaded generated tool names and unregister them
+  before reloading current metadata. The default metadata-backed activation runner rolls
+  back failed activation by reactivating `replacesVersion` or deleting failed initial
+  generated metadata, then reloads the runtime again.
 - Generated-tool promotion now has separate QA and review gates. `ToolBuildQaReport`
   may include `reviews` for code and behavior decisions; any `needs_revision` or `fail`
   review sends findings back into the next builder attempt or ends as `qa_failed` after
