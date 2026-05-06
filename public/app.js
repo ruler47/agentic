@@ -2838,12 +2838,37 @@ function renderBuildCard(request) {
         <summary>Create revision request</summary>
         <form data-action="rework-tool-build" class="rework-form">
           <input type="hidden" name="buildId" value="${escapeHtml(request.id)}" />
-          <textarea name="feedback" placeholder="What should be changed, fixed, retested, or redesigned?" required></textarea>
+          <textarea name="feedback" placeholder="${escapeHtml(suggestToolBuildReworkPlaceholder(request))}" required></textarea>
           <button type="submit" class="ghost-button">Create rework request</button>
         </form>
       </details>
     </article>
   `;
+}
+
+function suggestToolBuildReworkPlaceholder(request) {
+  const activationChecks = Array.isArray(request.qaReport?.checks)
+    ? request.qaReport.checks.filter((check) => /^activation fail:/i.test(String(check)))
+    : [];
+  if (activationChecks.length > 0) {
+    return [
+      "Describe the runtime activation fix you want.",
+      `Current blocker: ${request.statusDetail || request.qaReport?.summary || activationChecks[0]}`,
+      `Evidence: ${activationChecks.join("; ")}`,
+      "Expected result: rebuild a new version, pass QA, activate runtime successfully, and keep the old version available for rollback.",
+    ].join("\n");
+  }
+
+  if (request.statusDetail || request.qaReport?.summary) {
+    return [
+      "Describe what should be changed, fixed, retested, or redesigned.",
+      request.statusDetail ? `Current status: ${request.statusDetail}` : undefined,
+      request.qaReport?.summary ? `QA summary: ${request.qaReport.summary}` : undefined,
+      "Expected result: create a new version, pass QA, and promote only after activation succeeds.",
+    ].filter(Boolean).join("\n");
+  }
+
+  return "What should be changed, fixed, retested, or redesigned?";
 }
 
 function renderToolBuildQaEvidence(qaReport) {

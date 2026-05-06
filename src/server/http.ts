@@ -1483,7 +1483,7 @@ async function routeRequest(
       const reworkRequestInput = await attachInlineCredentialHandle({
         capability: original.capability,
         displayName: original.displayName,
-        reason: `${original.reason}\n\nRework feedback for ${original.id}:\n${feedback}`,
+        reason: formatToolBuildReworkReason(original, feedback),
         sourceRunId: original.sourceRunId,
         sourceSpanId: original.sourceSpanId,
         taskSummary: original.taskSummary,
@@ -3681,6 +3681,34 @@ function parseToolBuildReworkInput(value: unknown): string {
     throw new Error("feedback is required");
   }
   return candidate.feedback.trim();
+}
+
+function formatToolBuildReworkReason(
+  original: NonNullable<Awaited<ReturnType<ToolBuildRequestStore["get"]>>>,
+  feedback: string,
+): string {
+  const qaReport = original.qaReport;
+  const reviewLines = qaReport?.reviews?.flatMap((review) => [
+    `${review.kind} review: ${review.decision} - ${review.summary}`,
+    ...review.findings.map((finding) => `  - ${finding}`),
+  ]);
+  const context = [
+    `Original request ${original.id}`,
+    `Status: ${original.status}`,
+    original.statusDetail ? `Status detail: ${original.statusDetail}` : undefined,
+    original.registeredToolName ? `Registered tool: ${original.registeredToolName}` : undefined,
+    qaReport ? `QA summary: ${qaReport.summary}` : undefined,
+    ...(qaReport?.checks?.length ? ["QA checks:", ...qaReport.checks.map((check) => `- ${check}`)] : []),
+    ...(reviewLines?.length ? ["Reviews:", ...reviewLines] : []),
+  ].filter(Boolean);
+
+  return [
+    original.reason,
+    "Original build context:",
+    ...context,
+    `Rework feedback for ${original.id}:`,
+    feedback,
+  ].join("\n\n");
 }
 
 function parseOptionalDate(value: unknown, name: string): Date | undefined {

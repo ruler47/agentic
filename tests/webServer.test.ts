@@ -1564,6 +1564,9 @@ test("web server exposes tool build requests", async () => {
     assert.equal(rework.request.credentialNotes, "api key 12312, secret 8978");
     assert.equal(rework.request.displayName, "PDF Report");
     assert.match(rework.request.feedback, /stricter artifact validation/);
+    assert.match(rework.request.reason, /Original build context/);
+    assert.match(rework.request.reason, /Status detail: Builder tests passed/);
+    assert.match(rework.request.reason, /QA checks:\n\n- unit tests passed/);
     assert.equal(stopResponse.status, 200);
     assert.equal(stopped.request.status, "blocked");
     assert.match(stopped.request.statusDetail, /duplicate revision/);

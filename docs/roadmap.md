@@ -553,6 +553,11 @@ Next implementation tasks:
   configured with an activation runner. If activation fails, the request stays `blocked`
   with activation QA evidence and the registered tool name for repair. The Tool Builds UI
   now surfaces activation pass/fail checks directly on each card and in the preview.
+- Preserve full Tool Build rework context. DONE: revision requests created from a build
+  card carry the original request id/status/status detail, registered tool name when
+  present, QA summary/checks/reviews, activation pass/fail evidence, and the operator
+  comment into the new requested build. The UI placeholder also reflects the current
+  blocker without submitting placeholder text as feedback.
 - Keep Tool Build and rework request forms stable during live UI refresh. DONE: soft
   background refresh defers rendering while an operator has an open tool-build, span bug,
   or tool rework form, and universal QA/change prompts are placeholders rather than

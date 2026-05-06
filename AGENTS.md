@@ -755,7 +755,9 @@ For documentation-only changes:
   or tune it with `TOOL_BUILD_WORKER_INTERVAL_MS` and `TOOL_BUILD_WORKER_BATCH_SIZE`.
 - Tool Build requests can be reworked through `POST /api/tool-build-requests/:id/rework`.
   Preserve the original request and create a new requested revision with operator feedback
-  instead of overwriting prior QA evidence.
+  instead of overwriting prior QA evidence. The revision reason must include the selected
+  card context: original request id/status/status detail, registered tool name when known,
+  QA summary/checks/reviews, activation failure evidence, and the operator comment.
 - Tool Build requests can include low-level `credentialHandles` from runtime callers and
   human `credentialNotes` from the UI. Do not display raw credential notes on cards or
   write them into source, tests, prompts, traces, memory, artifacts, or audit metadata.
