@@ -87,6 +87,19 @@ export type ToolImprovementCoordinatorRunStore = Pick<
   "get" | "markWaitingForToolRework" | "resumeFromToolRework"
 >;
 
+/**
+ * Background-build hook injected by the HTTP layer when a Tool Builder worker is
+ * running. The coordinator nudges this scheduler immediately after creating a build
+ * request so promoted investigations / agent-driven improvements run through the same
+ * audited Builder/QA/Registrar workflow without waiting for the worker's interval tick
+ * or for an operator to PATCH the build to `registered`. Errors from the scheduler
+ * must not break the promote response — the build will still be picked up by the next
+ * worker tick.
+ */
+export type BackgroundBuildScheduler = {
+  scheduleImmediate(buildRequestId: string): Promise<void> | void;
+};
+
 export type ToolImprovementCoordinatorDeps = {
   // Investigation and build stores are required for `requestImprovement` (the agent /
   // operator promotion path) but optional for routes that only need to open a wait,
@@ -100,6 +113,7 @@ export type ToolImprovementCoordinatorDeps = {
   // HTTP path uses this to apply server-only validation/normalization
   // (assignGeneratedToolName / validateContextualToolBuildTarget) before persisting.
   finalizeBuildRequestInput?: (input: ToolBuildRequestInput) => Promise<ToolBuildRequestInput>;
+  backgroundBuildScheduler?: BackgroundBuildScheduler;
 };
 
 export class ToolImprovementCoordinator {
@@ -246,6 +260,21 @@ export class ToolImprovementCoordinator {
               ? `Run is waiting for agent-driven tool rework triggered by investigation ${linkedInvestigation.id}.`
               : `Run is waiting for tool rework triggered by investigation ${linkedInvestigation.id}.`,
         });
+      }
+
+      // Hand the freshly requested build over to the background worker if one is wired
+      // up. We never await scheduler errors here — the build is durably `requested` and
+      // the next worker tick will pick it up regardless. Promotes must not 500 because a
+      // worker hook misbehaved.
+      if (this.deps.backgroundBuildScheduler && buildRequest.status === "requested") {
+        try {
+          const scheduled = this.deps.backgroundBuildScheduler.scheduleImmediate(buildRequest.id);
+          if (scheduled instanceof Promise) {
+            scheduled.catch(() => undefined);
+          }
+        } catch {
+          // intentional: keep promote idempotent regardless of scheduler health.
+        }
       }
 
       return {

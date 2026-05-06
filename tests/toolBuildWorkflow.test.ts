@@ -611,3 +611,142 @@ test("ToolBuildWorker does not double-reload when workflow activation already ra
   assert.equal(workerReloads, 0);
   assert.equal(tick.results[0].activationReport?.ok, true);
 });
+
+test("ToolBuildWorker invokes onAfterCompleted with the workflow result for handoff", async () => {
+  const store = new InMemoryToolBuildRequestStore();
+  const request = await store.create({
+    capability: "background-handoff",
+    reason: "Verify post-registration callback fires.",
+  });
+  const workflow = new ToolBuildWorkflow(
+    store,
+    {
+      async build(claimed) {
+        return {
+          modulePath: claimed.contract.modulePath,
+          testPath: claimed.contract.testPath,
+          summary: "built",
+        };
+      },
+    },
+    {
+      async run() {
+        return { ok: true, summary: "QA passed.", checks: ["ok"] };
+      },
+    },
+    {
+      async register() {
+        return "generated.background.handoff";
+      },
+    },
+  );
+  const seen: Array<{ requestId: string; status: string; registeredToolName?: string }> = [];
+  const worker = new ToolBuildWorker(workflow, store, {
+    onAfterCompleted: async (workflowResult) => {
+      seen.push({
+        requestId: workflowResult.request.id,
+        status: workflowResult.request.status,
+        registeredToolName: workflowResult.registeredToolName,
+      });
+    },
+  });
+
+  await worker.tick();
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.requestId, request.id);
+  assert.equal(seen[0]?.status, "registered");
+  assert.equal(seen[0]?.registeredToolName, "generated.background.handoff");
+});
+
+test("ToolBuildWorker setOnAfterCompleted late-binds the post-completion callback", async () => {
+  const store = new InMemoryToolBuildRequestStore();
+  await store.create({
+    capability: "late-bind",
+    reason: "Verify setter replaces constructor callback.",
+  });
+  const workflow = new ToolBuildWorkflow(
+    store,
+    {
+      async build(claimed) {
+        return { modulePath: claimed.contract.modulePath, testPath: claimed.contract.testPath, summary: "built" };
+      },
+    },
+    {
+      async run() {
+        return { ok: true, summary: "ok", checks: ["ok"] };
+      },
+    },
+    {
+      async register() {
+        return "generated.late.bind";
+      },
+    },
+  );
+  const seen: string[] = [];
+  const worker = new ToolBuildWorker(workflow, store);
+  worker.setOnAfterCompleted(async (workflowResult) => {
+    seen.push(workflowResult.request.status);
+  });
+  await worker.tick();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0], "registered");
+});
+
+test("ToolBuildWorker does not claim the same request twice when ticks overlap", async () => {
+  const store = new InMemoryToolBuildRequestStore();
+  await store.create({ capability: "concurrency", reason: "concurrency probe 1" });
+  await store.create({ capability: "concurrency", reason: "concurrency probe 2" });
+  const claimedRequestIds: string[] = [];
+  const builderStarted: Array<() => void> = [];
+  const builderResume: Array<Promise<void>> = [];
+  const builderResumeResolvers: Array<() => void> = [];
+  // Builder blocks until the test releases it, so we can hold the worker mid-tick and
+  // attempt to start a second tick while the first is still in flight.
+  for (let index = 0; index < 4; index += 1) {
+    builderResume.push(new Promise<void>((resolve) => {
+      builderResumeResolvers.push(resolve);
+    }));
+    builderStarted.push(() => undefined);
+  }
+  let builderCallIndex = 0;
+  const workflow = new ToolBuildWorkflow(
+    store,
+    {
+      async build(claimed) {
+        claimedRequestIds.push(claimed.id);
+        const myIndex = builderCallIndex;
+        builderCallIndex += 1;
+        await builderResume[myIndex];
+        return { modulePath: claimed.contract.modulePath, testPath: claimed.contract.testPath, summary: "built" };
+      },
+    },
+    {
+      async run() {
+        return { ok: true, summary: "ok", checks: ["ok"] };
+      },
+    },
+    {
+      async register() {
+        return "generated.concurrency";
+      },
+    },
+  );
+  const worker = new ToolBuildWorker(workflow, store);
+  const firstTick = worker.tick();
+  // Second tick fires before the first releases the builder. It must join the pending
+  // tick (or no-op) instead of double-claiming the same request.
+  const secondTick = worker.tick();
+  // Third entry through scheduleImmediate. Same expectation.
+  const scheduled = worker.scheduleImmediate();
+
+  // Release builder for first request only.
+  builderResumeResolvers[0]?.();
+  await Promise.all([firstTick, secondTick, scheduled]);
+
+  // Exactly one build was claimed during this overlapping window.
+  assert.equal(claimedRequestIds.length, 1, "overlapping ticks must not double-claim");
+  // The other request remains `requested` for the next tick to pick up.
+  const remaining = (await store.list()).filter((req) => req.status === "requested");
+  assert.equal(remaining.length, 1);
+});

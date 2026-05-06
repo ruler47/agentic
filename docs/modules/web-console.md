@@ -995,9 +995,16 @@ API:
 
 All endpoints return 503 when the wait store is not configured.
 
-When a tool build request transitions to `registered` (through PATCH or the workflow
-runner), every matching wait is automatically promoted to `promoted`, the registered
-tool name is propagated, and a `tool_rework_wait.updated` audit event is recorded.
+When a tool build request transitions to `registered` (through PATCH, the workflow
+runner, or the background Tool Builder worker), every matching wait is automatically
+promoted to `promoted`, the registered tool name is propagated, and a
+`tool_rework_wait.updated` audit event is recorded. The background worker uses
+`actorId="tool-build-worker"` for its `tool_build.registered` audit and stamps
+`metadata.backgroundWorker=true` so operators can tell apart manual and worker-driven
+registrations. `ToolImprovementCoordinator` nudges the worker through
+`scheduleImmediate()` immediately after creating a build, so promoted investigations
+typically reach `promoted` within one tick instead of waiting for the configured
+`TOOL_BUILD_WORKER_INTERVAL_MS` interval.
 
 The promote endpoint, the standalone wait creation endpoint, the build-registered
 notification, and the resume endpoint all delegate to a single in-process domain helper,

@@ -68,6 +68,7 @@ import {
   ToolReworkWaitUpdateInput,
 } from "../runs/toolReworkWaitStore.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
+import { ToolBuildWorker } from "../tools/toolBuildWorker.js";
 import {
   generatedToolInputFromPackageManifest,
   type ToolModuleMetadata,
@@ -111,6 +112,7 @@ export type WebAppOptions = {
   toolInvestigationStore?: ToolInvestigationStore;
   toolReworkWaitStore?: ToolReworkWaitStore;
   toolBuildWorkflow?: ToolBuildWorkflow;
+  toolBuildWorker?: ToolBuildWorker;
   toolServiceSupervisor?: ToolServiceSupervisor;
   toolServiceEventStore?: ToolServiceEventStore;
   toolPackageRunners?: ToolPackageRunner[];
@@ -129,6 +131,51 @@ export type WebAppOptions = {
 const defaultUserStore = new InMemoryUserStore();
 
 export function createWebApp(options: WebAppOptions) {
+  // When a Tool Builder worker is wired up, give it the same post-completion behaviour
+  // that the manual `/run` and PATCH endpoints already implement: flip any matching
+  // ToolReworkWait records to `promoted` and emit the `tool_build.registered` audit
+  // event. This keeps the background handoff observable without duplicating logic.
+  options.toolBuildWorker?.setOnAfterCompleted(async (workflowResult) => {
+    if (workflowResult.request.status !== "registered") return;
+    const sourceRunId = workflowResult.request.sourceRunId;
+    const sourceRun = sourceRunId ? await options.runStore.get(sourceRunId).catch(() => undefined) : undefined;
+    await recordAudit(options, {
+      instanceId: sourceRun?.instanceId ?? "instance-local",
+      actorId: "tool-build-worker",
+      actorType: "agent",
+      action: "tool_build.registered",
+      targetType: "tool",
+      targetId:
+        workflowResult.registeredToolName ??
+        workflowResult.request.registeredToolName ??
+        workflowResult.request.id,
+      runId: sourceRunId,
+      threadId: sourceRun?.threadId,
+      requesterUserId: sourceRun?.requesterUserId,
+      channel: sourceRun?.channel,
+      summary: `Tool build registered (background worker): ${
+        workflowResult.registeredToolName ?? workflowResult.request.registeredToolName ?? workflowResult.request.id
+      }`,
+      metadata: {
+        capability: workflowResult.request.capability,
+        requestId: workflowResult.request.id,
+        backgroundWorker: true,
+      },
+    });
+    await createToolImprovementCoordinator(options, {
+      actorId: "tool-build-worker",
+      actorType: "agent",
+      instanceId: sourceRun?.instanceId,
+      threadId: sourceRun?.threadId,
+      requesterUserId: sourceRun?.requesterUserId,
+      channel: sourceRun?.channel,
+    }).notifyBuildRegistered(
+      workflowResult.request.id,
+      workflowResult.registeredToolName ?? workflowResult.request.registeredToolName,
+      workflowResult.request.contract?.version,
+    );
+  });
+
   return createServer(async (request, response) => {
     try {
       await routeRequest(request, response, options);
@@ -3413,6 +3460,16 @@ function createToolImprovementCoordinator(
         await validateContextualToolBuildTarget(input as ReturnType<typeof parseToolBuildRequestInput>, options),
         options,
       ),
+    backgroundBuildScheduler: options.toolBuildWorker
+      ? {
+          // Fire-and-forget: the coordinator nudges the worker so it picks up the new
+          // build immediately. The worker itself joins a pending tick if one is in
+          // flight, so promote-time and interval-time triggers never claim twice.
+          scheduleImmediate: () => {
+            void options.toolBuildWorker!.scheduleImmediate().catch(() => undefined);
+          },
+        }
+      : undefined,
   });
 }
 
