@@ -405,6 +405,23 @@ explicitly. When at least one wait is still open at synthesis time, the agent ap
 finished, since the recursive retry engine that automatically re-executes the failed step
 against the new tool version is still Phase 2 work.
 
+Once a wait reaches `promoted`, a separate
+`ToolReworkRetryCoordinator`
+([src/tools/toolReworkRetryCoordinator.ts](../src/tools/toolReworkRetryCoordinator.ts))
+turns the rework lifecycle into a real retry attempt. It loads the wait, validates that
+the build is registered, copies the original run's task plus instance/user/channel/thread
+provenance, and creates a new run linked through `parentRunId = sourceRunId`. The new run
+is also linked back to the wait through `wait.retryRunId`; the original run returns from
+`waiting_tool_rework` to `failed` so its failure context stays observable. The HTTP layer
+exposes this through `POST /api/tool-rework-waits/:id/retry-run` and immediately starts the
+retry through the same `executeRun` path that powers `POST /api/runs`, so the retry
+executes through the standard agent loop. The coordinator is intentionally generic —
+browser, Telegram, market, AML, screenshot, and PDF flows all converge on
+`(original run, wait, build, investigation, promoted tool version) -> retry run` without
+bespoke runtime branches. Span-level recursive retry (replanning only the failed step
+against the new tool version) is still Phase 2 work; the existing `markReadyForRetry`
+endpoint remains available as a "close wait without spawning a retry" handoff.
+
 ### Model Tiers
 
 Each LLM step receives a selected model tier based on task risk and activity type.

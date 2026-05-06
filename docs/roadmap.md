@@ -426,14 +426,27 @@ Implementation tasks:
   build + wait + `waiting_tool_rework` run state that an operator-triggered promotion
   produces. The agent emits `tool-rework-wait-opened` trace events and appends a
   "Pending tool rework waits" footer to the final answer when waits are still open. DONE.
+- Retry-run skeleton: `ToolReworkRetryCoordinator`
+  (`src/tools/toolReworkRetryCoordinator.ts`) turns a `promoted` wait into a real linked
+  retry run. The new run inherits the original run's task and instance/user/channel/thread
+  provenance, links back through `parentRunId` and through `wait.retryRunId`, and the
+  source run returns to `failed`. `POST /api/tool-rework-waits/:id/retry-run` exposes
+  this and starts the retry through the same `executeRun` path used by `POST /api/runs`,
+  so the retry executes through the standard agent loop with no bespoke special cases.
+  Run Workspace, Tool Builds investigation/build cards, and the Trace Lab inspector all
+  show "Create retry run" / "Open retry run" affordances. The endpoint is idempotent: a
+  second call returns the existing retry run with `alreadyExists: true`. The existing
+  `/resume` endpoint is preserved as a separate "close wait without spawning a retry"
+  handoff so operators keep that semantics. The new audit action
+  `tool_rework_wait.retry_run_created` records the linkage. DONE.
 
 Remaining work for Phase 2:
 
-- Replace the manual operator resume with the recursive agent retry engine: pick up the
-  promoted wait, re-plan the failed step against the new tool version, and produce a
-  retry run linked through `retryRunId`/`retrySpanId`. The coordinator already exposes
-  `markReadyForRetry(waitId, { retryRunId, retrySpanId })` so the recursive engine can
-  reuse the existing audited transition once it can drive the retry itself.
+- Span-level recursive retry / replanning: replace the run-level retry skeleton with an
+  engine that re-plans only the failed step against the new tool version, producing
+  scoped retry spans linked through `retryRunId`/`retrySpanId` instead of recomputing the
+  full task graph from scratch. `ToolReworkRetryCoordinator` is intentionally limited to
+  full-run retry; future recursive agents should layer span-level retry on top.
 - Drive automatic wait creation directly from runtime tool failures (artifact tool retry
   flow, recursive agent escalation) — partially DONE through
   `ToolImprovementCoordinator.requestImprovement(source: "agent_runtime")`. The remaining

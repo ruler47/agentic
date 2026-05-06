@@ -978,8 +978,20 @@ API:
   `resumed`, the run returns from `waiting_tool_rework` back to `failed` so an operator
   can re-issue the original task with the new tool version, and `tool_rework_wait.resumed`
   is audited. The endpoint does **not** automatically retry the agent — the recursive
-  retry/resume engine is Phase 2. Pass `{ "retryRunId": "..." }` to record an existing
+  span-level retry engine is Phase 2. Pass `{ "retryRunId": "..." }` to record an existing
   retry run id when one already exists.
+- `POST /api/tool-rework-waits/:id/retry-run` — also only allowed when status is
+  `promoted`. This is the **"create retry run"** handoff: the server creates a new run
+  whose `task` and instance/user/channel/thread provenance come from the original
+  run, links it through `parentRunId` and through `wait.retryRunId`, returns the source
+  run from `waiting_tool_rework` back to `failed`, and immediately starts the retry
+  through the same `executeRun` path used by `POST /api/runs`. Audits
+  `tool_rework_wait.retry_run_created` with `sourceRunId`, `retryRunId`, `buildRequestId`,
+  `investigationId`, `promotedVersion`, and `toolName`. Idempotent: a second call returns
+  `200 { wait, retryRun, alreadyExists: true }` instead of duplicating the run. Returns
+  `404` for unknown waits, `409` for non-promoted waits, and `400` when the source run
+  has been deleted. Span-level recursive retry of only the failed step is still Phase 2;
+  this endpoint creates a full-run retry that executes through the standard agent loop.
 
 All endpoints return 503 when the wait store is not configured.
 
@@ -1003,10 +1015,15 @@ UI surfaces:
   Builds and Trace Lab.
 - Trace Lab inspector renders the linked wait/build/investigation card next to the
   selected span when a wait is open.
-- Tool Builds investigation cards and build cards show their linked waits, including a
-  `Mark ready for retry` button when the wait is `promoted`. The button explicitly
-  closes the wait and returns the run to `failed`; it does **not** pretend to start a new
-  agent run automatically.
+- Tool Builds investigation cards and build cards show their linked waits with two
+  separate actions when the wait is `promoted`:
+  - `Create retry run` — calls `POST /api/tool-rework-waits/:id/retry-run` to spawn a
+    linked retry run that executes through the standard agent loop. Once a retry run
+    exists, the wait card replaces the button with `Open retry run`.
+  - `Mark ready for retry` — calls `POST /api/tool-rework-waits/:id/resume` to close the
+    wait without spawning a retry run, returning the source run to `failed` so an
+    operator can re-issue the task manually with the new tool version.
+  Run Workspace and the Trace Lab inspector wait card surface the same two actions.
 - The Runs list and dashboard activity surfaces show `waiting_tool_rework` as a separate
   status badge so paused runs are not confused with failures.
 

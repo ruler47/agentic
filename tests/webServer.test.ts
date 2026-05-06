@@ -2183,6 +2183,219 @@ test("web server promote endpoint never infers a different tool from fuzzy text"
   }
 });
 
+test("retry-run endpoint creates a linked retry run, audits it, and is idempotent", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const toolInvestigationStore = new InMemoryToolInvestigationStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  await toolMetadataStore.syncBuiltins([
+    {
+      name: "browser.operate",
+      version: "1.0.0",
+      description: "Generic Playwright command executor.",
+      capabilities: ["browser-operate"],
+      async run() {
+        return { ok: true, content: "ok" };
+      },
+    },
+  ]);
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolBuildRequestStore,
+    toolInvestigationStore,
+    toolReworkWaitStore,
+    toolMetadataStore,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const sourceRun = await runStore.create("Click the buy button and prove it", {
+      instanceId: "instance-local",
+      requesterUserId: "user-admin",
+      channel: "web",
+      threadId: "thread-buy",
+    });
+    const investigation = (
+      await (
+        await fetch(`${baseUrl}/api/tool-investigations`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            source: "trace_span",
+            title: "browser.operate cannot dismiss CAPTCHA",
+            runId: sourceRun.id,
+            spanId: "span-bo",
+            toolName: "browser.operate",
+            toolVersion: "1.0.0",
+            contextBundle: {
+              taskPrompt: "Click the buy button and prove it",
+              toolSettingsSummary: { apiKey: "DO-NOT-LEAK-RETRY" },
+            },
+          }),
+        })
+      ).json()
+    ).investigation;
+
+    const promoted = (
+      await (
+        await fetch(`${baseUrl}/api/tool-investigations/${encodeURIComponent(investigation.id)}/promote`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        })
+      ).json()
+    ) as { wait: { id: string }; request: { id: string } };
+
+    // Promote build to registered to flip the wait into the `promoted` state.
+    await fetch(`${baseUrl}/api/tool-build-requests/${encodeURIComponent(promoted.request.id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        status: "registered",
+        registeredToolName: "browser.operate",
+        qaReport: { ok: true, summary: "ok", checks: ["ok"] },
+      }),
+    });
+
+    // 1) Reject retry-run before the wait is promoted: a freshly created wait stub.
+    const freshRun = await runStore.create("Different task");
+    const freshWait = await toolReworkWaitStore.create({
+      runId: freshRun.id,
+      reason: "still waiting",
+    });
+    const tooEarly = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(freshWait.id)}/retry-run`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(tooEarly.status, 409);
+
+    // 2) Real retry-run creation against the promoted wait.
+    const retryResponse = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}/retry-run`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(retryResponse.status, 201);
+    const retryBody = (await retryResponse.json()) as {
+      wait: { id: string; status: string; retryRunId?: string };
+      retryRun: {
+        id: string;
+        task: string;
+        parentRunId?: string;
+        instanceId?: string;
+        requesterUserId?: string;
+        threadId?: string;
+      };
+    };
+    assert.equal(retryBody.wait.id, promoted.wait.id);
+    assert.equal(retryBody.wait.status, "resumed");
+    assert.equal(retryBody.wait.retryRunId, retryBody.retryRun.id);
+    assert.equal(retryBody.retryRun.task, sourceRun.task);
+    assert.equal(retryBody.retryRun.parentRunId, sourceRun.id);
+    assert.equal(retryBody.retryRun.instanceId, "instance-local");
+    assert.equal(retryBody.retryRun.requesterUserId, "user-admin");
+    assert.equal(retryBody.retryRun.threadId, "thread-buy");
+
+    // The source run returns to failed because the retry now owns the new attempt.
+    const sourceAfter = await runStore.get(sourceRun.id);
+    assert.equal(sourceAfter?.status, "failed");
+
+    // 3) Idempotency: a second retry-run call returns the existing retry run.
+    const second = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}/retry-run`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(second.status, 200);
+    const secondBody = (await second.json()) as {
+      retryRun: { id: string };
+      alreadyExists?: boolean;
+    };
+    assert.equal(secondBody.alreadyExists, true);
+    assert.equal(secondBody.retryRun.id, retryBody.retryRun.id);
+
+    // 4) 404 for unknown waits.
+    const missing = await fetch(`${baseUrl}/api/tool-rework-waits/missing-wait/retry-run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(missing.status, 404);
+
+    // 5) Audit log: retry_run_created event recorded with linkage; secrets did not leak.
+    const auditList = await auditEventStore.list();
+    const created = auditList.find((event) => event.action === "tool_rework_wait.retry_run_created");
+    assert.ok(created, "audit log records the retry_run_created event");
+    assert.equal((created?.metadata as { sourceRunId?: string } | undefined)?.sourceRunId, sourceRun.id);
+    assert.equal((created?.metadata as { retryRunId?: string } | undefined)?.retryRunId, retryBody.retryRun.id);
+    assert.equal(
+      (created?.metadata as { promotedVersion?: string } | undefined)?.promotedVersion,
+      "1.1.0",
+      "audit captures the promoted (bumped) version, not the previous one",
+    );
+    const seenAuditJson = JSON.stringify(auditList);
+    assert.ok(!seenAuditJson.includes("DO-NOT-LEAK-RETRY"), "audit metadata must not leak secret-shaped values");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("retry-run endpoint preserves the existing /resume behaviour as a separate handoff", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolReworkWaitStore,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const sourceRun = await runStore.create("Original task");
+    await runStore.markWaitingForToolRework(sourceRun.id, "wait");
+    const wait = await toolReworkWaitStore.create({
+      runId: sourceRun.id,
+      reason: "wait",
+      status: "promoted",
+      promotedVersion: "2.0.0",
+    });
+
+    // /resume keeps its old "mark ready, no new run" semantics — no retryRun is created.
+    const resumed = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(wait.id)}/resume`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(resumed.status, 200);
+    const resumedBody = await resumed.json();
+    assert.equal(resumedBody.wait.status, "resumed");
+    assert.equal(resumedBody.wait.retryRunId, undefined);
+
+    const allRuns = await runStore.list();
+    assert.equal(allRuns.length, 1, "/resume must NOT create a new run");
+
+    const auditList = await auditEventStore.list();
+    const actions = auditList.map((event) => event.action);
+    assert.ok(actions.includes("tool_rework_wait.resumed"));
+    assert.ok(!actions.includes("tool_rework_wait.retry_run_created"));
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("agent-driven coordinator path through HTTP marks run waiting and redacts secret-shaped audit metadata", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");

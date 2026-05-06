@@ -95,6 +95,7 @@ import {
   ToolImprovementCoordinator,
   ToolImprovementCoordinatorDeps,
 } from "../tools/toolImprovementCoordinator.js";
+import { ToolReworkRetryCoordinator } from "../tools/toolReworkRetryCoordinator.js";
 import { AgentArtifact, AgentEvent, AgentRunResult, ArtifactUploadInput } from "../types.js";
 
 export type WebAppOptions = {
@@ -2017,6 +2018,62 @@ async function routeRequest(
     return;
   }
 
+  const reworkWaitRetryRunMatch = url.pathname.match(
+    /^\/api\/tool-rework-waits\/([^/]+)\/retry-run$/,
+  );
+  if (request.method === "POST" && reworkWaitRetryRunMatch) {
+    if (!options.toolReworkWaitStore) {
+      sendJson(response, 503, { error: "Tool rework wait store is not configured" });
+      return;
+    }
+    const retryCoordinator = createToolReworkRetryCoordinator(options);
+    if (!retryCoordinator) {
+      sendJson(response, 503, { error: "Tool rework retry coordinator is not available" });
+      return;
+    }
+    try {
+      const id = decodeURIComponent(reworkWaitRetryRunMatch[1] ?? "");
+      const body = (await readJsonBody<unknown>(request)) ?? {};
+      const candidate = body as Record<string, unknown>;
+      const reason = parseOptionalText(candidate.reason);
+      const result = await retryCoordinator.createRetryRun(id, { reason });
+
+      if (result.status === "wait_not_found") {
+        sendJson(response, 404, { error: result.error ?? "Tool rework wait not found" });
+        return;
+      }
+      if (result.status === "wait_not_promoted") {
+        sendJson(response, 409, { error: result.error });
+        return;
+      }
+      if (result.status === "source_run_not_found") {
+        sendJson(response, 400, { error: result.error });
+        return;
+      }
+      if (result.status === "already_exists") {
+        sendJson(response, 200, {
+          wait: result.wait,
+          retryRun: result.retryRun,
+          alreadyExists: true,
+        });
+        return;
+      }
+
+      // status === "created": kick off the agent loop the same way POST /api/runs does,
+      // so the retry run executes through the existing audited execution path.
+      if (result.retryRun) {
+        void executeRun(result.retryRun.id, result.retryRun.task, options, [], {
+          threadId: result.retryRun.threadId,
+        });
+      }
+      sendJson(response, 201, { wait: result.wait, retryRun: result.retryRun });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid tool rework retry-run request";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/secret-handles") {
     sendJson(response, 200, {
       secretHandles: options.secretHandleStore ? await options.secretHandleStore.list() : [],
@@ -3356,6 +3413,45 @@ function createToolImprovementCoordinator(
         await validateContextualToolBuildTarget(input as ReturnType<typeof parseToolBuildRequestInput>, options),
         options,
       ),
+  });
+}
+
+function createToolReworkRetryCoordinator(
+  options: WebAppOptions,
+  context: ToolImprovementContext = { actorId: "user-admin", actorType: "user" },
+): ToolReworkRetryCoordinator | undefined {
+  if (!options.toolReworkWaitStore) return undefined;
+  const audit = options.auditEventStore
+    ? async (event: {
+        action: "tool_rework_wait.retry_run_created";
+        targetType: "tool_rework_wait";
+        targetId: string;
+        status: "success";
+        runId?: string;
+        summary: string;
+        metadata?: Record<string, unknown>;
+      }) => {
+        await recordAudit(options, {
+          instanceId: context.instanceId ?? "instance-local",
+          actorId: context.actorId,
+          actorType: context.actorType,
+          action: event.action,
+          targetType: event.targetType,
+          targetId: event.targetId,
+          status: event.status,
+          runId: event.runId,
+          threadId: context.threadId,
+          requesterUserId: context.requesterUserId,
+          channel: context.channel,
+          summary: event.summary,
+          metadata: sanitizeAuditMetadata(event.metadata),
+        });
+      }
+    : undefined;
+  return new ToolReworkRetryCoordinator({
+    toolReworkWaitStore: options.toolReworkWaitStore,
+    runStore: options.runStore,
+    audit,
   });
 }
 
