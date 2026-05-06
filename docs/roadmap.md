@@ -788,9 +788,10 @@ Remaining Phase 3 gaps:
   contextual requests when the operator feedback names a different installed tool, so a
   Telegram change request accidentally submitted from a `browser.operate` span asks the
   operator to open the correct tool/span instead of creating a misleading browser request.
-  Remaining work: classify the issue with a local LLM before build creation, include
-  rejected artifact QA evidence automatically, and route site limitations to failure
-  memory instead of tool rebuilds.
+  Span-originated request forms now include rejected artifact QA evidence when the span
+  payload contains it, including artifact filename, MIME type, QA reason, score, and
+  signals. Remaining work: classify the issue with a local LLM before build creation and
+  route site limitations to failure memory instead of tool rebuilds.
 - Let agents request a versioned tool improvement, wait for the QA-approved promoted
   replacement, reload the registry, and retry the tool call once when a current tool is
   close but insufficient. PARTIAL: prompts now require workers to identify reusable tool

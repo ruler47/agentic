@@ -1540,6 +1540,7 @@ function renderSpanToolRequestForm(node) {
     `Status: ${node.status}`,
     node.parentTitle ? `Called by: ${node.parentTitle}` : "",
     node.detail ? `Observed output/error:\n${truncate(node.detail, 1200)}` : "",
+    spanArtifactQaContext(node),
     `Context note: classify whether this is tool logic, tool contract, prompt/planning, site limitation, credential/policy limitation, or an external blocker before rebuilding.`,
   ]
     .filter(Boolean)
@@ -1573,6 +1574,23 @@ Prove the produced result is useful evidence and does not leak credentials."></t
       </form>
     </details>
   `;
+}
+
+function spanArtifactQaContext(node) {
+  const artifactQa = node.payload?.artifactQa;
+  if (!artifactQa || typeof artifactQa !== "object") return "";
+  const artifact = node.payload?.artifact;
+  const lines = [
+    "Rejected artifact QA:",
+    artifact?.filename ? `Artifact: ${artifact.filename}` : "",
+    artifact?.mimeType ? `Mime type: ${artifact.mimeType}` : "",
+    typeof artifactQa.reason === "string" ? `Reason: ${artifactQa.reason}` : "",
+    typeof artifactQa.score === "number" ? `Score: ${Math.round(artifactQa.score * 100)}%` : "",
+    Array.isArray(artifactQa.signals) && artifactQa.signals.length
+      ? `Signals: ${artifactQa.signals.slice(0, 8).join("; ")}`
+      : "",
+  ].filter(Boolean);
+  return lines.length > 1 ? lines.join("\n") : "";
 }
 
 function findToolForSpan(node) {

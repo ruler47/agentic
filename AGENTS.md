@@ -643,6 +643,9 @@ For documentation-only changes:
 - Memory proposal review is context-aware: proposed memories should be reviewed against
   accepted/proposed memories in the same exact scope for deterministic duplicate and
   same-title conflict warnings before operator acceptance.
+- Trace Lab span-originated Tool Build/Bug requests should carry rejected artifact QA
+  evidence when present, so generated-tool rework receives the artifact filename, MIME
+  type, QA reason, score, and signals rather than only a generic span detail.
 - Generated tool versions are persisted in `tool_module_versions`. `tool_modules`
   represents the active version, while older registered versions remain available for
   inspection and explicit activation through the Tools UI/API.

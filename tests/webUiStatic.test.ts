@@ -108,6 +108,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /Dependency: waits for upstream result/);
   assert.match(app, /Calls a failed span/);
   assert.match(app, /function renderSpanToolRequestForm/);
+  assert.match(app, /function spanArtifactQaContext/);
+  assert.match(app, /Rejected artifact QA:/);
   assert.match(app, /function renderNotice/);
   assert.match(app, /function inferCapabilityFromSpan/);
   assert.match(app, /sourceSpanId/);
