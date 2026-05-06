@@ -542,6 +542,11 @@ test("UniversalAgent records external screenshot blockers without requesting too
     assert.equal(result.artifacts?.length ?? 0, 0);
     assert.ok(events.some((event) => event.title === "External artifact blocker detected"));
     assert.ok(events.some((event) => event.status === "failed" && /semantic QA/.test(event.title)));
+    const blockerMemory = await memory.search("instagram external proof blocker", 5);
+    assert.equal(blockerMemory.length, 1);
+    assert.equal(blockerMemory[0]?.status, "accepted");
+    assert.equal(blockerMemory[0]?.scope, "global");
+    assert.match(blockerMemory[0]?.reusableProcedure ?? "", /Do not request a tool rebuild solely/);
     assert.equal(fakeLlm.callCount, 3);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1027,6 +1032,99 @@ test("UniversalAgent executes declared browser operate tool inputs and saves scr
     assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /Example Domain/);
     assert.match(result.finalAnswer, /\/artifacts\/browser-proof\.png/);
     assert.doesNotMatch(result.finalAnswer, /api\.runs\.example\.com/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent stores blocker memory for rejected declared browser screenshots", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"needs browser operation","domains":["browser"],"riskLevel":"medium"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "operate",
+          title: "Capture blocked provider proof",
+          role: "browser-operator",
+          prompt: "Capture proof from https://www.instagram.com/deadp47/.",
+          expectedOutput: "Useful screenshot evidence or a clear external blocker.",
+          reviewCriteria: ["Browser evidence is useful or blocker is explicit"],
+          requiredTools: ["browser-operate"],
+          toolInputs: {
+            "browser.operate": {
+              commands: [
+                { type: "navigate", url: "https://www.instagram.com/deadp47/" },
+                { type: "extractText", label: "page" },
+                { type: "screenshot", label: "proof" },
+              ],
+            },
+          },
+        },
+      ],
+    }),
+    "Instagram only returned a loading page, so no useful screenshot proof was produced.",
+    '{"subtaskId":"operate","verdict":"pass","notes":"The blocker was reported explicitly."}',
+    "Final answer reports the external blocker.",
+    '{"shouldStore":false}',
+  ]);
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "browser.operate",
+    description: "Fake browser operate tool",
+    capabilities: ["browser-operate", "browser-screenshot", "artifact-generation"],
+    async run() {
+      return {
+        ok: true,
+        content: "Executed browser commands. Page text: Instagram from Meta loading.",
+        data: {
+          finalUrl: "https://www.instagram.com/deadp47/",
+          title: "Instagram",
+          extractedText: [{ label: "page", text: "Instagram from Meta loading." }],
+          screenshots: [
+            {
+              filename: "instagram-loader.png",
+              mimeType: "image/png",
+              content: usefulPngBuffer(),
+              description: "Browser screenshot captured from https://www.instagram.com/deadp47/. Instagram from Meta loading.",
+            },
+          ],
+          steps: [{ index: 0, type: "navigate", status: "completed", summary: "ok", durationMs: 1 }],
+        },
+      };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const events: AgentEvent[] = [];
+  const savedArtifacts: ArtifactCreateInput[] = [];
+
+  try {
+    const result = await agent.run("Capture provider proof from browser.operate.", {
+      onEvent: (event) => {
+        events.push(event);
+      },
+      saveArtifact: async (artifact): Promise<AgentArtifact> => {
+        savedArtifacts.push(artifact);
+        return {
+          id: "artifact-should-not-save",
+          runId: "run-1",
+          kind: "output",
+          filename: artifact.filename,
+          mimeType: artifact.mimeType,
+          sizeBytes: 1,
+          url: "/artifact",
+          createdAt: new Date().toISOString(),
+        };
+      },
+    });
+
+    assert.equal(savedArtifacts.length, 0);
+    assert.equal(result.workerResults[0]?.artifacts?.length ?? 0, 0);
+    assert.ok(events.some((event) => event.title === "External artifact blocker detected"));
+    const blockerMemory = await memory.search("instagram external proof blocker browser", 5);
+    assert.equal(blockerMemory.length, 1);
+    assert.match(blockerMemory[0]?.summary ?? "", /provider returned a blocker or loader/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

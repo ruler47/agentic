@@ -649,7 +649,9 @@ For documentation-only changes:
 - Semantic artifact QA decision `blocked_or_loader` means the evidence likely failed due
   to an external provider/site limitation. Record the blocker in trace and avoid creating
   an automatic tool rework request unless there is separate evidence the tool contract is
-  actually insufficient.
+  actually insufficient. Browser screenshot blockers now also create/update an accepted
+  global memory entry such as `External proof blocker: instagram.com`, so later runs can
+  prefer another public evidence strategy or explain the provider limitation.
 - Generated tool versions are persisted in `tool_module_versions`. `tool_modules`
   represents the active version, while older registered versions remain available for
   inspection and explicit activation through the Tools UI/API.

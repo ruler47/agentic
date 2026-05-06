@@ -1173,8 +1173,9 @@ export class UniversalAgent {
           });
           if (!artifactQa.ok) {
             evidence.push(`Rejected screenshot artifact ${artifactInput.filename}: ${artifactQa.reason}`);
+            const artifactRejectedSpanId = createSpanId("artifact-rejected");
             await emit({
-              spanId: createSpanId("artifact-rejected"),
+              spanId: artifactRejectedSpanId,
               parentSpanId: spanId,
               type: "artifact-created",
               actor: "artifact:browser",
@@ -1187,6 +1188,19 @@ export class UniversalAgent {
               durationMs: elapsedMs(artifactStartedAt),
               payload: { artifact: sanitizeArtifactInput(artifactInput), artifactQa },
             });
+            if (artifactQa.decision === "blocked_or_loader") {
+              await this.recordExternalArtifactBlocker(
+                {
+                  tool,
+                  capability: "browser-screenshot",
+                  artifactQa,
+                  artifact: artifactInput,
+                  task: `${subtask.title}\n${subtask.prompt}\n${subtask.expectedOutput}`,
+                },
+                emit,
+                artifactRejectedSpanId,
+              );
+            }
             continue;
           }
           const artifact = await saveArtifact({
@@ -1741,6 +1755,7 @@ export class UniversalAgent {
               capability,
               artifactQa,
               artifact: artifactInput,
+              task: detail,
             },
             emit,
             artifactSpanId,
@@ -1826,11 +1841,13 @@ export class UniversalAgent {
       capability: string;
       artifactQa: ReturnType<typeof inspectBrowserScreenshotEvidence>;
       artifact: ArtifactCreateInput;
+      task?: string;
     },
     emit: AgentEventEmitter,
     parentSpanId: string,
   ): Promise<void> {
     const startedAt = new Date();
+    const blockerMemory = await this.storeExternalArtifactBlockerMemory(input);
     await emit({
       spanId: createSpanId(`artifact-blocker-${input.capability}`),
       parentSpanId,
@@ -1858,7 +1875,67 @@ export class UniversalAgent {
         artifact: sanitizeArtifactInput(input.artifact),
         artifactQa: input.artifactQa,
         limitationType: "external-blocker",
+        blockerMemory,
       },
+    });
+  }
+
+  private async storeExternalArtifactBlockerMemory(input: {
+    tool: Tool;
+    capability: string;
+    artifactQa: ReturnType<typeof inspectBrowserScreenshotEvidence>;
+    artifact: ArtifactCreateInput;
+    task?: string;
+  }): Promise<SkillMemoryEntry | undefined> {
+    const sourceText = [
+      input.task,
+      input.artifact.filename,
+      input.artifact.description,
+      input.artifactQa.reason,
+      input.artifactQa.blockerSignals.join(" "),
+    ]
+      .filter(Boolean)
+      .join("\n");
+    const host = extractHttpUrls(sourceText).map(normalizedHost).find(Boolean);
+    const limitationTarget = host ?? input.tool.name;
+    const title = `External proof blocker: ${limitationTarget}`;
+    const evidence = uniqueStrings([
+      `Tool: ${input.tool.name}${input.tool.version ? `@${input.tool.version}` : ""}`,
+      `Capability: ${input.capability}`,
+      `Artifact: ${input.artifact.filename}`,
+      `QA decision: ${input.artifactQa.decision}`,
+      `QA reason: ${input.artifactQa.reason}`,
+      input.artifactQa.blockerSignals.length
+        ? `Blocker signals: ${input.artifactQa.blockerSignals.join(", ")}`
+        : "",
+      host ? `Host: ${host}` : "",
+    ]).filter(Boolean);
+
+    const existing = (await this.skillMemory.list({ includeArchived: true, limit: 500 })).find(
+      (entry) => normalizeMemoryStatus(entry.status) !== "archived" && entry.title === title,
+    );
+
+    if (existing) {
+      if (!this.skillMemory.update) return existing;
+      return this.skillMemory.update(existing.id, {
+        summary: `Browser proof for ${limitationTarget} recently failed semantic artifact QA because the provider returned a blocker or loader page instead of task evidence.`,
+        reusableProcedure: externalBlockerProcedure(limitationTarget),
+        tags: uniqueStrings([...(existing.tags ?? []), "external-blocker", "artifact-qa", input.capability, host ?? "unknown-host"]),
+        confidence: Math.max(normalizeMemoryConfidence(existing.confidence), 0.9),
+        evidence: uniqueStrings([...(existing.evidence ?? []), ...evidence]).slice(-20),
+      });
+    }
+
+    return this.skillMemory.add({
+      title,
+      tags: uniqueStrings(["external-blocker", "artifact-qa", input.capability, host ?? "unknown-host"]),
+      summary: `Browser proof for ${limitationTarget} failed semantic artifact QA because the provider returned a blocker or loader page instead of task evidence.`,
+      reusableProcedure: externalBlockerProcedure(limitationTarget),
+      scope: "global",
+      status: "accepted",
+      confidence: 0.9,
+      sensitivity: "normal",
+      evidence,
     });
   }
 
@@ -3433,4 +3510,24 @@ function sanitizeArtifactInput(input: ArtifactCreateInput) {
     description: input.description,
     sizeBytes,
   };
+}
+
+function externalBlockerProcedure(target: string): string {
+  return [
+    `When browser proof from ${target} returns a loader, login wall, verification page, or other provider blocker, do not treat that as proof of the user task.`,
+    "Do not request a tool rebuild solely from this signal: the tool executed, but the external provider did not expose useful evidence.",
+    "Try a different public source or evidence strategy when available; otherwise report the external limitation clearly and attach only diagnostic evidence if it helps explain the blocker.",
+  ].join(" ");
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
 }
