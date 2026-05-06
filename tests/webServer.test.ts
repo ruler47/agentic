@@ -1951,6 +1951,10 @@ test("web server tracks tool rework waits across investigations, builds, and res
     toolReworkWaitStore,
     toolMetadataStore,
     auditEventStore,
+    // This regression covers the legacy manual lifecycle (promoted -> resume), so the
+    // auto retry orchestrator must stay out of the picture. Auto retry has its own
+    // dedicated tests above.
+    toolReworkAutoRetryPolicy: { enabled: false, maxAutoRetriesPerRootRun: 0 },
   });
 
   try {
@@ -2184,6 +2188,350 @@ test("web server promote endpoint never infers a different tool from fuzzy text"
   }
 });
 
+test("auto retry orchestrator creates a retry run when build registration promotes a wait", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const toolInvestigationStore = new InMemoryToolInvestigationStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  await toolMetadataStore.syncBuiltins([
+    {
+      name: "browser.operate",
+      version: "1.0.0",
+      description: "Generic Playwright command executor.",
+      capabilities: ["browser-operate"],
+      async run() {
+        return { ok: true, content: "ok" };
+      },
+    },
+  ]);
+  const auditEventStore = new InMemoryAuditEventStore();
+  const workflow = new ToolBuildWorkflow(
+    toolBuildRequestStore,
+    {
+      async build(claimed) {
+        return {
+          modulePath: claimed.contract.modulePath,
+          testPath: claimed.contract.testPath,
+          summary: "auto retry smoke",
+        };
+      },
+    },
+    {
+      async run() {
+        return { ok: true, summary: "QA passed.", checks: ["ok"] };
+      },
+    },
+    {
+      async register() {
+        return "browser.operate";
+      },
+    },
+  );
+  const toolBuildWorker = new ToolBuildWorker(workflow, toolBuildRequestStore);
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolBuildRequestStore,
+    toolInvestigationStore,
+    toolReworkWaitStore,
+    toolMetadataStore,
+    toolBuildWorkflow: workflow,
+    toolBuildWorker,
+    toolReworkAutoRetryPolicy: { enabled: true, maxAutoRetriesPerRootRun: 1 },
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const sourceRun = await runStore.create("Click the buy button and prove it", {
+      instanceId: "instance-local",
+      requesterUserId: "user-admin",
+      channel: "web",
+      threadId: "thread-auto",
+    });
+    const investigation = (
+      await (
+        await fetch(`${baseUrl}/api/tool-investigations`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            source: "trace_span",
+            title: "browser.operate cannot dismiss CAPTCHA",
+            runId: sourceRun.id,
+            spanId: "span-bo",
+            toolName: "browser.operate",
+            toolVersion: "1.0.0",
+            contextBundle: {
+              taskPrompt: "Click the buy button and prove it",
+              toolSettingsSummary: { apiKey: "AUTO-RETRY-CANARY" },
+            },
+          }),
+        })
+      ).json()
+    ).investigation;
+
+    const promoted = (
+      await (
+        await fetch(`${baseUrl}/api/tool-investigations/${encodeURIComponent(investigation.id)}/promote`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        })
+      ).json()
+    ) as { wait: { id: string } };
+
+    // Background worker registers the build; onWaitPromoted then fires auto retry.
+    let wait: { id: string; status: string; retryRunId?: string; reason?: string } = promoted.wait as never;
+    for (let attempt = 0; attempt < 60 && !wait.retryRunId; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      wait = (
+        (await (await fetch(`${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}`)).json()) as {
+          wait: typeof wait;
+        }
+      ).wait;
+    }
+    assert.ok(wait.retryRunId, "auto retry must create a linked retry run after promotion");
+    assert.equal(wait.status, "resumed");
+    assert.match(
+      wait.reason ?? "",
+      /Auto retry/,
+      "wait reason marks the auto-retry handoff",
+    );
+
+    // Source run returned to failed; retry run inherits parentRunId and provenance.
+    const sourceAfter = await runStore.get(sourceRun.id);
+    assert.equal(sourceAfter?.status, "failed");
+    const retryAfter = await runStore.get(wait.retryRunId!);
+    assert.equal(retryAfter?.parentRunId, sourceRun.id);
+    assert.equal(retryAfter?.threadId, "thread-auto");
+
+    // Audit chain: build registered + auto retry decision both fired and no secret leaked.
+    const auditList = await auditEventStore.list();
+    const decisions = auditList.filter((event) => event.action === "tool_rework_wait.auto_retry_decision");
+    assert.ok(decisions.length >= 1, "auto retry decision is audited");
+    assert.equal(decisions[0]?.status, "success");
+    assert.equal(
+      (decisions[0]?.metadata as { decision?: string } | undefined)?.decision,
+      "created",
+    );
+    assert.ok(auditList.some((event) => event.action === "tool_build.registered"));
+    assert.ok(
+      !JSON.stringify(auditList).includes("AUTO-RETRY-CANARY"),
+      "audit must not leak secret-shaped values",
+    );
+
+    // The legacy /retry-run endpoint stays idempotent against the auto-created retry.
+    const retryEndpoint = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}/retry-run`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(retryEndpoint.status, 200);
+    const retryBody = (await retryEndpoint.json()) as { alreadyExists?: boolean; retryRun: { id: string } };
+    assert.equal(retryBody.alreadyExists, true);
+    assert.equal(retryBody.retryRun.id, wait.retryRunId);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("auto retry policy disabled keeps wait promoted for manual retry", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const toolInvestigationStore = new InMemoryToolInvestigationStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  await toolMetadataStore.syncBuiltins([
+    {
+      name: "browser.operate",
+      version: "1.0.0",
+      description: "Generic Playwright command executor.",
+      capabilities: ["browser-operate"],
+      async run() {
+        return { ok: true, content: "ok" };
+      },
+    },
+  ]);
+  const workflow = new ToolBuildWorkflow(
+    toolBuildRequestStore,
+    {
+      async build(claimed) {
+        return {
+          modulePath: claimed.contract.modulePath,
+          testPath: claimed.contract.testPath,
+          summary: "smoke",
+        };
+      },
+    },
+    {
+      async run() {
+        return { ok: true, summary: "ok", checks: ["ok"] };
+      },
+    },
+    {
+      async register() {
+        return "browser.operate";
+      },
+    },
+  );
+  const toolBuildWorker = new ToolBuildWorker(workflow, toolBuildRequestStore);
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolBuildRequestStore,
+    toolInvestigationStore,
+    toolReworkWaitStore,
+    toolMetadataStore,
+    toolBuildWorkflow: workflow,
+    toolBuildWorker,
+    toolReworkAutoRetryPolicy: { enabled: false, maxAutoRetriesPerRootRun: 1 },
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const sourceRun = await runStore.create("Original task");
+    const investigation = (
+      await (
+        await fetch(`${baseUrl}/api/tool-investigations`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            source: "trace_span",
+            title: "Title",
+            runId: sourceRun.id,
+            toolName: "browser.operate",
+            toolVersion: "1.0.0",
+          }),
+        })
+      ).json()
+    ).investigation;
+    const promoted = (
+      await (
+        await fetch(`${baseUrl}/api/tool-investigations/${encodeURIComponent(investigation.id)}/promote`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        })
+      ).json()
+    ) as { wait: { id: string } };
+
+    // Wait for the worker to register so the wait is `promoted` (status flip), then
+    // confirm auto retry did NOT create a retry run.
+    let wait: { id: string; status: string; retryRunId?: string } = promoted.wait as never;
+    for (let attempt = 0; attempt < 50 && wait.status !== "promoted"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      wait = (
+        (await (await fetch(`${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}`)).json()) as {
+          wait: typeof wait;
+        }
+      ).wait;
+    }
+    assert.equal(wait.status, "promoted");
+    assert.equal(wait.retryRunId, undefined, "disabled policy must not auto retry");
+
+    // Operator can still create a manual retry run through /retry-run.
+    const manualResponse = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}/retry-run`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(manualResponse.status, 201);
+
+    // /auto-retry endpoint still returns a clean `disabled` response with the policy.
+    const autoResponse = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}/auto-retry`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(autoResponse.status, 200);
+    const autoBody = await autoResponse.json();
+    assert.equal(autoBody.status, "disabled");
+    assert.equal(autoBody.policy.enabled, false);
+
+    const auditList = await auditEventStore.list();
+    assert.ok(
+      !auditList.some((event) => event.action === "tool_rework_wait.auto_retry_decision" && event.status === "success"),
+      "no successful auto retry audit entries when policy is disabled",
+    );
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("/auto-retry endpoint is idempotent and returns 409 for non-promoted waits", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolReworkWaitStore,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+
+    // 404 for unknown wait.
+    const missing = await fetch(`${baseUrl}/api/tool-rework-waits/not-a-wait/auto-retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(missing.status, 404);
+
+    // 409 for non-promoted wait.
+    const sourceRun = await runStore.create("task");
+    const wait = await toolReworkWaitStore.create({
+      runId: sourceRun.id,
+      reason: "still waiting",
+    });
+    const tooEarly = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(wait.id)}/auto-retry`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(tooEarly.status, 409);
+    const tooEarlyBody = await tooEarly.json();
+    assert.equal(tooEarlyBody.status, "wait_not_promoted");
+
+    // Promote wait manually to exercise idempotency.
+    await runStore.markWaitingForToolRework(sourceRun.id, "promoted");
+    await toolReworkWaitStore.update(wait.id, { status: "promoted", promotedVersion: "1.1.0" });
+    const first = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(wait.id)}/auto-retry`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(first.status, 201);
+    const firstBody = (await first.json()) as { retryRun: { id: string } };
+
+    const second = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(wait.id)}/auto-retry`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(second.status, 200);
+    const secondBody = (await second.json()) as { retryRun: { id: string }; status: string };
+    assert.equal(secondBody.status, "already_exists");
+    assert.equal(secondBody.retryRun.id, firstBody.retryRun.id);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("background tool build worker promotes the wait without manual PATCH after promote", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
@@ -2243,6 +2591,10 @@ test("background tool build worker promotes the wait without manual PATCH after 
     toolBuildWorkflow: workflow,
     toolBuildWorker,
     auditEventStore,
+    // Legacy assertion: the wait should remain `promoted` after registration so the
+    // operator can decide between Mark ready / Create retry run. Auto retry has its
+    // own integration test above.
+    toolReworkAutoRetryPolicy: { enabled: false, maxAutoRetriesPerRootRun: 0 },
   });
 
   try {
@@ -2363,6 +2715,9 @@ test("retry-run endpoint creates a linked retry run, audits it, and is idempoten
     toolReworkWaitStore,
     toolMetadataStore,
     auditEventStore,
+    // This regression covers the manual /retry-run endpoint specifically. Auto retry
+    // has its own dedicated integration tests; keep this one isolated.
+    toolReworkAutoRetryPolicy: { enabled: false, maxAutoRetriesPerRootRun: 0 },
   });
 
   try {

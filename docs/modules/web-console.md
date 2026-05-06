@@ -958,8 +958,8 @@ A wait record has:
 - `reason`;
 - optional `toolName`, `toolVersion`, `investigationId`, `buildRequestId`;
 - optional `promotedVersion` once the build registers;
-- optional `retryRunId` / `retrySpanId` once the wait is resumed (Phase 2 will populate
-  these automatically from the recursive retry engine);
+- optional `retryRunId` / `retrySpanId` once the wait is resumed by a manual retry run or
+  by the auto-retry orchestrator;
 - `createdAt`, `updatedAt`.
 
 API:
@@ -980,6 +980,17 @@ API:
   is audited. The endpoint does **not** automatically retry the agent — the recursive
   span-level retry engine is Phase 2. Pass `{ "retryRunId": "..." }` to record an existing
   retry run id when one already exists.
+- `POST /api/tool-rework-waits/:id/auto-retry` — runs the auto-retry orchestrator's
+  decision against the wait. Returns `{ status, wait?, retryRun?, alreadyExists?,
+  policy, retryDepth?, reason? }`. Status codes: `201` for newly created retry runs,
+  `200` for `already_exists` and `disabled`, `404` for unknown waits, `409` for
+  `wait_not_promoted` / `source_run_cancelled` / `max_depth_reached`, and `400` for
+  `source_run_not_found` / `failed`. Idempotent: a second call returns the existing
+  retry run. Audits `tool_rework_wait.auto_retry_decision` with
+  `actorId=auto-retry-orchestrator`, `actorType=agent`, and metadata containing the
+  decision string, policy snapshot, retry depth, and linked build/investigation ids.
+  This endpoint is the operator surface for the same orchestrator that runs
+  automatically inside `notifyBuildRegistered` via `onWaitPromoted`.
 - `POST /api/tool-rework-waits/:id/retry-run` — also only allowed when status is
   `promoted`. This is the **"create retry run"** handoff: the server creates a new run
   whose `task` and instance/user/channel/thread provenance come from the original

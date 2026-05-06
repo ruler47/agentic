@@ -114,6 +114,14 @@ export type ToolImprovementCoordinatorDeps = {
   // (assignGeneratedToolName / validateContextualToolBuildTarget) before persisting.
   finalizeBuildRequestInput?: (input: ToolBuildRequestInput) => Promise<ToolBuildRequestInput>;
   backgroundBuildScheduler?: BackgroundBuildScheduler;
+  /**
+   * Fires once per wait that `notifyBuildRegistered` flips to `promoted`. The HTTP
+   * layer uses this to hand promoted waits to `ToolReworkAutoRetryCoordinator` so the
+   * retry-run handoff can be fully automatic without breaking manual /resume or
+   * /retry-run. Errors are swallowed inside `notifyBuildRegistered` so a misbehaving
+   * auto-retry hook cannot fail the build registration audit.
+   */
+  onWaitPromoted?: (wait: ToolReworkWaitRecord) => Promise<void> | void;
 };
 
 export class ToolImprovementCoordinator {
@@ -368,6 +376,15 @@ export class ToolImprovementCoordinator {
           toolName: next.toolName,
         },
       });
+      if (this.deps.onWaitPromoted) {
+        try {
+          await this.deps.onWaitPromoted(next);
+        } catch {
+          // The auto-retry hook is purely additive. A failure here must not break the
+          // build-registration audit chain that the operator UI depends on. The
+          // auto-retry coordinator records its own audit when it fails.
+        }
+      }
     }
   }
 
@@ -390,7 +407,7 @@ export class ToolImprovementCoordinator {
     const reason =
       options.reason?.trim() ||
       `Operator marked run ${previous.runId} ready for retry after tool rework promotion. ` +
-        `Phase 2 will run the actual retry; until then the run returns to "failed" so the operator can re-issue it manually.`;
+        `The run returns to "failed" without creating a retry run; use Create retry run or auto-retry when a new attempt should execute.`;
     const wait = await this.deps.toolReworkWaitStore.update(waitId, {
       status: "resumed",
       reason,

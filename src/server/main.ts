@@ -287,6 +287,13 @@ const server = createWebApp({
   toolReworkWaitStore,
   toolBuildWorkflow,
   toolBuildWorker,
+  toolReworkAutoRetryPolicy: {
+    enabled: process.env.TOOL_REWORK_AUTO_RETRY !== "disabled",
+    maxAutoRetriesPerRootRun: Math.max(
+      0,
+      Number.parseInt(process.env.TOOL_REWORK_AUTO_RETRY_MAX_DEPTH ?? "1", 10) || 1,
+    ),
+  },
   toolServiceSupervisor,
   toolServiceEventStore,
   toolPackageRunners,

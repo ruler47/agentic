@@ -97,6 +97,11 @@ import {
   ToolImprovementCoordinatorDeps,
 } from "../tools/toolImprovementCoordinator.js";
 import { ToolReworkRetryCoordinator } from "../tools/toolReworkRetryCoordinator.js";
+import {
+  AutoRetryPolicy,
+  DEFAULT_AUTO_RETRY_POLICY,
+  ToolReworkAutoRetryCoordinator,
+} from "../tools/toolReworkAutoRetryCoordinator.js";
 import { AgentArtifact, AgentEvent, AgentRunResult, ArtifactUploadInput } from "../types.js";
 
 export type WebAppOptions = {
@@ -113,6 +118,7 @@ export type WebAppOptions = {
   toolReworkWaitStore?: ToolReworkWaitStore;
   toolBuildWorkflow?: ToolBuildWorkflow;
   toolBuildWorker?: ToolBuildWorker;
+  toolReworkAutoRetryPolicy?: AutoRetryPolicy;
   toolServiceSupervisor?: ToolServiceSupervisor;
   toolServiceEventStore?: ToolServiceEventStore;
   toolPackageRunners?: ToolPackageRunner[];
@@ -2121,6 +2127,66 @@ async function routeRequest(
     return;
   }
 
+  const reworkWaitAutoRetryMatch = url.pathname.match(
+    /^\/api\/tool-rework-waits\/([^/]+)\/auto-retry$/,
+  );
+  if (request.method === "POST" && reworkWaitAutoRetryMatch) {
+    if (!options.toolReworkWaitStore) {
+      sendJson(response, 503, { error: "Tool rework wait store is not configured" });
+      return;
+    }
+    const auto = createToolReworkAutoRetryCoordinator(options);
+    if (!auto) {
+      sendJson(response, 503, { error: "Tool rework auto-retry coordinator is not available" });
+      return;
+    }
+    try {
+      const id = decodeURIComponent(reworkWaitAutoRetryMatch[1] ?? "");
+      const result = await auto.tryAutoRetry(id);
+      const body = {
+        status: result.status,
+        wait: result.wait,
+        retryRun: result.retryRun,
+        alreadyExists: result.alreadyExists,
+        policy: result.policy,
+        retryDepth: result.retryDepth,
+        reason: result.reason,
+      };
+      switch (result.status) {
+        case "created": {
+          if (result.retryRun) {
+            void executeRun(result.retryRun.id, result.retryRun.task, options, [], {
+              threadId: result.retryRun.threadId,
+            });
+          }
+          sendJson(response, 201, body);
+          return;
+        }
+        case "already_exists":
+        case "disabled":
+          sendJson(response, 200, body);
+          return;
+        case "wait_not_found":
+          sendJson(response, 404, body);
+          return;
+        case "wait_not_promoted":
+        case "source_run_cancelled":
+        case "max_depth_reached":
+          sendJson(response, 409, body);
+          return;
+        case "source_run_not_found":
+        case "failed":
+        default:
+          sendJson(response, 400, body);
+          return;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid tool rework auto-retry request";
+      sendJson(response, 400, { error: message });
+    }
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/secret-handles") {
     sendJson(response, 200, {
       secretHandles: options.secretHandleStore ? await options.secretHandleStore.list() : [],
@@ -3470,6 +3536,16 @@ function createToolImprovementCoordinator(
           },
         }
       : undefined,
+    onWaitPromoted: async (wait) => {
+      // The auto-retry orchestrator handles its own audit + idempotency; we just need
+      // to hand the freshly-promoted wait id over and never let any failure bubble up
+      // into `notifyBuildRegistered`'s control flow.
+      try {
+        await autoRetryAfterPromotion(options, context, wait.id);
+      } catch {
+        // intentional: keep the build-registered audit chain stable.
+      }
+    },
   });
 }
 
@@ -3510,6 +3586,73 @@ function createToolReworkRetryCoordinator(
     runStore: options.runStore,
     audit,
   });
+}
+
+function createToolReworkAutoRetryCoordinator(
+  options: WebAppOptions,
+  context: ToolImprovementContext = { actorId: "auto-retry-orchestrator", actorType: "agent" },
+): ToolReworkAutoRetryCoordinator | undefined {
+  if (!options.toolReworkWaitStore) return undefined;
+  const retryCoordinator = createToolReworkRetryCoordinator(options, context);
+  if (!retryCoordinator) return undefined;
+  const audit = options.auditEventStore
+    ? async (event: {
+        action: "tool_rework_wait.auto_retry_decision";
+        targetType: "tool_rework_wait";
+        targetId: string;
+        status: "success" | "failure";
+        runId?: string;
+        summary: string;
+        metadata?: Record<string, unknown>;
+      }) => {
+        await recordAudit(options, {
+          instanceId: context.instanceId ?? "instance-local",
+          actorId: context.actorId,
+          actorType: context.actorType,
+          action: event.action,
+          targetType: event.targetType,
+          targetId: event.targetId,
+          status: event.status,
+          runId: event.runId,
+          threadId: context.threadId,
+          requesterUserId: context.requesterUserId,
+          channel: context.channel,
+          summary: event.summary,
+          metadata: sanitizeAuditMetadata(event.metadata),
+        });
+      }
+    : undefined;
+  return new ToolReworkAutoRetryCoordinator({
+    toolReworkWaitStore: options.toolReworkWaitStore,
+    runStore: options.runStore,
+    retryCoordinator,
+    audit,
+    policy: options.toolReworkAutoRetryPolicy ?? DEFAULT_AUTO_RETRY_POLICY,
+  });
+}
+
+async function autoRetryAfterPromotion(
+  options: WebAppOptions,
+  context: ToolImprovementContext,
+  waitId: string,
+): Promise<void> {
+  const auto = createToolReworkAutoRetryCoordinator(options, {
+    ...context,
+    // The orchestrator runs on behalf of the runtime, not the operator who triggered
+    // promote. Tag audits accordingly so the operator can tell the auto path apart.
+    actorId: "auto-retry-orchestrator",
+    actorType: "agent",
+  });
+  if (!auto) return;
+  // After the build registers a new run, wire the new run's execution through the same
+  // executeRun path the manual /retry-run endpoint uses. The auto coordinator only
+  // creates the run record; HTTP owns execution.
+  const result = await auto.tryAutoRetry(waitId);
+  if (result.status === "created" && result.retryRun) {
+    void executeRun(result.retryRun.id, result.retryRun.task, options, [], {
+      threadId: result.retryRun.threadId,
+    });
+  }
 }
 
 async function listOpenAiCompatibleModels(baseUrl: string): Promise<Array<{ id: string; ownedBy?: string }>> {
