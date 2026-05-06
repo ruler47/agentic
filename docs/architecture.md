@@ -390,6 +390,21 @@ The run states form a single non-overlapping lifecycle:
 declined or the recursive engine surfaces a permanent block) or forward to a new retry
 run linked through the wait's `retryRunId`.
 
+The same lifecycle is also reachable from inside the agent runtime itself.
+`ToolImprovementCoordinator`
+([src/tools/toolImprovementCoordinator.ts](../src/tools/toolImprovementCoordinator.ts))
+is the single domain helper that creates an investigation, opens the build request, opens
+the wait, marks the run as `waiting_tool_rework`, and emits audit events through one
+boundary. Both `POST /api/tool-investigations/:id/promote` and the `UniversalAgent`
+runtime delegate to this coordinator, so an agent that detects a missing or insufficient
+tool produces the same auditable lifecycle as an operator who triggered the promotion
+manually. The agent passes its run/span context through the coordinator and emits a
+`tool-rework-wait-opened` trace event so Trace Lab can show the agent-driven decision
+explicitly. When at least one wait is still open at synthesis time, the agent appends a
+"Pending tool rework waits" footer to the final answer instead of pretending the task
+finished, since the recursive retry engine that automatically re-executes the failed step
+against the new tool version is still Phase 2 work.
+
 ### Model Tiers
 
 Each LLM step receives a selected model tier based on task risk and activity type.

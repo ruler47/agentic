@@ -91,6 +91,10 @@ import {
   validateToolMigrationStatus,
 } from "../tools/toolMigrationStore.js";
 import { ToolPromotionStore } from "../tools/toolPromotionStore.js";
+import {
+  ToolImprovementCoordinator,
+  ToolImprovementCoordinatorDeps,
+} from "../tools/toolImprovementCoordinator.js";
 import { AgentArtifact, AgentEvent, AgentRunResult, ArtifactUploadInput } from "../types.js";
 
 export type WebAppOptions = {
@@ -1513,8 +1517,7 @@ async function routeRequest(
         update,
       );
       if (buildRequest.status === "registered") {
-        await notifyToolBuildRegistered(
-          options,
+        await createToolImprovementCoordinator(options)?.notifyBuildRegistered(
           buildRequest.id,
           buildRequest.registeredToolName,
           buildRequest.contract?.version,
@@ -1684,8 +1687,7 @@ async function routeRequest(
       await options.reloadGeneratedTools?.();
     }
     if (result.request.status === "registered") {
-      await notifyToolBuildRegistered(
-        options,
+      await createToolImprovementCoordinator(options)?.notifyBuildRegistered(
         result.request.id,
         result.registeredToolName ?? result.request.registeredToolName,
         result.request.contract?.version,
@@ -1817,11 +1819,12 @@ async function routeRequest(
       });
       return;
     }
+    const coordinator = createToolImprovementCoordinator(options);
 
     try {
       const id = decodeURIComponent(toolInvestigationPromoteMatch[1] ?? "");
-      const investigation = await options.toolInvestigationStore.get(id);
-      if (!investigation) {
+      const existing = await options.toolInvestigationStore.get(id);
+      if (!existing) {
         sendJson(response, 404, { error: "Tool investigation not found" });
         return;
       }
@@ -1830,89 +1833,29 @@ async function routeRequest(
       const operatorComment = parseOptionalText(candidateBody.operatorComment);
       const overrideCapability = parseOptionalText(candidateBody.capability);
       const overrideDesiredToolName = parseOptionalText(candidateBody.desiredToolName);
-      if (investigation.runId) {
-        const sourceRun = await options.runStore.get(investigation.runId);
-        if (!sourceRun) {
-          sendJson(response, 400, {
-            error: `Investigation runId ${investigation.runId} does not match any run; cannot promote.`,
-          });
-          return;
-        }
-      }
-      const promotionTarget = await resolveInvestigationPromotionTarget(
-        investigation,
-        { capability: overrideCapability, desiredToolName: overrideDesiredToolName },
-        options,
-      );
-      const buildInputCandidate = parseToolBuildRequestInput(
-        formatInvestigationBuildRequestInput(investigation, operatorComment, promotionTarget),
-      );
-      const validatedInput = await assignGeneratedToolName(
-        await validateContextualToolBuildTarget(buildInputCandidate, options),
-        options,
-      );
-      const buildRequest = await options.toolBuildRequestStore.create(validatedInput);
-      await recordAudit(options, {
-        instanceId: "instance-local",
-        actorId: "user-admin",
-        actorType: "user",
-        action: "tool_build.requested",
-        targetType: "tool_build_request",
-        targetId: buildRequest.id,
-        status: "pending",
-        runId: buildRequest.sourceRunId,
-        summary: `Tool build requested from investigation: ${buildRequest.capability}`,
-        metadata: sanitizeAuditMetadata({
-          investigationId: investigation.id,
-          capability: buildRequest.capability,
-          desiredToolName: buildRequest.desiredToolName,
-        }),
-      });
-      const updatedInvestigation = await options.toolInvestigationStore.update(id, {
-        status: "linked_to_build",
-        linkedBuildRequestId: buildRequest.id,
-        operatorComment: operatorComment ?? investigation.operatorComment,
-      });
-      await recordAudit(options, {
-        instanceId: "instance-local",
-        actorId: "user-admin",
-        actorType: "user",
-        action: "tool_investigation.updated",
-        targetType: "tool_investigation",
-        targetId: updatedInvestigation.id,
-        status: "success",
-        runId: updatedInvestigation.runId,
-        summary: `Tool investigation promoted: ${updatedInvestigation.title} (${updatedInvestigation.status})`,
-        metadata: sanitizeAuditMetadata({
-          previousStatus: investigation.status,
-          status: updatedInvestigation.status,
-          linkedBuildRequestId: updatedInvestigation.linkedBuildRequestId,
-        }),
+
+      const result = await coordinator.requestImprovement({
+        source: "investigation_promote",
+        investigationId: id,
+        operatorComment,
+        override: { capability: overrideCapability, desiredToolName: overrideDesiredToolName },
       });
 
-      let wait: ToolReworkWaitRecord | undefined;
-      if (options.toolReworkWaitStore && updatedInvestigation.runId) {
-        wait = await createReworkWait(options, {
-          runId: updatedInvestigation.runId,
-          spanId: updatedInvestigation.spanId,
-          toolName: updatedInvestigation.toolName,
-          toolVersion: updatedInvestigation.toolVersion,
-          investigationId: updatedInvestigation.id,
-          buildRequestId: buildRequest.id,
-          status: "waiting",
-          reason: `Run is waiting for tool rework triggered by investigation ${updatedInvestigation.id}.`,
+      if (result.status === "waiting") {
+        sendJson(response, 201, {
+          investigation: result.investigation,
+          request: result.buildRequest,
+          wait: result.wait,
         });
-      }
-      sendJson(response, 201, {
-        investigation: updatedInvestigation,
-        request: buildRequest,
-        wait,
-      });
-    } catch (error) {
-      if (error instanceof InvestigationPromotionError) {
-        sendJson(response, 400, { error: error.message, code: error.code });
         return;
       }
+      if (result.errorCode === "investigation_promotion_ambiguous") {
+        sendJson(response, 400, { error: result.error, code: result.errorCode });
+        return;
+      }
+      const message = result.error ?? "Invalid investigation promotion";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid investigation promotion";
       sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
     }
@@ -1933,9 +1876,10 @@ async function routeRequest(
       sendJson(response, 503, { error: "Tool rework wait store is not configured" });
       return;
     }
+    const coordinator = createToolImprovementCoordinator(options);
     try {
       const input = parseToolReworkWaitCreateInput(await readJsonBody<unknown>(request));
-      const wait = await createReworkWait(options, input);
+      const wait = await coordinator.openWait(input);
       sendJson(response, 201, { wait });
     } catch (error) {
       sendJson(response, 400, {
@@ -2040,6 +1984,7 @@ async function routeRequest(
       sendJson(response, 503, { error: "Tool rework wait store is not configured" });
       return;
     }
+    const coordinator = createToolImprovementCoordinator(options);
     try {
       const id = decodeURIComponent(reworkWaitResumeMatch[1] ?? "");
       const previous = await options.toolReworkWaitStore.get(id);
@@ -2055,37 +2000,14 @@ async function routeRequest(
       }
       const body = (await readJsonBody<unknown>(request)) ?? {};
       const candidate = body as Record<string, unknown>;
-      const operatorReason =
-        parseOptionalText(candidate.reason) ??
-        `Operator marked run ${previous.runId} ready for retry after tool rework promotion. ` +
-          `Phase 2 will run the actual retry; until then the run returns to "failed" so the operator can re-issue it manually.`;
+      const operatorReason = parseOptionalText(candidate.reason);
       const retryRunId = parseOptionalText(candidate.retryRunId);
+      const retrySpanId = parseOptionalText(candidate.retrySpanId);
 
-      const wait = await options.toolReworkWaitStore.update(id, {
-        status: "resumed",
+      const wait = await coordinator.markReadyForRetry(id, {
         reason: operatorReason,
-        retryRunId: retryRunId ?? null,
-      });
-      await options.runStore.resumeFromToolRework(wait.runId, operatorReason);
-      await recordAudit(options, {
-        instanceId: "instance-local",
-        actorId: "user-admin",
-        actorType: "user",
-        action: "tool_rework_wait.resumed",
-        targetType: "tool_rework_wait",
-        targetId: wait.id,
-        status: "success",
-        runId: wait.runId,
-        summary:
-          `Tool rework wait closed (ready for retry): ${wait.id}; ` +
-          "automatic retry is Phase 2, run returned to failed for operator follow-up.",
-        metadata: sanitizeAuditMetadata({
-          previousStatus: previous.status,
-          retryRunId: wait.retryRunId,
-          buildRequestId: wait.buildRequestId,
-          investigationId: wait.investigationId,
-          promotedVersion: wait.promotedVersion,
-        }),
+        retryRunId,
+        retrySpanId,
       });
       sendJson(response, 200, { wait });
     } catch (error) {
@@ -3043,6 +2965,15 @@ async function executeRun(
     summary: `Run started: ${task.slice(0, 160)}`,
   });
 
+  const agentToolImprovementCoordinator = createToolImprovementCoordinator(options, {
+    actorId: "coordinator",
+    actorType: "agent",
+    instanceId: run?.instanceId,
+    threadId: run?.threadId,
+    requesterUserId: run?.requesterUserId,
+    channel: run?.channel,
+  });
+
   try {
     const result = await options.agent.run(task, {
       inputArtifacts,
@@ -3051,6 +2982,7 @@ async function executeRun(
       instanceId: run?.instanceId ?? "group-local",
       requesterUserId: run?.requesterUserId ?? "user-admin",
       threadId: run?.threadId,
+      toolImprovementCoordinator: agentToolImprovementCoordinator,
       memoryScopes: [
         { scope: "global" },
         { scope: "group", scopeId: run?.instanceId ?? "group-local" },
@@ -3122,8 +3054,7 @@ async function executeRun(
                 summary: `Tool build registered: ${result.registeredToolName ?? result.request.registeredToolName}`,
                 metadata: { capability: result.request.capability, requestId: result.request.id },
               });
-              await notifyToolBuildRegistered(
-                options,
+              await agentToolImprovementCoordinator?.notifyBuildRegistered(
                 result.request.id,
                 result.registeredToolName ?? result.request.registeredToolName,
                 result.request.contract?.version,
@@ -3379,6 +3310,53 @@ async function auditTraceEvent(
 async function recordAudit(options: WebAppOptions, input: AuditEventInput): Promise<void> {
   if (!options.auditEventStore) return;
   await options.auditEventStore.record(input);
+}
+
+type ToolImprovementContext = {
+  actorId: string;
+  actorType: AuditEventInput["actorType"];
+  instanceId?: string;
+  threadId?: string;
+  requesterUserId?: string;
+  channel?: string;
+};
+
+function createToolImprovementCoordinator(
+  options: WebAppOptions,
+  context: ToolImprovementContext = { actorId: "user-admin", actorType: "user" },
+): ToolImprovementCoordinator {
+  const audit: ToolImprovementCoordinatorDeps["audit"] = options.auditEventStore
+    ? async (event) => {
+        await recordAudit(options, {
+          instanceId: context.instanceId ?? "instance-local",
+          actorId: context.actorId,
+          actorType: context.actorType,
+          action: event.action,
+          targetType: event.targetType,
+          targetId: event.targetId,
+          status: event.status,
+          runId: event.runId,
+          threadId: context.threadId,
+          requesterUserId: context.requesterUserId,
+          channel: context.channel,
+          summary: event.summary,
+          metadata: sanitizeAuditMetadata(event.metadata),
+        });
+      }
+    : undefined;
+  return new ToolImprovementCoordinator({
+    toolInvestigationStore: options.toolInvestigationStore,
+    toolBuildRequestStore: options.toolBuildRequestStore,
+    toolReworkWaitStore: options.toolReworkWaitStore,
+    toolMetadataStore: options.toolMetadataStore,
+    runStore: options.runStore,
+    audit,
+    finalizeBuildRequestInput: async (input) =>
+      assignGeneratedToolName(
+        await validateContextualToolBuildTarget(input as ReturnType<typeof parseToolBuildRequestInput>, options),
+        options,
+      ),
+  });
 }
 
 async function listOpenAiCompatibleModels(baseUrl: string): Promise<Array<{ id: string; ownedBy?: string }>> {
@@ -4661,198 +4639,9 @@ function parseNullableText(value: unknown, name: string): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
-type InvestigationPromotionTarget = {
-  capability: string;
-  desiredToolName?: string;
-  replacesToolName?: string;
-  replacesVersion?: string;
-  startupMode?: ToolStartupMode;
-  displayName?: string;
-};
-
-async function resolveInvestigationPromotionTarget(
-  investigation: {
-    id: string;
-    title: string;
-    toolName?: string;
-    toolVersion?: string;
-  },
-  override: { capability?: string; desiredToolName?: string },
-  options: WebAppOptions,
-): Promise<InvestigationPromotionTarget> {
-  const installedTools = options.toolMetadataStore ? await options.toolMetadataStore.list() : [];
-  const matchedByName = investigation.toolName
-    ? installedTools.find((tool) => tool.name === investigation.toolName)
-    : undefined;
-  const matchedByOverride = override.desiredToolName
-    ? installedTools.find((tool) => tool.name === override.desiredToolName)
-    : undefined;
-  const matched = matchedByName ?? matchedByOverride;
-
-  if (matched) {
-    const capability = override.capability ?? matched.capabilities?.[0] ?? matched.name;
-    return {
-      capability,
-      desiredToolName: matched.name,
-      replacesToolName: matched.name,
-      replacesVersion: matched.version,
-      startupMode: matched.startupMode,
-      displayName: matched.displayName ?? matched.name,
-    };
-  }
-
-  // No registered tool matched. The operator can still promote, but only with an
-  // explicit (capability, desiredToolName) pair so we never let fuzzy text inference
-  // pick a different tool than what the investigation pointed at.
-  if (override.capability && override.desiredToolName) {
-    return {
-      capability: override.capability,
-      desiredToolName: override.desiredToolName,
-      displayName: investigation.toolName ?? investigation.title,
-    };
-  }
-
-  if (investigation.toolName) {
-    throw new InvestigationPromotionError(
-      `Investigation toolName "${investigation.toolName}" is not registered in the tool catalog; ` +
-        `provide explicit "capability" and "desiredToolName" in the request body to promote anyway.`,
-    );
-  }
-
-  throw new InvestigationPromotionError(
-    `Investigation ${investigation.id} has no matching installed tool; ` +
-      `provide explicit "capability" and "desiredToolName" in the request body to promote.`,
-  );
-}
-
-class InvestigationPromotionError extends Error {
-  readonly code = "investigation_promotion_ambiguous" as const;
-}
-
-function formatInvestigationBuildRequestInput(
-  investigation: {
-    id: string;
-    title: string;
-    runId?: string;
-    spanId?: string;
-    toolName?: string;
-    toolVersion?: string;
-    operatorComment?: string;
-    contextBundle?: { taskPrompt?: string; outputSummary?: string; error?: string };
-  },
-  operatorComment: string | undefined,
-  target: InvestigationPromotionTarget,
-): Record<string, unknown> {
-  const reasonLines = [
-    `Promoted from Tool Investigation ${investigation.id}.`,
-    investigation.title ? `Title: ${investigation.title}` : "",
-    operatorComment
-      ? `Operator comment: ${operatorComment}`
-      : investigation.operatorComment
-        ? `Operator comment: ${investigation.operatorComment}`
-        : "",
-    investigation.contextBundle?.taskPrompt ? `Task: ${investigation.contextBundle.taskPrompt}` : "",
-    investigation.contextBundle?.error ? `Observed error: ${investigation.contextBundle.error}` : "",
-    investigation.contextBundle?.outputSummary
-      ? `Observed output: ${investigation.contextBundle.outputSummary}`
-      : "",
-  ].filter(Boolean);
-
-  return {
-    capability: target.capability,
-    displayName: target.displayName ?? investigation.toolName ?? investigation.title,
-    reason: reasonLines.join("\n") || `Promoted from investigation ${investigation.id}.`,
-    sourceRunId: investigation.runId,
-    sourceSpanId: investigation.spanId,
-    taskSummary: investigation.contextBundle?.taskPrompt,
-    desiredToolName: target.desiredToolName,
-    replacesToolName: target.replacesToolName,
-    replacesVersion: target.replacesVersion ?? investigation.toolVersion,
-    startupMode: target.startupMode,
-    feedback: operatorComment ?? investigation.operatorComment,
-  };
-}
-
-async function createReworkWait(
-  options: WebAppOptions,
-  input: ToolReworkWaitCreateInput,
-): Promise<ToolReworkWaitRecord | undefined> {
-  if (!options.toolReworkWaitStore) return undefined;
-  const sourceRun = await options.runStore.get(input.runId);
-  if (!sourceRun) {
-    throw new Error(`runId ${input.runId} does not match any run`);
-  }
-  if (input.buildRequestId && options.toolBuildRequestStore) {
-    const build = await options.toolBuildRequestStore.get(input.buildRequestId);
-    if (!build) {
-      throw new Error("buildRequestId does not match any tool build request");
-    }
-  }
-  if (input.investigationId && options.toolInvestigationStore) {
-    const investigation = await options.toolInvestigationStore.get(input.investigationId);
-    if (!investigation) {
-      throw new Error("investigationId does not match any tool investigation");
-    }
-  }
-  const wait = await options.toolReworkWaitStore.create(input);
-  await options.runStore.markWaitingForToolRework(wait.runId, wait.reason);
-  await recordAudit(options, {
-    instanceId: "instance-local",
-    actorId: "user-admin",
-    actorType: "user",
-    action: "tool_rework_wait.created",
-    targetType: "tool_rework_wait",
-    targetId: wait.id,
-    status: "pending",
-    runId: wait.runId,
-    summary: `Tool rework wait opened: ${wait.id}`,
-    metadata: sanitizeAuditMetadata({
-      buildRequestId: wait.buildRequestId,
-      investigationId: wait.investigationId,
-      toolName: wait.toolName,
-      toolVersion: wait.toolVersion,
-      spanId: wait.spanId,
-    }),
-  });
-  return wait;
-}
-
-async function notifyToolBuildRegistered(
-  options: WebAppOptions,
-  buildRequestId: string,
-  registeredToolName?: string,
-  promotedVersion?: string,
-): Promise<void> {
-  if (!options.toolReworkWaitStore) return;
-  const candidates = await options.toolReworkWaitStore.listByBuildRequest(buildRequestId);
-  for (const wait of candidates) {
-    if (wait.status === "promoted" || wait.status === "resumed" || wait.status === "cancelled") continue;
-    const next = await options.toolReworkWaitStore.update(wait.id, {
-      status: "promoted",
-      promotedVersion: promotedVersion ?? wait.promotedVersion ?? null,
-      toolName: registeredToolName ?? wait.toolName ?? null,
-    });
-    await recordAudit(options, {
-      instanceId: "instance-local",
-      actorId: "tool-registrar",
-      actorType: "agent",
-      action: "tool_rework_wait.updated",
-      targetType: "tool_rework_wait",
-      targetId: next.id,
-      status: "success",
-      runId: next.runId,
-      summary: `Tool rework wait promoted: ${next.id}`,
-      metadata: sanitizeAuditMetadata({
-        previousStatus: wait.status,
-        status: next.status,
-        buildRequestId: next.buildRequestId,
-        investigationId: next.investigationId,
-        promotedVersion: next.promotedVersion,
-        toolName: next.toolName,
-      }),
-    });
-  }
-}
+// Investigation promotion target/error and the related rework-wait helpers now live
+// in src/tools/toolImprovementCoordinator.ts so the same flow is reachable from the
+// agent runtime through ToolImprovementCoordinator.
 
 function parseOptionalQaReport(value: unknown): ToolBuildQaReport | undefined {
   if (value === undefined) return undefined;

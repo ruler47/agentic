@@ -416,15 +416,29 @@ Implementation tasks:
 - runId validation: both promote-created waits and `POST /api/tool-rework-waits` look up
   the source run through `RunStore.get()` before creating a wait. Errors from
   `markWaitingForToolRework` propagate to the caller instead of being swallowed. DONE.
+- Agent-driven wait creation: `ToolImprovementCoordinator`
+  (`src/tools/toolImprovementCoordinator.ts`) centralizes investigation+build+wait
+  creation, audit emission, build-registered notification, and "ready for retry" closure.
+  `POST /api/tool-investigations/:id/promote`, `POST /api/tool-rework-waits`, the build
+  PATCH/run hooks, and the resume endpoint all delegate to this coordinator. The
+  `UniversalAgent` accepts an optional `toolImprovementCoordinator` and uses it from the
+  missing/insufficient tool paths so an agent failure now opens the same investigation +
+  build + wait + `waiting_tool_rework` run state that an operator-triggered promotion
+  produces. The agent emits `tool-rework-wait-opened` trace events and appends a
+  "Pending tool rework waits" footer to the final answer when waits are still open. DONE.
 
 Remaining work for Phase 2:
 
 - Replace the manual operator resume with the recursive agent retry engine: pick up the
   promoted wait, re-plan the failed step against the new tool version, and produce a
-  retry run linked through `retryRunId`/`retrySpanId`.
+  retry run linked through `retryRunId`/`retrySpanId`. The coordinator already exposes
+  `markReadyForRetry(waitId, { retryRunId, retrySpanId })` so the recursive engine can
+  reuse the existing audited transition once it can drive the retry itself.
 - Drive automatic wait creation directly from runtime tool failures (artifact tool retry
-  flow, recursive agent escalation) instead of only from operator-triggered investigation
-  promotion.
+  flow, recursive agent escalation) — partially DONE through
+  `ToolImprovementCoordinator.requestImprovement(source: "agent_runtime")`. The remaining
+  step is letting the coordinator optionally run a synchronous Tool Build workflow before
+  parking the run, so promoted versions can resume in the same call.
 - Add cancellation, timeouts, and notifications for waits that linger past a configured
   policy.
 - Surface a Waits page that aggregates open waits across runs, with filters by tool, run,

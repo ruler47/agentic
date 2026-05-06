@@ -317,6 +317,12 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   investigation, build request, promoted version, and optional retry pointers.
 - [src/runs/postgresToolReworkWaitStore.ts](src/runs/postgresToolReworkWaitStore.ts)
   - Postgres-backed `tool_rework_waits` table.
+- [src/tools/toolImprovementCoordinator.ts](src/tools/toolImprovementCoordinator.ts) -
+  shared in-process domain helper used by the promote endpoint, the standalone wait
+  creation/resume endpoints, the build-registered notification, and the `UniversalAgent`
+  runtime. Centralizes investigation + build + wait creation, marks the run as
+  `waiting_tool_rework`, emits audit events, and exposes `notifyBuildRegistered` /
+  `markReadyForRetry` so HTTP and agent runtime use the same auditable flow.
 - [src/tools/toolBuildWorkflow.ts](src/tools/toolBuildWorkflow.ts) - reusable Builder/QA/
   review/Registrar orchestration flow for missing tool capabilities.
 - [src/tools/toolBuildReviewers.ts](src/tools/toolBuildReviewers.ts) - deterministic and
@@ -466,6 +472,12 @@ For documentation-only changes:
   context-bundle secret redaction.
 - `tests/toolReworkWaitStore.test.ts` covers the Tool Rework Wait in-memory store
   lifecycle and required-field validation.
+- `tests/toolImprovementCoordinator.test.ts` covers the shared agent/HTTP coordinator:
+  promote-with-registered-tool, refusal of fuzzy retargeting on unknown toolName,
+  agent-runtime mode (creates investigation+build+wait+marks run waiting), missing-run
+  handling, idempotent build-registered notifications, `markReadyForRetry` resuming the
+  run only when the wait is `promoted`, and protection against late completion overwriting
+  a coordinator-opened wait.
 - `tests/toolServiceSupervisor.test.ts` covers generic always-on tool lifecycle state,
   status-store persistence across supervisor instances, reconciliation, and lifecycle
   logs.
@@ -648,6 +660,18 @@ For documentation-only changes:
   an automatic agent retry. The recursive retry engine (Phase 2) is what will populate
   `retryRunId`/`retrySpanId` automatically. Audit `tool_rework_wait.created`,
   `tool_rework_wait.updated`, and `tool_rework_wait.resumed` for every state transition.
+- Tool rework lifecycle (HTTP and agent runtime) is owned by a single in-process domain
+  helper, `ToolImprovementCoordinator` (`src/tools/toolImprovementCoordinator.ts`). The
+  promote endpoint, the standalone wait creation endpoint, the build-registered
+  notification (PATCH and `/run`), and the resume endpoint all delegate to it. The
+  `UniversalAgent` accepts an optional `toolImprovementCoordinator` in its `RunOptions`
+  and uses it from `handleMissingToolCapability` / `handleInsufficientToolCapability` so
+  agent-driven failures open the same investigation + build + wait + `waiting_tool_rework`
+  run state. The agent emits `tool-rework-wait-opened` trace events and appends a
+  "Pending tool rework waits" footer to the final answer when waits are still open. Do
+  not duplicate this lifecycle; if a new HTTP or agent path needs to create/promote/resume
+  a wait, route it through the coordinator and keep the audit `actorId`/`actorType`
+  consistent with the caller (operator vs agent).
 - `RunStore.complete()` and `RunStore.fail()` must not overwrite a `waiting_tool_rework`
   run. A late agent completion or failure that arrives after the run was paused for tool
   rework is silently ignored, so the wait stays the source of truth until the operator

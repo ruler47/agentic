@@ -2183,6 +2183,128 @@ test("web server promote endpoint never infers a different tool from fuzzy text"
   }
 });
 
+test("agent-driven coordinator path through HTTP marks run waiting and redacts secret-shaped audit metadata", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const toolInvestigationStore = new InMemoryToolInvestigationStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  await toolMetadataStore.syncBuiltins([
+    {
+      name: "browser.operate",
+      version: "1.0.0",
+      description: "Generic Playwright command executor.",
+      capabilities: ["browser-operate"],
+      async run() {
+        return { ok: true, content: "ok" };
+      },
+    },
+  ]);
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  // The fake agent stands in for UniversalAgent and uses the runtime-provided
+  // toolImprovementCoordinator the way the real agent would for an insufficient tool.
+  class CoordinatorDrivenFakeAgent {
+    async run(_task: string, options: {
+      runId?: string;
+      toolImprovementCoordinator?: import("../src/tools/toolImprovementCoordinator.js").ToolImprovementCoordinator;
+      onEvent?: AgentEventSink;
+    }): Promise<AgentRunResult> {
+      const coordinator = options.toolImprovementCoordinator;
+      if (coordinator) {
+        await coordinator.requestImprovement({
+          source: "agent_runtime",
+          runId: options.runId,
+          spanId: "tool-browser.operate",
+          toolName: "browser.operate",
+          toolVersion: "1.0.0",
+          title: "Insufficient tool: browser.operate",
+          contextBundle: {
+            taskPrompt: "Open page and click",
+            outputSummary: "Tool returned a loader page",
+            error: "blocker_or_loader",
+            // Secret-shaped fields must be redacted in audit metadata.
+            toolSettingsSummary: { apiKey: "DO-NOT-LEAK" },
+          },
+          buildRequestInput: {
+            capability: "browser-operate",
+            reason: "browser.operate insufficient: cannot bypass loader page.",
+            sourceSpanId: "tool-browser.operate",
+          },
+        });
+      }
+      return {
+        finalAnswer: "agent ran but the tool was insufficient",
+        complexity: { mode: "direct", reason: "test", domains: ["test"], riskLevel: "low" },
+        subtasks: [],
+        workerResults: [],
+        reviews: [],
+      };
+    }
+  }
+
+  const server = createWebApp({
+    agent: new CoordinatorDrivenFakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolBuildRequestStore,
+    toolInvestigationStore,
+    toolReworkWaitStore,
+    toolMetadataStore,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const runResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "Click the buy button and prove it" }),
+    });
+    assert.equal(runResponse.status, 202);
+    const created = (await runResponse.json()) as { run: { id: string } };
+
+    let runAfter = await runStore.get(created.run.id);
+    for (let attempt = 0; attempt < 50 && runAfter?.status !== "waiting_tool_rework"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      runAfter = await runStore.get(created.run.id);
+    }
+    assert.equal(
+      runAfter?.status,
+      "waiting_tool_rework",
+      "agent-driven coordinator must mark the run waiting when a tool needs rework",
+    );
+
+    const investigations = await toolInvestigationStore.list();
+    assert.equal(investigations.length, 1);
+    assert.equal(investigations[0]?.runId, created.run.id);
+
+    const waits = await toolReworkWaitStore.list();
+    assert.equal(waits.length, 1);
+    assert.equal(waits[0]?.runId, created.run.id);
+    assert.equal(waits[0]?.investigationId, investigations[0]!.id);
+
+    const auditEvents = await auditEventStore.list();
+    const investigationCreated = auditEvents.find((event) => event.action === "tool_investigation.created");
+    assert.ok(investigationCreated, "audit log records investigation.created from the agent runtime");
+    assert.equal(investigationCreated?.actorId, "coordinator");
+    assert.equal(investigationCreated?.actorType, "agent");
+    assert.equal(
+      (investigationCreated?.metadata as { agentDriven?: boolean } | undefined)?.agentDriven,
+      true,
+    );
+
+    // No raw secret should leak into any audit metadata even though the bundle carried one.
+    const seenAuditJson = JSON.stringify(auditEvents);
+    assert.ok(!seenAuditJson.includes("DO-NOT-LEAK"), "raw secret must not leak into audit metadata");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 test("web server promote endpoint rejects ambiguous toolName/capability with 400", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");

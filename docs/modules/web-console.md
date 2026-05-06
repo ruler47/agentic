@@ -987,6 +987,15 @@ When a tool build request transitions to `registered` (through PATCH or the work
 runner), every matching wait is automatically promoted to `promoted`, the registered
 tool name is propagated, and a `tool_rework_wait.updated` audit event is recorded.
 
+The promote endpoint, the standalone wait creation endpoint, the build-registered
+notification, and the resume endpoint all delegate to a single in-process domain helper,
+`ToolImprovementCoordinator` (`src/tools/toolImprovementCoordinator.ts`). The same
+coordinator is also passed into `UniversalAgent.run` as `toolImprovementCoordinator`, so
+an agent that detects a missing or insufficient tool produces the same auditable
+investigation + build + wait lifecycle as an operator-triggered promotion. Agent-driven
+audits are tagged with `actorType: "agent"` and `metadata.agentDriven: true`, while
+operator-triggered audits keep `actorType: "user"` with `actorId: "user-admin"`.
+
 UI surfaces:
 
 - Run Workspace shows a "Waiting for tool upgrade" panel above the answer card whenever

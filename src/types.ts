@@ -176,6 +176,7 @@ export type AgentEventType =
   | "review-failed"
   | "tool-missing"
   | "tool-build-requested"
+  | "tool-rework-wait-opened"
   | "tool-started"
   | "tool-completed"
   | "agent-self-check-completed"

@@ -8,6 +8,12 @@ import { LlmClient } from "../src/llm/client.js";
 import { SkillMemory } from "../src/memory/skillMemory.js";
 import { AgentArtifact, AgentEvent, ArtifactCreateInput, Message } from "../src/types.js";
 import { ToolBuildRequestInput } from "../src/tools/toolBuildRequestStore.js";
+import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
+import { InMemoryToolInvestigationStore } from "../src/tools/toolInvestigationStore.js";
+import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
+import { InMemoryToolReworkWaitStore } from "../src/runs/toolReworkWaitStore.js";
+import { InMemoryRunStore } from "../src/runs/inMemoryRunStore.js";
+import { ToolImprovementCoordinator } from "../src/tools/toolImprovementCoordinator.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { Tool } from "../src/tools/tool.js";
 import { PNG } from "pngjs";
@@ -2484,6 +2490,114 @@ test("UniversalAgent rejects weak browser artifact evidence before synthesis", a
     assert.equal(result.artifacts?.length ?? 0, 0);
     assert.ok(events.some((event) => event.status === "failed" && /semantic QA/.test(event.title)));
     assert.equal(fakeLlm.callCount, 6);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent uses ToolImprovementCoordinator to open a rework wait when a generated artifact tool is insufficient", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"direct","reason":"small artifact task","domains":["visualization"],"riskLevel":"low"}',
+    "I tried to attach a chart, but the current tool could not parse the data.",
+    '{"shouldStore":false}',
+  ]);
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "generated.chart.generation",
+    version: "1.0.0",
+    description: "Generated chart tool with insufficient behavior.",
+    capabilities: ["chart-generation"],
+    async run() {
+      return { ok: false, content: "Could not parse arbitrary series data." };
+    },
+  });
+  const toolMetadataStore = new InMemoryToolMetadataStore([
+    {
+      name: "generated.chart.generation",
+      version: "1.0.0",
+      description: "Generated chart tool with insufficient behavior.",
+      capabilities: ["chart-generation"],
+      startupMode: "on-demand",
+      requiredConfigurationKeys: [],
+      requiredSecretHandles: [],
+      examples: [],
+      successCount: 0,
+      failureCount: 0,
+      source: "generated",
+      status: "available",
+      updatedAt: new Date().toISOString(),
+    },
+  ]);
+  const runStore = new InMemoryRunStore();
+  const sourceRun = await runStore.create('Построй график по данным {"series":[{"x":"2026-01-01","y":1}]}');
+  const toolInvestigationStore = new InMemoryToolInvestigationStore();
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const coordinator = new ToolImprovementCoordinator({
+    toolInvestigationStore,
+    toolBuildRequestStore,
+    toolReworkWaitStore,
+    toolMetadataStore,
+    runStore,
+  });
+
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const events: AgentEvent[] = [];
+
+  try {
+    const result = await agent.run('Построй график по данным {"series":[{"x":"2026-01-01","y":1}]}', {
+      runId: sourceRun.id,
+      saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
+        id: "artifact-1",
+        runId: sourceRun.id,
+        kind: "output",
+        filename: artifact.filename,
+        mimeType: artifact.mimeType,
+        sizeBytes: 1,
+        url: "/artifact",
+        createdAt: new Date().toISOString(),
+      }),
+      toolImprovementCoordinator: coordinator,
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    const investigations = await toolInvestigationStore.list();
+    assert.equal(investigations.length, 1);
+    assert.equal(investigations[0]?.toolName, "generated.chart.generation");
+    assert.equal(investigations[0]?.runId, sourceRun.id);
+    assert.equal(investigations[0]?.status, "linked_to_build");
+
+    const builds = await toolBuildRequestStore.list();
+    assert.equal(builds.length, 1);
+    assert.equal(builds[0]?.replacesToolName, "generated.chart.generation");
+    assert.equal(builds[0]?.replacesVersion, "1.0.0");
+
+    const waits = await toolReworkWaitStore.list();
+    assert.equal(waits.length, 1);
+    assert.equal(waits[0]?.runId, sourceRun.id);
+    assert.equal(waits[0]?.status, "waiting");
+    assert.equal(waits[0]?.investigationId, investigations[0]!.id);
+    assert.equal(waits[0]?.buildRequestId, builds[0]!.id);
+
+    const stored = await runStore.get(sourceRun.id);
+    assert.equal(stored?.status, "waiting_tool_rework");
+
+    const waitOpenedEvents = events.filter((event) => event.type === "tool-rework-wait-opened");
+    assert.equal(waitOpenedEvents.length, 1, "agent emits exactly one tool-rework-wait-opened event");
+    assert.equal(
+      ((waitOpenedEvents[0]?.payload as { agentDriven?: boolean } | undefined)?.agentDriven),
+      true,
+    );
+
+    assert.match(result.finalAnswer, /Pending tool rework waits/);
+    assert.ok(
+      result.finalAnswer.includes(waits[0]!.id),
+      "final answer references the open wait id so the operator knows what is blocking",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
