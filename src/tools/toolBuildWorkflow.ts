@@ -68,12 +68,19 @@ export type ToolActivationRunner = {
     output: ToolBuildOutput,
     registeredToolName: string,
   ): Promise<ToolBuildActivationReport>;
+  rollback?(
+    request: ToolBuildRequest,
+    output: ToolBuildOutput,
+    registeredToolName: string,
+    activationReport: ToolBuildActivationReport,
+  ): Promise<ToolBuildActivationReport>;
 };
 
 export type ToolBuildWorkflowResult = {
   request: ToolBuildRequest;
   registeredToolName?: string;
   activationReport?: ToolBuildActivationReport;
+  activationRollbackReport?: ToolBuildActivationReport;
 };
 
 export type ToolBuildWorkflowOptions = {
@@ -192,14 +199,21 @@ export class ToolBuildWorkflow {
 
         const registeredToolName = await this.registrar.register(request, output, reviewedQaReport);
         const activationReport = await this.runActivation(request, output, registeredToolName);
-        const finalQaReport = appendActivationReport(reviewedQaReport, activationReport);
+        const activationRollbackReport = activationReport && !activationReport.ok
+          ? await this.runActivationRollback(request, output, registeredToolName, activationReport)
+          : undefined;
+        const finalQaReport = appendActivationReport(reviewedQaReport, activationReport, activationRollbackReport);
         if (activationReport && !activationReport.ok) {
           return {
             registeredToolName,
             activationReport,
+            activationRollbackReport,
             request: await this.requests.updateStatus(id, {
               status: "blocked",
-              statusDetail: `Registered ${registeredToolName}, but activation failed: ${activationReport.summary}`,
+              statusDetail: [
+                `Registered ${registeredToolName}, but activation failed: ${activationReport.summary}`,
+                activationRollbackReport ? `Rollback: ${activationRollbackReport.summary}` : undefined,
+              ].filter(Boolean).join(" "),
               qaReport: finalQaReport,
               registeredToolName,
             }),
@@ -255,6 +269,26 @@ export class ToolBuildWorkflow {
     }
   }
 
+  private async runActivationRollback(
+    request: ToolBuildRequest,
+    output: ToolBuildOutput,
+    registeredToolName: string,
+    activationReport: ToolBuildActivationReport,
+  ): Promise<ToolBuildActivationReport | undefined> {
+    const rollback = this.options.activationRunner?.rollback;
+    if (!rollback) return undefined;
+
+    try {
+      return await rollback.call(this.options.activationRunner, request, output, registeredToolName, activationReport);
+    } catch (error) {
+      return {
+        ok: false,
+        summary: error instanceof Error ? error.message : String(error),
+        checks: ["runtime activation rollback threw before confirming previous runtime state"],
+      };
+    }
+  }
+
   private async runReviewGates(
     request: ToolBuildRequest,
     output: ToolBuildOutput,
@@ -280,18 +314,36 @@ export class ToolBuildWorkflow {
 function appendActivationReport(
   qaReport: ToolBuildQaReport,
   activationReport?: ToolBuildActivationReport,
+  activationRollbackReport?: ToolBuildActivationReport,
 ): ToolBuildQaReport {
-  if (!activationReport) return qaReport;
+  if (!activationReport && !activationRollbackReport) return qaReport;
+  const activationStatus = activationReport?.ok ? "pass" : "fail";
+  const rollbackStatus = activationRollbackReport?.ok ? "pass" : "fail";
 
   return {
     ...qaReport,
-    ok: qaReport.ok && activationReport.ok,
-    summary: activationReport.ok
-      ? `${qaReport.summary} Activation passed: ${activationReport.summary}`
-      : `${qaReport.summary} Activation failed: ${activationReport.summary}`,
+    ok: qaReport.ok && (activationReport?.ok ?? true) && (activationRollbackReport?.ok ?? true),
+    summary: [
+      qaReport.summary,
+      activationReport
+        ? activationReport.ok
+          ? `Activation passed: ${activationReport.summary}`
+          : `Activation failed: ${activationReport.summary}`
+        : undefined,
+      activationRollbackReport
+        ? activationRollbackReport.ok
+          ? `Rollback passed: ${activationRollbackReport.summary}`
+          : `Rollback failed: ${activationRollbackReport.summary}`
+        : undefined,
+    ].filter(Boolean).join(" "),
     checks: [
       ...qaReport.checks,
-      ...activationReport.checks.map((check) => `activation ${activationReport.ok ? "pass" : "fail"}: ${check}`),
+      ...(activationReport?.checks ?? []).map(
+        (check) => `activation ${activationStatus}: ${check}`,
+      ),
+      ...(activationRollbackReport?.checks ?? []).map(
+        (check) => `activation rollback ${rollbackStatus}: ${check}`,
+      ),
     ],
   };
 }

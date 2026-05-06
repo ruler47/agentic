@@ -2873,7 +2873,7 @@ function suggestToolBuildReworkPlaceholder(request) {
 
 function renderToolBuildQaEvidence(qaReport) {
   if (!qaReport || !Array.isArray(qaReport.checks) || qaReport.checks.length === 0) return "";
-  const activationChecks = qaReport.checks.filter((check) => /^activation (pass|fail):/i.test(String(check)));
+  const activationChecks = qaReport.checks.filter((check) => /^activation (pass|fail|rollback pass|rollback fail):/i.test(String(check)));
   if (activationChecks.length === 0) return "";
 
   return `

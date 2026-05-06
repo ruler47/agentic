@@ -734,7 +734,9 @@ For documentation-only changes:
   passing QA report plus all configured review gates. When an activation runner is
   configured, the workflow reloads/activates the generated runtime before marking the
   request `registered`; activation failure leaves the request `blocked` with the
-  registered tool name and activation QA evidence.
+  registered tool name and activation QA evidence. If the activation runner exposes a
+  rollback hook, the workflow calls it before returning the blocked request and appends
+  `activation rollback pass/fail` checks to the QA report.
 - Generated-tool promotion now has separate QA and review gates. `ToolBuildQaReport`
   may include `reviews` for code and behavior decisions; any `needs_revision` or `fail`
   review sends findings back into the next builder attempt or ends as `qa_failed` after

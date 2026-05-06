@@ -756,10 +756,14 @@ Remaining Phase 3 gaps:
   metadata, migration records, and journal records together. When Postgres is configured,
   `PostgresToolPromotionCoordinator` wraps the metadata, pending migration-manifest, and
   promotion-journal writes in one database transaction, with tests covering commit and
-  rollback. Remaining work is expanding the transactional promotion boundary into a full
-  saga that applies/records migrations, activates the generated package, reloads runtime,
-  and rolls back cleanly if any step fails. Runtime reload/activation is now represented
-  in the workflow status and QA report, but it is still not part of the same Postgres
+  rollback. Runtime activation now has a compensating rollback hook: if activation fails
+  after registration, the workflow calls the activation runner rollback method when
+  available, keeps the request `blocked`, and records `activation rollback pass/fail`
+  evidence in the QA report/UI. Remaining work is expanding the transactional promotion
+  boundary into a full saga that applies/records migrations, activates the generated
+  package, reloads runtime, and rolls back cleanly if any step fails. Runtime
+  reload/activation is now represented in the workflow status and QA report, but it is
+  still not part of the same Postgres
   transaction/package rollback boundary.
 - Add safe database maintenance actions from Trace Lab/Tool Detail/Tool Builds: the agent
   can create an auditable request to delete, repair, backfill, or compact records related

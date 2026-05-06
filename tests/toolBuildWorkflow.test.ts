@@ -217,6 +217,14 @@ test("ToolBuildWorkflow blocks registered metadata when activation fails", async
           calls.push("activate");
           throw new Error("runtime reload failed");
         },
+        async rollback(_request, _output, registeredToolName, activationReport) {
+          calls.push(`rollback:${registeredToolName}:${activationReport.ok}`);
+          return {
+            ok: true,
+            summary: "Previous runtime state restored.",
+            checks: ["removed failed runtime version", "old version remains callable"],
+          };
+        },
       },
     },
   );
@@ -224,14 +232,17 @@ test("ToolBuildWorkflow blocks registered metadata when activation fails", async
   const result = await workflow.runOnce(request.id);
   const stored = await store.get(request.id);
 
-  assert.deepEqual(calls, ["builder", "qa", "registrar", "activate"]);
+  assert.deepEqual(calls, ["builder", "qa", "registrar", "activate", "rollback:generated.broken.runtime:false"]);
   assert.equal(result.request.status, "blocked");
   assert.equal(result.registeredToolName, "generated.broken.runtime");
   assert.equal(result.activationReport?.ok, false);
+  assert.equal(result.activationRollbackReport?.ok, true);
   assert.match(stored?.statusDetail ?? "", /activation failed: runtime reload failed/);
+  assert.match(stored?.statusDetail ?? "", /Rollback: Previous runtime state restored/);
   assert.equal(stored?.registeredToolName, "generated.broken.runtime");
   assert.equal(stored?.qaReport?.ok, false);
   assert.ok(stored?.qaReport?.checks.some((check) => check.includes("activation fail")));
+  assert.ok(stored?.qaReport?.checks.some((check) => check.includes("activation rollback pass")));
 });
 
 test("ToolBuildWorkflow returns failed review findings to builder before retry", async () => {

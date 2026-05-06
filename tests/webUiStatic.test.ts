@@ -184,6 +184,7 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /Promotion evidence/);
   assert.match(app, /Promotion journal/);
   assert.match(app, /QA and activation checks/);
+  assert.match(app, /rollback pass/);
   assert.match(app, /Current blocker:/);
   assert.match(app, /\/api\/tool-promotions/);
   assert.match(app, /function renderMarkdown/);
