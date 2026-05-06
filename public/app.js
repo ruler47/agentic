@@ -3657,7 +3657,7 @@ function renderToolBuildReviews(reviews) {
 }
 
 function formatStatusLabel(status) {
-  return String(status).replace("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return String(status).replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function toolBuildStatusDescription(status) {
