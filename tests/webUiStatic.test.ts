@@ -157,6 +157,9 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /Retry run linked to a tool rework wait/);
   assert.match(app, /function renderRetryRunChip/);
   assert.match(app, /function isRetryRun/);
+  // Background tool build worker copy: the wait panel now mentions auto-promotion so
+  // operators know they don't have to PATCH the build manually.
+  assert.match(app, /background Tool Builder worker picks up/);
   assert.match(app, /function renderNotice/);
   assert.match(app, /sourceSpanId/);
   assert.match(app, /Tool request created/);

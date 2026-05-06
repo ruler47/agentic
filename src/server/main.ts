@@ -286,6 +286,7 @@ const server = createWebApp({
   toolInvestigationStore,
   toolReworkWaitStore,
   toolBuildWorkflow,
+  toolBuildWorker,
   toolServiceSupervisor,
   toolServiceEventStore,
   toolPackageRunners,

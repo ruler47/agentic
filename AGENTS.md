@@ -317,6 +317,14 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   investigation, build request, promoted version, and optional retry pointers.
 - [src/runs/postgresToolReworkWaitStore.ts](src/runs/postgresToolReworkWaitStore.ts)
   - Postgres-backed `tool_rework_waits` table.
+- [src/tools/toolBuildWorker.ts](src/tools/toolBuildWorker.ts) - background worker that
+  claims `requested` Tool Build queue items and runs them through the Builder/QA/
+  Registrar workflow. Now accepts `onAfterCompleted` (set at construction OR late-bound
+  via `setOnAfterCompleted`) so the HTTP layer can wire it to
+  `notifyToolBuildRegistered` and `tool_build.registered` audit. Also exposes
+  `scheduleImmediate()` for fire-and-forget triggers from
+  `ToolImprovementCoordinator`; overlapping ticks join the pending tick instead of
+  double-claiming the same `requested` build.
 - [src/tools/toolImprovementCoordinator.ts](src/tools/toolImprovementCoordinator.ts) -
   shared in-process domain helper used by the promote endpoint, the standalone wait
   creation/resume endpoints, the build-registered notification, and the `UniversalAgent`
@@ -485,6 +493,14 @@ For documentation-only changes:
   handling, idempotent build-registered notifications, `markReadyForRetry` resuming the
   run only when the wait is `promoted`, and protection against late completion overwriting
   a coordinator-opened wait.
+- `tests/toolBuildWorkflow.test.ts` extended with three new ToolBuildWorker cases:
+  `onAfterCompleted` fires with the workflow result for handoff, `setOnAfterCompleted`
+  late-binds the callback after construction, and overlapping ticks (including
+  `scheduleImmediate`) never double-claim the same `requested` build.
+- `tests/webServer.test.ts` extended with a background handoff integration: promote
+  investigation -> coordinator nudges scheduler -> worker registers -> linked wait flips
+  to `promoted` automatically -> retry-run endpoint becomes reachable, all without a
+  manual PATCH and with secret-shaped audit metadata redacted.
 - `tests/toolReworkRetryCoordinator.test.ts` covers the retry-run skeleton: rejection of
   unknown / non-promoted / orphaned waits, creation of a linked retry run that inherits
   the original run's task and provenance, idempotency on the second call, and the
@@ -672,6 +688,16 @@ For documentation-only changes:
   an automatic agent retry. The recursive retry engine (Phase 2) is what will populate
   `retryRunId`/`retrySpanId` automatically. Audit `tool_rework_wait.created`,
   `tool_rework_wait.updated`, and `tool_rework_wait.resumed` for every state transition.
+- Background tool build handoff: when a build request is created (operator promote OR
+  agent-driven improvement), `ToolImprovementCoordinator` calls
+  `ToolBuildWorker.scheduleImmediate()` if a worker is wired up. The worker's
+  `onAfterCompleted` callback (late-bound by `createWebApp`) emits the same
+  `tool_build.registered` audit and `notifyToolBuildRegistered` linkage that the manual
+  PATCH/`/run` endpoints use, so background-driven registrations flip matching
+  `ToolReworkWait` records to `promoted` automatically. Worker audits use
+  `actorId="tool-build-worker"` and `metadata.backgroundWorker=true` for observability.
+  Do not duplicate this handoff; if a new path needs to register a build, route the
+  post-completion side effects through the same coordinator helpers.
 - Retry-run handoff: when a `ToolReworkWait` reaches `promoted`, operators (and the
   future recursive engine) can either close the wait without spawning a retry through
   `POST /api/tool-rework-waits/:id/resume`, or create a linked retry run through

@@ -426,6 +426,15 @@ Implementation tasks:
   build + wait + `waiting_tool_rework` run state that an operator-triggered promotion
   produces. The agent emits `tool-rework-wait-opened` trace events and appends a
   "Pending tool rework waits" footer to the final answer when waits are still open. DONE.
+- Background build handoff: `ToolImprovementCoordinator` accepts an optional
+  `backgroundBuildScheduler` and, when wired up by the HTTP layer, calls
+  `ToolBuildWorker.scheduleImmediate()` immediately after creating a build request so a
+  promoted investigation or agent-driven improvement does not have to wait for the
+  worker's interval tick. `ToolBuildWorker.onAfterCompleted` is late-bound by
+  `createWebApp` to the same `notifyToolBuildRegistered` + `tool_build.registered` audit
+  path the manual PATCH/`/run` endpoints already use, so a background-driven
+  registration flips matching `ToolReworkWait` records to `promoted` automatically. The
+  worker also joins a pending tick instead of double-claiming when ticks overlap. DONE.
 - Retry-run skeleton: `ToolReworkRetryCoordinator`
   (`src/tools/toolReworkRetryCoordinator.ts`) turns a `promoted` wait into a real linked
   retry run. The new run inherits the original run's task and instance/user/channel/thread

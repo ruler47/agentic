@@ -405,6 +405,20 @@ explicitly. When at least one wait is still open at synthesis time, the agent ap
 finished, since the recursive retry engine that automatically re-executes the failed step
 against the new tool version is still Phase 2 work.
 
+When a wait is opened (operator promote or agent-driven), the coordinator can also nudge
+a background Tool Builder worker so the registered Builder/QA/Registrar workflow runs
+without waiting for the next interval tick or for an operator to PATCH the build to
+`registered`. The worker is generic — it works for any capability/build request — and
+exposes a late-bound `onAfterCompleted` callback. The HTTP layer wires that callback to
+the same `notifyToolBuildRegistered` and `tool_build.registered` audit path the manual
+`/run` and PATCH endpoints already use, so a background-driven registration produces the
+same observable lifecycle: matching `ToolReworkWait` records flip to `promoted`, the
+audit log records `tool_build.registered` with `actorId=tool-build-worker` and
+`metadata.backgroundWorker=true`, and the linked retry-run endpoint becomes available
+without any human intervention. The coordinator's `scheduleImmediate` fire-and-forget
+handoff ignores scheduler errors so promote responses stay 201; the next interval tick
+remains a durable fallback.
+
 Once a wait reaches `promoted`, a separate
 `ToolReworkRetryCoordinator`
 ([src/tools/toolReworkRetryCoordinator.ts](../src/tools/toolReworkRetryCoordinator.ts))

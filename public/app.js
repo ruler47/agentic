@@ -1140,7 +1140,7 @@ function renderRunWaitPanel(run) {
         <div>
           <span class="eyebrow">Tool rework wait</span>
           <h2>Waiting for tool upgrade</h2>
-          <p>This run paused because a registered tool needs to be improved or rebuilt before retrying. The investigation/build queue below preserves the failure context. Once the new tool version is promoted, click <em>Create retry run</em> to spawn a linked retry run that executes through the standard run path, or <em>Mark ready for retry</em> to just close the wait and let an operator re-issue the task manually. Span-level recursive retry/replanning of only the failed step is still Phase 2 work.</p>
+          <p>This run paused because a registered tool needs to be improved or rebuilt before retrying. The investigation/build queue below preserves the failure context. The background Tool Builder worker picks up the new build automatically; once it reaches <code>registered</code>, the wait flips to <em>promoted</em> and you can click <em>Create retry run</em> to spawn a linked retry run that executes through the standard run path, or <em>Mark ready for retry</em> to just close the wait and let an operator re-issue the task manually. Span-level recursive retry/replanning of only the failed step is still Phase 2 work.</p>
         </div>
         <span class="context-chip">${pending.length} active</span>
       </div>

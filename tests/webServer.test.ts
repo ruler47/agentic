@@ -21,6 +21,7 @@ import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import { InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
 import { InMemoryToolPromotionStore } from "../src/tools/toolPromotionStore.js";
 import { ToolBuildWorkflow } from "../src/tools/toolBuildWorkflow.js";
+import { ToolBuildWorker } from "../src/tools/toolBuildWorker.js";
 import { InMemoryAuditEventStore } from "../src/audit/inMemoryAuditEventStore.js";
 import { InMemoryGroupProfileStore } from "../src/instance/groupProfileStore.js";
 import { InMemoryUserStore } from "../src/instance/userStore.js";
@@ -2177,6 +2178,155 @@ test("web server promote endpoint never infers a different tool from fuzzy text"
     assert.equal(promoted.request.replacesToolName, "browser.operate");
     assert.equal(promoted.request.desiredToolName, "browser.operate");
     assert.notEqual(promoted.request.capability, "browser-screenshot");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("background tool build worker promotes the wait without manual PATCH after promote", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const toolInvestigationStore = new InMemoryToolInvestigationStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  await toolMetadataStore.syncBuiltins([
+    {
+      name: "browser.operate",
+      version: "1.0.0",
+      description: "Generic Playwright command executor.",
+      capabilities: ["browser-operate"],
+      async run() {
+        return { ok: true, content: "ok" };
+      },
+    },
+  ]);
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  // Minimal but realistic Builder/QA/Registrar trio: every claimed request becomes
+  // `registered` without doing real I/O. The point is to prove the post-completion
+  // handoff fires in the same path the production worker uses.
+  const workflow = new ToolBuildWorkflow(
+    toolBuildRequestStore,
+    {
+      async build(claimed) {
+        return {
+          modulePath: claimed.contract.modulePath,
+          testPath: claimed.contract.testPath,
+          summary: "background smoke",
+        };
+      },
+    },
+    {
+      async run() {
+        return { ok: true, summary: "QA passed.", checks: ["targeted test passed"] };
+      },
+    },
+    {
+      async register() {
+        return "browser.operate";
+      },
+    },
+  );
+  const toolBuildWorker = new ToolBuildWorker(workflow, toolBuildRequestStore);
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolBuildRequestStore,
+    toolInvestigationStore,
+    toolReworkWaitStore,
+    toolMetadataStore,
+    toolBuildWorkflow: workflow,
+    toolBuildWorker,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const sourceRun = await runStore.create("Click the buy button and prove it", {
+      instanceId: "instance-local",
+      requesterUserId: "user-admin",
+      channel: "web",
+    });
+    const investigation = (
+      await (
+        await fetch(`${baseUrl}/api/tool-investigations`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            source: "trace_span",
+            title: "browser.operate cannot dismiss CAPTCHA",
+            runId: sourceRun.id,
+            spanId: "span-bo",
+            toolName: "browser.operate",
+            toolVersion: "1.0.0",
+            contextBundle: {
+              taskPrompt: "Click the buy button and prove it",
+              toolSettingsSummary: { apiKey: "DO-NOT-LEAK-BACKGROUND" },
+            },
+          }),
+        })
+      ).json()
+    ).investigation;
+
+    const promoteResponse = await fetch(
+      `${baseUrl}/api/tool-investigations/${encodeURIComponent(investigation.id)}/promote`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(promoteResponse.status, 201);
+    const promoted = (await promoteResponse.json()) as {
+      wait: { id: string; status: string; promotedVersion?: string };
+      request: { id: string };
+    };
+    assert.equal(promoted.wait.status, "waiting");
+
+    // The coordinator nudged scheduleImmediate inside promote, so by the time the
+    // request returns the worker has either run or is about to run. Poll briefly until
+    // the wait reflects promotion driven by the worker's onAfterCompleted hook.
+    let wait = promoted.wait;
+    for (let attempt = 0; attempt < 50 && wait.status !== "promoted"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      wait = (
+        (await (await fetch(`${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}`)).json()) as {
+          wait: typeof wait;
+        }
+      ).wait;
+    }
+    assert.equal(
+      wait.status,
+      "promoted",
+      "background worker must flip the wait without a manual PATCH",
+    );
+    assert.equal(wait.promotedVersion, "1.1.0", "worker propagates the bumped version into the wait");
+
+    // The build request itself reached `registered`.
+    const buildAfter = (
+      await (await fetch(`${baseUrl}/api/tool-build-requests/${encodeURIComponent(promoted.request.id)}`)).json()
+    ).request;
+    assert.equal(buildAfter.status, "registered");
+
+    // Audit chain proves both the worker-driven `tool_build.registered` event and the
+    // `tool_rework_wait.updated` (promotion) event fired. No raw secret leaked.
+    const auditList = await auditEventStore.list();
+    const actions = auditList.map((event) => event.action);
+    assert.ok(actions.includes("tool_build.requested"));
+    assert.ok(actions.includes("tool_build.registered"));
+    const registeredAudit = auditList.find((event) => event.action === "tool_build.registered");
+    assert.equal(registeredAudit?.actorId, "tool-build-worker");
+    assert.equal((registeredAudit?.metadata as { backgroundWorker?: boolean } | undefined)?.backgroundWorker, true);
+    assert.ok(actions.includes("tool_rework_wait.updated"));
+    assert.ok(!JSON.stringify(auditList).includes("DO-NOT-LEAK-BACKGROUND"), "audit must not leak secret-shaped values");
+
+    // The retry-run endpoint is now reachable because the wait is `promoted`.
+    const retryResponse = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}/retry-run`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(retryResponse.status, 201);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
