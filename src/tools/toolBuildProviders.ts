@@ -14,7 +14,7 @@ import {
   ToolBuildQaReport,
   ToolBuildRequest,
 } from "./toolBuildRequestStore.js";
-import { ToolMetadataStore, type ToolModulePromotionEvidence } from "./toolMetadataStore.js";
+import { ToolMetadataStore } from "./toolMetadataStore.js";
 import { ToolExample, ToolSchema, ToolStartupMode, ToolStorageContract } from "./tool.js";
 import {
   integrationDocsMarkdown,
@@ -24,8 +24,9 @@ import {
 import type { ToolPackageManifest } from "./toolPackage.js";
 import { ToolPackageWorkspaceStore } from "./toolPackageWorkspaceStore.js";
 import { validateAndBuildToolPackageWorkspace } from "./toolPackageWorkspaceQa.js";
-import { createToolMigrationChecksum, ToolMigrationStore } from "./toolMigrationStore.js";
+import { ToolMigrationStore } from "./toolMigrationStore.js";
 import { ToolPromotionStore } from "./toolPromotionStore.js";
+import { ToolPromotionCoordinator } from "./toolPromotionCoordinator.js";
 import {
   runToolStorageMigrationPlanQa,
   type ToolStorageMigrationQueryExecutor,
@@ -597,172 +598,19 @@ export function validateToolStorageMigrationContract(storage?: ToolStorageContra
 }
 
 export class MetadataToolRegistrar implements ToolRegistrar {
+  private readonly promotionCoordinator: ToolPromotionCoordinator;
+
   constructor(
-    private readonly metadataStore: ToolMetadataStore,
-    private readonly migrationStore?: ToolMigrationStore,
-    private readonly promotionStore?: ToolPromotionStore,
-  ) {}
+    metadataStore: ToolMetadataStore,
+    migrationStore?: ToolMigrationStore,
+    promotionStore?: ToolPromotionStore,
+  ) {
+    this.promotionCoordinator = new ToolPromotionCoordinator(metadataStore, migrationStore, promotionStore);
+  }
 
   async register(request: ToolBuildRequest, output: ToolBuildOutput, qaReport?: ToolBuildQaReport): Promise<string> {
-    const toolName = request.contract.toolName;
-    const promotionEvidence = promotionEvidenceFromBuild(request, output, qaReport);
-    const input = {
-      name: toolName,
-      displayName: output.displayName ?? request.displayName ?? request.contract.displayName,
-      version: request.contract.version,
-      description: request.contract.description,
-      capabilities: output.capabilities ?? [request.capability],
-      startupMode: request.contract.startupMode,
-      inputSchema: output.inputSchema ?? request.contract.inputSchema,
-      outputSchema: output.outputSchema ?? request.contract.outputSchema,
-      modulePath: output.modulePath,
-      testPath: output.testPath,
-      requiredConfigurationKeys: output.requiredConfigurationKeys,
-      requiredSecretHandles: output.requiredSecretHandles ?? request.credentialHandles,
-      settingsSchema: output.settingsSchema,
-      storage: output.storage,
-      docsMarkdown: output.docsMarkdown,
-      examples: output.examples,
-      packageManifest: output.packageWorkspace
-        ? packageWorkspaceManifest(request, output, output.packageWorkspace.packageRef)
-        : output.packageManifest,
-      changeSummary: output.changeSummary ?? formatToolVersionChangeSummary(request, output),
-      promotionEvidence,
-    };
-
-    if (request.replacesVersion) {
-      await this.metadataStore.promoteReplacement({
-        ...input,
-        replacesVersion: request.replacesVersion,
-      });
-    } else {
-      await this.metadataStore.registerGenerated(input);
-    }
-
-    await this.recordStorageMigrationManifests(request, output, qaReport);
-    await this.recordPromotion(request, promotionEvidence);
-
-    return toolName;
+    return (await this.promotionCoordinator.promote(request, output, qaReport)).toolName;
   }
-
-  private async recordStorageMigrationManifests(
-    request: ToolBuildRequest,
-    output: ToolBuildOutput,
-    qaReport?: ToolBuildQaReport,
-  ): Promise<void> {
-    if (!this.migrationStore || !output.storage?.migrations?.length) return;
-
-    for (const migrationId of output.storage.migrations) {
-      await this.migrationStore.create({
-        toolName: request.contract.toolName,
-        toolVersion: request.contract.version,
-        migrationId,
-        checksum: createToolMigrationChecksum({
-          toolName: request.contract.toolName,
-          toolVersion: request.contract.version,
-          migrationId,
-          schema: output.storage.schema,
-          tables: output.storage.tables,
-        }),
-        status: "pending",
-        qaReport: {
-          ok: qaReport?.ok ?? true,
-          summary: qaReport?.summary ?? "Migration manifest recorded with generated tool metadata.",
-          checks: qaReport?.checks ?? ["migration manifest recorded; isolated database execution pending"],
-        },
-        rollbackNotes: "Pending isolated database execution and transactional promotion.",
-      });
-    }
-  }
-
-  private async recordPromotion(
-    request: ToolBuildRequest,
-    evidence: ToolModulePromotionEvidence,
-  ): Promise<void> {
-    if (!this.promotionStore) return;
-
-    await this.promotionStore.create({
-      toolName: request.contract.toolName,
-      toolVersion: request.contract.version,
-      status: evidence.status,
-      promotedAt: new Date(evidence.promotedAt),
-      buildRequestId: evidence.buildRequestId,
-      qaReport: evidence.qaReport,
-      packageRef: evidence.packageRef,
-      migrationIds: evidence.migrationIds,
-      summary: evidence.summary,
-    });
-  }
-}
-
-function promotionEvidenceFromBuild(
-  request: ToolBuildRequest,
-  output: ToolBuildOutput,
-  qaReport?: ToolBuildQaReport,
-): ToolModulePromotionEvidence {
-  return {
-    status: "promoted",
-    promotedAt: new Date().toISOString(),
-    summary: qaReport?.summary ?? output.summary,
-    buildRequestId: request.id,
-    qaReport: qaReport
-      ? {
-          ok: qaReport.ok,
-          summary: qaReport.summary,
-          checks: qaReport.checks,
-          artifacts: qaReport.artifacts,
-          reviews: qaReport.reviews,
-        }
-      : undefined,
-    packageRef: output.packageWorkspace?.packageRef ?? output.packageManifest?.package.ref,
-    migrationIds: output.storage?.migrations,
-  };
-}
-
-function packageWorkspaceManifest(
-  request: ToolBuildRequest,
-  output: ToolBuildOutput,
-  packageRef: string,
-): ToolPackageManifest {
-  return {
-    schemaVersion: "agentic.tool-package.v1",
-    name: request.contract.toolName,
-    displayName: output.displayName ?? request.displayName ?? request.contract.displayName,
-    version: request.contract.version,
-    description: request.contract.description,
-    capabilities: output.capabilities ?? [request.capability],
-    startupMode: request.contract.startupMode,
-    package: {
-      type: "source-bundle",
-      ref: packageRef,
-    },
-    inputSchema: output.inputSchema ?? request.contract.inputSchema,
-    outputSchema: output.outputSchema ?? request.contract.outputSchema,
-    requiredConfigurationKeys: output.requiredConfigurationKeys,
-    requiredSecretHandles: output.requiredSecretHandles ?? request.credentialHandles,
-    settingsSchema: output.settingsSchema,
-    storage: output.storage,
-    docsMarkdown: output.docsMarkdown,
-    examples: output.examples,
-  };
-}
-
-function formatToolVersionChangeSummary(request: ToolBuildRequest, output: ToolBuildOutput): string {
-  const header = request.replacesVersion
-    ? `Version ${request.contract.version} replaces ${request.replacesVersion}.`
-    : `Initial generated version ${request.contract.version}.`;
-  const feedback = request.feedback?.trim()
-    ? `\n\nOperator feedback:\n${request.feedback.trim()}`
-    : "";
-  return [
-    header,
-    `Build request: ${request.id}.`,
-    output.summary,
-    request.reason.trim() ? `Request context:\n${request.reason.trim()}` : undefined,
-    feedback || undefined,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
 }
 
 export class BrowserScreenshotToolBuildProvider implements ToolBuildProvider {

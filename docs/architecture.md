@@ -267,6 +267,9 @@ The target contract is:
   journal. `tool_modules` remains the current active state; `tool_module_versions` keeps
   selectable versions; `tool_promotions` records the decision trail that future rollback,
   diff, approval, and audit screens can consume;
+- generated registrations go through `ToolPromotionCoordinator`, which centralizes
+  metadata, migration-manifest, and journal writes as the explicit boundary that will be
+  replaced by a true Postgres transaction in the next promotion hardening step;
 - tool runtime receives a constrained `ToolExecutionContext` with secret resolver, audit
   writer, logger, provenance, cancellation signal, and a portable
   `artifacts.saveGenerated(...)` writer for output files. When Postgres is configured,

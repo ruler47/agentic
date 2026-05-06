@@ -743,9 +743,12 @@ Remaining Phase 3 gaps:
   ref, timestamp, and migration ids. Generated promotions are also appended to a
   `tool_promotions` journal, and the server exposes `GET /api/tool-promotions` for
   operator/audit surfaces. The Tools inspector now shows the journal beside each generated
-  tool, separating active state from append-only registrar decisions. Remaining work is
-  one all-or-nothing promotion boundary that applies/records migrations, activates the
-  package, reloads runtime, and rolls back cleanly if any step fails.
+  tool, separating active state from append-only registrar decisions. The registrar now
+  delegates to `ToolPromotionCoordinator`, an explicit promotion boundary that returns
+  metadata, migration records, and journal records together. Remaining work is replacing
+  that boundary with a true all-or-nothing Postgres transaction that applies/records
+  migrations, activates the package, reloads runtime, and rolls back cleanly if any step
+  fails.
 - Add safe database maintenance actions from Trace Lab/Tool Detail/Tool Builds: the agent
   can create an auditable request to delete, repair, backfill, or compact records related
   to a source run/thread/tool, but execution must support dry-run preview, policy

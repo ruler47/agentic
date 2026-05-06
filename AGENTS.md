@@ -290,6 +290,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   promotion journal contract and in-memory implementation.
 - [src/tools/postgresToolPromotionStore.ts](src/tools/postgresToolPromotionStore.ts) -
   Postgres-backed `tool_promotions` journal.
+- [src/tools/toolPromotionCoordinator.ts](src/tools/toolPromotionCoordinator.ts) -
+  explicit generated-tool promotion boundary for metadata, migration manifests, and
+  promotion journal evidence.
 - [src/tools/toolBuildRequestStore.ts](src/tools/toolBuildRequestStore.ts) - Tool Builder
   request/contract/lifecycle/QA criteria model.
 - [src/tools/postgresToolBuildRequestStore.ts](src/tools/postgresToolBuildRequestStore.ts)
@@ -442,6 +445,7 @@ For documentation-only changes:
   recording, API listing, payload redaction, and audit emission.
 - `tests/toolMigrationStore.test.ts` covers tool-owned migration metadata lifecycle.
 - `tests/toolPromotionStore.test.ts` covers generated tool promotion journal entries.
+- `tests/toolPromotionCoordinator.test.ts` covers the generated-tool promotion boundary.
 - `tests/toolBuildWorkflow.test.ts` covers Builder/QA/Registrar orchestration and failed
   QA registration blocking.
 - `tests/toolBuildProviders.test.ts` covers provider-backed TypeScript generation and
@@ -698,6 +702,9 @@ For documentation-only changes:
 - Generated promotions are also appended to `tool_promotions`. Treat `tool_modules` as
   the current active state and `tool_promotions` as the operator journal of promotion
   decisions.
+- Keep generated-tool registration logic behind `ToolPromotionCoordinator` so the next
+  phase can replace the current multi-store writes with a true Postgres transaction
+  without changing Tool Builder providers.
 - Destructive database operations requested through a tool bug/rework flow must become
   explicit auditable capabilities with exact scope, dry-run preview, policy/approval
   checks, and audit events. Do not satisfy them by running arbitrary one-off SQL.
