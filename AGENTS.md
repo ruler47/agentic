@@ -646,6 +646,10 @@ For documentation-only changes:
 - Trace Lab span-originated Tool Build/Bug requests should carry rejected artifact QA
   evidence when present, so generated-tool rework receives the artifact filename, MIME
   type, QA reason, score, and signals rather than only a generic span detail.
+- Semantic artifact QA decision `blocked_or_loader` means the evidence likely failed due
+  to an external provider/site limitation. Record the blocker in trace and avoid creating
+  an automatic tool rework request unless there is separate evidence the tool contract is
+  actually insufficient.
 - Generated tool versions are persisted in `tool_module_versions`. `tool_modules`
   represents the active version, while older registered versions remain available for
   inspection and explicit activation through the Tools UI/API.

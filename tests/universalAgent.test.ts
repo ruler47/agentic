@@ -483,6 +483,71 @@ test("UniversalAgent retries an artifact tool once when a reworked version is im
   }
 });
 
+test("UniversalAgent records external screenshot blockers without requesting tool rework", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"direct","reason":"small proof task","domains":["browser"],"riskLevel":"low"}',
+    "Не удалось получить полезный скриншот: страница показывает внешний blocker.",
+    '{"shouldStore":false}',
+  ]);
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "generated.browser.screenshot",
+    version: "1.0.0",
+    description: "Fake generated screenshot tool.",
+    capabilities: ["browser-screenshot", "artifact-generation"],
+    async run() {
+      return {
+        ok: true,
+        content: "Captured https://www.instagram.com/, page text: Instagram from Meta loading.",
+        data: {
+          artifact: {
+            filename: "proof-instagram.png",
+            mimeType: "image/png",
+            contentBase64: usefulPngBuffer().toString("base64"),
+            description: "Browser screenshot captured from Instagram from Meta loading page.",
+          },
+          url: "https://www.instagram.com/",
+        },
+      };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const requestedBuilds: ToolBuildRequestInput[] = [];
+  const events: AgentEvent[] = [];
+
+  try {
+    const result = await agent.run("Сделай скриншот доказательства профиля Instagram deadp47: https://www.instagram.com/deadp47/.", {
+      saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
+        id: "artifact-should-not-save",
+        runId: "run-1",
+        kind: "output",
+        filename: artifact.filename,
+        mimeType: artifact.mimeType,
+        sizeBytes: 1,
+        url: "/artifact",
+        createdAt: new Date().toISOString(),
+      }),
+      requestToolBuild: async (request) => {
+        requestedBuilds.push(request);
+        throw new Error("external blockers should not create tool rework requests");
+      },
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    assert.equal(requestedBuilds.length, 0);
+    assert.equal(result.artifacts?.length ?? 0, 0);
+    assert.ok(events.some((event) => event.title === "External artifact blocker detected"));
+    assert.ok(events.some((event) => event.status === "failed" && /semantic QA/.test(event.title)));
+    assert.equal(fakeLlm.callCount, 3);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent can use a newly built screenshot tool in the same run", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));

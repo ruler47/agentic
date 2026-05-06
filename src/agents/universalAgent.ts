@@ -1734,6 +1734,19 @@ export class UniversalAgent {
           durationMs: elapsedMs(artifactStartedAt),
           payload: { artifact: sanitizeArtifactInput(artifactInput), artifactQa },
         });
+        if (artifactQa.decision === "blocked_or_loader") {
+          await this.recordExternalArtifactBlocker(
+            {
+              tool,
+              capability,
+              artifactQa,
+              artifact: artifactInput,
+            },
+            emit,
+            artifactSpanId,
+          );
+          return undefined;
+        }
         const buildRequest = await this.handleInsufficientToolCapability(
           {
             tool,
@@ -1805,6 +1818,48 @@ export class UniversalAgent {
     });
 
     return artifact;
+  }
+
+  private async recordExternalArtifactBlocker(
+    input: {
+      tool: Tool;
+      capability: string;
+      artifactQa: ReturnType<typeof inspectBrowserScreenshotEvidence>;
+      artifact: ArtifactCreateInput;
+    },
+    emit: AgentEventEmitter,
+    parentSpanId: string,
+  ): Promise<void> {
+    const startedAt = new Date();
+    await emit({
+      spanId: createSpanId(`artifact-blocker-${input.capability}`),
+      parentSpanId,
+      type: "learning-completed",
+      actor: "artifact:qa",
+      activity: "tool",
+      status: "completed",
+      title: "External artifact blocker detected",
+      detail: [
+        input.artifact.filename,
+        input.artifactQa.reason,
+        input.artifactQa.blockerSignals.length
+          ? `Blocker signals: ${input.artifactQa.blockerSignals.join(", ")}`
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(startedAt),
+      payload: {
+        tool: input.tool.name,
+        version: input.tool.version,
+        capability: input.capability,
+        artifact: sanitizeArtifactInput(input.artifact),
+        artifactQa: input.artifactQa,
+        limitationType: "external-blocker",
+      },
+    });
   }
 
   private findReworkedTool(tool: Tool, capability: string, reworkRetryKeys: Set<string>): Tool | undefined {
