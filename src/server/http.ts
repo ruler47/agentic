@@ -564,7 +564,8 @@ async function routeRequest(
     }
 
     const memories = await options.skillMemory.list({ status: "proposed", includeArchived: true });
-    const reviews = reviewMemoryProposals(memories);
+    const acceptedMemories = await options.skillMemory.list({ status: "accepted", includeArchived: true });
+    const reviews = reviewMemoryProposals(memories, [...memories, ...acceptedMemories]);
     sendJson(response, 200, {
       memories,
       reviews,

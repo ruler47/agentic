@@ -1411,6 +1411,61 @@ test("web server supports scoped memory review lifecycle", async () => {
   }
 });
 
+test("web server memory review queue compares proposals against accepted scoped memory", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  const memoryDir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const skillMemory = new SkillMemory(join(memoryDir, "skills.json"));
+  await skillMemory.add({
+    title: "Telegram thread routing",
+    tags: ["telegram"],
+    summary: "Telegram messages from whitelisted users should stay in the active thread.",
+    reusableProcedure: "Resolve the channel identity and append follow-ups to the existing thread.",
+    scope: "group",
+    scopeId: "group-local",
+    status: "accepted",
+    confidence: 0.9,
+    sourceRunId: "run-accepted",
+    evidence: ["accepted by operator"],
+  });
+  const proposed = await skillMemory.add({
+    title: "Telegram routing duplicate",
+    tags: ["telegram"],
+    summary: "Telegram messages from whitelisted users should stay in the active thread.",
+    reusableProcedure: "Resolve the channel identity and append follow-ups to the existing thread.",
+    scope: "group",
+    scopeId: "group-local",
+    status: "proposed",
+    confidence: 0.9,
+    sourceRunId: "run-proposed",
+    evidence: ["new run repeated the same lesson"],
+  });
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    skillMemory,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const reviewQueue = await (await fetch(`${baseUrl}/api/memories/review-queue`)).json();
+
+    assert.equal(reviewQueue.summary.total, 1);
+    assert.equal(reviewQueue.reviews[0].memoryId, proposed.id);
+    assert.equal(reviewQueue.reviews[0].status, "needs_review");
+    assert.equal(
+      reviewQueue.reviews[0].findings.some((finding: { code: string }) => finding.code === "possible_duplicate"),
+      true,
+    );
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("web server exposes tool build requests", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");

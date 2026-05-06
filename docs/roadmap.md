@@ -305,9 +305,11 @@ Remaining memory gaps:
 - Memory proposals from completed runs are classified into group/user/thread/run scope by
   the learning model, audited as `memory.created`, and checked by deterministic
   memory-specialist guardrails before storage. Low-confidence or policy-risky learned
-  memories stay `proposed` even if the model requested `accepted`. A separate LLM
-  memory-specialist reviewer remains a future upgrade for semantic duplication,
-  privacy-risk explanation, and evidence grading.
+  memories stay `proposed` even if the model requested `accepted`. The review queue now
+  compares proposed memories against accepted/proposed memories in the same exact scope
+  and warns about likely duplicates or same-title conflicts before operator accept. A
+  separate LLM memory-specialist reviewer remains a future upgrade for deeper semantic
+  duplication, privacy-risk explanation, and evidence grading.
 - Memory policy simulation currently uses the selected run context and deterministic
   rules. It is not yet connected to editable role/policy records or audit decisions.
 
