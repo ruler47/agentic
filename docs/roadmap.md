@@ -793,8 +793,11 @@ Remaining Phase 3 gaps:
   replacement, reload the registry, and retry the tool call once when a current tool is
   close but insufficient. PARTIAL: prompts now require workers to identify reusable tool
   improvement needs with tool name/current behavior/desired behavior/acceptance test; the
-  runtime already does this for missing capabilities. Remaining work is automatic
-  insufficient-tool rework execution and bounded retry.
+  runtime already does this for missing capabilities. Artifact-producing tool failures
+  and semantic artifact QA failures now create contextual versioned rework requests with
+  source span id, tool name/version, input/output summaries, and `replacesVersion` for
+  generated tools. Remaining work is waiting for the QA-approved promoted replacement,
+  reloading the registry, and retrying the tool call once in the same run.
 - Next roadmap focus after the background worker: scoped semantic memory with group,
   user, and thread facts; review queue; confidence; accepted/rejected fact lifecycle.
 

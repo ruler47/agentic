@@ -1280,6 +1280,7 @@ export class UniversalAgent {
         "artifact:chart",
         "Chart artifact generated",
         toolExecutionContext,
+        requestToolBuild,
       );
     }
 
@@ -1317,6 +1318,7 @@ export class UniversalAgent {
       `artifact:${requirement.kind}`,
       `${capitalize(requirement.kind)} artifact generated`,
       toolExecutionContext,
+      requestToolBuild,
     );
   }
 
@@ -1459,6 +1461,7 @@ export class UniversalAgent {
       "artifact:chart",
       "Chart artifact generated",
       toolExecutionContext,
+      requestToolBuild,
     );
   }
 
@@ -1534,6 +1537,7 @@ export class UniversalAgent {
         "artifact:screenshot",
         "Screenshot artifact generated",
         toolExecutionContext,
+        requestToolBuild,
       );
     }
 
@@ -1555,6 +1559,7 @@ export class UniversalAgent {
       "artifact:screenshot",
       "Screenshot artifact generated",
       toolExecutionContext,
+      requestToolBuild,
     );
   }
 
@@ -1613,6 +1618,7 @@ export class UniversalAgent {
     artifactActor: string,
     artifactTitle: string,
     toolExecutionContext?: BaseToolExecutionContext,
+    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
   ): Promise<AgentArtifact | undefined> {
     const spanId = createSpanId(`tool-${tool.name}`);
     const startedAt = new Date();
@@ -1650,6 +1656,20 @@ export class UniversalAgent {
         durationMs: elapsedMs(startedAt),
         payload: sanitizeToolPayload(toolResult),
       });
+      await this.handleInsufficientToolCapability(
+        {
+          tool,
+          capability,
+          reason: `Tool ${tool.name} could not produce a valid ${artifactTitle}: ${toolResult.content}`,
+          detail,
+          input,
+          output: toolResult,
+          sourceSpanId: spanId,
+        },
+        emit,
+        parentSpanId,
+        requestToolBuild,
+      );
       return undefined;
     }
 
@@ -1693,6 +1713,20 @@ export class UniversalAgent {
           durationMs: elapsedMs(artifactStartedAt),
           payload: { artifact: sanitizeArtifactInput(artifactInput), artifactQa },
         });
+        await this.handleInsufficientToolCapability(
+          {
+            tool,
+            capability,
+            reason: `Tool ${tool.name} returned an artifact that failed semantic QA: ${artifactQa.reason}`,
+            detail,
+            input,
+            output: toolResult,
+            sourceSpanId: spanId,
+          },
+          emit,
+          artifactSpanId,
+          requestToolBuild,
+        );
         return undefined;
       }
       artifactInput = {
@@ -1771,6 +1805,68 @@ export class UniversalAgent {
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(buildStartedAt),
       payload: { request: buildRequest },
+    });
+
+    return buildRequest;
+  }
+
+  private async handleInsufficientToolCapability(
+    issue: {
+      tool: Tool;
+      capability: string;
+      reason: string;
+      detail: string;
+      input: ToolInput;
+      output: ToolResult;
+      sourceSpanId: string;
+    },
+    emit: AgentEventEmitter,
+    parentSpanId: string,
+    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
+  ): Promise<ToolBuildRequest | undefined> {
+    if (!requestToolBuild) return undefined;
+
+    const startedAt = new Date();
+    const isGenerated = issue.tool.name.startsWith("generated.");
+    const request: ToolBuildRequestInput = {
+      capability: issue.capability,
+      displayName: `${issue.tool.displayName ?? issue.tool.name} improvement`,
+      reason: [
+        issue.reason,
+        `Current tool: ${issue.tool.name}${issue.tool.version ? `@${issue.tool.version}` : ""}.`,
+        `Task/tool context: ${issue.detail}`,
+        `Input summary: ${summarizeToolInput(issue.input)}`,
+        `Output summary: ${issue.output.content}`,
+      ].join("\n\n"),
+      sourceSpanId: issue.sourceSpanId,
+      taskSummary: issue.detail.slice(0, 1200),
+      desiredToolName: isGenerated ? issue.tool.name : undefined,
+      replacesToolName: isGenerated ? issue.tool.name : undefined,
+      replacesVersion: isGenerated && issue.tool.version ? issue.tool.version : undefined,
+      feedback: issue.reason,
+      requiredInputs: Object.keys(issue.input).slice(0, 8),
+      requiredOutputs: ["content", "data", "artifact"],
+      qaCriteria: [
+        "Reproduce the observed insufficient-tool behavior from the source span context.",
+        "Keep the tool reusable and capability-oriented; do not hard-code the original task.",
+        "Add tests for the previous failure plus a successful corrected behavior.",
+        "Register a new version only after QA and runtime activation pass.",
+      ],
+    };
+    const buildRequest = await requestToolBuild(request);
+    await emit({
+      spanId: createSpanId(`tool-rework-${issue.capability}`),
+      parentSpanId,
+      type: "tool-build-requested",
+      actor: "tool-builder",
+      activity: "tool",
+      status: "completed",
+      title: `Tool rework requested: ${issue.tool.name}`,
+      detail: `${buildRequest.contract.toolName}\n${buildRequest.contract.modulePath}\n${buildRequest.contract.testPath}`,
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(startedAt),
+      payload: { request: buildRequest, sourceTool: issue.tool.name, sourceToolVersion: issue.tool.version },
     });
 
     return buildRequest;

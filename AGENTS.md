@@ -634,7 +634,10 @@ For documentation-only changes:
   schemas, acceptance criteria, and QA criteria before any generated code is promoted.
 - Existing capabilities that are too weak should create a rework request for a new tool
   version. Do not silently overwrite the old version; preserve changelog, QA evidence,
-  failure context, and promotion decision.
+  failure context, and promotion decision. Artifact-producing tool failures and semantic
+  artifact QA failures create contextual Tool Build rework requests with source span id,
+  tool name/version, input/output summary, `replacesToolName`, and `replacesVersion` when
+  a generated tool is the source.
 - Generated tool versions are persisted in `tool_module_versions`. `tool_modules`
   represents the active version, while older registered versions remain available for
   inspection and explicit activation through the Tools UI/API.

@@ -306,6 +306,83 @@ test("UniversalAgent records a tool build request when a required capability is 
   }
 });
 
+test("UniversalAgent requests a versioned tool rework when an existing generated artifact tool is insufficient", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"direct","reason":"small artifact task","domains":["visualization"],"riskLevel":"low"}',
+    "I tried to attach a chart, but the current tool could not parse the data.",
+    '{"shouldStore":false}',
+  ]);
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "generated.chart.generation",
+    version: "1.0.0",
+    description: "Generated chart tool with insufficient behavior.",
+    capabilities: ["chart-generation"],
+    async run() {
+      return { ok: false, content: "Could not parse arbitrary series data." };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const requestedBuilds: ToolBuildRequestInput[] = [];
+  const events: AgentEvent[] = [];
+
+  try {
+    await agent.run('Построй график по данным {"series":[{"x":"2026-01-01","y":1}]}', {
+      saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
+        id: "artifact-1",
+        runId: "run-1",
+        kind: "output",
+        filename: artifact.filename,
+        mimeType: artifact.mimeType,
+        sizeBytes: 1,
+        url: "/artifact",
+        createdAt: new Date().toISOString(),
+      }),
+      requestToolBuild: async (request) => {
+        requestedBuilds.push(request);
+        return {
+          ...request,
+          id: "toolbuild-rework-1",
+          status: "requested",
+          contract: {
+            toolName: request.desiredToolName ?? "generated.chart.generation",
+            version: "1.1.0",
+            modulePath: "src/tools/generated/chart-generation-v1-1-0Tool.ts",
+            testPath: "tests/generated/chart-generation-v1-1-0Tool.test.ts",
+            capability: request.capability,
+            description: "Generated chart tool rework",
+            startupMode: "on-demand",
+            inputSchema: { type: "object", properties: {}, required: [] },
+            outputSchema: { type: "object", properties: {}, required: [] },
+            acceptanceCriteria: ["works"],
+            qaCriteria: ["tested"],
+            builderInstructions: ["build"],
+            replacesVersion: request.replacesVersion,
+          },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      },
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    assert.equal(requestedBuilds.length, 1);
+    assert.equal(requestedBuilds[0]?.capability, "chart-generation");
+    assert.equal(requestedBuilds[0]?.desiredToolName, "generated.chart.generation");
+    assert.equal(requestedBuilds[0]?.replacesToolName, "generated.chart.generation");
+    assert.equal(requestedBuilds[0]?.replacesVersion, "1.0.0");
+    assert.match(requestedBuilds[0]?.reason ?? "", /Could not parse arbitrary series data/);
+    assert.ok(events.some((event) => event.type === "tool-build-requested" && event.title.includes("Tool rework")));
+    assert.equal(fakeLlm.callCount, 3);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent can use a newly built screenshot tool in the same run", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));
