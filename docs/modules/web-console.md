@@ -162,6 +162,13 @@ GET /api/tool-investigations
 POST /api/tool-investigations
 GET /api/tool-investigations/:id
 PATCH /api/tool-investigations/:id
+POST /api/tool-investigations/:id/promote
+GET /api/tool-rework-waits
+POST /api/tool-rework-waits
+GET /api/tool-rework-waits/:id
+PATCH /api/tool-rework-waits/:id
+POST /api/tool-rework-waits/:id/resume
+GET /api/runs/:id/tool-rework-waits
 GET /api/secret-handles
 POST /api/secret-handles
 GET /api/secret-handles/:handle
@@ -916,8 +923,83 @@ investigation, and shows the created ticket id on success. When the selected spa
 clear matching registered tool (by exact actor/payload), the modal renders a warning and
 saves the ticket as `manual` instead of guessing a target tool. The Tool Builds page
 exposes the same tickets as a top "Tool Investigations" panel with a one-click "Promote
-to Tool Build request" action that creates a build through the existing tool-build API
-and links the build id back to the investigation.
+to Tool Build request" action.
+
+`POST /api/tool-investigations/:id/promote` is the server-side promotion path: it creates
+a tool build request from the investigation context, links it as `linked_to_build`, and,
+when the investigation has a `runId`, opens a Tool Rework Wait that parks the run in
+`waiting_tool_rework` until the build is registered or the operator closes the wait.
+
+Promotion is **deterministic**, not fuzzy:
+
+- If `investigation.toolName` matches an installed tool in the registry, capability,
+  `replacesToolName`, `replacesVersion`, and startup mode come from that tool's
+  metadata. No keyword inference can override the matched tool.
+- If `investigation.toolName` is set but does not match any installed tool, the API
+  returns `400` with `code=investigation_promotion_ambiguous` and asks the operator to
+  pass explicit `capability` and `desiredToolName` in the request body.
+- If the investigation has no `toolName`, the API returns the same `400` unless the body
+  explicitly provides both `capability` and `desiredToolName`.
+
+The investigation's `runId` is also validated against the run store before any wait is
+created. A missing run causes a `400` instead of silently leaving an orphan wait.
+
+## Tool Rework Waits And Run Resume
+
+Tool Rework Waits are the durable link between a failing run, the investigation/build
+chain that explains the failure, and the eventual resume. They turn `failed` runs that
+need a tool upgrade into `waiting_tool_rework` runs without losing operator visibility.
+
+A wait record has:
+
+- `id`, `runId`, optional `spanId`;
+- `status` (`waiting` | `build_running` | `promoted` | `resumed` | `failed` |
+  `cancelled`);
+- `reason`;
+- optional `toolName`, `toolVersion`, `investigationId`, `buildRequestId`;
+- optional `promotedVersion` once the build registers;
+- optional `retryRunId` / `retrySpanId` once the wait is resumed (Phase 2 will populate
+  these automatically from the recursive retry engine);
+- `createdAt`, `updatedAt`.
+
+API:
+
+- `GET /api/tool-rework-waits` — list recent waits (newest first).
+- `GET /api/runs/:id/tool-rework-waits` — list waits scoped to one run.
+- `GET /api/tool-rework-waits/:id` — fetch a single wait. 404 when missing.
+- `POST /api/tool-rework-waits` — create a wait. Required fields: `runId`, `reason`. The
+  server validates that any provided `buildRequestId`/`investigationId` exists, creates
+  the wait, marks the run as `waiting_tool_rework`, and audits
+  `tool_rework_wait.created`.
+- `PATCH /api/tool-rework-waits/:id` — update `status`, `reason`, references, or retry
+  pointers. Audits `tool_rework_wait.updated`.
+- `POST /api/tool-rework-waits/:id/resume` — only allowed when status is `promoted`.
+  This is the **"mark ready for retry / close wait"** handoff: the wait moves to
+  `resumed`, the run returns from `waiting_tool_rework` back to `failed` so an operator
+  can re-issue the original task with the new tool version, and `tool_rework_wait.resumed`
+  is audited. The endpoint does **not** automatically retry the agent — the recursive
+  retry/resume engine is Phase 2. Pass `{ "retryRunId": "..." }` to record an existing
+  retry run id when one already exists.
+
+All endpoints return 503 when the wait store is not configured.
+
+When a tool build request transitions to `registered` (through PATCH or the workflow
+runner), every matching wait is automatically promoted to `promoted`, the registered
+tool name is propagated, and a `tool_rework_wait.updated` audit event is recorded.
+
+UI surfaces:
+
+- Run Workspace shows a "Waiting for tool upgrade" panel above the answer card whenever
+  active waits exist for the selected run, with status, reason, and shortcuts to Tool
+  Builds and Trace Lab.
+- Trace Lab inspector renders the linked wait/build/investigation card next to the
+  selected span when a wait is open.
+- Tool Builds investigation cards and build cards show their linked waits, including a
+  `Mark ready for retry` button when the wait is `promoted`. The button explicitly
+  closes the wait and returns the run to `failed`; it does **not** pretend to start a new
+  agent run automatically.
+- The Runs list and dashboard activity surfaces show `waiting_tool_rework` as a separate
+  status badge so paused runs are not confused with failures.
 
 ## Always-On Tool UX
 

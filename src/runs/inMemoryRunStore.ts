@@ -55,7 +55,7 @@ export class InMemoryRunStore implements RunStore {
 
   async complete(id: string, result: AgentRunResult): Promise<void> {
     const run = this.mustGet(id);
-    if (run.status === "cancelled") return;
+    if (run.status === "cancelled" || run.status === "waiting_tool_rework") return;
     run.status = "completed";
     run.result = result;
     run.updatedAt = new Date().toISOString();
@@ -63,7 +63,7 @@ export class InMemoryRunStore implements RunStore {
 
   async fail(id: string, error: string): Promise<void> {
     const run = this.mustGet(id);
-    if (run.status === "cancelled") return;
+    if (run.status === "cancelled" || run.status === "waiting_tool_rework") return;
     run.status = "failed";
     run.error = error;
     run.updatedAt = new Date().toISOString();
@@ -73,6 +73,22 @@ export class InMemoryRunStore implements RunStore {
     const run = this.mustGet(id);
     if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") return;
     run.status = "cancelled";
+    run.error = reason;
+    run.updatedAt = new Date().toISOString();
+  }
+
+  async markWaitingForToolRework(id: string, reason: string): Promise<void> {
+    const run = this.mustGet(id);
+    if (run.status === "cancelled" || run.status === "completed") return;
+    run.status = "waiting_tool_rework";
+    run.error = reason;
+    run.updatedAt = new Date().toISOString();
+  }
+
+  async resumeFromToolRework(id: string, reason: string): Promise<void> {
+    const run = this.mustGet(id);
+    if (run.status !== "waiting_tool_rework") return;
+    run.status = "failed";
     run.error = reason;
     run.updatedAt = new Date().toISOString();
   }

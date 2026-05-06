@@ -312,6 +312,11 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   sanitization.
 - [src/tools/postgresToolInvestigationStore.ts](src/tools/postgresToolInvestigationStore.ts)
   - Postgres-backed `tool_investigations` table.
+- [src/runs/toolReworkWaitStore.ts](src/runs/toolReworkWaitStore.ts) - Tool Rework Wait
+  model, in-memory store, and lifecycle helpers that link a paused run to an
+  investigation, build request, promoted version, and optional retry pointers.
+- [src/runs/postgresToolReworkWaitStore.ts](src/runs/postgresToolReworkWaitStore.ts)
+  - Postgres-backed `tool_rework_waits` table.
 - [src/tools/toolBuildWorkflow.ts](src/tools/toolBuildWorkflow.ts) - reusable Builder/QA/
   review/Registrar orchestration flow for missing tool capabilities.
 - [src/tools/toolBuildReviewers.ts](src/tools/toolBuildReviewers.ts) - deterministic and
@@ -459,6 +464,8 @@ For documentation-only changes:
 - `tests/toolMetadataStore.test.ts` covers tool metadata and Tool Build Queue lifecycle.
 - `tests/toolInvestigationStore.test.ts` covers Tool Investigation Ticket lifecycle and
   context-bundle secret redaction.
+- `tests/toolReworkWaitStore.test.ts` covers the Tool Rework Wait in-memory store
+  lifecycle and required-field validation.
 - `tests/toolServiceSupervisor.test.ts` covers generic always-on tool lifecycle state,
   status-store persistence across supervisor instances, reconciliation, and lifecycle
   logs.
@@ -625,6 +632,30 @@ For documentation-only changes:
   matching `secret`, `token`, `password`, `apiKey`, `api_key`, `credential`, or
   `authorization` to `"[redacted]"` before persistence. Promotion to a Tool Build request
   must continue to use scoped secret handles for credentials.
+- A run that fails because an existing tool is too weak should not stay terminal as
+  `failed`. Promote the linked investigation through `POST /api/tool-investigations/:id/
+  promote`; the server creates a Tool Build request, opens a `tool_rework_waits` row, and
+  marks the run as `waiting_tool_rework`. Promotion is deterministic: if
+  `investigation.toolName` matches the tool registry, capability and replacement target
+  come from that tool's metadata. Unknown `toolName` or missing tool metadata returns 400
+  with `code=investigation_promotion_ambiguous` so the operator must provide explicit
+  `capability` and `desiredToolName` instead of letting fuzzy text inference target the
+  wrong tool.
+- When the tool build reaches `registered` (PATCH or workflow runOnce), the matching
+  wait moves to `promoted`. The operator action `POST /api/tool-rework-waits/:id/resume`
+  is **"mark ready for retry / close wait"**: it records the decision and returns the run
+  to `failed` so the operator can re-issue the task with the new tool version. It is not
+  an automatic agent retry. The recursive retry engine (Phase 2) is what will populate
+  `retryRunId`/`retrySpanId` automatically. Audit `tool_rework_wait.created`,
+  `tool_rework_wait.updated`, and `tool_rework_wait.resumed` for every state transition.
+- `RunStore.complete()` and `RunStore.fail()` must not overwrite a `waiting_tool_rework`
+  run. A late agent completion or failure that arrives after the run was paused for tool
+  rework is silently ignored, so the wait stays the source of truth until the operator
+  closes it. The same protection covers `cancelled`. The Postgres run store enforces this
+  through `where status not in ('cancelled', 'waiting_tool_rework')` clauses.
+- `POST /api/tool-rework-waits` and the promote-created wait flow both validate the
+  source `runId` through `runStore.get()` before any wait is created. Errors from
+  `markWaitingForToolRework` are surfaced to the caller; they are not swallowed.
 - Conversation deletion is destructive: `DELETE /api/conversation-threads/:id` deletes the
   thread, its messages, all runs with that `threadId`, and their trace events/artifact
   metadata through run cascades. Keep UI copy explicit about the blast radius.

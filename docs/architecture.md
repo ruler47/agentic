@@ -366,6 +366,30 @@ register the tool, and store credentials through secret handles rather than prom
 This same flow should be used for API clients, bots, webhooks, artifact renderers,
 browser helpers, data acquisition modules, and any other capability family.
 
+### Async Tool Rework And Run Resume
+
+The Tool Builder flow above repairs the registry. The runtime also needs a durable link
+between *the run that hit a too-weak tool* and *the build/rework that fixes it*. That link
+is the `tool_rework_waits` record:
+
+```text
+failing run + span
+  -> Tool Investigation Ticket preserves failure context (Phase 1.5)
+  -> POST /api/tool-investigations/:id/promote creates a Tool Build request and a
+     `tool_rework_waits` row for the originating run
+  -> the run moves to status `waiting_tool_rework` instead of plain `failed`
+  -> Builder/QA/Registrar lifecycle eventually reaches `registered`
+  -> matching wait flips to `promoted` with the new tool name/version
+  -> operator (Phase 1.6) or recursive agent retry engine (Phase 2) calls
+     POST /api/tool-rework-waits/:id/resume to clear the wait and feed the retry
+```
+
+The run states form a single non-overlapping lifecycle:
+`queued -> running -> { completed | failed | cancelled | waiting_tool_rework }`. From
+`waiting_tool_rework` the only durable transitions are back to `failed` (when resume is
+declined or the recursive engine surfaces a permanent block) or forward to a new retry
+run linked through the wait's `retryRunId`.
+
 ### Model Tiers
 
 Each LLM step receives a selected model tier based on task risk and activity type.

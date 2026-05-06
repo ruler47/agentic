@@ -146,7 +146,7 @@ export class PostgresRunStore implements RunStore {
       `
         update runs
         set status = 'completed', result = $1, updated_at = $2, error = null
-        where id = $3 and status <> 'cancelled'
+        where id = $3 and status not in ('cancelled', 'waiting_tool_rework')
       `,
       [JSON.stringify(result), new Date(), id],
     );
@@ -157,7 +157,7 @@ export class PostgresRunStore implements RunStore {
       `
         update runs
         set status = 'failed', error = $1, updated_at = $2
-        where id = $3 and status <> 'cancelled'
+        where id = $3 and status not in ('cancelled', 'waiting_tool_rework')
       `,
       [error, new Date(), id],
     );
@@ -169,6 +169,28 @@ export class PostgresRunStore implements RunStore {
         update runs
         set status = 'cancelled', error = $1, updated_at = $2
         where id = $3 and status in ('queued', 'running')
+      `,
+      [reason, new Date(), id],
+    );
+  }
+
+  async markWaitingForToolRework(id: string, reason: string): Promise<void> {
+    await this.pool.query(
+      `
+        update runs
+        set status = 'waiting_tool_rework', error = $1, updated_at = $2
+        where id = $3 and status not in ('completed', 'cancelled')
+      `,
+      [reason, new Date(), id],
+    );
+  }
+
+  async resumeFromToolRework(id: string, reason: string): Promise<void> {
+    await this.pool.query(
+      `
+        update runs
+        set status = 'failed', error = $1, updated_at = $2
+        where id = $3 and status = 'waiting_tool_rework'
       `,
       [reason, new Date(), id],
     );

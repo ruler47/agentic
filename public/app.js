@@ -66,6 +66,7 @@ const state = {
   investigations: [],
   investigationModal: undefined,
   investigationModalNotice: undefined,
+  toolReworkWaits: [],
   secretHandles: [],
   tiers: [],
   modelProviders: [],
@@ -212,6 +213,7 @@ document.addEventListener("click", (event) => {
     eventId,
     investigationId,
     investigationStatus,
+    waitId,
   } = action.dataset;
   if (actionName === "navigate" && route) {
     navigate(route);
@@ -328,6 +330,12 @@ document.addEventListener("click", (event) => {
   if (actionName === "update-investigation-status" && investigationId && investigationStatus) {
     void updateInvestigation(investigationId, { status: investigationStatus });
   }
+  if (actionName === "resume-tool-rework-wait" && waitId) {
+    void resumeToolReworkWait(waitId);
+  }
+  if (actionName === "cancel-tool-rework-wait" && waitId) {
+    void cancelToolReworkWait(waitId);
+  }
 });
 
 document.addEventListener("pointerover", (event) => {
@@ -420,6 +428,7 @@ async function refreshData(options = {}) {
       toolSettings,
       buildRequests,
       investigations,
+      toolReworkWaits,
       secretHandles,
       toolServices,
       toolServiceLogs,
@@ -444,6 +453,9 @@ async function refreshData(options = {}) {
       fetchJson("/api/tool-build-requests").then((data) => data.requests ?? []),
       fetchJson("/api/tool-investigations")
         .then((data) => data.investigations ?? [])
+        .catch(() => []),
+      fetchJson("/api/tool-rework-waits")
+        .then((data) => data.waits ?? [])
         .catch(() => []),
       fetchJson("/api/secret-handles").then((data) => data.secretHandles ?? []),
       fetchJson("/api/tool-services").then((data) => data.services ?? []),
@@ -470,6 +482,7 @@ async function refreshData(options = {}) {
       toolSettings,
       buildRequests,
       investigations,
+      toolReworkWaits,
       secretHandles,
       toolServices,
       toolServiceLogs,
@@ -537,6 +550,7 @@ function dataFingerprint(data) {
     toolSettings: data.toolSettings,
     buildRequests: data.buildRequests,
     investigations: data.investigations,
+    toolReworkWaits: data.toolReworkWaits,
     secretHandles: data.secretHandles,
     toolServices: data.toolServices,
     toolServiceLogs: data.toolServiceLogs,
@@ -919,7 +933,7 @@ function renderRecentActivity(runs) {
 function renderActivityItem(run) {
   return `
     <button type="button" class="activity-item" data-action="select-run" data-run-id="${run.id}">
-      <span class="activity-icon">${run.status === "completed" ? "✓" : run.status === "failed" ? "!" : run.status === "cancelled" ? "×" : "•"}</span>
+      <span class="activity-icon">${run.status === "completed" ? "✓" : run.status === "failed" ? "!" : run.status === "cancelled" ? "×" : run.status === "waiting_tool_rework" ? "⏸" : "•"}</span>
       <span class="activity-copy">
         <strong>${escapeHtml(run.task)}</strong>
         <small>${run.channel ?? "web"} · ${run.requesterUserId ?? "user-admin"} · ${formatRelative(run.updatedAt)}</small>
@@ -1039,6 +1053,7 @@ function renderRunWorkspace(run) {
       </header>
       <div class="run-result-layout">
         <section class="result-column">
+          ${renderRunWaitPanel(run)}
           ${resultCard("Task Prompt", run.task)}
           ${resultCard("Final Answer", runStatusMessage(run))}
           ${renderArtifactStrip(artifacts)}
@@ -1090,7 +1105,67 @@ function resultCard(title, content) {
 function runStatusMessage(run) {
   if (run.status === "failed") return run.error ?? "Run failed.";
   if (run.status === "cancelled") return run.error ?? "Run cancelled.";
+  if (run.status === "waiting_tool_rework") {
+    return run.error ?? "Run is waiting for a tool upgrade. See the panel above for details.";
+  }
   return run.result?.finalAnswer ?? "Agent is working...";
+}
+
+function waitsForRun(runId) {
+  if (!runId) return [];
+  return state.toolReworkWaits.filter((wait) => wait.runId === runId);
+}
+
+function renderRunWaitPanel(run) {
+  if (!run) return "";
+  const runWaits = waitsForRun(run.id);
+  const pending = runWaits.filter((wait) => wait.status !== "resumed" && wait.status !== "cancelled" && wait.status !== "failed");
+  if (pending.length === 0 && run.status !== "waiting_tool_rework") return "";
+  const panelWaits = pending.length > 0 ? pending : runWaits.slice(0, 1);
+  return `
+    <section class="surface-panel run-wait-panel">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Tool rework wait</span>
+          <h2>Waiting for tool upgrade</h2>
+          <p>This run paused because a registered tool needs to be improved or rebuilt before retrying. The investigation/build queue below preserves the failure context. Once the new tool version is promoted, click <em>Mark ready for retry</em>: the wait closes, the run returns to <code>failed</code>, and an operator can re-issue the task with the new tool. The automatic recursive retry engine arrives in Phase 2.</p>
+        </div>
+        <span class="context-chip">${pending.length} active</span>
+      </div>
+      <div class="wait-list">
+        ${panelWaits.map(renderRunWaitCard).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderRunWaitCard(wait) {
+  const investigation = wait.investigationId
+    ? state.investigations.find((item) => item.id === wait.investigationId)
+    : undefined;
+  const build = wait.buildRequestId
+    ? state.buildRequests.find((item) => item.id === wait.buildRequestId)
+    : undefined;
+  const canResume = wait.status === "promoted";
+  return `
+    <article class="wait-card" data-wait-id="${escapeHtml(wait.id)}">
+      <div class="card-topline">
+        <span>${escapeHtml(formatStatusLabel(wait.status))}</span>
+        <span>${formatRelative(wait.updatedAt ?? wait.createdAt)}</span>
+      </div>
+      <strong>${escapeHtml(wait.toolName ? `Tool: ${wait.toolName}` : "Tool: not matched")}</strong>
+      ${wait.toolVersion ? `<small class="status-note">Version: ${escapeHtml(wait.toolVersion)}${wait.promotedVersion ? ` → ${escapeHtml(wait.promotedVersion)}` : ""}</small>` : ""}
+      ${investigation ? `<small class="status-note">Investigation: <code>${escapeHtml(investigation.id)}</code> (${escapeHtml(investigation.status)})</small>` : ""}
+      ${build ? `<small class="status-note">Build: <code>${escapeHtml(build.id)}</code> (${escapeHtml(build.status)})</small>` : ""}
+      <p class="wait-reason">${escapeHtml(truncate(wait.reason ?? "", 240))}</p>
+      <div class="card-actions">
+        ${canResume ? `<button type="button" class="primary-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>` : ""}
+        ${wait.status !== "resumed" && wait.status !== "cancelled" ? `<button type="button" class="ghost-button" data-action="cancel-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Cancel wait</button>` : ""}
+        ${build ? `<button type="button" class="ghost-button" data-action="navigate" data-route="tool-builds">Open Tool Builds</button>` : ""}
+        ${wait.runId ? `<button type="button" class="ghost-button" data-action="open-trace" data-run-id="${escapeHtml(wait.runId)}">Open Trace Lab</button>` : ""}
+      </div>
+    </article>
+  `;
 }
 
 function renderArtifactStrip(artifacts, expanded = false) {
@@ -1449,8 +1524,44 @@ function renderInspector(node) {
       ${renderInspectorCallFrame(node)}
       ${renderInspectorSelfCheck(node)}
       ${renderInspectorEvidence(node)}
+      ${renderInspectorReworkWait(node)}
       ${renderSpanToolRequestForm(node)}
     </div>
+  `;
+}
+
+function renderInspectorReworkWait(node) {
+  const run = activeRun();
+  if (!run) return "";
+  const matching = waitsForRun(run.id).filter((wait) =>
+    wait.spanId ? wait.spanId === node.spanId : true,
+  );
+  if (matching.length === 0) return "";
+  const wait = matching[0];
+  const investigation = wait.investigationId
+    ? state.investigations.find((item) => item.id === wait.investigationId)
+    : undefined;
+  const build = wait.buildRequestId
+    ? state.buildRequests.find((item) => item.id === wait.buildRequestId)
+    : undefined;
+  return `
+    <section class="context-block rework-wait-card">
+      <div class="rework-wait-heading">
+        <span>Tool rework wait</span>
+        <strong>${escapeHtml(formatStatusLabel(wait.status))}</strong>
+      </div>
+      <dl class="rework-wait-meta">
+        <div><dt>Wait</dt><dd><code>${escapeHtml(wait.id)}</code></dd></div>
+        ${wait.toolName ? `<div><dt>Tool</dt><dd><code>${escapeHtml(wait.toolName)}</code>${wait.toolVersion ? ` v${escapeHtml(wait.toolVersion)}` : ""}${wait.promotedVersion ? ` → v${escapeHtml(wait.promotedVersion)}` : ""}</dd></div>` : ""}
+        ${investigation ? `<div><dt>Investigation</dt><dd><code>${escapeHtml(investigation.id)}</code> (${escapeHtml(investigation.status)})</dd></div>` : ""}
+        ${build ? `<div><dt>Build</dt><dd><code>${escapeHtml(build.id)}</code> (${escapeHtml(build.status)})</dd></div>` : ""}
+      </dl>
+      <p class="muted">${escapeHtml(truncate(wait.reason ?? "", 240))}</p>
+      <div class="card-actions">
+        ${wait.status === "promoted" ? `<button type="button" class="primary-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>` : ""}
+        <button type="button" class="ghost-button" data-action="navigate" data-route="tool-builds">Open Tool Builds</button>
+      </div>
+    </section>
   `;
 }
 
@@ -1822,48 +1933,86 @@ async function updateInvestigation(id, update) {
 async function promoteInvestigationToBuild(id) {
   const investigation = state.investigations.find((item) => item.id === id);
   if (!investigation) return;
-  const run = activeRun();
-  const reasonLines = [
-    `Promoted from Tool Investigation ${investigation.id}.`,
-    investigation.title ? `Title: ${investigation.title}` : "",
-    investigation.operatorComment ? `Operator comment: ${investigation.operatorComment}` : "",
-    investigation.contextBundle?.taskPrompt ? `Task: ${investigation.contextBundle.taskPrompt}` : "",
-    investigation.contextBundle?.error ? `Observed error: ${investigation.contextBundle.error}` : "",
-    investigation.contextBundle?.outputSummary ? `Observed output: ${investigation.contextBundle.outputSummary}` : "",
-  ].filter(Boolean);
-  const reason = reasonLines.join("\n");
-  const tool = investigation.toolName ? state.tools.find((item) => item.name === investigation.toolName) : undefined;
-  const buildPayload = {
-    displayName: tool?.displayName || investigation.toolName || investigation.title,
-    reason,
-    sourceRunId: investigation.runId || run?.id || undefined,
-    sourceSpanId: investigation.spanId || undefined,
-    taskSummary: investigation.contextBundle?.taskPrompt || undefined,
-    desiredToolName: investigation.toolName || undefined,
-    replacesToolName: investigation.toolName || undefined,
-    replacesVersion: investigation.toolVersion || undefined,
-    startupMode: tool?.startupMode || undefined,
-    feedback: investigation.operatorComment || undefined,
-  };
   try {
-    const data = await fetchJson("/api/tool-build-requests", {
+    const data = await fetchJson(`/api/tool-investigations/${encodeURIComponent(id)}/promote`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(buildPayload),
+      body: JSON.stringify({}),
     });
-    state.buildRequests = [data.request, ...state.buildRequests.filter((item) => item.id !== data.request.id)];
-    const updated = await updateInvestigation(id, {
-      status: "linked_to_build",
-      linkedBuildRequestId: data.request.id,
-    });
+    if (data.request) {
+      state.buildRequests = [
+        data.request,
+        ...state.buildRequests.filter((item) => item.id !== data.request.id),
+      ];
+    }
+    if (data.investigation) {
+      state.investigations = state.investigations.map((item) =>
+        item.id === data.investigation.id ? data.investigation : item,
+      );
+    }
+    if (data.wait) {
+      state.toolReworkWaits = [
+        data.wait,
+        ...state.toolReworkWaits.filter((item) => item.id !== data.wait.id),
+      ];
+    }
     state.notice = {
-      title: "Investigation linked to Tool Build",
-      body: `${data.request.capability} is now in the Tool Builds queue (${data.request.id}).`,
+      title: data.wait ? "Investigation promoted; run is waiting for tool upgrade" : "Investigation linked to Tool Build",
+      body: data.wait
+        ? `Tool Build ${data.request.id} created and tool rework wait ${data.wait.id} is open for run ${data.wait.runId}.`
+        : `${data.request?.capability ?? "Tool Build"} is now in the Tool Builds queue (${data.request?.id}).`,
       route: "tool-builds",
       actionLabel: "Open queue",
     };
     render();
-    return updated;
+    return data.investigation;
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function resumeToolReworkWait(id) {
+  try {
+    const data = await fetchJson(`/api/tool-rework-waits/${encodeURIComponent(id)}/resume`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    state.toolReworkWaits = state.toolReworkWaits.map((item) =>
+      item.id === data.wait.id ? data.wait : item,
+    );
+    if (data.wait?.runId) {
+      const refreshed = await fetchJson(`/api/runs/${encodeURIComponent(data.wait.runId)}`).catch(() => undefined);
+      if (refreshed?.run) {
+        state.runs = state.runs.map((run) => (run.id === refreshed.run.id ? refreshed.run : run));
+      }
+    }
+    state.notice = {
+      title: "Tool rework wait closed (ready for retry)",
+      body:
+        `Wait ${data.wait.id} is now marked ready for retry: the run was returned to "failed" so an operator can re-issue it ` +
+        `manually with the new tool version. The automatic recursive retry/resume engine ships in Phase 2.`,
+    };
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function cancelToolReworkWait(id) {
+  if (!window.confirm("Cancel this tool rework wait? The run remains in waiting state until manually closed.")) return;
+  try {
+    const data = await fetchJson(`/api/tool-rework-waits/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "cancelled", reason: "Operator cancelled the wait." }),
+    });
+    state.toolReworkWaits = state.toolReworkWaits.map((item) =>
+      item.id === data.wait.id ? data.wait : item,
+    );
+    render();
   } catch (error) {
     state.error = error instanceof Error ? error.message : String(error);
     render();
@@ -3277,6 +3426,7 @@ function renderInvestigationCard(investigation) {
       ${investigation.operatorComment
         ? `<p class="investigation-comment">${escapeHtml(truncate(investigation.operatorComment, 360))}</p>`
         : ""}
+      ${renderInvestigationLinkedWaits(investigation)}
       <div class="card-actions">
         ${canPromote
           ? `<button type="button" class="ghost-button" data-action="promote-investigation-to-build" data-investigation-id="${escapeHtml(investigation.id)}">Promote to Tool Build request</button>`
@@ -3292,6 +3442,48 @@ function renderInvestigationCard(investigation) {
           : ""}
       </div>
     </article>
+  `;
+}
+
+function renderBuildLinkedWaits(request) {
+  const linked = state.toolReworkWaits.filter((wait) => wait.buildRequestId === request.id);
+  if (linked.length === 0) return "";
+  return `
+    <div class="build-wait-list">
+      ${linked
+        .map(
+          (wait) => `
+            <div class="build-wait-row">
+              <small class="status-note">Wait <code>${escapeHtml(wait.id)}</code> for run <code>${escapeHtml(wait.runId)}</code> · ${escapeHtml(formatStatusLabel(wait.status))}</small>
+              ${wait.status === "promoted"
+                ? `<button type="button" class="primary-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>`
+                : ""}
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderInvestigationLinkedWaits(investigation) {
+  const linked = state.toolReworkWaits.filter((wait) => wait.investigationId === investigation.id);
+  if (linked.length === 0) return "";
+  return `
+    <div class="investigation-wait-list">
+      ${linked
+        .map(
+          (wait) => `
+            <div class="investigation-wait-row">
+              <small class="status-note">Wait <code>${escapeHtml(wait.id)}</code> · ${escapeHtml(formatStatusLabel(wait.status))}${wait.promotedVersion ? ` · v${escapeHtml(wait.promotedVersion)}` : ""}</small>
+              ${wait.status === "promoted"
+                ? `<button type="button" class="primary-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>`
+                : ""}
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
   `;
 }
 
@@ -3316,6 +3508,7 @@ function renderBuildCard(request) {
       ${request.qaReport ? `<small class="status-note">QA: ${escapeHtml(request.qaReport.summary)}</small>` : ""}
       ${renderToolBuildQaEvidence(request.qaReport)}
       ${renderToolBuildReviews(request.qaReport?.reviews)}
+      ${renderBuildLinkedWaits(request)}
       <details class="build-preview" data-panel-id="build-preview:${escapeHtml(request.id)}" ${panelOpenAttr(`build-preview:${request.id}`)}>
         <summary>Preview</summary>
         ${contextBlock("Tool contract", `${request.contract?.toolName ?? "pending"}\n${request.contract?.modulePath ?? "module pending"}\n${request.contract?.testPath ?? "test pending"}`)}

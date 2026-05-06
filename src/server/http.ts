@@ -59,6 +59,14 @@ import {
   ToolInvestigationStore,
   ToolInvestigationUpdateInput,
 } from "../tools/toolInvestigationStore.js";
+import {
+  TOOL_REWORK_WAIT_STATUSES,
+  ToolReworkWaitCreateInput,
+  ToolReworkWaitRecord,
+  ToolReworkWaitStatus,
+  ToolReworkWaitStore,
+  ToolReworkWaitUpdateInput,
+} from "../runs/toolReworkWaitStore.js";
 import { ToolBuildWorkflow } from "../tools/toolBuildWorkflow.js";
 import {
   generatedToolInputFromPackageManifest,
@@ -96,6 +104,7 @@ export type WebAppOptions = {
   toolPromotionStore?: ToolPromotionStore;
   toolBuildRequestStore?: ToolBuildRequestStore;
   toolInvestigationStore?: ToolInvestigationStore;
+  toolReworkWaitStore?: ToolReworkWaitStore;
   toolBuildWorkflow?: ToolBuildWorkflow;
   toolServiceSupervisor?: ToolServiceSupervisor;
   toolServiceEventStore?: ToolServiceEventStore;
@@ -1503,6 +1512,14 @@ async function routeRequest(
         decodeURIComponent(toolBuildRequestMatch[1] ?? ""),
         update,
       );
+      if (buildRequest.status === "registered") {
+        await notifyToolBuildRegistered(
+          options,
+          buildRequest.id,
+          buildRequest.registeredToolName,
+          buildRequest.contract?.version,
+        );
+      }
       sendJson(response, 200, { request: buildRequest });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid tool build request update";
@@ -1666,6 +1683,14 @@ async function routeRequest(
     if (result.request.status === "registered" && !result.activationReport) {
       await options.reloadGeneratedTools?.();
     }
+    if (result.request.status === "registered") {
+      await notifyToolBuildRegistered(
+        options,
+        result.request.id,
+        result.registeredToolName ?? result.request.registeredToolName,
+        result.request.contract?.version,
+      );
+    }
     sendJson(response, 200, result);
     return;
   }
@@ -1777,6 +1802,294 @@ async function routeRequest(
       sendJson(response, 200, { investigation });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid tool investigation update";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
+  const toolInvestigationPromoteMatch = url.pathname.match(
+    /^\/api\/tool-investigations\/([^/]+)\/promote$/,
+  );
+  if (request.method === "POST" && toolInvestigationPromoteMatch) {
+    if (!options.toolInvestigationStore || !options.toolBuildRequestStore) {
+      sendJson(response, 503, {
+        error: "Tool investigation or build request store is not configured",
+      });
+      return;
+    }
+
+    try {
+      const id = decodeURIComponent(toolInvestigationPromoteMatch[1] ?? "");
+      const investigation = await options.toolInvestigationStore.get(id);
+      if (!investigation) {
+        sendJson(response, 404, { error: "Tool investigation not found" });
+        return;
+      }
+      const body = (await readJsonBody<unknown>(request)) ?? {};
+      const candidateBody = body as Record<string, unknown>;
+      const operatorComment = parseOptionalText(candidateBody.operatorComment);
+      const overrideCapability = parseOptionalText(candidateBody.capability);
+      const overrideDesiredToolName = parseOptionalText(candidateBody.desiredToolName);
+      if (investigation.runId) {
+        const sourceRun = await options.runStore.get(investigation.runId);
+        if (!sourceRun) {
+          sendJson(response, 400, {
+            error: `Investigation runId ${investigation.runId} does not match any run; cannot promote.`,
+          });
+          return;
+        }
+      }
+      const promotionTarget = await resolveInvestigationPromotionTarget(
+        investigation,
+        { capability: overrideCapability, desiredToolName: overrideDesiredToolName },
+        options,
+      );
+      const buildInputCandidate = parseToolBuildRequestInput(
+        formatInvestigationBuildRequestInput(investigation, operatorComment, promotionTarget),
+      );
+      const validatedInput = await assignGeneratedToolName(
+        await validateContextualToolBuildTarget(buildInputCandidate, options),
+        options,
+      );
+      const buildRequest = await options.toolBuildRequestStore.create(validatedInput);
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool_build.requested",
+        targetType: "tool_build_request",
+        targetId: buildRequest.id,
+        status: "pending",
+        runId: buildRequest.sourceRunId,
+        summary: `Tool build requested from investigation: ${buildRequest.capability}`,
+        metadata: sanitizeAuditMetadata({
+          investigationId: investigation.id,
+          capability: buildRequest.capability,
+          desiredToolName: buildRequest.desiredToolName,
+        }),
+      });
+      const updatedInvestigation = await options.toolInvestigationStore.update(id, {
+        status: "linked_to_build",
+        linkedBuildRequestId: buildRequest.id,
+        operatorComment: operatorComment ?? investigation.operatorComment,
+      });
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool_investigation.updated",
+        targetType: "tool_investigation",
+        targetId: updatedInvestigation.id,
+        status: "success",
+        runId: updatedInvestigation.runId,
+        summary: `Tool investigation promoted: ${updatedInvestigation.title} (${updatedInvestigation.status})`,
+        metadata: sanitizeAuditMetadata({
+          previousStatus: investigation.status,
+          status: updatedInvestigation.status,
+          linkedBuildRequestId: updatedInvestigation.linkedBuildRequestId,
+        }),
+      });
+
+      let wait: ToolReworkWaitRecord | undefined;
+      if (options.toolReworkWaitStore && updatedInvestigation.runId) {
+        wait = await createReworkWait(options, {
+          runId: updatedInvestigation.runId,
+          spanId: updatedInvestigation.spanId,
+          toolName: updatedInvestigation.toolName,
+          toolVersion: updatedInvestigation.toolVersion,
+          investigationId: updatedInvestigation.id,
+          buildRequestId: buildRequest.id,
+          status: "waiting",
+          reason: `Run is waiting for tool rework triggered by investigation ${updatedInvestigation.id}.`,
+        });
+      }
+      sendJson(response, 201, {
+        investigation: updatedInvestigation,
+        request: buildRequest,
+        wait,
+      });
+    } catch (error) {
+      if (error instanceof InvestigationPromotionError) {
+        sendJson(response, 400, { error: error.message, code: error.code });
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Invalid investigation promotion";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/tool-rework-waits") {
+    if (!options.toolReworkWaitStore) {
+      sendJson(response, 503, { error: "Tool rework wait store is not configured" });
+      return;
+    }
+    sendJson(response, 200, { waits: await options.toolReworkWaitStore.list() });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/tool-rework-waits") {
+    if (!options.toolReworkWaitStore) {
+      sendJson(response, 503, { error: "Tool rework wait store is not configured" });
+      return;
+    }
+    try {
+      const input = parseToolReworkWaitCreateInput(await readJsonBody<unknown>(request));
+      const wait = await createReworkWait(options, input);
+      sendJson(response, 201, { wait });
+    } catch (error) {
+      sendJson(response, 400, {
+        error: error instanceof Error ? error.message : "Invalid tool rework wait",
+      });
+    }
+    return;
+  }
+
+  const runWaitsMatch = url.pathname.match(/^\/api\/runs\/([^/]+)\/tool-rework-waits$/);
+  if (request.method === "GET" && runWaitsMatch) {
+    if (!options.toolReworkWaitStore) {
+      sendJson(response, 503, { error: "Tool rework wait store is not configured" });
+      return;
+    }
+    const runId = decodeURIComponent(runWaitsMatch[1] ?? "");
+    sendJson(response, 200, { waits: await options.toolReworkWaitStore.listByRun(runId) });
+    return;
+  }
+
+  const reworkWaitMatch = url.pathname.match(/^\/api\/tool-rework-waits\/([^/]+)$/);
+  if (request.method === "GET" && reworkWaitMatch) {
+    if (!options.toolReworkWaitStore) {
+      sendJson(response, 503, { error: "Tool rework wait store is not configured" });
+      return;
+    }
+    const wait = await options.toolReworkWaitStore.get(
+      decodeURIComponent(reworkWaitMatch[1] ?? ""),
+    );
+    if (!wait) {
+      sendJson(response, 404, { error: "Tool rework wait not found" });
+      return;
+    }
+    sendJson(response, 200, { wait });
+    return;
+  }
+
+  if (request.method === "PATCH" && reworkWaitMatch) {
+    if (!options.toolReworkWaitStore) {
+      sendJson(response, 503, { error: "Tool rework wait store is not configured" });
+      return;
+    }
+    try {
+      const id = decodeURIComponent(reworkWaitMatch[1] ?? "");
+      const previous = await options.toolReworkWaitStore.get(id);
+      if (!previous) {
+        sendJson(response, 404, { error: "Tool rework wait not found" });
+        return;
+      }
+      const update = parseToolReworkWaitUpdateInput(await readJsonBody<unknown>(request));
+      if (update.buildRequestId && options.toolBuildRequestStore) {
+        const build = await options.toolBuildRequestStore.get(update.buildRequestId);
+        if (!build) {
+          sendJson(response, 400, {
+            error: "buildRequestId does not match any tool build request",
+          });
+          return;
+        }
+      }
+      if (update.investigationId && options.toolInvestigationStore) {
+        const investigation = await options.toolInvestigationStore.get(update.investigationId);
+        if (!investigation) {
+          sendJson(response, 400, {
+            error: "investigationId does not match any tool investigation",
+          });
+          return;
+        }
+      }
+      const wait = await options.toolReworkWaitStore.update(id, update);
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool_rework_wait.updated",
+        targetType: "tool_rework_wait",
+        targetId: wait.id,
+        status: "success",
+        runId: wait.runId,
+        summary: `Tool rework wait updated: ${wait.id} (${wait.status})`,
+        metadata: sanitizeAuditMetadata({
+          previousStatus: previous.status,
+          status: wait.status,
+          buildRequestId: wait.buildRequestId,
+          investigationId: wait.investigationId,
+          promotedVersion: wait.promotedVersion,
+          retryRunId: wait.retryRunId,
+        }),
+      });
+      sendJson(response, 200, { wait });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid tool rework wait update";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
+  const reworkWaitResumeMatch = url.pathname.match(
+    /^\/api\/tool-rework-waits\/([^/]+)\/resume$/,
+  );
+  if (request.method === "POST" && reworkWaitResumeMatch) {
+    if (!options.toolReworkWaitStore) {
+      sendJson(response, 503, { error: "Tool rework wait store is not configured" });
+      return;
+    }
+    try {
+      const id = decodeURIComponent(reworkWaitResumeMatch[1] ?? "");
+      const previous = await options.toolReworkWaitStore.get(id);
+      if (!previous) {
+        sendJson(response, 404, { error: "Tool rework wait not found" });
+        return;
+      }
+      if (previous.status !== "promoted") {
+        sendJson(response, 409, {
+          error: `Tool rework wait is not promoted yet (current status: ${previous.status})`,
+        });
+        return;
+      }
+      const body = (await readJsonBody<unknown>(request)) ?? {};
+      const candidate = body as Record<string, unknown>;
+      const operatorReason =
+        parseOptionalText(candidate.reason) ??
+        `Operator marked run ${previous.runId} ready for retry after tool rework promotion. ` +
+          `Phase 2 will run the actual retry; until then the run returns to "failed" so the operator can re-issue it manually.`;
+      const retryRunId = parseOptionalText(candidate.retryRunId);
+
+      const wait = await options.toolReworkWaitStore.update(id, {
+        status: "resumed",
+        reason: operatorReason,
+        retryRunId: retryRunId ?? null,
+      });
+      await options.runStore.resumeFromToolRework(wait.runId, operatorReason);
+      await recordAudit(options, {
+        instanceId: "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "tool_rework_wait.resumed",
+        targetType: "tool_rework_wait",
+        targetId: wait.id,
+        status: "success",
+        runId: wait.runId,
+        summary:
+          `Tool rework wait closed (ready for retry): ${wait.id}; ` +
+          "automatic retry is Phase 2, run returned to failed for operator follow-up.",
+        metadata: sanitizeAuditMetadata({
+          previousStatus: previous.status,
+          retryRunId: wait.retryRunId,
+          buildRequestId: wait.buildRequestId,
+          investigationId: wait.investigationId,
+          promotedVersion: wait.promotedVersion,
+        }),
+      });
+      sendJson(response, 200, { wait });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid tool rework wait resume";
       sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
     }
     return;
@@ -2809,6 +3122,12 @@ async function executeRun(
                 summary: `Tool build registered: ${result.registeredToolName ?? result.request.registeredToolName}`,
                 metadata: { capability: result.request.capability, requestId: result.request.id },
               });
+              await notifyToolBuildRegistered(
+                options,
+                result.request.id,
+                result.registeredToolName ?? result.request.registeredToolName,
+                result.request.contract?.version,
+              );
             }
             return result.request;
           }
@@ -4266,6 +4585,273 @@ function parseToolInvestigationContextBundle(value: unknown): ToolInvestigationC
   }
   if (isRecord(candidate.extra)) bundle.extra = sanitizeObject(candidate.extra);
   return bundle;
+}
+
+function parseToolReworkWaitCreateInput(value: unknown): ToolReworkWaitCreateInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("tool rework wait must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  const runId = parseRequiredText(candidate.runId, "runId");
+  const reason = parseRequiredText(candidate.reason, "reason");
+  const status = parseToolReworkWaitStatus(candidate.status);
+  return {
+    runId,
+    reason,
+    spanId: parseOptionalText(candidate.spanId),
+    toolName: parseOptionalText(candidate.toolName),
+    toolVersion: parseOptionalText(candidate.toolVersion),
+    investigationId: parseOptionalText(candidate.investigationId),
+    buildRequestId: parseOptionalText(candidate.buildRequestId),
+    status,
+    promotedVersion: parseOptionalText(candidate.promotedVersion),
+    retryRunId: parseOptionalText(candidate.retryRunId),
+    retrySpanId: parseOptionalText(candidate.retrySpanId),
+  };
+}
+
+function parseToolReworkWaitUpdateInput(value: unknown): ToolReworkWaitUpdateInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("tool rework wait update must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  const update: ToolReworkWaitUpdateInput = {};
+  if (candidate.status !== undefined) update.status = parseToolReworkWaitStatus(candidate.status);
+  if (candidate.reason !== undefined) update.reason = parseOptionalText(candidate.reason) ?? "";
+  if (candidate.buildRequestId !== undefined) {
+    update.buildRequestId = parseNullableText(candidate.buildRequestId, "buildRequestId");
+  }
+  if (candidate.investigationId !== undefined) {
+    update.investigationId = parseNullableText(candidate.investigationId, "investigationId");
+  }
+  if (candidate.promotedVersion !== undefined) {
+    update.promotedVersion = parseNullableText(candidate.promotedVersion, "promotedVersion");
+  }
+  if (candidate.retryRunId !== undefined) {
+    update.retryRunId = parseNullableText(candidate.retryRunId, "retryRunId");
+  }
+  if (candidate.retrySpanId !== undefined) {
+    update.retrySpanId = parseNullableText(candidate.retrySpanId, "retrySpanId");
+  }
+  if (candidate.toolName !== undefined) {
+    update.toolName = parseNullableText(candidate.toolName, "toolName");
+  }
+  if (candidate.toolVersion !== undefined) {
+    update.toolVersion = parseNullableText(candidate.toolVersion, "toolVersion");
+  }
+  return update;
+}
+
+function parseToolReworkWaitStatus(value: unknown): ToolReworkWaitStatus | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !TOOL_REWORK_WAIT_STATUSES.includes(value as ToolReworkWaitStatus)) {
+    throw new Error(
+      `status must be one of ${TOOL_REWORK_WAIT_STATUSES.join(", ")}`,
+    );
+  }
+  return value as ToolReworkWaitStatus;
+}
+
+function parseNullableText(value: unknown, name: string): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string") {
+    throw new Error(`${name} must be a string or null`);
+  }
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+type InvestigationPromotionTarget = {
+  capability: string;
+  desiredToolName?: string;
+  replacesToolName?: string;
+  replacesVersion?: string;
+  startupMode?: ToolStartupMode;
+  displayName?: string;
+};
+
+async function resolveInvestigationPromotionTarget(
+  investigation: {
+    id: string;
+    title: string;
+    toolName?: string;
+    toolVersion?: string;
+  },
+  override: { capability?: string; desiredToolName?: string },
+  options: WebAppOptions,
+): Promise<InvestigationPromotionTarget> {
+  const installedTools = options.toolMetadataStore ? await options.toolMetadataStore.list() : [];
+  const matchedByName = investigation.toolName
+    ? installedTools.find((tool) => tool.name === investigation.toolName)
+    : undefined;
+  const matchedByOverride = override.desiredToolName
+    ? installedTools.find((tool) => tool.name === override.desiredToolName)
+    : undefined;
+  const matched = matchedByName ?? matchedByOverride;
+
+  if (matched) {
+    const capability = override.capability ?? matched.capabilities?.[0] ?? matched.name;
+    return {
+      capability,
+      desiredToolName: matched.name,
+      replacesToolName: matched.name,
+      replacesVersion: matched.version,
+      startupMode: matched.startupMode,
+      displayName: matched.displayName ?? matched.name,
+    };
+  }
+
+  // No registered tool matched. The operator can still promote, but only with an
+  // explicit (capability, desiredToolName) pair so we never let fuzzy text inference
+  // pick a different tool than what the investigation pointed at.
+  if (override.capability && override.desiredToolName) {
+    return {
+      capability: override.capability,
+      desiredToolName: override.desiredToolName,
+      displayName: investigation.toolName ?? investigation.title,
+    };
+  }
+
+  if (investigation.toolName) {
+    throw new InvestigationPromotionError(
+      `Investigation toolName "${investigation.toolName}" is not registered in the tool catalog; ` +
+        `provide explicit "capability" and "desiredToolName" in the request body to promote anyway.`,
+    );
+  }
+
+  throw new InvestigationPromotionError(
+    `Investigation ${investigation.id} has no matching installed tool; ` +
+      `provide explicit "capability" and "desiredToolName" in the request body to promote.`,
+  );
+}
+
+class InvestigationPromotionError extends Error {
+  readonly code = "investigation_promotion_ambiguous" as const;
+}
+
+function formatInvestigationBuildRequestInput(
+  investigation: {
+    id: string;
+    title: string;
+    runId?: string;
+    spanId?: string;
+    toolName?: string;
+    toolVersion?: string;
+    operatorComment?: string;
+    contextBundle?: { taskPrompt?: string; outputSummary?: string; error?: string };
+  },
+  operatorComment: string | undefined,
+  target: InvestigationPromotionTarget,
+): Record<string, unknown> {
+  const reasonLines = [
+    `Promoted from Tool Investigation ${investigation.id}.`,
+    investigation.title ? `Title: ${investigation.title}` : "",
+    operatorComment
+      ? `Operator comment: ${operatorComment}`
+      : investigation.operatorComment
+        ? `Operator comment: ${investigation.operatorComment}`
+        : "",
+    investigation.contextBundle?.taskPrompt ? `Task: ${investigation.contextBundle.taskPrompt}` : "",
+    investigation.contextBundle?.error ? `Observed error: ${investigation.contextBundle.error}` : "",
+    investigation.contextBundle?.outputSummary
+      ? `Observed output: ${investigation.contextBundle.outputSummary}`
+      : "",
+  ].filter(Boolean);
+
+  return {
+    capability: target.capability,
+    displayName: target.displayName ?? investigation.toolName ?? investigation.title,
+    reason: reasonLines.join("\n") || `Promoted from investigation ${investigation.id}.`,
+    sourceRunId: investigation.runId,
+    sourceSpanId: investigation.spanId,
+    taskSummary: investigation.contextBundle?.taskPrompt,
+    desiredToolName: target.desiredToolName,
+    replacesToolName: target.replacesToolName,
+    replacesVersion: target.replacesVersion ?? investigation.toolVersion,
+    startupMode: target.startupMode,
+    feedback: operatorComment ?? investigation.operatorComment,
+  };
+}
+
+async function createReworkWait(
+  options: WebAppOptions,
+  input: ToolReworkWaitCreateInput,
+): Promise<ToolReworkWaitRecord | undefined> {
+  if (!options.toolReworkWaitStore) return undefined;
+  const sourceRun = await options.runStore.get(input.runId);
+  if (!sourceRun) {
+    throw new Error(`runId ${input.runId} does not match any run`);
+  }
+  if (input.buildRequestId && options.toolBuildRequestStore) {
+    const build = await options.toolBuildRequestStore.get(input.buildRequestId);
+    if (!build) {
+      throw new Error("buildRequestId does not match any tool build request");
+    }
+  }
+  if (input.investigationId && options.toolInvestigationStore) {
+    const investigation = await options.toolInvestigationStore.get(input.investigationId);
+    if (!investigation) {
+      throw new Error("investigationId does not match any tool investigation");
+    }
+  }
+  const wait = await options.toolReworkWaitStore.create(input);
+  await options.runStore.markWaitingForToolRework(wait.runId, wait.reason);
+  await recordAudit(options, {
+    instanceId: "instance-local",
+    actorId: "user-admin",
+    actorType: "user",
+    action: "tool_rework_wait.created",
+    targetType: "tool_rework_wait",
+    targetId: wait.id,
+    status: "pending",
+    runId: wait.runId,
+    summary: `Tool rework wait opened: ${wait.id}`,
+    metadata: sanitizeAuditMetadata({
+      buildRequestId: wait.buildRequestId,
+      investigationId: wait.investigationId,
+      toolName: wait.toolName,
+      toolVersion: wait.toolVersion,
+      spanId: wait.spanId,
+    }),
+  });
+  return wait;
+}
+
+async function notifyToolBuildRegistered(
+  options: WebAppOptions,
+  buildRequestId: string,
+  registeredToolName?: string,
+  promotedVersion?: string,
+): Promise<void> {
+  if (!options.toolReworkWaitStore) return;
+  const candidates = await options.toolReworkWaitStore.listByBuildRequest(buildRequestId);
+  for (const wait of candidates) {
+    if (wait.status === "promoted" || wait.status === "resumed" || wait.status === "cancelled") continue;
+    const next = await options.toolReworkWaitStore.update(wait.id, {
+      status: "promoted",
+      promotedVersion: promotedVersion ?? wait.promotedVersion ?? null,
+      toolName: registeredToolName ?? wait.toolName ?? null,
+    });
+    await recordAudit(options, {
+      instanceId: "instance-local",
+      actorId: "tool-registrar",
+      actorType: "agent",
+      action: "tool_rework_wait.updated",
+      targetType: "tool_rework_wait",
+      targetId: next.id,
+      status: "success",
+      runId: next.runId,
+      summary: `Tool rework wait promoted: ${next.id}`,
+      metadata: sanitizeAuditMetadata({
+        previousStatus: wait.status,
+        status: next.status,
+        buildRequestId: next.buildRequestId,
+        investigationId: next.investigationId,
+        promotedVersion: next.promotedVersion,
+        toolName: next.toolName,
+      }),
+    });
+  }
 }
 
 function parseOptionalQaReport(value: unknown): ToolBuildQaReport | undefined {

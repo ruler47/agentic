@@ -3156,6 +3156,90 @@ textarea {
   gap: 8px;
 }
 
+.run-wait-panel {
+  border: 1px solid rgba(255, 196, 0, 0.4);
+  background: rgba(255, 196, 0, 0.06);
+  display: grid;
+  gap: 12px;
+}
+
+.run-wait-panel .wait-list {
+  display: grid;
+  gap: 10px;
+}
+
+.wait-card,
+.investigation-wait-row,
+.build-wait-row {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.wait-card .wait-reason {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-muted, #b8c0cc);
+  white-space: pre-wrap;
+}
+
+.wait-card .card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.investigation-wait-list,
+.build-wait-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.investigation-wait-row,
+.build-wait-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.rework-wait-card {
+  border-color: rgba(255, 196, 0, 0.4);
+  background: rgba(255, 196, 0, 0.06);
+}
+
+.rework-wait-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.rework-wait-meta {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin: 4px 0 0;
+}
+
+.rework-wait-meta > div {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+}
+
+.status-badge.waiting_tool_rework {
+  background: rgba(255, 196, 0, 0.18);
+  color: rgba(255, 196, 0, 0.95);
+  border: 1px solid rgba(255, 196, 0, 0.45);
+}
+
 @media (max-width: 1280px) {
   .dashboard-layout,
   .run-result-layout,

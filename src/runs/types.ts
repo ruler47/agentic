@@ -1,6 +1,12 @@
 import { AgentEvent, AgentRunResult } from "../types.js";
 
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "waiting_tool_rework";
 
 export type AgentRunRecord = {
   id: string;
@@ -47,6 +53,8 @@ export type RunStore = {
   complete(id: string, result: AgentRunResult): Promise<void>;
   fail(id: string, error: string): Promise<void>;
   cancel(id: string, reason: string): Promise<void>;
+  markWaitingForToolRework(id: string, reason: string): Promise<void>;
+  resumeFromToolRework(id: string, reason: string): Promise<void>;
   recoverInterrupted(error: string): Promise<number>;
   deleteByThreadId(threadId: string): Promise<number>;
 };

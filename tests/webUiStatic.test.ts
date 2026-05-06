@@ -128,6 +128,25 @@ test("web UI keeps page-based workspace information architecture", async () => {
   assert.match(app, /\/api\/tool-investigations/);
   assert.match(app, /Tool Investigation Ticket/);
   assert.match(app, /Tool Investigations/);
+  assert.match(app, /function renderRunWaitPanel/);
+  assert.match(app, /function renderRunWaitCard/);
+  assert.match(app, /function renderInspectorReworkWait/);
+  assert.match(app, /function renderInvestigationLinkedWaits/);
+  assert.match(app, /function renderBuildLinkedWaits/);
+  assert.match(app, /function resumeToolReworkWait/);
+  assert.match(app, /function cancelToolReworkWait/);
+  assert.match(app, /data-action="resume-tool-rework-wait"/);
+  assert.match(app, /data-action="cancel-tool-rework-wait"/);
+  assert.match(app, /\/api\/tool-rework-waits/);
+  assert.match(app, /\/promote/);
+  assert.match(app, /Waiting for tool upgrade/);
+  assert.match(app, /Tool rework wait/);
+  assert.match(app, /Mark ready for retry/);
+  assert.doesNotMatch(
+    app,
+    />Resume run</,
+    "the resume button must not be labelled 'Resume run' anymore — call it 'Mark ready for retry' instead",
+  );
   assert.match(app, /function renderNotice/);
   assert.match(app, /sourceSpanId/);
   assert.match(app, /Tool request created/);
@@ -286,6 +305,10 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".investigation-card",
     ".investigation-grid",
     ".span-investigation-actions",
+    ".run-wait-panel",
+    ".wait-card",
+    ".rework-wait-card",
+    ".status-badge.waiting_tool_rework",
   ]) {
     assert.match(styles, new RegExp(componentClass.replace(".", "\\.")));
   }

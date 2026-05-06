@@ -16,6 +16,7 @@ import { UniversalAgent } from "../src/agents/universalAgent.js";
 import { LocalArtifactStore } from "../src/artifacts/artifactStore.js";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolInvestigationStore } from "../src/tools/toolInvestigationStore.js";
+import { InMemoryToolReworkWaitStore } from "../src/runs/toolReworkWaitStore.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import { InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
 import { InMemoryToolPromotionStore } from "../src/tools/toolPromotionStore.js";
@@ -1913,6 +1914,498 @@ test("web server returns 503 for tool investigations when the store is not confi
       body: JSON.stringify({ source: "manual", title: "Test" }),
     });
     assert.equal(create.status, 503);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server tracks tool rework waits across investigations, builds, and resume", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const toolInvestigationStore = new InMemoryToolInvestigationStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const auditEventStore = new InMemoryAuditEventStore();
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  await toolMetadataStore.syncBuiltins([
+    {
+      name: "browser.screenshot",
+      version: "1.0.0",
+      description: "Captures Playwright PNG screenshots.",
+      capabilities: ["browser-screenshot"],
+      async run() {
+        return { ok: true, content: "ok" };
+      },
+    },
+  ]);
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolBuildRequestStore,
+    toolInvestigationStore,
+    toolReworkWaitStore,
+    toolMetadataStore,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const sourceRun = await runStore.create("Capture proof", { instanceId: "instance-local" });
+
+    const investigationResponse = await fetch(`${baseUrl}/api/tool-investigations`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source: "trace_span",
+        title: "browser.screenshot returned a loader page",
+        operatorComment: "Cloudflare blocker, needs upgrade.",
+        runId: sourceRun.id,
+        spanId: "span-x",
+        toolName: "browser.screenshot",
+        toolVersion: "1.0.0",
+        contextBundle: {
+          taskPrompt: "Capture proof of pricing page",
+          actor: "browser.screenshot",
+          activity: "tool",
+          status: "failed",
+          error: "Loader page detected",
+          toolSettingsSummary: { apiKey: "VERY-SECRET-NEVER-LEAK" },
+        },
+      }),
+    });
+    assert.equal(investigationResponse.status, 201);
+    const investigation = (await investigationResponse.json()).investigation;
+
+    const promoteResponse = await fetch(
+      `${baseUrl}/api/tool-investigations/${encodeURIComponent(investigation.id)}/promote`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ operatorComment: "Promote it; we know the cause." }),
+      },
+    );
+    assert.equal(promoteResponse.status, 201);
+    const promoted = await promoteResponse.json();
+    assert.equal(promoted.investigation.status, "linked_to_build");
+    assert.equal(promoted.investigation.linkedBuildRequestId, promoted.request.id);
+    assert.ok(promoted.wait, "promote endpoint returns the created wait");
+    assert.equal(promoted.wait.runId, sourceRun.id);
+    assert.equal(promoted.wait.status, "waiting");
+    assert.equal(promoted.wait.investigationId, investigation.id);
+    assert.equal(promoted.wait.buildRequestId, promoted.request.id);
+
+    const runAfterPromote = await runStore.get(sourceRun.id);
+    assert.equal(runAfterPromote?.status, "waiting_tool_rework");
+
+    // Race: simulate a late agent completion or failure arriving after the run was paused
+    // for tool rework. Both calls must be ignored so the wait stays the source of truth.
+    await runStore.complete(sourceRun.id, {
+      finalAnswer: "late agent completion",
+      complexity: { mode: "direct", reason: "test", domains: ["test"], riskLevel: "low" },
+      subtasks: [],
+      workerResults: [],
+      reviews: [],
+    });
+    await runStore.fail(sourceRun.id, "late agent failure");
+    const runAfterRace = await runStore.get(sourceRun.id);
+    assert.equal(
+      runAfterRace?.status,
+      "waiting_tool_rework",
+      "RunStore.complete()/fail() must not overwrite waiting_tool_rework",
+    );
+    assert.equal(runAfterRace?.result, undefined, "late completion result must not be persisted");
+
+    const listByRunResponse = await fetch(
+      `${baseUrl}/api/runs/${encodeURIComponent(sourceRun.id)}/tool-rework-waits`,
+    );
+    assert.equal(listByRunResponse.status, 200);
+    const listByRun = await listByRunResponse.json();
+    assert.equal(listByRun.waits.length, 1);
+    assert.equal(listByRun.waits[0].id, promoted.wait.id);
+
+    const resumeBeforePromotion = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}/resume`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(resumeBeforePromotion.status, 409);
+
+    const buildPatch = await fetch(
+      `${baseUrl}/api/tool-build-requests/${encodeURIComponent(promoted.request.id)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          status: "registered",
+          statusDetail: "Registered after rebuild.",
+          registeredToolName: "browser.screenshot",
+          qaReport: {
+            ok: true,
+            summary: "Generated tool ready.",
+            checks: ["unit tests passed"],
+          },
+        }),
+      },
+    );
+    assert.equal(buildPatch.status, 200);
+
+    const waitAfterRegister = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}`,
+    );
+    assert.equal(waitAfterRegister.status, 200);
+    const waitNow = (await waitAfterRegister.json()).wait;
+    assert.equal(waitNow.status, "promoted");
+    assert.ok(waitNow.toolName, "tool name is preserved on promotion");
+
+    const patchUnknownBuild = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ buildRequestId: "missing-build" }),
+      },
+    );
+    assert.equal(patchUnknownBuild.status, 400);
+
+    const resumeResponse = await fetch(
+      `${baseUrl}/api/tool-rework-waits/${encodeURIComponent(promoted.wait.id)}/resume`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ retryRunId: "run-retry-77" }),
+      },
+    );
+    assert.equal(resumeResponse.status, 200);
+    const resumed = (await resumeResponse.json()).wait;
+    assert.equal(resumed.status, "resumed");
+    assert.equal(resumed.retryRunId, "run-retry-77");
+
+    const runAfterResume = await runStore.get(sourceRun.id);
+    assert.equal(runAfterResume?.status, "failed");
+
+    const audit = await (await fetch(`${baseUrl}/api/audit-events`)).json();
+    const actions = audit.events.map((event: { action: string }) => event.action);
+    assert.ok(actions.includes("tool_rework_wait.created"));
+    assert.ok(actions.includes("tool_rework_wait.updated"));
+    assert.ok(actions.includes("tool_rework_wait.resumed"));
+    const auditSerialized = JSON.stringify(audit);
+    assert.doesNotMatch(
+      auditSerialized,
+      /VERY-SECRET-NEVER-LEAK/,
+      "audit metadata must not leak secrets from investigation context",
+    );
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server promote endpoint never infers a different tool from fuzzy text", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const toolInvestigationStore = new InMemoryToolInvestigationStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  await toolMetadataStore.syncBuiltins([
+    {
+      name: "browser.operate",
+      version: "1.0.0",
+      description: "Generic Playwright command executor.",
+      capabilities: ["browser-operate"],
+      async run() {
+        return { ok: true, content: "ok" };
+      },
+    },
+  ]);
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolBuildRequestStore,
+    toolInvestigationStore,
+    toolReworkWaitStore,
+    toolMetadataStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const sourceRun = await runStore.create("Open page and click");
+
+    // Investigation text contains "browser" and "screenshot" so the legacy fuzzy
+    // capability inference would prefer browser-screenshot. The matched tool is
+    // browser.operate, and the registry says its capability is browser-operate.
+    // The promotion must NOT silently retarget another tool.
+    const investigation = (
+      await (
+        await fetch(`${baseUrl}/api/tool-investigations`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            source: "trace_span",
+            title: "browser.operate failed: should not capture a screenshot",
+            runId: sourceRun.id,
+            spanId: "span-bo",
+            toolName: "browser.operate",
+            toolVersion: "1.0.0",
+            contextBundle: {
+              taskPrompt: "Click the buy button",
+              outputSummary: "Browser screenshot artifact returned a loader page screenshot",
+              error: "Browser command failed; loader page detected",
+            },
+          }),
+        })
+      ).json()
+    ).investigation;
+
+    const promoteResponse = await fetch(
+      `${baseUrl}/api/tool-investigations/${encodeURIComponent(investigation.id)}/promote`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(promoteResponse.status, 201);
+    const promoted = await promoteResponse.json();
+    assert.equal(
+      promoted.request.capability,
+      "browser-operate",
+      "capability must come from registered tool metadata, not from text inference",
+    );
+    assert.equal(promoted.request.replacesToolName, "browser.operate");
+    assert.equal(promoted.request.desiredToolName, "browser.operate");
+    assert.notEqual(promoted.request.capability, "browser-screenshot");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server promote endpoint rejects ambiguous toolName/capability with 400", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const toolInvestigationStore = new InMemoryToolInvestigationStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  // Tool metadata store is empty: the investigation's toolName cannot match any tool.
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolBuildRequestStore,
+    toolInvestigationStore,
+    toolReworkWaitStore,
+    toolMetadataStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const sourceRun = await runStore.create("Some task");
+    const investigation = (
+      await (
+        await fetch(`${baseUrl}/api/tool-investigations`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            source: "manual",
+            title: "browser.unknown returned a loader",
+            runId: sourceRun.id,
+            toolName: "browser.unknown",
+          }),
+        })
+      ).json()
+    ).investigation;
+
+    const ambiguous = await fetch(
+      `${baseUrl}/api/tool-investigations/${encodeURIComponent(investigation.id)}/promote`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(ambiguous.status, 400);
+    const ambiguousBody = await ambiguous.json();
+    assert.equal(ambiguousBody.code, "investigation_promotion_ambiguous");
+    assert.match(ambiguousBody.error, /not registered/);
+
+    // Operator can override with explicit capability + desiredToolName.
+    const explicit = await fetch(
+      `${baseUrl}/api/tool-investigations/${encodeURIComponent(investigation.id)}/promote`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          capability: "api.unknown.score",
+          desiredToolName: "generated.api.unknown",
+        }),
+      },
+    );
+    assert.equal(explicit.status, 201);
+    const explicitBody = await explicit.json();
+    assert.equal(explicitBody.request.capability, "api.unknown.score");
+    assert.equal(explicitBody.request.desiredToolName, "generated.api.unknown");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server rejects tool rework wait creation when runId does not exist", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolReworkWaitStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const orphan = await fetch(`${baseUrl}/api/tool-rework-waits`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runId: "missing-run", reason: "ghost wait" }),
+    });
+    assert.equal(orphan.status, 400);
+    const body = await orphan.json();
+    assert.match(body.error, /runId.*missing-run.*does not match any run/);
+
+    const list = await (await fetch(`${baseUrl}/api/tool-rework-waits`)).json();
+    assert.equal(list.waits.length, 0, "no wait should be persisted for a missing run");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server promote endpoint validates run existence before creating a wait", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const toolInvestigationStore = new InMemoryToolInvestigationStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  await toolMetadataStore.syncBuiltins([
+    {
+      name: "browser.operate",
+      version: "1.0.0",
+      description: "Generic Playwright command executor.",
+      capabilities: ["browser-operate"],
+      async run() {
+        return { ok: true, content: "ok" };
+      },
+    },
+  ]);
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolBuildRequestStore,
+    toolInvestigationStore,
+    toolReworkWaitStore,
+    toolMetadataStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const investigation = (
+      await (
+        await fetch(`${baseUrl}/api/tool-investigations`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            source: "trace_span",
+            title: "browser.operate failed",
+            runId: "ghost-run-id",
+            toolName: "browser.operate",
+          }),
+        })
+      ).json()
+    ).investigation;
+
+    const response = await fetch(
+      `${baseUrl}/api/tool-investigations/${encodeURIComponent(investigation.id)}/promote`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.match(body.error, /runId ghost-run-id does not match any run/);
+
+    const list = await (await fetch(`${baseUrl}/api/tool-rework-waits`)).json();
+    assert.equal(list.waits.length, 0, "promote must not leave an orphan wait");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server returns 503 for tool rework waits when the store is not configured", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const list = await fetch(`${baseUrl}/api/tool-rework-waits`);
+    assert.equal(list.status, 503);
+    const byRun = await fetch(`${baseUrl}/api/runs/run-x/tool-rework-waits`);
+    assert.equal(byRun.status, 503);
+    const create = await fetch(`${baseUrl}/api/tool-rework-waits`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runId: "run-x", reason: "test" }),
+    });
+    assert.equal(create.status, 503);
+    const resume = await fetch(`${baseUrl}/api/tool-rework-waits/x/resume`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(resume.status, 503);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server rejects tool rework wait creation with bad payloads", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const runStore = new InMemoryRunStore();
+  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore,
+    publicDir,
+    toolReworkWaitStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const missingFields = await fetch(`${baseUrl}/api/tool-rework-waits`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(missingFields.status, 400);
+    const badStatus = await fetch(`${baseUrl}/api/tool-rework-waits`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runId: "run-x", reason: "x", status: "nonsense" }),
+    });
+    assert.equal(badStatus.status, 400);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

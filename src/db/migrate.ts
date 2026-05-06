@@ -173,7 +173,7 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`
       alter table runs drop constraint if exists runs_status_check;
       alter table runs add constraint runs_status_check
-        check (status in ('queued', 'running', 'completed', 'failed', 'cancelled'));
+        check (status in ('queued', 'running', 'completed', 'failed', 'cancelled', 'waiting_tool_rework'));
     `);
 
     await pool.query(`
@@ -721,6 +721,49 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       create index if not exists tool_investigations_run_id_idx
       on tool_investigations(run_id, created_at desc)
       where run_id is not null;
+    `);
+
+    await pool.query(`
+      create table if not exists tool_rework_waits (
+        id text primary key,
+        run_id text not null references runs(id) on delete cascade,
+        span_id text,
+        tool_name text,
+        tool_version text,
+        investigation_id text references tool_investigations(id) on delete set null,
+        build_request_id text references tool_build_requests(id) on delete set null,
+        status text not null check (status in (
+          'waiting', 'build_running', 'promoted', 'resumed', 'failed', 'cancelled'
+        )),
+        reason text not null,
+        promoted_version text,
+        retry_run_id text references runs(id) on delete set null,
+        retry_span_id text,
+        created_at timestamptz not null,
+        updated_at timestamptz not null
+      );
+    `);
+
+    await pool.query(`
+      create index if not exists tool_rework_waits_run_id_idx
+      on tool_rework_waits(run_id, created_at desc);
+    `);
+
+    await pool.query(`
+      create index if not exists tool_rework_waits_status_idx
+      on tool_rework_waits(status, created_at desc);
+    `);
+
+    await pool.query(`
+      create index if not exists tool_rework_waits_build_request_id_idx
+      on tool_rework_waits(build_request_id, created_at desc)
+      where build_request_id is not null;
+    `);
+
+    await pool.query(`
+      create index if not exists tool_rework_waits_investigation_id_idx
+      on tool_rework_waits(investigation_id, created_at desc)
+      where investigation_id is not null;
     `);
 
     await pool.query(`

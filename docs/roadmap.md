@@ -363,6 +363,75 @@ Remaining gaps:
 - Memory writes from a closed investigation (when the root cause is external) should
   pre-fill a proposed memory in the review queue with conservative scope/wording.
 
+## Phase 1.6: Async Tool Rework And Run Resume
+
+Status: partially implemented (skeleton).
+
+A run that fails because an existing tool is too weak should not silently end as `failed`.
+The runtime should:
+
+- preserve failure context as a Tool Investigation Ticket (Phase 1.5);
+- promote the ticket into a Tool Build / rework request when the operator (or, later, an
+  agent) decides the tool itself needs an upgrade;
+- park the originating run in a durable "waiting for tool upgrade" state instead of a
+  failed/cancelled terminal status;
+- track the link between run, span, investigation, build request, and the eventually
+  promoted tool version through a `tool_rework_waits` record;
+- expose a resume action that closes the wait and feeds the recursive agent retry/resume
+  engine in a future phase.
+
+Implementation tasks:
+
+- Add `tool_rework_waits` Postgres table and an in-memory store fallback. DONE.
+- Add `RunStatus = waiting_tool_rework` plus `markWaitingForToolRework` /
+  `resumeFromToolRework` on `RunStore`. DONE for in-memory and Postgres run stores.
+- Add `GET /api/tool-rework-waits`, `GET /api/runs/:id/tool-rework-waits`,
+  `POST /api/tool-rework-waits`, `PATCH /api/tool-rework-waits/:id`, and
+  `POST /api/tool-rework-waits/:id/resume`. DONE. Stores return 503 when missing.
+- Add `POST /api/tool-investigations/:id/promote` which creates a tool build request,
+  links the investigation as `linked_to_build`, opens a wait when the investigation has a
+  `runId`, and marks that run as `waiting_tool_rework`. DONE.
+- When a tool build reaches `registered` (through PATCH or workflow runOnce), promote
+  every matching wait to `promoted`, store the new version, and write a
+  `tool_rework_wait.updated` audit event. DONE.
+- Add audit events `tool_rework_wait.created`, `tool_rework_wait.updated`, and
+  `tool_rework_wait.resumed`. DONE.
+- Run Workspace shows a "Waiting for tool upgrade" panel when active waits exist for the
+  selected run. DONE. Trace Lab inspector shows the linked wait/build/investigation card
+  for the selected span. DONE. Tool Builds investigation cards and build cards show
+  linked waits with a `Resume run` button when the wait is `promoted`. DONE.
+- "Mark ready for retry / close wait" action: marks the wait as `resumed`, optionally
+  records `retryRunId`, returns the run from `waiting_tool_rework` back to `failed` so
+  an operator can re-issue the task with the new tool version, and writes
+  `tool_rework_wait.resumed` to the audit log. DONE. The action is **not** an automatic
+  agent retry; the recursive retry engine is Phase 2 work.
+- Run lifecycle protection: `RunStore.complete()` and `RunStore.fail()` skip runs in
+  `waiting_tool_rework` so a late agent completion or failure cannot overwrite the
+  durable wait state. DONE for in-memory and Postgres run stores.
+- Promotion determinism: `/api/tool-investigations/:id/promote` resolves the build target
+  from registered tool metadata when `toolName` matches the registry, and returns 400
+  (`code=investigation_promotion_ambiguous`) when `toolName` is unknown or the
+  investigation has no matching tool, instead of letting fuzzy text inference pick a
+  capability that could replace the wrong tool. DONE.
+- runId validation: both promote-created waits and `POST /api/tool-rework-waits` look up
+  the source run through `RunStore.get()` before creating a wait. Errors from
+  `markWaitingForToolRework` propagate to the caller instead of being swallowed. DONE.
+
+Remaining work for Phase 2:
+
+- Replace the manual operator resume with the recursive agent retry engine: pick up the
+  promoted wait, re-plan the failed step against the new tool version, and produce a
+  retry run linked through `retryRunId`/`retrySpanId`.
+- Drive automatic wait creation directly from runtime tool failures (artifact tool retry
+  flow, recursive agent escalation) instead of only from operator-triggered investigation
+  promotion.
+- Add cancellation, timeouts, and notifications for waits that linger past a configured
+  policy.
+- Surface a Waits page that aggregates open waits across runs, with filters by tool, run,
+  and investigation.
+- Resume should preserve continuation context (memory, artifacts, conversation thread)
+  for the retried run instead of relying on the operator to re-issue the task.
+
 ## Phase 2: Tool Registry
 
 Status: partially implemented.
