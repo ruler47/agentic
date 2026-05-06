@@ -147,6 +147,16 @@ test("web UI keeps page-based workspace information architecture", async () => {
     />Resume run</,
     "the resume button must not be labelled 'Resume run' anymore — call it 'Mark ready for retry' instead",
   );
+  // Auto retry-run skeleton: Run Workspace, Tool Builds, and Trace Lab inspector all
+  // expose the new `/retry-run` action and surface the linked retryRunId once created.
+  assert.match(app, /Create retry run/);
+  assert.match(app, /data-action="create-retry-run-for-wait"/);
+  assert.match(app, /function createRetryRunForWait/);
+  assert.match(app, /\/api\/tool-rework-waits\/[^"]*\/retry-run/);
+  assert.match(app, /Open retry run/);
+  assert.match(app, /Retry run linked to a tool rework wait/);
+  assert.match(app, /function renderRetryRunChip/);
+  assert.match(app, /function isRetryRun/);
   assert.match(app, /function renderNotice/);
   assert.match(app, /sourceSpanId/);
   assert.match(app, /Tool request created/);
@@ -308,6 +318,8 @@ test("web UI keeps page-based workspace information architecture", async () => {
     ".run-wait-panel",
     ".wait-card",
     ".rework-wait-card",
+    ".retry-chip",
+    ".row-title-text",
     ".status-badge.waiting_tool_rework",
   ]) {
     assert.match(styles, new RegExp(componentClass.replace(".", "\\.")));

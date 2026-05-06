@@ -30,6 +30,7 @@ export type AuditAction =
   | "tool_rework_wait.created"
   | "tool_rework_wait.updated"
   | "tool_rework_wait.resumed"
+  | "tool_rework_wait.retry_run_created"
   | "tool_migration.recorded"
   | "conversation_thread.deleted"
   | "group_profile.updated"

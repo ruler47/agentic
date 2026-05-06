@@ -323,6 +323,13 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   runtime. Centralizes investigation + build + wait creation, marks the run as
   `waiting_tool_rework`, emits audit events, and exposes `notifyBuildRegistered` /
   `markReadyForRetry` so HTTP and agent runtime use the same auditable flow.
+- [src/tools/toolReworkRetryCoordinator.ts](src/tools/toolReworkRetryCoordinator.ts) -
+  domain helper that turns a `promoted` `ToolReworkWait` into a linked retry run. Copies
+  the original run's task and instance/user/channel/thread provenance, sets
+  `parentRunId = sourceRunId` and `wait.retryRunId`, returns the source run to `failed`,
+  and audits `tool_rework_wait.retry_run_created`. Idempotent: a second call returns the
+  existing retry run. The HTTP endpoint `POST /api/tool-rework-waits/:id/retry-run`
+  delegates to it and starts execution through the standard `executeRun` path.
 - [src/tools/toolBuildWorkflow.ts](src/tools/toolBuildWorkflow.ts) - reusable Builder/QA/
   review/Registrar orchestration flow for missing tool capabilities.
 - [src/tools/toolBuildReviewers.ts](src/tools/toolBuildReviewers.ts) - deterministic and
@@ -478,6 +485,11 @@ For documentation-only changes:
   handling, idempotent build-registered notifications, `markReadyForRetry` resuming the
   run only when the wait is `promoted`, and protection against late completion overwriting
   a coordinator-opened wait.
+- `tests/toolReworkRetryCoordinator.test.ts` covers the retry-run skeleton: rejection of
+  unknown / non-promoted / orphaned waits, creation of a linked retry run that inherits
+  the original run's task and provenance, idempotency on the second call, and the
+  contract that the coordinator never auto-executes the retry run (execution stays in the
+  HTTP layer's `executeRun`).
 - `tests/toolServiceSupervisor.test.ts` covers generic always-on tool lifecycle state,
   status-store persistence across supervisor instances, reconciliation, and lifecycle
   logs.
@@ -660,6 +672,17 @@ For documentation-only changes:
   an automatic agent retry. The recursive retry engine (Phase 2) is what will populate
   `retryRunId`/`retrySpanId` automatically. Audit `tool_rework_wait.created`,
   `tool_rework_wait.updated`, and `tool_rework_wait.resumed` for every state transition.
+- Retry-run handoff: when a `ToolReworkWait` reaches `promoted`, operators (and the
+  future recursive engine) can either close the wait without spawning a retry through
+  `POST /api/tool-rework-waits/:id/resume`, or create a linked retry run through
+  `POST /api/tool-rework-waits/:id/retry-run`. The retry-run path goes through
+  `ToolReworkRetryCoordinator` (`src/tools/toolReworkRetryCoordinator.ts`) and starts
+  execution through the same `executeRun` helper that powers `POST /api/runs`. The retry
+  run has `parentRunId = sourceRunId` and is reachable from `wait.retryRunId`. The source
+  run returns from `waiting_tool_rework` to `failed`. The endpoint is idempotent and
+  audits `tool_rework_wait.retry_run_created`. Do not duplicate this lifecycle; if a new
+  surface needs to spawn a retry run, route it through the same coordinator/endpoint.
+  Span-level recursive retry of only the failed step is still Phase 2.
 - Tool rework lifecycle (HTTP and agent runtime) is owned by a single in-process domain
   helper, `ToolImprovementCoordinator` (`src/tools/toolImprovementCoordinator.ts`). The
   promote endpoint, the standalone wait creation endpoint, the build-registered

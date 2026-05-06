@@ -333,6 +333,9 @@ document.addEventListener("click", (event) => {
   if (actionName === "resume-tool-rework-wait" && waitId) {
     void resumeToolReworkWait(waitId);
   }
+  if (actionName === "create-retry-run-for-wait" && waitId) {
+    void createRetryRunForWait(waitId);
+  }
   if (actionName === "cancel-tool-rework-wait" && waitId) {
     void cancelToolReworkWait(waitId);
   }
@@ -899,6 +902,7 @@ function renderRunCard(run) {
     <article class="run-card ${run.status}" data-action="select-run" data-run-id="${run.id}" tabindex="0">
       <div class="run-card-top">
         ${statusBadge(run.status)}
+        ${renderRetryRunChip(run)}
         <span data-live-run-duration="${run.id}">${formatRunDuration(run)}</span>
       </div>
       <h3>${escapeHtml(run.task)}</h3>
@@ -935,7 +939,7 @@ function renderActivityItem(run) {
     <button type="button" class="activity-item" data-action="select-run" data-run-id="${run.id}">
       <span class="activity-icon">${run.status === "completed" ? "✓" : run.status === "failed" ? "!" : run.status === "cancelled" ? "×" : run.status === "waiting_tool_rework" ? "⏸" : "•"}</span>
       <span class="activity-copy">
-        <strong>${escapeHtml(run.task)}</strong>
+        <strong>${escapeHtml(run.task)} ${renderRetryRunChip(run)}</strong>
         <small>${run.channel ?? "web"} · ${run.requesterUserId ?? "user-admin"} · ${formatRelative(run.updatedAt)}</small>
       </span>
       ${statusBadge(run.status)}
@@ -1019,7 +1023,7 @@ function renderRunRow(run) {
   const tools = (run.events ?? []).filter((event) => event.activity === "tool").length;
   return `
     <button type="button" class="data-row" data-action="select-run" data-run-id="${run.id}">
-      <span class="row-title">${escapeHtml(run.task)}</span>
+      <span class="row-title"><span class="row-title-text">${escapeHtml(run.task)}</span>${renderRetryRunChip(run)}</span>
       ${statusBadge(run.status)}
       <span>${run.requesterUserId ?? "user-admin"}</span>
       <span>${run.channel ?? "web"}</span>
@@ -1028,6 +1032,14 @@ function renderRunRow(run) {
       <span>${formatRelative(run.createdAt)}</span>
     </button>
   `;
+}
+
+function isRetryRun(run) {
+  return state.toolReworkWaits.some((wait) => wait.retryRunId === run.id);
+}
+
+function renderRetryRunChip(run) {
+  return isRetryRun(run) ? `<span class="status-chip retry-chip" title="Retry run linked to a tool rework wait">Retry run</span>` : "";
 }
 
 function renderRunWorkspace(run) {
@@ -1128,7 +1140,7 @@ function renderRunWaitPanel(run) {
         <div>
           <span class="eyebrow">Tool rework wait</span>
           <h2>Waiting for tool upgrade</h2>
-          <p>This run paused because a registered tool needs to be improved or rebuilt before retrying. The investigation/build queue below preserves the failure context. Once the new tool version is promoted, click <em>Mark ready for retry</em>: the wait closes, the run returns to <code>failed</code>, and an operator can re-issue the task with the new tool. The automatic recursive retry engine arrives in Phase 2.</p>
+          <p>This run paused because a registered tool needs to be improved or rebuilt before retrying. The investigation/build queue below preserves the failure context. Once the new tool version is promoted, click <em>Create retry run</em> to spawn a linked retry run that executes through the standard run path, or <em>Mark ready for retry</em> to just close the wait and let an operator re-issue the task manually. Span-level recursive retry/replanning of only the failed step is still Phase 2 work.</p>
         </div>
         <span class="context-chip">${pending.length} active</span>
       </div>
@@ -1146,7 +1158,8 @@ function renderRunWaitCard(wait) {
   const build = wait.buildRequestId
     ? state.buildRequests.find((item) => item.id === wait.buildRequestId)
     : undefined;
-  const canResume = wait.status === "promoted";
+  const canCreateRetry = wait.status === "promoted" && !wait.retryRunId;
+  const canMarkReady = wait.status === "promoted";
   return `
     <article class="wait-card" data-wait-id="${escapeHtml(wait.id)}">
       <div class="card-topline">
@@ -1157,9 +1170,12 @@ function renderRunWaitCard(wait) {
       ${wait.toolVersion ? `<small class="status-note">Version: ${escapeHtml(wait.toolVersion)}${wait.promotedVersion ? ` → ${escapeHtml(wait.promotedVersion)}` : ""}</small>` : ""}
       ${investigation ? `<small class="status-note">Investigation: <code>${escapeHtml(investigation.id)}</code> (${escapeHtml(investigation.status)})</small>` : ""}
       ${build ? `<small class="status-note">Build: <code>${escapeHtml(build.id)}</code> (${escapeHtml(build.status)})</small>` : ""}
+      ${wait.retryRunId ? `<small class="status-note">Retry run: <code>${escapeHtml(wait.retryRunId)}</code></small>` : ""}
       <p class="wait-reason">${escapeHtml(truncate(wait.reason ?? "", 240))}</p>
       <div class="card-actions">
-        ${canResume ? `<button type="button" class="primary-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>` : ""}
+        ${canCreateRetry ? `<button type="button" class="primary-button" data-action="create-retry-run-for-wait" data-wait-id="${escapeHtml(wait.id)}">Create retry run</button>` : ""}
+        ${wait.retryRunId ? `<button type="button" class="ghost-button" data-action="select-run" data-run-id="${escapeHtml(wait.retryRunId)}">Open retry run</button>` : ""}
+        ${canMarkReady ? `<button type="button" class="ghost-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>` : ""}
         ${wait.status !== "resumed" && wait.status !== "cancelled" ? `<button type="button" class="ghost-button" data-action="cancel-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Cancel wait</button>` : ""}
         ${build ? `<button type="button" class="ghost-button" data-action="navigate" data-route="tool-builds">Open Tool Builds</button>` : ""}
         ${wait.runId ? `<button type="button" class="ghost-button" data-action="open-trace" data-run-id="${escapeHtml(wait.runId)}">Open Trace Lab</button>` : ""}
@@ -1555,10 +1571,13 @@ function renderInspectorReworkWait(node) {
         ${wait.toolName ? `<div><dt>Tool</dt><dd><code>${escapeHtml(wait.toolName)}</code>${wait.toolVersion ? ` v${escapeHtml(wait.toolVersion)}` : ""}${wait.promotedVersion ? ` → v${escapeHtml(wait.promotedVersion)}` : ""}</dd></div>` : ""}
         ${investigation ? `<div><dt>Investigation</dt><dd><code>${escapeHtml(investigation.id)}</code> (${escapeHtml(investigation.status)})</dd></div>` : ""}
         ${build ? `<div><dt>Build</dt><dd><code>${escapeHtml(build.id)}</code> (${escapeHtml(build.status)})</dd></div>` : ""}
+        ${wait.retryRunId ? `<div><dt>Retry run</dt><dd><code>${escapeHtml(wait.retryRunId)}</code></dd></div>` : ""}
       </dl>
       <p class="muted">${escapeHtml(truncate(wait.reason ?? "", 240))}</p>
       <div class="card-actions">
-        ${wait.status === "promoted" ? `<button type="button" class="primary-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>` : ""}
+        ${wait.status === "promoted" && !wait.retryRunId ? `<button type="button" class="primary-button" data-action="create-retry-run-for-wait" data-wait-id="${escapeHtml(wait.id)}">Create retry run</button>` : ""}
+        ${wait.retryRunId ? `<button type="button" class="ghost-button" data-action="select-run" data-run-id="${escapeHtml(wait.retryRunId)}">Open retry run</button>` : ""}
+        ${wait.status === "promoted" ? `<button type="button" class="ghost-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>` : ""}
         <button type="button" class="ghost-button" data-action="navigate" data-route="tool-builds">Open Tool Builds</button>
       </div>
     </section>
@@ -1993,6 +2012,45 @@ async function resumeToolReworkWait(id) {
       body:
         `Wait ${data.wait.id} is now marked ready for retry: the run was returned to "failed" so an operator can re-issue it ` +
         `manually with the new tool version. The automatic recursive retry/resume engine ships in Phase 2.`,
+    };
+    render();
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function createRetryRunForWait(id) {
+  try {
+    const data = await fetchJson(`/api/tool-rework-waits/${encodeURIComponent(id)}/retry-run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (data.wait) {
+      state.toolReworkWaits = state.toolReworkWaits.map((item) =>
+        item.id === data.wait.id ? data.wait : item,
+      );
+    }
+    if (data.retryRun) {
+      // Insert or update the retry run record so it shows up in the runs list immediately.
+      state.runs = [
+        data.retryRun,
+        ...state.runs.filter((run) => run.id !== data.retryRun.id),
+      ];
+    }
+    if (data.wait?.runId) {
+      const refreshed = await fetchJson(`/api/runs/${encodeURIComponent(data.wait.runId)}`).catch(() => undefined);
+      if (refreshed?.run) {
+        state.runs = state.runs.map((run) => (run.id === refreshed.run.id ? refreshed.run : run));
+      }
+    }
+    state.notice = {
+      title: data.alreadyExists ? "Retry run already exists" : "Retry run created",
+      body: data.retryRun
+        ? `Retry run ${data.retryRun.id} is linked to wait ${id} (parent run ${data.retryRun.parentRunId ?? "unknown"}). ` +
+          `It executes through the standard run path; full span-level recursive retry is still Phase 2.`
+        : `Wait ${id} updated.`,
     };
     render();
   } catch (error) {
@@ -3454,9 +3512,15 @@ function renderBuildLinkedWaits(request) {
         .map(
           (wait) => `
             <div class="build-wait-row">
-              <small class="status-note">Wait <code>${escapeHtml(wait.id)}</code> for run <code>${escapeHtml(wait.runId)}</code> · ${escapeHtml(formatStatusLabel(wait.status))}</small>
+              <small class="status-note">Wait <code>${escapeHtml(wait.id)}</code> for run <code>${escapeHtml(wait.runId)}</code> · ${escapeHtml(formatStatusLabel(wait.status))}${wait.retryRunId ? ` · retry <code>${escapeHtml(wait.retryRunId)}</code>` : ""}</small>
+              ${wait.status === "promoted" && !wait.retryRunId
+                ? `<button type="button" class="primary-button" data-action="create-retry-run-for-wait" data-wait-id="${escapeHtml(wait.id)}">Create retry run</button>`
+                : ""}
+              ${wait.retryRunId
+                ? `<button type="button" class="ghost-button" data-action="select-run" data-run-id="${escapeHtml(wait.retryRunId)}">Open retry run</button>`
+                : ""}
               ${wait.status === "promoted"
-                ? `<button type="button" class="primary-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>`
+                ? `<button type="button" class="ghost-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>`
                 : ""}
             </div>
           `,
@@ -3475,9 +3539,15 @@ function renderInvestigationLinkedWaits(investigation) {
         .map(
           (wait) => `
             <div class="investigation-wait-row">
-              <small class="status-note">Wait <code>${escapeHtml(wait.id)}</code> · ${escapeHtml(formatStatusLabel(wait.status))}${wait.promotedVersion ? ` · v${escapeHtml(wait.promotedVersion)}` : ""}</small>
+              <small class="status-note">Wait <code>${escapeHtml(wait.id)}</code> · ${escapeHtml(formatStatusLabel(wait.status))}${wait.promotedVersion ? ` · v${escapeHtml(wait.promotedVersion)}` : ""}${wait.retryRunId ? ` · retry <code>${escapeHtml(wait.retryRunId)}</code>` : ""}</small>
+              ${wait.status === "promoted" && !wait.retryRunId
+                ? `<button type="button" class="primary-button" data-action="create-retry-run-for-wait" data-wait-id="${escapeHtml(wait.id)}">Create retry run</button>`
+                : ""}
+              ${wait.retryRunId
+                ? `<button type="button" class="ghost-button" data-action="select-run" data-run-id="${escapeHtml(wait.retryRunId)}">Open retry run</button>`
+                : ""}
               ${wait.status === "promoted"
-                ? `<button type="button" class="primary-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>`
+                ? `<button type="button" class="ghost-button" data-action="resume-tool-rework-wait" data-wait-id="${escapeHtml(wait.id)}">Mark ready for retry</button>`
                 : ""}
             </div>
           `,
