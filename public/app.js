@@ -898,12 +898,11 @@ function renderActiveRuns(runs) {
 
 function renderRunCard(run) {
   const currentStep = latestEvent(run)?.title ?? "Waiting for first event";
-  const isRetryRun = state.toolReworkWaits.some((wait) => wait.retryRunId === run.id);
   return `
     <article class="run-card ${run.status}" data-action="select-run" data-run-id="${run.id}" tabindex="0">
       <div class="run-card-top">
         ${statusBadge(run.status)}
-        ${isRetryRun ? `<span class="status-chip retry-chip" title="Retry run linked to a tool rework wait">Retry run</span>` : ""}
+        ${renderRetryRunChip(run)}
         <span data-live-run-duration="${run.id}">${formatRunDuration(run)}</span>
       </div>
       <h3>${escapeHtml(run.task)}</h3>
@@ -940,7 +939,7 @@ function renderActivityItem(run) {
     <button type="button" class="activity-item" data-action="select-run" data-run-id="${run.id}">
       <span class="activity-icon">${run.status === "completed" ? "✓" : run.status === "failed" ? "!" : run.status === "cancelled" ? "×" : run.status === "waiting_tool_rework" ? "⏸" : "•"}</span>
       <span class="activity-copy">
-        <strong>${escapeHtml(run.task)}</strong>
+        <strong>${escapeHtml(run.task)} ${renderRetryRunChip(run)}</strong>
         <small>${run.channel ?? "web"} · ${run.requesterUserId ?? "user-admin"} · ${formatRelative(run.updatedAt)}</small>
       </span>
       ${statusBadge(run.status)}
@@ -1024,7 +1023,7 @@ function renderRunRow(run) {
   const tools = (run.events ?? []).filter((event) => event.activity === "tool").length;
   return `
     <button type="button" class="data-row" data-action="select-run" data-run-id="${run.id}">
-      <span class="row-title">${escapeHtml(run.task)}</span>
+      <span class="row-title"><span class="row-title-text">${escapeHtml(run.task)}</span>${renderRetryRunChip(run)}</span>
       ${statusBadge(run.status)}
       <span>${run.requesterUserId ?? "user-admin"}</span>
       <span>${run.channel ?? "web"}</span>
@@ -1033,6 +1032,14 @@ function renderRunRow(run) {
       <span>${formatRelative(run.createdAt)}</span>
     </button>
   `;
+}
+
+function isRetryRun(run) {
+  return state.toolReworkWaits.some((wait) => wait.retryRunId === run.id);
+}
+
+function renderRetryRunChip(run) {
+  return isRetryRun(run) ? `<span class="status-chip retry-chip" title="Retry run linked to a tool rework wait">Retry run</span>` : "";
 }
 
 function renderRunWorkspace(run) {
