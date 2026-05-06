@@ -33,6 +33,7 @@ export class ToolBuildWorker {
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
   private pendingTick: Promise<ToolBuildWorkerTickResult> | undefined;
+  private queuedImmediateTick: Promise<ToolBuildWorkerTickResult> | undefined;
   private onAfterCompleted?: (result: ToolBuildWorkflowResult) => Promise<void> | void;
 
   constructor(
@@ -74,12 +75,29 @@ export class ToolBuildWorker {
   /**
    * Trigger an immediate tick without waiting for the configured interval. Used by
    * `ToolImprovementCoordinator.requestImprovement` to hand a freshly created build
-   * over to the worker directly. If a tick is already in flight, this method joins it
-   * instead of starting a duplicate run, so promote-time and interval-time triggers
-   * never claim the same request twice.
+   * over to the worker directly. If a tick is already in flight, this method schedules
+   * exactly one follow-up tick after it completes. That preserves the single-claimer
+   * guard while still catching requests created after the current tick already checked
+   * the queue.
    */
   async scheduleImmediate(): Promise<ToolBuildWorkerTickResult> {
-    if (this.pendingTick) return this.pendingTick;
+    if (this.pendingTick) {
+      if (!this.queuedImmediateTick) {
+        const currentTick = this.pendingTick;
+        this.queuedImmediateTick = (async () => {
+          try {
+            await currentTick;
+          } catch {
+            // `tick` records workflow errors in its result, but keep the follow-up
+            // trigger resilient if a future implementation throws unexpectedly.
+          }
+          return this.tick();
+        })().finally(() => {
+          this.queuedImmediateTick = undefined;
+        });
+      }
+      return this.queuedImmediateTick;
+    }
     return this.tick();
   }
 

@@ -693,7 +693,7 @@ test("ToolBuildWorker setOnAfterCompleted late-binds the post-completion callbac
   assert.equal(seen[0], "registered");
 });
 
-test("ToolBuildWorker does not claim the same request twice when ticks overlap", async () => {
+test("ToolBuildWorker does not double-claim overlapping ticks and queues scheduleImmediate follow-up", async () => {
   const store = new InMemoryToolBuildRequestStore();
   await store.create({ capability: "concurrency", reason: "concurrency probe 1" });
   await store.create({ capability: "concurrency", reason: "concurrency probe 2" });
@@ -737,16 +737,77 @@ test("ToolBuildWorker does not claim the same request twice when ticks overlap",
   // Second tick fires before the first releases the builder. It must join the pending
   // tick (or no-op) instead of double-claiming the same request.
   const secondTick = worker.tick();
-  // Third entry through scheduleImmediate. Same expectation.
+  // scheduleImmediate is stronger than a plain overlapping tick: it queues one follow-up
+  // tick after the current one finishes, so freshly-created handoff requests do not wait
+  // for the next interval.
   const scheduled = worker.scheduleImmediate();
 
   // Release builder for first request only.
   builderResumeResolvers[0]?.();
-  await Promise.all([firstTick, secondTick, scheduled]);
+  await Promise.all([firstTick, secondTick]);
 
-  // Exactly one build was claimed during this overlapping window.
-  assert.equal(claimedRequestIds.length, 1, "overlapping ticks must not double-claim");
-  // The other request remains `requested` for the next tick to pick up.
+  assert.equal(claimedRequestIds.length, 1, "plain overlapping ticks must not double-claim");
+
+  builderResumeResolvers[1]?.();
+  const scheduledResult = await scheduled;
+
+  assert.equal(scheduledResult.claimed.length, 1, "scheduleImmediate should run one queued follow-up tick");
+  assert.equal(claimedRequestIds.length, 2);
+  assert.equal(new Set(claimedRequestIds).size, 2, "each request should be claimed once");
   const remaining = (await store.list()).filter((req) => req.status === "requested");
-  assert.equal(remaining.length, 1);
+  assert.equal(remaining.length, 0);
+});
+
+test("ToolBuildWorker scheduleImmediate catches requests created after an in-flight idle claim", async () => {
+  const store = new InMemoryToolBuildRequestStore();
+  let releaseFirstClaim: (() => void) | undefined;
+  const firstClaimStarted = new Promise<void>((resolve) => {
+    const originalClaim = store.claimNextRequested.bind(store);
+    let claimCalls = 0;
+    store.claimNextRequested = async (statusDetail?: string) => {
+      claimCalls += 1;
+      if (claimCalls === 1) {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseFirstClaim = release;
+        });
+        return undefined;
+      }
+      return originalClaim(statusDetail);
+    };
+  });
+  const workflow = new ToolBuildWorkflow(
+    store,
+    {
+      async build(claimed) {
+        return { modulePath: claimed.contract.modulePath, testPath: claimed.contract.testPath, summary: "built" };
+      },
+    },
+    {
+      async run() {
+        return { ok: true, summary: "ok", checks: ["ok"] };
+      },
+    },
+    {
+      async register() {
+        return "generated.immediate";
+      },
+    },
+  );
+  const worker = new ToolBuildWorker(workflow, store);
+
+  const firstTick = worker.tick();
+  await firstClaimStarted;
+  const request = await store.create({
+    capability: "immediate-after-idle-claim",
+    reason: "Created while an idle tick is already in flight.",
+  });
+  const scheduled = worker.scheduleImmediate();
+  releaseFirstClaim?.();
+  const [firstResult, scheduledResult] = await Promise.all([firstTick, scheduled]);
+
+  assert.equal(firstResult.claimed.length, 0, "the in-flight tick already missed the new request");
+  assert.equal(scheduledResult.claimed.length, 1, "scheduleImmediate must queue a follow-up claim");
+  assert.equal(scheduledResult.claimed[0]?.id, request.id);
+  assert.equal((await store.get(request.id))?.status, "registered");
 });
