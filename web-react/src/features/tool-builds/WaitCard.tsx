@@ -1,9 +1,18 @@
 import { Link } from "react-router-dom";
 
-import { useResumeReworkWait, useUpdateReworkWait } from "@/api/reworkWaits";
+import {
+  useAutoRetryReworkWait,
+  useCreateRetryRunForWait,
+  useResumeReworkWait,
+  useUpdateReworkWait,
+} from "@/api/reworkWaits";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
 import type { ToolReworkWaitRecord } from "@/api/types";
+import {
+  canCreateRetryRun,
+  retryRunLabel,
+} from "@/features/tool-builds/reworkWaitPresentation";
 
 type WaitCardProps = {
   wait: ToolReworkWaitRecord;
@@ -11,9 +20,12 @@ type WaitCardProps = {
 
 export function WaitCard({ wait }: WaitCardProps) {
   const resume = useResumeReworkWait();
+  const createRetry = useCreateRetryRunForWait();
+  const autoRetry = useAutoRetryReworkWait();
   const update = useUpdateReworkWait();
 
   const canResume = wait.status === "promoted";
+  const canCreateRetry = canCreateRetryRun(wait);
   const canCancel = wait.status !== "resumed" && wait.status !== "cancelled";
 
   return (
@@ -55,8 +67,44 @@ export function WaitCard({ wait }: WaitCardProps) {
           Build: <code>{wait.buildRequestId}</code>
         </p>
       ) : null}
+      {wait.retryRunId ? (
+        <p className="text-[11px] text-app-text-muted">
+          {retryRunLabel(wait)}:{" "}
+          <Link to={`/run/${wait.retryRunId}`} className="text-app-accent underline">
+            {wait.retryRunId}
+          </Link>
+        </p>
+      ) : null}
       <p className="whitespace-pre-wrap text-[11px]">{truncate(wait.reason, 240)}</p>
       <div className="mt-1 flex flex-wrap gap-2">
+        {canCreateRetry ? (
+          <>
+            <button
+              type="button"
+              onClick={() => createRetry.mutate({ id: wait.id })}
+              disabled={createRetry.isPending}
+              className="rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
+            >
+              {createRetry.isPending ? "Creating…" : "Create retry run"}
+            </button>
+            <button
+              type="button"
+              onClick={() => autoRetry.mutate({ id: wait.id })}
+              disabled={autoRetry.isPending}
+              className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px]"
+            >
+              {autoRetry.isPending ? "Checking…" : "Force auto retry"}
+            </button>
+          </>
+        ) : null}
+        {wait.retryRunId ? (
+          <Link
+            to={`/run/${wait.retryRunId}`}
+            className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
+          >
+            Open retry run
+          </Link>
+        ) : null}
         {canResume ? (
           <button
             type="button"
@@ -93,13 +141,19 @@ export function WaitCard({ wait }: WaitCardProps) {
           Open Trace Lab
         </Link>
       </div>
-      {[resume.error, update.error]
+      {[createRetry.error, autoRetry.error, resume.error, update.error]
         .filter((error): error is Error => Boolean(error))
         .map((error, index) => (
           <p key={index} className="text-[11px] text-app-danger">
             {error.message}
           </p>
         ))}
+      {autoRetry.data?.status && autoRetry.data.status !== "created" && autoRetry.data.status !== "already_exists" ? (
+        <p className="text-[11px] text-app-text-muted">
+          Auto retry decision: <code>{autoRetry.data.status}</code>
+          {autoRetry.data.reason ? <> · {truncate(autoRetry.data.reason, 120)}</> : null}
+        </p>
+      ) : null}
     </article>
   );
 }

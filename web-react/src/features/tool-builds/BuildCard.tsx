@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 import {
   buildHasActivationFailure,
@@ -7,9 +8,14 @@ import {
   useRunToolBuild,
   useStopToolBuild,
 } from "@/api/toolBuilds";
+import { useCreateRetryRunForWait, useResumeReworkWait } from "@/api/reworkWaits";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
 import type { ToolBuildRequest, ToolBuildRequestStatus, ToolReworkWaitRecord } from "@/api/types";
+import {
+  canCreateRetryRun,
+  retryRunLabel,
+} from "@/features/tool-builds/reworkWaitPresentation";
 
 type BuildCardProps = {
   request: ToolBuildRequest;
@@ -23,6 +29,8 @@ export function BuildCard({ request, linkedWaits }: BuildCardProps) {
   const stopBuild = useStopToolBuild();
   const deleteBuild = useDeleteToolBuild();
   const rework = useReworkToolBuild();
+  const createRetry = useCreateRetryRunForWait();
+  const resumeWait = useResumeReworkWait();
   const [reworkOpen, setReworkOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
 
@@ -74,7 +82,35 @@ export function BuildCard({ request, linkedWaits }: BuildCardProps) {
                 <span className="font-mono">{wait.id}</span>
                 <span className="ml-1 text-app-text-muted">
                   · run {wait.runId} · {wait.status}
+                  {wait.retryRunId ? <> · {retryRunLabel(wait)} {wait.retryRunId}</> : null}
                 </span>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {canCreateRetryRun(wait) ? (
+                    <button
+                      type="button"
+                      onClick={() => createRetry.mutate({ id: wait.id })}
+                      disabled={createRetry.isPending}
+                      className="rounded border border-app-border bg-app-surface px-2 py-0.5"
+                    >
+                      Create retry run
+                    </button>
+                  ) : null}
+                  {wait.retryRunId ? (
+                    <Link className="text-app-accent underline" to={`/run/${wait.retryRunId}`}>
+                      Open retry run
+                    </Link>
+                  ) : null}
+                  {wait.status === "promoted" ? (
+                    <button
+                      type="button"
+                      onClick={() => resumeWait.mutate({ id: wait.id })}
+                      disabled={resumeWait.isPending}
+                      className="rounded border border-app-border bg-app-surface px-2 py-0.5"
+                    >
+                      Mark ready for retry
+                    </button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
@@ -168,7 +204,7 @@ export function BuildCard({ request, linkedWaits }: BuildCardProps) {
         </form>
       ) : null}
 
-      {[runBuild.error, stopBuild.error, deleteBuild.error]
+      {[runBuild.error, stopBuild.error, deleteBuild.error, createRetry.error, resumeWait.error]
         .filter((error): error is Error => Boolean(error))
         .map((error, index) => (
           <p key={index} className="text-[11px] text-app-danger">

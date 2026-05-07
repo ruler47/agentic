@@ -6,9 +6,14 @@ import {
   usePromoteInvestigation,
   useUpdateInvestigation,
 } from "@/api/investigations";
+import { useCreateRetryRunForWait, useResumeReworkWait } from "@/api/reworkWaits";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
 import type { ToolInvestigationRecord, ToolReworkWaitRecord } from "@/api/types";
+import {
+  canCreateRetryRun,
+  retryRunLabel,
+} from "@/features/tool-builds/reworkWaitPresentation";
 
 type InvestigationCardProps = {
   investigation: ToolInvestigationRecord;
@@ -23,6 +28,8 @@ export function InvestigationCard({
 }: InvestigationCardProps) {
   const promote = usePromoteInvestigation();
   const update = useUpdateInvestigation();
+  const createRetry = useCreateRetryRunForWait();
+  const resumeWait = useResumeReworkWait();
   const [override, setOverride] = useState<{ capability: string; desiredToolName: string } | undefined>();
   const canPromote = investigation.status === "open" || investigation.status === "triaged";
   const toolKnown = investigation.toolName ? installedToolNames.has(investigation.toolName) : false;
@@ -86,8 +93,40 @@ export function InvestigationCard({
           <p className="font-semibold text-app-warning">Linked rework wait{linkedWaits.length > 1 ? "s" : ""}</p>
           <ul className="mt-1 space-y-0.5">
             {linkedWaits.map((wait) => (
-              <li key={wait.id} className="font-mono">
-                {wait.id} <span className="text-app-text-muted">({wait.status})</span>
+              <li key={wait.id}>
+                <p className="font-mono">
+                  {wait.id} <span className="text-app-text-muted">({wait.status})</span>
+                </p>
+                {wait.retryRunId ? (
+                  <p>
+                    {retryRunLabel(wait)}:{" "}
+                    <Link to={`/run/${wait.retryRunId}`} className="text-app-accent underline">
+                      {wait.retryRunId}
+                    </Link>
+                  </p>
+                ) : null}
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {canCreateRetryRun(wait) ? (
+                    <button
+                      type="button"
+                      onClick={() => createRetry.mutate({ id: wait.id })}
+                      disabled={createRetry.isPending}
+                      className="rounded border border-app-border bg-app-surface px-2 py-0.5"
+                    >
+                      Create retry run
+                    </button>
+                  ) : null}
+                  {wait.status === "promoted" ? (
+                    <button
+                      type="button"
+                      onClick={() => resumeWait.mutate({ id: wait.id })}
+                      disabled={resumeWait.isPending}
+                      className="rounded border border-app-border bg-app-surface px-2 py-0.5"
+                    >
+                      Mark ready for retry
+                    </button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
@@ -95,6 +134,14 @@ export function InvestigationCard({
       ) : null}
 
       {/* Promotion error fallback (ambiguous toolName) */}
+      {[createRetry.error, resumeWait.error]
+        .filter((error): error is Error => Boolean(error))
+        .map((error, index) => (
+          <p key={index} className="text-[11px] text-app-danger">
+            {error.message}
+          </p>
+        ))}
+
       {promote.isError && promote.error instanceof InvestigationPromotionAmbiguousError ? (
         <form
           onSubmit={handlePromote}

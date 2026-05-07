@@ -3,7 +3,16 @@ import { modelTierForNode } from "@/features/trace/buildTraceNodes";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatDuration, formatRelative, truncate } from "@/lib/format";
 import type { ToolReworkWaitRecord } from "@/api/types";
-import { useResumeReworkWait } from "@/api/reworkWaits";
+import {
+  useAutoRetryReworkWait,
+  useCreateRetryRunForWait,
+  useResumeReworkWait,
+} from "@/api/reworkWaits";
+import {
+  canCreateRetryRun,
+  retryRunLabel,
+} from "@/features/tool-builds/reworkWaitPresentation";
+import { Link } from "react-router-dom";
 
 type TraceInspectorProps = {
   node: TraceNode | undefined;
@@ -13,6 +22,8 @@ type TraceInspectorProps = {
 
 export function TraceInspector({ node, reworkWait, onCreateInvestigation }: TraceInspectorProps) {
   const resume = useResumeReworkWait();
+  const createRetry = useCreateRetryRunForWait();
+  const autoRetry = useAutoRetryReworkWait();
 
   if (!node) {
     return (
@@ -156,6 +167,42 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
           {reworkWait.reason ? (
             <p className="mt-1 text-app-text-muted">{truncate(reworkWait.reason, 220)}</p>
           ) : null}
+          {reworkWait.retryRunId ? (
+            <p className="mt-1 text-app-text-muted">
+              {retryRunLabel(reworkWait)}:{" "}
+              <Link to={`/run/${reworkWait.retryRunId}`} className="font-mono text-app-accent underline">
+                {reworkWait.retryRunId}
+              </Link>
+            </p>
+          ) : null}
+          {canCreateRetryRun(reworkWait) ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => createRetry.mutate({ id: reworkWait.id })}
+                disabled={createRetry.isPending}
+                className="rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
+              >
+                {createRetry.isPending ? "Creating…" : "Create retry run"}
+              </button>
+              <button
+                type="button"
+                onClick={() => autoRetry.mutate({ id: reworkWait.id })}
+                disabled={autoRetry.isPending}
+                className="rounded-md border border-app-warning/40 bg-app-surface px-2.5 py-1 text-[11px] text-app-text"
+              >
+                {autoRetry.isPending ? "Checking…" : "Force auto retry"}
+              </button>
+            </div>
+          ) : null}
+          {reworkWait.retryRunId ? (
+            <Link
+              to={`/run/${reworkWait.retryRunId}`}
+              className="mt-2 inline-flex rounded-md border border-app-warning/40 bg-app-surface px-2.5 py-1 text-[11px] text-app-text hover:border-app-accent/40"
+            >
+              Open retry run
+            </Link>
+          ) : null}
           {reworkWait.status === "promoted" ? (
             <button
               type="button"
@@ -166,9 +213,13 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
               {resume.isPending ? "Closing…" : "Mark ready for retry"}
             </button>
           ) : null}
-          {resume.isError ? (
-            <p className="mt-1 text-[11px] text-app-danger">{resume.error.message}</p>
-          ) : null}
+          {[createRetry.error, autoRetry.error, resume.error]
+            .filter((error): error is Error => Boolean(error))
+            .map((error, index) => (
+              <p key={index} className="mt-1 text-[11px] text-app-danger">
+                {error.message}
+              </p>
+            ))}
         </section>
       ) : null}
 

@@ -1,7 +1,36 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/fetch";
 import { queryKeys } from "@/api/queryKeys";
-import type { ToolReworkWaitRecord, ToolReworkWaitStatus } from "@/api/types";
+import type { AgentRunRecord, ToolReworkWaitRecord, ToolReworkWaitStatus } from "@/api/types";
+
+type RetryRunResponse = {
+  wait: ToolReworkWaitRecord;
+  retryRun?: AgentRunRecord;
+  alreadyExists?: boolean;
+};
+
+type AutoRetryResponse = RetryRunResponse & {
+  status: string;
+  policy?: unknown;
+  retryDepth?: number;
+  reason?: string;
+};
+
+function refreshWaitCaches(
+  queryClient: ReturnType<typeof useQueryClient>,
+  wait: ToolReworkWaitRecord,
+  retryRun?: AgentRunRecord,
+) {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.toolReworkWaits });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+  if (wait.runId) {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.run(wait.runId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.runWaits(wait.runId) });
+  }
+  if (retryRun) {
+    queryClient.setQueryData(queryKeys.run(retryRun.id), retryRun);
+  }
+}
 
 /**
  * Closes a promoted wait so the operator can retry the original task with the
@@ -26,11 +55,36 @@ export function useResumeReworkWait() {
         { method: "POST", body: { retryRunId, reason } },
       ),
     onSuccess: (data) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.toolReworkWaits });
-      if (data.wait.runId) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.run(data.wait.runId) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.runWaits(data.wait.runId) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+      refreshWaitCaches(queryClient, data.wait);
+    },
+  });
+}
+
+export function useCreateRetryRunForWait() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason?: string }) =>
+      apiFetch<RetryRunResponse>(
+        `/api/tool-rework-waits/${encodeURIComponent(id)}/retry-run`,
+        { method: "POST", body: { reason } },
+      ),
+    onSuccess: (data) => {
+      refreshWaitCaches(queryClient, data.wait, data.retryRun);
+    },
+  });
+}
+
+export function useAutoRetryReworkWait() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string }) =>
+      apiFetch<AutoRetryResponse>(
+        `/api/tool-rework-waits/${encodeURIComponent(id)}/auto-retry`,
+        { method: "POST", body: {} },
+      ),
+    onSuccess: (data) => {
+      if (data.wait) {
+        refreshWaitCaches(queryClient, data.wait, data.retryRun);
       }
     },
   });
@@ -59,11 +113,7 @@ export function useUpdateReworkWait() {
         { method: "PATCH", body: update },
       ),
     onSuccess: (data) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.toolReworkWaits });
-      if (data.wait.runId) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.runWaits(data.wait.runId) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.run(data.wait.runId) });
-      }
+      refreshWaitCaches(queryClient, data.wait);
     },
   });
 }
