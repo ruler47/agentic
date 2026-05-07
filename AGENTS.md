@@ -66,6 +66,20 @@ policies without leaking context.
 - Continuation runs should receive compact prior artifact metadata in thread context and
   reuse those artifacts when they satisfy the follow-up instead of reacquiring identical
   data by default.
+- Future recursive-agent work should add a Thread/Run Work Ledger plus Evidence Ledger:
+  agents must record planned/claimed/running/completed/failed/stale work, search queries,
+  URLs, API calls, screenshots, datasets, files, owner spans, freshness, QA status, and
+  dedupe keys so sibling branches can reuse evidence or wait instead of doing the same
+  external work twice.
+- Future runs should produce a structured retrospective after completion/failure:
+  what worked, what failed, probable root causes, duplicated work, weak tools/models,
+  useful evidence, and proposed memory/tool/prompt/policy follow-ups. Retrospectives feed
+  review queues and improvement tickets; they do not automatically become accepted
+  memory.
+- Council planning is an allowed universal-agent strategy for ambiguous/high-risk/
+  multi-domain work: the agent may ask several child agents or model tiers to propose or
+  critique a plan, then synthesize the result while using the Work Ledger to prevent
+  duplicate evidence gathering.
 - Agents will eventually send auditable outbound messages/reminders to a group or
   individual when policy allows.
 - Tools should be easy to onboard from API documentation and access credentials, but
@@ -606,6 +620,11 @@ For documentation-only changes:
   adapter. If a request asks for concrete provider behavior such as Telegram Bot API
   polling or message delivery, review should fail unless the generated package and QA
   evidence prove that behavior behind the portable service contract.
+- Tool Builder should be treated as a general Technical Capability Builder, not an
+  API-only generator. Requests can come from OpenAPI, Markdown/PDF docs, SDK docs, CLI
+  docs, webhook docs, browser workflow instructions, protocol notes, examples, or plain
+  operator instructions; the builder should classify the reusable capability family
+  before generating code.
 - Always-on tools that receive external provider messages should forward normalized
   events to `POST /api/tool-services/:name/inbound`; that path records the inbound event,
   resolves channel identity, creates a normal run, and records the linked queued event.

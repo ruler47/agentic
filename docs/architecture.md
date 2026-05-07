@@ -45,6 +45,21 @@ metadata such as filename, MIME type, URL, content preview, and QA status. Agent
 reuse these prior artifacts when they satisfy a follow-up request. They should reacquire
 data only when the prior artifact is stale, missing, insufficient, or explicitly rejected.
 
+The next recursive-agent layer adds a structured Thread/Run Work Ledger and Evidence
+Ledger beside this compact summary. The summary is for humans and prompt compression; the
+ledger is for agent coordination. It records planned, claimed, running, completed, failed,
+and stale work; normalized search queries; URLs visited; API calls; screenshots; datasets;
+generated files; owner spans; freshness; QA status; confidence; and dedupe keys. Before
+an agent repeats external work, it should check the ledger, reuse fresh evidence, wait for
+an in-flight sibling claim, or create a new versioned attempt with an explicit reason.
+
+Every run should also end with a structured retrospective. The retrospective captures
+what worked, what failed, why the failure probably happened, whether agents duplicated
+work, which tools/models/prompts were weak, which evidence was useful, and which follow-up
+actions should be proposed. Retrospectives are review inputs, not automatic truth: they
+can create memory proposals, tool investigations, limitation records, prompt/policy
+improvement tickets, or model-tier tuning suggestions.
+
 ## Capability Principle
 
 The system should grow through reusable capabilities, not private case patches. A run may
@@ -63,6 +78,12 @@ A universal agent should be able to sit anywhere in the call chain. It receives 
 task, decides whether to answer or delegate, optionally requests tools, self-checks its
 result against the task contract, and returns upward without needing to know whether its
 caller is a human or another agent.
+
+The same universal agent can choose a council strategy when the task is ambiguous,
+high-risk, multi-domain, or model-sensitive. A council is just another delegated
+capability: several agents, potentially on different providers or stronger tiers, propose
+plans or critiques; a synthesis agent merges them; and the Work Ledger prevents council
+branches from doing duplicate evidence gathering.
 
 The first runtime slice of that model is event-backed call frames. Worker and reviewer
 spans persist a structured `callFrame` payload with local task, output contract, caller

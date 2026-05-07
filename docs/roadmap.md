@@ -28,6 +28,60 @@ review triggers one bounded revision pass before synthesis.
 This is not yet a fully autonomous recursive agent society. It is still centrally
 orchestrated, but the trace contract is ready for nested agent calls.
 
+## Approved Direction: Retrospective And Work Ledger
+
+Recursive agents need shared operational memory for a *task*, not only long-term memory
+for facts. The next recursive-agent design must add three durable layers:
+
+- **Run Retrospective Store**: after every completed, failed, cancelled, or tool-waiting
+  run, the system writes a structured reflection: what worked, what failed, suspected
+  root causes, duplicated work, weak tools, missing capabilities, useful evidence,
+  model/agent failures, and proposed follow-up actions. Retrospectives do not directly
+  become accepted memory. They create reviewable proposals: memory candidates, tool
+  investigations, prompt/policy improvement tickets, limitation records, or model-tier
+  tuning suggestions.
+- **Thread / Run Work Ledger**: every thread and run keeps machine-readable work state,
+  not only a human summary. The ledger tracks planned work, claimed work, running work,
+  completed work, failed work, stale work, open questions, accepted/rejected facts,
+  source URLs, search queries, API calls, screenshots, datasets, and generated files.
+  Agents read this ledger before doing external work so they can reuse fresh evidence or
+  wait for a sibling branch instead of repeating the same search, scrape, screenshot, or
+  API call.
+- **Evidence Ledger**: artifacts and source observations are normalized as evidence with
+  owner span, source URL/provider, timestamp, freshness, QA status, confidence,
+  limitations, and dedupe keys. Final answers, retries, and follow-up runs should cite
+  evidence from this ledger whenever possible.
+
+The dedupe protocol should be explicit:
+
+```text
+agent wants to do work
+  -> computes a work key (query/url/API params/artifact intent/tool+input)
+  -> checks Thread/Run Work Ledger
+  -> if completed and fresh: reuse evidence
+  -> if running/claimed by another branch: wait or subscribe
+  -> if failed/stale/insufficient: create a new versioned attempt with reason
+  -> record result and retrospective signals
+```
+
+This is also the foundation for safe parallelism: child agents can remain local and
+independent while still sharing a small coordination surface that prevents duplicate work.
+
+The universal agent should treat a **council of agents** as one available strategy, not as
+a separate hardcoded orchestrator. For high-risk, ambiguous, multi-domain, or expensive
+tasks, an agent may call a council planner that asks several agents, possibly with
+different model tiers or providers, to propose plans or critique a solution. A synthesis
+agent merges those proposals into a DAG and the Work Ledger keeps the council branches
+from doing the same evidence-gathering twice.
+
+The Tool Builder should be framed as a general **Technical Capability Builder**, not an
+API-only builder. The agent should classify technical instructions/documentation into the
+needed capability family first: API client, SDK wrapper, CLI adapter, browser workflow,
+webhook/listener, always-on messaging service, file/media processor, protocol adapter,
+database/schema workflow, or another reusable tool family. API docs are only one input
+format among OpenAPI, Markdown/PDF docs, SDK docs, CLI docs, webhook docs, examples, and
+plain operator instructions.
+
 ## Product Direction: Group Assistant Platform
 
 The project is evolving from a single local agent console into a deployable assistant
@@ -1095,6 +1149,17 @@ Additional target behavior:
 
 - child agents can request new child agents without central planner knowing the whole
   future graph;
+- child agents check the Thread/Run Work Ledger before doing costly or external work and
+  either reuse fresh evidence, wait for an in-flight sibling claim, or create a new
+  versioned attempt with an explicit reason;
+- child agents record their work claims, evidence, failures, and generated artifacts in a
+  shared ledger so parallel branches do not repeat the same search, scrape, screenshot,
+  API call, or file generation;
+- after each run, a retrospective agent writes structured lessons about what worked,
+  what failed, why it failed, and which memories/tools/prompts/policies should be
+  reviewed;
+- agents can invoke a council planner when task uncertainty, risk, model disagreement, or
+  domain breadth warrants multiple independent plans or critiques;
 - child agents can create Tool Build Requests when they detect missing capabilities;
 - child agents can create Tool Rework Requests when an existing tool is insufficient;
 - child agents can choose model tier and review strictness based on local task risk;
@@ -1109,6 +1174,14 @@ Remaining recursive-agent gaps:
 
 - Replace the central one-shot planner with an agent runtime that can recursively spawn
   workers, reviewers, tool builders, tool QA agents, and tool users.
+- Add Thread/Run Work Ledger and Evidence Ledger stores, including work keys, claim
+  states, owner spans, freshness, QA status, and reuse decisions.
+- Add the run retrospective pipeline and review queue that turns structured reflection
+  into memory proposals, tool investigations, prompt/policy improvement tickets, and
+  limitation records without auto-polluting accepted memory.
+- Add council-planning as a universal-agent strategy: multiple model tiers/providers can
+  propose or critique plans, then a synthesis agent merges the plan while dedupe ledger
+  entries prevent duplicate external work.
 - Persist agent call frames so a child agent has a local task/caller/output contract
   without needing full global context. PARTIAL: worker and reviewer spans now carry a
   structured `callFrame` payload with local task, output contract, caller span,
