@@ -162,6 +162,16 @@ Generated tool package workspace:
   tune the local HTTP process runner readiness wait.
 - `TOOL_SOURCE_BUNDLE_CALL_TIMEOUT_MS` bounds `/run` and service lifecycle HTTP calls for
   source-bundle local process runtimes; default is 60 seconds.
+- `TOOL_OCI_RUNNER=enabled` enables OCI-image tool package execution through Docker.
+  The container must expose `GET /health`, `POST /run`, and optional service lifecycle
+  routes on `TOOL_OCI_INTERNAL_PORT` (default `8080`).
+- `TOOL_OCI_STARTUP_TIMEOUT_MS` and `TOOL_OCI_POLL_INTERVAL_MS` tune OCI runtime
+  readiness checks.
+- `TOOL_OCI_CALL_TIMEOUT_MS` bounds OCI `/run` and lifecycle HTTP calls; default is 60
+  seconds.
+- `TOOL_OCI_MEMORY`, `TOOL_OCI_CPUS`, `TOOL_OCI_PIDS_LIMIT`, `TOOL_OCI_NETWORK`, and
+  `TOOL_OCI_READ_ONLY=enabled` apply conservative Docker resource/isolation flags to
+  generated tool containers.
 - `TOOL_SOURCE_BUNDLE_AUTO_BUILD=disabled` disables the default development behavior
   where source-bundle runners run package-local `npm run build` when the expected
   `dist/index.js` or `dist/runtime/server.js` entrypoint is missing.
@@ -909,7 +919,10 @@ For documentation-only changes:
   `TOOL_SOURCE_BUNDLE_RUNNER=http-process`; HTTP(S)
   external-package refs load through an external runtime proxy; OCI-image refs can load
   through the Docker runner when `TOOL_OCI_RUNNER=enabled` and the container exposes
-  `/health` and `/run`; HTTP/OCI runtimes receive only declared
+  `/health` and `/run`; OCI containers receive Agentic labels, non-secret tool identity
+  environment variables, optional memory/CPU/PID/network/read-only limits, bounded
+  readiness and call timeouts, and redacted failure logs from `docker logs`; HTTP/OCI
+  runtimes receive only declared
   `requiredConfigurationKeys` and `requiredSecretHandles` through scoped runtime
   envelopes; missing required runtime values fail before calling the external runtime;
   npm-style external packages remain roadmap work.
