@@ -30,6 +30,25 @@ orchestrated, but the trace contract is ready for nested agent calls.
 
 ## Approved Direction: Retrospective And Work Ledger
 
+### Foundation slice (DONE)
+
+The domain layer for the Work / Evidence / Run-Retrospective ledgers ships as a
+foundation-only slice in `src/work-ledger/`. It defines `WorkLedgerItem`,
+`WorkLedgerStore`, `EvidenceRecord`, `EvidenceLedgerStore`,
+`RunRetrospectiveRecord`, and `RunRetrospectiveStore`; provides deterministic
+work-key builders and a pure `decideWorkReuse` decision function returning
+`reuse_completed` / `wait_for_inflight` / `create_revalidation` /
+`create_new_attempt` / `blocked_by_recent_failure`; ships in-memory and Postgres
+implementations plus durable migrations; recursively redacts secret-shaped metadata;
+and exposes narrow operator/runtime HTTP endpoints
+(`/api/work-ledger`, `/api/evidence-ledger`, `/api/run-retrospectives`) with audit
+events and 503 fall-through when stores are not configured. The UniversalAgent prompt
+plumbing that will actually consult the ledgers, claim work, append evidence, and
+write a retrospective at run end is intentionally separate and lives in the next
+runtime-integration slice; this foundation is the storage/model/API layer only.
+
+
+
 Recursive agents need shared operational memory for a *task*, not only long-term memory
 for facts. The next recursive-agent design must add three durable layers:
 

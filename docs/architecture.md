@@ -483,6 +483,48 @@ bespoke runtime branches. Span-level recursive retry (replanning only the failed
 against the new tool version) is still Phase 2 work; the existing `markReadyForRetry`
 endpoint remains available as a "close wait without spawning a retry" handoff.
 
+### Work, Evidence, And Retrospective Ledgers
+
+Recursive agents need a small coordination surface so parallel branches do not repeat
+the same searches, URL visits, API calls, screenshots, or artifact generation. The
+domain foundation lives in `src/work-ledger/`:
+
+- **Work Ledger** ([src/work-ledger/types.ts](../src/work-ledger/types.ts),
+  [workLedgerStore.ts](../src/work-ledger/workLedgerStore.ts)) — typed `WorkLedgerItem`
+  records keyed by a deterministic `workKey` and tagged with `kind`
+  (`search`/`url_visit`/`api_call`/`tool_call`/`screenshot`/`artifact_generation`/
+  `data_fetch`/`analysis`/`other`) and `status`
+  (`planned`/`claimed`/`running`/`completed`/`failed`/`stale`/`cancelled`). Helpers in
+  [workKey.ts](../src/work-ledger/workKey.ts) build keys from search queries, URLs,
+  tool calls, API params, and artifact intents while normalizing whitespace, lowering
+  hostnames, sorting query params, dropping URL fragments, and redacting secret-shaped
+  fields. The pure `decideWorkReuse` function returns one of `reuse_completed`,
+  `wait_for_inflight`, `create_revalidation`, `create_new_attempt`, or
+  `blocked_by_recent_failure` — agents call this before doing costly external work.
+- **Evidence Ledger** ([evidenceLedgerStore.ts](../src/work-ledger/evidenceLedgerStore.ts))
+  — typed `EvidenceRecord` rows with QA status, confidence, limitations, and links to
+  artifacts/work items. Useful evidence is reused across runs and cited from final
+  answers without reissuing the same search/scrape.
+- **Run Retrospective** ([runRetrospectiveStore.ts](../src/work-ledger/runRetrospectiveStore.ts))
+  — structured per-run reflections (what worked, what failed, suspected root causes,
+  duplicated work, weak tools/models, missing capabilities, useful evidence ids) plus
+  proposed memory/tool-investigation/policy/prompt changes. Retrospectives are durable
+  proposals; they do not directly become accepted memory or tool builds.
+
+All metadata accepted by these stores is recursively redacted by
+[sanitize.ts](../src/work-ledger/sanitize.ts) so secret-shaped keys cannot reach
+audit metadata or store rows. Each domain has both an in-memory and a Postgres store
+implementation; the Postgres tables (`work_ledger_items`, `evidence_ledger_records`,
+`run_retrospectives`) live in [src/db/migrate.ts](../src/db/migrate.ts) with indexes
+on instance/thread/run/workKey/status/sourceUrl. The web API exposes narrow CRUD
+endpoints (`/api/work-ledger`, `/api/evidence-ledger`, `/api/run-retrospectives`) for
+operator and runtime plumbing.
+
+This is foundation only. UniversalAgent prompt integration — checking the work ledger
+before doing external work, citing evidence from the evidence ledger, and writing a
+retrospective at the end of every run — is intentionally a separate task and is not
+wired into the agent runtime in this slice.
+
 ### Model Tiers
 
 Each LLM step receives a selected model tier based on task risk and activity type.
