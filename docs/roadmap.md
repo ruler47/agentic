@@ -708,14 +708,17 @@ Remaining registry persistence:
   an HTTP(S) runtime URL now load through a proxy runner that calls `/health`, `/run`, and
   optional service lifecycle routes. OCI-image manifests can now be executed by an
   explicitly enabled Docker runner (`TOOL_OCI_RUNNER=enabled`) when the container exposes
-  the same HTTP runtime contract. Tests also prove custom non-local manifests can be
-  loaded by adding a runner, unhealthy OCI runtimes are stopped instead of promoted, and
-  HTTP/OCI runtimes receive only their declared `requiredConfigurationKeys` and
-  `requiredSecretHandles` as scoped runtime envelopes. Missing required runtime values now
-  fail before the external runtime is called. The OCI runner now adds Agentic Docker
-  labels, non-secret tool identity environment variables, optional memory/CPU/PID/
-  network/read-only limits, bounded `/run` and service lifecycle call timeouts, service
-  lifecycle proxying, and redacted startup failure logs from `docker logs`.
+  the same HTTP runtime contract. Loading an OCI manifest is lazy: it registers the tool
+  without starting Docker, starts a short-lived container for normal `/run` calls, and
+  delegates `always-on` startup/heartbeat/stop to the generic Tool Service supervisor.
+  Tests also prove custom non-local manifests can be loaded by adding a runner, lazy
+  unhealthy OCI startups stop the just-created container, and HTTP/OCI runtimes receive
+  only their declared `requiredConfigurationKeys` and `requiredSecretHandles` as scoped
+  runtime envelopes. Missing required runtime values now fail before the external runtime
+  is called. The OCI runner now adds Agentic Docker labels, non-secret tool identity
+  environment variables, optional memory/CPU/PID/network/read-only limits, bounded `/run`
+  and service lifecycle call timeouts, service lifecycle proxying, and redacted startup
+  failure logs from `docker logs`.
   Runner inventory is visible through the API and Diagnostics page, and operators can
   explicitly reload generated tools after updating a source-bundle on disk. Remaining
   work is building package folders into OCI images, npm/external package

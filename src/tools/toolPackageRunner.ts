@@ -343,58 +343,21 @@ export class OciImageToolPackageRunner implements ToolPackageRunner {
       return { loaded: false, detail, health: { ok: false, detail } };
     }
 
-    let container: { containerId: string; baseUrl: string } | undefined;
-    try {
-      container = await this.runtime.start({
+    return {
+      loaded: true,
+      detail: `Loaded ${metadata.name} from OCI image ${ref}; container starts on run or service start.`,
+      tool: ociImageHttpTool(metadata, {
         image: ref,
         internalPort: this.internalPort,
-        toolName: metadata.name,
-        toolVersion: metadata.version,
-        startupMode: metadata.startupMode,
-        labels: {
-          "agentic.tool": metadata.name,
-          "agentic.tool.version": metadata.version,
-          "agentic.tool.package-type": "oci-image",
-          "agentic.tool.startup-mode": metadata.startupMode ?? "on-demand",
-        },
-        env: {
-          AGENTIC_TOOL_NAME: metadata.name,
-          AGENTIC_TOOL_VERSION: metadata.version,
-          AGENTIC_TOOL_STARTUP_MODE: metadata.startupMode ?? "on-demand",
-        },
-        resources: Object.keys(this.resources).length ? this.resources : undefined,
-      });
-      const baseUrl = normalizeBaseUrl(container.baseUrl);
-      const health = await waitForHealthyRuntime(
-        this.fetchImpl,
-        baseUrl,
-        this.startupTimeoutMs,
-        this.pollIntervalMs,
-      );
-      if (!health.ok) {
-        const detail = await healthDetailWithContainerLogs(this.runtime, container.containerId, health.detail);
-        await this.runtime.stop(container.containerId);
-        return { loaded: false, detail, health: { ...health, detail } };
-      }
-
-      attachProcessCleanup(this.runtime, container.containerId);
-      return {
-        loaded: true,
-        detail: `Loaded ${metadata.name} from OCI image ${ref} at ${baseUrl}`,
-        tool: externalHttpProxyTool(metadata, baseUrl, this.fetchImpl, {
-          callTimeoutMs: this.callTimeoutMs,
-          labelPrefix: "OCI image HTTP runtime",
-        }),
-        health,
-      };
-    } catch (error) {
-      const baseDetail = error instanceof Error ? error.message : String(error);
-      const detail = container
-        ? await healthDetailWithContainerLogs(this.runtime, container.containerId, baseDetail)
-        : redactRuntimeText(baseDetail);
-      if (container) await bestEffortStop(this.runtime, container.containerId);
-      return { loaded: false, detail, health: { ok: false, detail } };
-    }
+        startupTimeoutMs: this.startupTimeoutMs,
+        pollIntervalMs: this.pollIntervalMs,
+        callTimeoutMs: this.callTimeoutMs,
+        resources: this.resources,
+        runtime: this.runtime,
+        fetchImpl: this.fetchImpl,
+      }),
+      health: { ok: true, detail: "OCI image manifest accepted; container starts lazily on run or service start." },
+    };
   }
 
   describe(): ToolPackageRunnerInfo {
@@ -403,10 +366,175 @@ export class OciImageToolPackageRunner implements ToolPackageRunner {
       type: this.type,
       status: this.enabled ? "available" : "disabled",
       detail: this.enabled
-        ? `Starts OCI image packages with Docker and proxies their HTTP runtime on internal port ${this.internalPort}.`
+        ? `Starts OCI image packages with Docker on demand or through service lifecycle on internal port ${this.internalPort}.`
         : "Disabled by default. Set TOOL_OCI_RUNNER=enabled to start OCI image packages through Docker.",
       supportedPackageTypes: ["oci-image"],
     };
+  }
+}
+
+type OciImageHttpRuntimeOptions = {
+  image: string;
+  internalPort: number;
+  startupTimeoutMs: number;
+  pollIntervalMs: number;
+  callTimeoutMs: number;
+  resources: OciContainerResources;
+  runtime: OciContainerRuntime;
+  fetchImpl: typeof fetch;
+};
+
+function ociImageHttpTool(
+  metadata: ToolModuleMetadata,
+  options: OciImageHttpRuntimeOptions,
+): Tool {
+  let serviceRuntime: { containerId: string; baseUrl: string } | undefined;
+  let serviceStarted = false;
+
+  return {
+    name: metadata.name,
+    displayName: metadata.displayName,
+    version: metadata.version,
+    description: metadata.description,
+    capabilities: [...metadata.capabilities],
+    inputSchema: metadata.inputSchema,
+    outputSchema: metadata.outputSchema,
+    startupMode: metadata.startupMode,
+    requiredConfigurationKeys: metadata.requiredConfigurationKeys,
+    requiredSecretHandles: metadata.requiredSecretHandles,
+    settingsSchema: metadata.settingsSchema,
+    storage: metadata.storage,
+    docsMarkdown: metadata.docsMarkdown,
+    examples: metadata.examples,
+    async healthcheck() {
+      if (serviceRuntime) return fetchHealth(options.fetchImpl, serviceRuntime.baseUrl);
+      return { ok: true, detail: "OCI image runtime is not running; container starts on demand or service start." };
+    },
+    async run(input, context) {
+      const runtime = serviceRuntime ?? await startOciHttpRuntime(metadata, options);
+      const shouldStop = !serviceRuntime;
+      try {
+        const response = await withOptionalTimeoutSignal(
+          context?.signal,
+          options.callTimeoutMs,
+          "OCI image HTTP runtime /run call",
+          async (signal) => postJson(options.fetchImpl, `${runtime.baseUrl}/run`, {
+            input,
+            context: await executionContextPayload(metadata, context),
+          }, signal),
+        );
+        return parseToolResult(response);
+      } finally {
+        if (shouldStop) await bestEffortStop(options.runtime, runtime.containerId);
+      }
+    },
+    async startService(context) {
+      let startedForThisCall = false;
+      if (!serviceRuntime) {
+        serviceRuntime = await startOciHttpRuntime(metadata, options);
+        startedForThisCall = true;
+      }
+      try {
+        if (!serviceStarted) {
+          await withOptionalTimeoutSignal(
+            context.signal,
+            options.callTimeoutMs,
+            "OCI image HTTP runtime /service/start call",
+            async (signal) => postJson(options.fetchImpl, `${serviceRuntime!.baseUrl}/service/start`, {
+              context: await serviceContextPayload(metadata, context),
+            }, signal),
+          );
+          serviceStarted = true;
+        }
+      } catch (error) {
+        if (startedForThisCall && serviceRuntime) {
+          await bestEffortStop(options.runtime, serviceRuntime.containerId);
+          serviceRuntime = undefined;
+        }
+        serviceStarted = false;
+        throw error;
+      }
+
+      const activeRuntime = serviceRuntime;
+      return {
+        async stop() {
+          if (!activeRuntime) return;
+          try {
+            if (serviceStarted) {
+              await withOptionalTimeoutSignal(
+                undefined,
+                options.callTimeoutMs,
+                "OCI image HTTP runtime /service/stop call",
+                async (signal) => postJson(options.fetchImpl, `${activeRuntime.baseUrl}/service/stop`, {
+                  context: await serviceContextPayload(metadata, context),
+                }, signal),
+              );
+            }
+          } finally {
+            await bestEffortStop(options.runtime, activeRuntime.containerId);
+            if (serviceRuntime?.containerId === activeRuntime.containerId) {
+              serviceRuntime = undefined;
+              serviceStarted = false;
+            }
+          }
+        },
+        async healthcheck() {
+          return fetchHealth(options.fetchImpl, activeRuntime.baseUrl, context.signal);
+        },
+      };
+    },
+  };
+}
+
+async function startOciHttpRuntime(
+  metadata: ToolModuleMetadata,
+  options: OciImageHttpRuntimeOptions,
+): Promise<{ containerId: string; baseUrl: string }> {
+  let container: { containerId: string; baseUrl: string } | undefined;
+  let stopped = false;
+  try {
+    container = await options.runtime.start({
+      image: options.image,
+      internalPort: options.internalPort,
+      toolName: metadata.name,
+      toolVersion: metadata.version,
+      startupMode: metadata.startupMode,
+      labels: {
+        "agentic.tool": metadata.name,
+        "agentic.tool.version": metadata.version,
+        "agentic.tool.package-type": "oci-image",
+        "agentic.tool.startup-mode": metadata.startupMode ?? "on-demand",
+      },
+      env: {
+        AGENTIC_TOOL_NAME: metadata.name,
+        AGENTIC_TOOL_VERSION: metadata.version,
+        AGENTIC_TOOL_STARTUP_MODE: metadata.startupMode ?? "on-demand",
+      },
+      resources: Object.keys(options.resources).length ? options.resources : undefined,
+    });
+    const baseUrl = normalizeBaseUrl(container.baseUrl);
+    const health = await waitForHealthyRuntime(
+      options.fetchImpl,
+      baseUrl,
+      options.startupTimeoutMs,
+      options.pollIntervalMs,
+    );
+    if (!health.ok) {
+      const detail = await healthDetailWithContainerLogs(options.runtime, container.containerId, health.detail);
+      await bestEffortStop(options.runtime, container.containerId);
+      stopped = true;
+      throw new Error(detail);
+    }
+
+    attachProcessCleanup(options.runtime, container.containerId);
+    return { containerId: container.containerId, baseUrl };
+  } catch (error) {
+    const baseDetail = error instanceof Error ? error.message : String(error);
+    const detail = container && !stopped
+      ? await healthDetailWithContainerLogs(options.runtime, container.containerId, baseDetail)
+      : redactRuntimeText(baseDetail);
+    if (container && !stopped) await bestEffortStop(options.runtime, container.containerId);
+    throw new Error(detail);
   }
 }
 

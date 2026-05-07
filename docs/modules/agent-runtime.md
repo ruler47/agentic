@@ -289,12 +289,14 @@ runners are:
   optional service lifecycle calls through `POST /service/start` and
   `POST /service/stop`.
 - `OciImageToolPackageRunner`, which is disabled by default and becomes available when
-  `TOOL_OCI_RUNNER=enabled`. It starts a Docker container for `package.type="oci-image"`,
-  publishes internal port `TOOL_OCI_INTERNAL_PORT` (default `8080`), waits for the same
-  `/health` contract, and then proxies runtime calls through the external HTTP adapter.
-  The runner adds Agentic labels, non-secret tool identity environment variables, optional
-  resource/isolation flags, bounded `/run` and lifecycle call timeouts, and redacted
-  container logs when startup health fails.
+  `TOOL_OCI_RUNNER=enabled`. It accepts `package.type="oci-image"` manifests without
+  starting Docker at app startup. A normal tool call starts a short-lived container,
+  publishes internal port `TOOL_OCI_INTERNAL_PORT` (default `8080`), waits for `/health`,
+  calls `/run`, and stops the container afterwards. An `always-on` tool starts and stops
+  the same OCI runtime through `ToolServiceSupervisor` using `/service/start`,
+  `/service/stop`, and `/health`. The runner adds Agentic labels, non-secret tool
+  identity environment variables, optional resource/isolation flags, bounded `/run` and
+  lifecycle call timeouts, and redacted container logs when startup health fails.
 
 Future package runners can use the same extension point for npm packages, sandboxed
 process pools, or remote execution platforms. Runner diagnostics include both the generic
@@ -385,11 +387,13 @@ Local-path loading is deliberately constrained:
   runner/supervisor can execute that reference type. Tests prove that a registered
   external runner can load such a manifest without changing the core loader.
 
-The first OCI runner is intentionally conservative: it starts one HTTP runtime container
-per loaded package and delegates tool semantics to that container. It does not yet build
-or publish images, pull missing images, rotate a pool of containers, or scale multiple
-replicas. It does add the operational guardrails needed for local generated-tool
-containers:
+The first OCI runner is intentionally conservative: it delegates tool semantics to an
+HTTP runtime container while keeping app startup cheap and explicit. Loading an OCI
+manifest only registers the tool. A `run()` call starts a temporary container and stops it
+after `/run`; `startService()` keeps one container alive under the service supervisor
+until the operator or reconciliation loop stops it. It does not yet build or publish
+images, pull missing images, rotate a pool of containers, or scale multiple replicas. It
+does add the operational guardrails needed for local generated-tool containers:
 
 - `TOOL_OCI_CALL_TIMEOUT_MS` bounds `/run`, `/service/start`, and `/service/stop` calls
   after the runtime becomes healthy.
@@ -398,9 +402,9 @@ containers:
   `AGENTIC_TOOL_NAME`, `AGENTIC_TOOL_VERSION`, and `AGENTIC_TOOL_STARTUP_MODE`.
 - `TOOL_OCI_MEMORY`, `TOOL_OCI_CPUS`, `TOOL_OCI_PIDS_LIMIT`, `TOOL_OCI_NETWORK`, and
   `TOOL_OCI_READ_ONLY=enabled` map to Docker resource/isolation flags.
-- When startup health fails, the runner stops the container and appends redacted
-  `docker logs --tail 80` output to the failure detail so operators see useful bootstrap
-  diagnostics without leaking obvious token/API-key shapes.
+- When lazy startup health fails, the runner stops the just-created container and appends
+  redacted `docker logs --tail 80` output to the failure detail so operators see useful
+  bootstrap diagnostics without leaking obvious token/API-key shapes.
 
 Runtime calls and service lifecycle calls receive only declared runtime envelopes:
 

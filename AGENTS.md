@@ -165,6 +165,9 @@ Generated tool package workspace:
 - `TOOL_OCI_RUNNER=enabled` enables OCI-image tool package execution through Docker.
   The container must expose `GET /health`, `POST /run`, and optional service lifecycle
   routes on `TOOL_OCI_INTERNAL_PORT` (default `8080`).
+  Importing/loading an OCI manifest does not start the container: normal tool calls start
+  an on-demand container and stop it after `/run`, while `always-on` tools are started,
+  healthchecked, and stopped by the generic `ToolServiceSupervisor` lifecycle.
 - `TOOL_OCI_STARTUP_TIMEOUT_MS` and `TOOL_OCI_POLL_INTERVAL_MS` tune OCI runtime
   readiness checks.
 - `TOOL_OCI_CALL_TIMEOUT_MS` bounds OCI `/run` and lifecycle HTTP calls; default is 60
@@ -944,9 +947,12 @@ For documentation-only changes:
   `TOOL_SOURCE_BUNDLE_RUNNER=http-process`; HTTP(S)
   external-package refs load through an external runtime proxy; OCI-image refs can load
   through the Docker runner when `TOOL_OCI_RUNNER=enabled` and the container exposes
-  `/health` and `/run`; OCI containers receive Agentic labels, non-secret tool identity
-  environment variables, optional memory/CPU/PID/network/read-only limits, bounded
-  readiness and call timeouts, and redacted failure logs from `docker logs`; HTTP/OCI
+  `/health` and `/run`; OCI manifests register lazily without starting Docker at app
+  startup, tool calls run through short-lived on-demand containers, and `always-on` OCI
+  tools are controlled by the same service supervisor as source-bundle services; OCI
+  containers receive Agentic labels, non-secret tool identity environment variables,
+  optional memory/CPU/PID/network/read-only limits, bounded readiness and call timeouts,
+  and redacted failure logs from `docker logs`; HTTP/OCI
   runtimes receive only declared
   `requiredConfigurationKeys` and `requiredSecretHandles` through scoped runtime
   envelopes; missing required runtime values fail before calling the external runtime;
