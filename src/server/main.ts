@@ -82,6 +82,12 @@ import {
 import { MessagingServiceToolBuildProvider } from "../tools/messagingServiceToolBuildProvider.js";
 import { ToolPackageWorkspaceStore } from "../tools/toolPackageWorkspaceStore.js";
 import { LlmToolBuildProvider } from "../tools/llmToolBuildProvider.js";
+import { InMemoryWorkLedgerStore } from "../work-ledger/workLedgerStore.js";
+import { PostgresWorkLedgerStore } from "../work-ledger/postgresWorkLedgerStore.js";
+import { InMemoryEvidenceLedgerStore } from "../work-ledger/evidenceLedgerStore.js";
+import { PostgresEvidenceLedgerStore } from "../work-ledger/postgresEvidenceLedgerStore.js";
+import { InMemoryRunRetrospectiveStore } from "../work-ledger/runRetrospectiveStore.js";
+import { PostgresRunRetrospectiveStore } from "../work-ledger/postgresRunRetrospectiveStore.js";
 import { createScopedToolDbClient } from "../tools/toolScopedDb.js";
 
 const port = Number(process.env.PORT ?? "3000");
@@ -263,6 +269,13 @@ const modelProviderStore = pool
 const auditEventStore = pool ? new PostgresAuditEventStore(pool) : new InMemoryAuditEventStore();
 const groupProfileStore = pool ? new PostgresGroupProfileStore(pool) : new InMemoryGroupProfileStore();
 const userStore = pool ? new PostgresUserStore(pool) : new InMemoryUserStore();
+const workLedgerStore = pool ? new PostgresWorkLedgerStore(pool) : new InMemoryWorkLedgerStore();
+const evidenceLedgerStore = pool
+  ? new PostgresEvidenceLedgerStore(pool)
+  : new InMemoryEvidenceLedgerStore();
+const runRetrospectiveStore = pool
+  ? new PostgresRunRetrospectiveStore(pool)
+  : new InMemoryRunRetrospectiveStore();
 const localArtifactStore = new LocalArtifactStore();
 const s3Config = s3ConfigFromEnv();
 const artifactStore =
@@ -311,6 +324,9 @@ const server = createWebApp({
   groupProfileStore,
   userStore,
   secretHandleStore,
+  workLedgerStore,
+  evidenceLedgerStore,
+  runRetrospectiveStore,
 });
 
 const recoveredRuns = await runStore.recoverInterrupted(

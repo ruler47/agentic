@@ -28,6 +28,9 @@ import {
 import { MessagingServiceToolBuildProvider } from "../src/tools/messagingServiceToolBuildProvider.js";
 import { ToolPackageWorkspaceStore } from "../src/tools/toolPackageWorkspaceStore.js";
 import { ToolBuildWorker } from "../src/tools/toolBuildWorker.js";
+import { InMemoryWorkLedgerStore } from "../src/work-ledger/workLedgerStore.js";
+import { InMemoryEvidenceLedgerStore } from "../src/work-ledger/evidenceLedgerStore.js";
+import { InMemoryRunRetrospectiveStore } from "../src/work-ledger/runRetrospectiveStore.js";
 import { InMemoryAuditEventStore } from "../src/audit/inMemoryAuditEventStore.js";
 import { InMemoryGroupProfileStore } from "../src/instance/groupProfileStore.js";
 import { InMemoryUserStore } from "../src/instance/userStore.js";
@@ -4456,6 +4459,218 @@ test("web server manages users and channel identities with audit events", async 
       audit.events.slice(0, 3).map((event: any) => event.action).sort(),
       ["channel_identity.created", "channel_identity.updated", "user.created"].sort(),
     );
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("work ledger / evidence ledger / retrospective endpoints return 503 when stores are missing", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+  });
+  try {
+    const baseUrl = await listen(server);
+    for (const path of [
+      "/api/work-ledger?threadId=t",
+      "/api/evidence-ledger?threadId=t",
+      "/api/run-retrospectives?runId=r",
+    ]) {
+      const res = await fetch(`${baseUrl}${path}`);
+      assert.equal(res.status, 503, `${path} must return 503 when its store is missing`);
+    }
+    const post = await fetch(`${baseUrl}/api/work-ledger`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "search", workKey: "k", title: "t" }),
+    });
+    assert.equal(post.status, 503);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("work ledger HTTP API persists items, validates input, and redacts secret-shaped metadata", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const workLedgerStore = new InMemoryWorkLedgerStore();
+  const evidenceLedgerStore = new InMemoryEvidenceLedgerStore();
+  const runRetrospectiveStore = new InMemoryRunRetrospectiveStore();
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    workLedgerStore,
+    evidenceLedgerStore,
+    runRetrospectiveStore,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+
+    // 1) Missing required fields -> 400.
+    const bad = await fetch(`${baseUrl}/api/work-ledger`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "search" }),
+    });
+    assert.equal(bad.status, 400);
+
+    // 2) Happy path: create a work item with a search work key + secret-shaped metadata.
+    const create = await fetch(`${baseUrl}/api/work-ledger`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "search",
+        workKey: "search:any:any:any:spanish doctors",
+        title: "Find Spanish doctors",
+        runId: "run-foundation-1",
+        threadId: "thread-foundation-1",
+        ownerSpanId: "span-A",
+        metadata: { topic: "doctors", apiKey: "WORK-LEDGER-CANARY" },
+      }),
+    });
+    assert.equal(create.status, 201);
+    const created = (await create.json()) as { item: { id: string; metadata?: Record<string, unknown> } };
+    assert.equal((created.item.metadata as Record<string, unknown>).apiKey, "[redacted]");
+
+    // 3) GET by run / thread / workKey work as documented.
+    const byRun = await (await fetch(`${baseUrl}/api/work-ledger?runId=run-foundation-1`)).json();
+    assert.equal(byRun.items.length, 1);
+    const byThread = await (await fetch(`${baseUrl}/api/work-ledger?threadId=thread-foundation-1`)).json();
+    assert.equal(byThread.items.length, 1);
+    const byKey = await (
+      await fetch(`${baseUrl}/api/work-ledger?workKey=${encodeURIComponent("search:any:any:any:spanish doctors")}`)
+    ).json();
+    assert.equal(byKey.items.length, 1);
+
+    const missingFilter = await fetch(`${baseUrl}/api/work-ledger`);
+    assert.equal(missingFilter.status, 400);
+
+    // 4) PATCH transitions status.
+    const patch = await fetch(`${baseUrl}/api/work-ledger/${encodeURIComponent(created.item.id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "completed", outputSummary: "Found 3 candidates" }),
+    });
+    assert.equal(patch.status, 200);
+
+    // 5) Evidence + artifact append endpoints update the same item.
+    const evidence = await fetch(`${baseUrl}/api/evidence-ledger`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "source_url",
+        title: "Source page",
+        sourceUrl: "https://example.com/article",
+        runId: "run-foundation-1",
+        threadId: "thread-foundation-1",
+        workItemId: created.item.id,
+        metadata: { token: "EVIDENCE-CANARY" },
+      }),
+    });
+    assert.equal(evidence.status, 201);
+    const evidenceBody = (await evidence.json()) as { record: { id: string; metadata?: Record<string, unknown> } };
+    assert.equal((evidenceBody.record.metadata as Record<string, unknown>).token, "[redacted]");
+
+    const linkEvidence = await fetch(
+      `${baseUrl}/api/work-ledger/${encodeURIComponent(created.item.id)}/evidence`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ evidenceId: evidenceBody.record.id }),
+      },
+    );
+    assert.equal(linkEvidence.status, 200);
+
+    const linkArtifact = await fetch(
+      `${baseUrl}/api/work-ledger/${encodeURIComponent(created.item.id)}/artifacts`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ artifactId: "artifact-foundation-1" }),
+      },
+    );
+    assert.equal(linkArtifact.status, 200);
+
+    // 6) Evidence GET filters.
+    const byUrl = await (
+      await fetch(`${baseUrl}/api/evidence-ledger?sourceUrl=${encodeURIComponent("https://example.com/article")}`)
+    ).json();
+    assert.equal(byUrl.records.length, 1);
+    const evidenceMissingFilter = await fetch(`${baseUrl}/api/evidence-ledger`);
+    assert.equal(evidenceMissingFilter.status, 400);
+
+    // 7) Retrospective lifecycle.
+    const retroBad = await fetch(`${baseUrl}/api/run-retrospectives`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runId: "run-foundation-1" }),
+    });
+    assert.equal(retroBad.status, 400);
+
+    const retro = await fetch(`${baseUrl}/api/run-retrospectives`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        runId: "run-foundation-1",
+        threadId: "thread-foundation-1",
+        runOutcome: "failed",
+        suspectedRootCauses: ["Browser blocker"],
+        weakTools: ["browser.operate@1.0.0"],
+        usefulEvidenceIds: [evidenceBody.record.id],
+        metadata: { secret: "RETRO-CANARY" },
+      }),
+    });
+    assert.equal(retro.status, 201);
+    const retroBody = (await retro.json()) as { record: { id: string; metadata?: Record<string, unknown> } };
+    assert.equal((retroBody.record.metadata as Record<string, unknown>).secret, "[redacted]");
+
+    const retroPatch = await fetch(`${baseUrl}/api/run-retrospectives/${encodeURIComponent(retroBody.record.id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "reviewed", summary: "Reviewed by operator." }),
+    });
+    assert.equal(retroPatch.status, 200);
+
+    const retroList = await (await fetch(`${baseUrl}/api/run-retrospectives?runId=run-foundation-1`)).json();
+    assert.equal(retroList.records.length, 1);
+    const retroMissingFilter = await fetch(`${baseUrl}/api/run-retrospectives`);
+    assert.equal(retroMissingFilter.status, 400);
+
+    // 8) Audit chain includes our actions and never echoes the canaries.
+    const audit = await auditEventStore.list();
+    const actions: string[] = audit.map((event) => event.action as string);
+    for (const required of [
+      "work_ledger.created",
+      "work_ledger.updated",
+      "evidence_ledger.created",
+      "run_retrospective.created",
+      "run_retrospective.updated",
+    ]) {
+      assert.ok(actions.includes(required), `audit log must include ${required}`);
+    }
+    const auditJson = JSON.stringify(audit);
+    for (const canary of ["WORK-LEDGER-CANARY", "EVIDENCE-CANARY", "RETRO-CANARY"]) {
+      assert.ok(!auditJson.includes(canary), `audit log must not leak ${canary}`);
+    }
+
+    // 9) The ledger does not explode for foreign run/thread ids that no longer exist.
+    const orphan = await fetch(`${baseUrl}/api/work-ledger?runId=run-deleted`);
+    assert.equal(orphan.status, 200);
+    const orphanBody = (await orphan.json()) as { items: unknown[] };
+    assert.equal(orphanBody.items.length, 0);
+
+    const orphanThread = await fetch(`${baseUrl}/api/run-retrospectives?threadId=thread-deleted`);
+    assert.equal(orphanThread.status, 200);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

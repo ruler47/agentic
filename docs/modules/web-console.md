@@ -173,6 +173,16 @@ GET /api/secret-handles
 POST /api/secret-handles
 GET /api/secret-handles/:handle
 DELETE /api/secret-handles/:handle
+GET /api/work-ledger?threadId=&runId=&workKey=
+POST /api/work-ledger
+PATCH /api/work-ledger/:id
+POST /api/work-ledger/:id/evidence
+POST /api/work-ledger/:id/artifacts
+GET /api/evidence-ledger?threadId=&runId=&workItemId=&artifactId=&sourceUrl=
+POST /api/evidence-ledger
+GET /api/run-retrospectives?threadId=&runId=
+POST /api/run-retrospectives
+PATCH /api/run-retrospectives/:id
 ```
 
 `GET /api/tools` returns persistent registry metadata when configured: system name,

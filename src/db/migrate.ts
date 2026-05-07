@@ -819,6 +819,148 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       create index if not exists secret_handles_updated_at_idx
       on secret_handles(updated_at desc);
     `);
+
+    await pool.query(`
+      create table if not exists work_ledger_items (
+        id text primary key,
+        instance_id text,
+        thread_id text references conversation_threads(id) on delete set null,
+        run_id text references runs(id) on delete set null,
+        owner_span_id text,
+        parent_work_item_id text references work_ledger_items(id) on delete set null,
+        kind text not null check (kind in (
+          'search', 'url_visit', 'api_call', 'tool_call', 'screenshot',
+          'artifact_generation', 'data_fetch', 'analysis', 'other'
+        )),
+        status text not null check (status in (
+          'planned', 'claimed', 'running', 'completed', 'failed', 'stale', 'cancelled'
+        )),
+        work_key text not null,
+        title text not null,
+        summary text,
+        input_summary text,
+        output_summary text,
+        source_urls text[] not null default '{}',
+        artifact_ids text[] not null default '{}',
+        evidence_ids text[] not null default '{}',
+        error text,
+        confidence numeric,
+        freshness_expires_at timestamptz,
+        metadata jsonb not null default '{}'::jsonb,
+        created_at timestamptz not null,
+        updated_at timestamptz not null
+      );
+    `);
+    await pool.query(`
+      create index if not exists work_ledger_items_thread_id_created_at_idx
+      on work_ledger_items(thread_id, created_at desc) where thread_id is not null;
+    `);
+    await pool.query(`
+      create index if not exists work_ledger_items_run_id_created_at_idx
+      on work_ledger_items(run_id, created_at desc) where run_id is not null;
+    `);
+    await pool.query(`
+      create index if not exists work_ledger_items_work_key_idx
+      on work_ledger_items(work_key, created_at desc);
+    `);
+    await pool.query(`
+      create index if not exists work_ledger_items_status_idx
+      on work_ledger_items(status, created_at desc);
+    `);
+    await pool.query(`
+      create index if not exists work_ledger_items_instance_id_idx
+      on work_ledger_items(instance_id, created_at desc) where instance_id is not null;
+    `);
+
+    await pool.query(`
+      create table if not exists evidence_ledger_records (
+        id text primary key,
+        instance_id text,
+        thread_id text references conversation_threads(id) on delete set null,
+        run_id text references runs(id) on delete set null,
+        span_id text,
+        work_item_id text references work_ledger_items(id) on delete set null,
+        kind text not null check (kind in (
+          'source_url', 'search_result', 'browser_snapshot', 'screenshot',
+          'api_response', 'artifact', 'file', 'model_observation', 'limitation', 'other'
+        )),
+        source_url text,
+        provider text,
+        tool_name text,
+        title text not null,
+        summary text,
+        content_preview text,
+        artifact_id text,
+        qa_status text not null check (qa_status in (
+          'unchecked', 'passed', 'failed', 'blocked', 'partial'
+        )),
+        confidence numeric,
+        limitations text[] not null default '{}',
+        metadata jsonb not null default '{}'::jsonb,
+        created_at timestamptz not null
+      );
+    `);
+    await pool.query(`
+      create index if not exists evidence_ledger_records_thread_id_created_at_idx
+      on evidence_ledger_records(thread_id, created_at desc) where thread_id is not null;
+    `);
+    await pool.query(`
+      create index if not exists evidence_ledger_records_run_id_created_at_idx
+      on evidence_ledger_records(run_id, created_at desc) where run_id is not null;
+    `);
+    await pool.query(`
+      create index if not exists evidence_ledger_records_work_item_id_created_at_idx
+      on evidence_ledger_records(work_item_id, created_at desc) where work_item_id is not null;
+    `);
+    await pool.query(`
+      create index if not exists evidence_ledger_records_source_url_idx
+      on evidence_ledger_records(source_url) where source_url is not null;
+    `);
+    await pool.query(`
+      create index if not exists evidence_ledger_records_artifact_id_idx
+      on evidence_ledger_records(artifact_id) where artifact_id is not null;
+    `);
+
+    await pool.query(`
+      create table if not exists run_retrospectives (
+        id text primary key,
+        instance_id text,
+        thread_id text references conversation_threads(id) on delete set null,
+        run_id text not null references runs(id) on delete cascade,
+        status text not null check (status in ('proposed', 'reviewed', 'archived')),
+        run_outcome text not null check (run_outcome in (
+          'completed', 'failed', 'cancelled', 'waiting_tool_rework'
+        )),
+        what_worked text[] not null default '{}',
+        what_failed text[] not null default '{}',
+        suspected_root_causes text[] not null default '{}',
+        duplicated_work text[] not null default '{}',
+        weak_tools text[] not null default '{}',
+        weak_models text[] not null default '{}',
+        missing_capabilities text[] not null default '{}',
+        useful_evidence_ids text[] not null default '{}',
+        proposed_memory_ids text[] not null default '{}',
+        proposed_tool_investigation_ids text[] not null default '{}',
+        proposed_policy_changes text[] not null default '{}',
+        proposed_prompt_changes text[] not null default '{}',
+        summary text,
+        metadata jsonb not null default '{}'::jsonb,
+        created_at timestamptz not null,
+        updated_at timestamptz not null
+      );
+    `);
+    await pool.query(`
+      create index if not exists run_retrospectives_run_id_created_at_idx
+      on run_retrospectives(run_id, created_at desc);
+    `);
+    await pool.query(`
+      create index if not exists run_retrospectives_thread_id_created_at_idx
+      on run_retrospectives(thread_id, created_at desc) where thread_id is not null;
+    `);
+    await pool.query(`
+      create index if not exists run_retrospectives_status_idx
+      on run_retrospectives(status, created_at desc);
+    `);
   } finally {
     await pool.end();
   }

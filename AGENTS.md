@@ -456,6 +456,26 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/runs/inMemoryRunStore.ts](src/runs/inMemoryRunStore.ts) - replaceable run store.
 - [src/runs/postgresRunStore.ts](src/runs/postgresRunStore.ts) - Postgres-backed run store.
 - [src/db/migrate.ts](src/db/migrate.ts) - database migrations.
+- [src/work-ledger/types.ts](src/work-ledger/types.ts) - shared types for the Work
+  Ledger, Evidence Ledger, and Run Retrospective domain stores (foundation only; the
+  UniversalAgent runtime is not yet wired into the ledgers).
+- [src/work-ledger/workKey.ts](src/work-ledger/workKey.ts) - deterministic work-key
+  builders for search queries, URL visits, tool/API calls, and artifact intents.
+- [src/work-ledger/decideWorkReuse.ts](src/work-ledger/decideWorkReuse.ts) - pure
+  reuse decision (`reuse_completed`, `wait_for_inflight`, `create_revalidation`,
+  `create_new_attempt`, `blocked_by_recent_failure`).
+- [src/work-ledger/sanitize.ts](src/work-ledger/sanitize.ts) - recursive secret
+  redaction shared by every ledger store and HTTP route.
+- [src/work-ledger/workLedgerStore.ts](src/work-ledger/workLedgerStore.ts) /
+  [postgresWorkLedgerStore.ts](src/work-ledger/postgresWorkLedgerStore.ts) - Work
+  Ledger implementations.
+- [src/work-ledger/evidenceLedgerStore.ts](src/work-ledger/evidenceLedgerStore.ts) /
+  [postgresEvidenceLedgerStore.ts](src/work-ledger/postgresEvidenceLedgerStore.ts) -
+  Evidence Ledger implementations.
+- [src/work-ledger/runRetrospectiveStore.ts](src/work-ledger/runRetrospectiveStore.ts)
+  /
+  [postgresRunRetrospectiveStore.ts](src/work-ledger/postgresRunRetrospectiveStore.ts)
+  - Run Retrospective implementations.
 - [public/](public/) - browser console UI.
 - [memory/skills.json](memory/skills.json) - current long-term skill memory store.
 - [tests/](tests/) - automated tests.
@@ -525,6 +545,11 @@ For documentation-only changes:
 
 ## Current Test Coverage
 
+- `tests/workLedger.test.ts` covers the Work / Evidence / Run-Retrospective domain
+  foundation: deterministic work-key normalization, recursive secret redaction, the
+  full `decideWorkReuse` decision matrix, in-memory store lifecycles, and link
+  appending. The HTTP layer is covered alongside the rest of the API surface in
+  `tests/webServer.test.ts`.
 - `tests/json.test.ts` covers JSON extraction from model output.
 - `tests/skillMemory.test.ts` covers file-backed skill memory.
 - `tests/memoryRetrievalEvaluation.test.ts` covers retrieval quality fixture scoring.

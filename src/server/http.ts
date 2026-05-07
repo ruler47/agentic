@@ -102,6 +102,19 @@ import {
   DEFAULT_AUTO_RETRY_POLICY,
   ToolReworkAutoRetryCoordinator,
 } from "../tools/toolReworkAutoRetryCoordinator.js";
+import {
+  EVIDENCE_KINDS,
+  EVIDENCE_QA_STATUSES,
+  EvidenceLedgerStore,
+  RUN_RETROSPECTIVE_OUTCOMES,
+  RUN_RETROSPECTIVE_STATUSES,
+  RunRetrospectiveProposalKind,
+  RunRetrospectiveStore,
+  WORK_LEDGER_KINDS,
+  WORK_LEDGER_STATUSES,
+  WorkLedgerStore,
+} from "../work-ledger/types.js";
+import { sanitizeMetadata as sanitizeLedgerMetadata } from "../work-ledger/sanitize.js";
 import { AgentArtifact, AgentEvent, AgentRunResult, ArtifactUploadInput } from "../types.js";
 
 export type WebAppOptions = {
@@ -132,6 +145,9 @@ export type WebAppOptions = {
   auditEventStore?: AuditEventStore;
   groupProfileStore?: GroupProfileStore;
   userStore?: UserStore;
+  workLedgerStore?: WorkLedgerStore;
+  evidenceLedgerStore?: EvidenceLedgerStore;
+  runRetrospectiveStore?: RunRetrospectiveStore;
 };
 
 const defaultUserStore = new InMemoryUserStore();
@@ -2183,6 +2199,382 @@ async function routeRequest(
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid tool rework auto-retry request";
       sendJson(response, 400, { error: message });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/work-ledger") {
+    if (!options.workLedgerStore) {
+      sendJson(response, 503, { error: "Work ledger store is not configured" });
+      return;
+    }
+    const threadId = parseOptionalText(url.searchParams.get("threadId"));
+    const runId = parseOptionalText(url.searchParams.get("runId"));
+    const workKey = parseOptionalText(url.searchParams.get("workKey"));
+    let items;
+    if (workKey) {
+      items = await options.workLedgerStore.listByWorkKey(workKey);
+    } else if (runId) {
+      items = await options.workLedgerStore.listByRun(runId);
+    } else if (threadId) {
+      items = await options.workLedgerStore.listByThread(threadId);
+    } else {
+      sendJson(response, 400, { error: "threadId, runId, or workKey is required" });
+      return;
+    }
+    sendJson(response, 200, { items });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/work-ledger") {
+    if (!options.workLedgerStore) {
+      sendJson(response, 503, { error: "Work ledger store is not configured" });
+      return;
+    }
+    try {
+      const body = (await readJsonBody<unknown>(request)) ?? {};
+      const candidate = body as Record<string, unknown>;
+      const kind = parseRequiredEnum(candidate.kind, WORK_LEDGER_KINDS, "kind");
+      const workKey = parseRequiredText(candidate.workKey, "workKey");
+      const title = parseRequiredText(candidate.title, "title");
+      const status = parseOptionalEnum(candidate.status, WORK_LEDGER_STATUSES, "status");
+      const item = await options.workLedgerStore.createItem({
+        kind,
+        workKey,
+        title,
+        status,
+        instanceId: parseOptionalText(candidate.instanceId),
+        threadId: parseOptionalText(candidate.threadId),
+        runId: parseOptionalText(candidate.runId),
+        ownerSpanId: parseOptionalText(candidate.ownerSpanId),
+        parentWorkItemId: parseOptionalText(candidate.parentWorkItemId),
+        summary: parseOptionalText(candidate.summary),
+        inputSummary: parseOptionalText(candidate.inputSummary),
+        outputSummary: parseOptionalText(candidate.outputSummary),
+        sourceUrls: parseOptionalStringArray(candidate.sourceUrls, "sourceUrls"),
+        artifactIds: parseOptionalStringArray(candidate.artifactIds, "artifactIds"),
+        evidenceIds: parseOptionalStringArray(candidate.evidenceIds, "evidenceIds"),
+        error: parseOptionalText(candidate.error),
+        confidence: parseOptionalNumber(candidate.confidence),
+        freshnessExpiresAt: parseOptionalText(candidate.freshnessExpiresAt),
+        metadata: sanitizeLedgerMetadata(candidate.metadata),
+      });
+      await recordAudit(options, {
+        instanceId: item.instanceId ?? "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "work_ledger.created",
+        targetType: "work_ledger_item",
+        targetId: item.id,
+        status: "success",
+        runId: item.runId,
+        threadId: item.threadId,
+        summary: `Work ledger item created: ${item.title} (${item.kind}/${item.status})`,
+        metadata: sanitizeAuditMetadata({
+          workKey: item.workKey,
+          kind: item.kind,
+          status: item.status,
+          ownerSpanId: item.ownerSpanId,
+        }),
+      });
+      sendJson(response, 201, { item });
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : "Invalid work ledger item" });
+    }
+    return;
+  }
+
+  const workLedgerItemMatch = url.pathname.match(/^\/api\/work-ledger\/([^/]+)$/);
+  if (request.method === "PATCH" && workLedgerItemMatch) {
+    if (!options.workLedgerStore) {
+      sendJson(response, 503, { error: "Work ledger store is not configured" });
+      return;
+    }
+    try {
+      const id = decodeURIComponent(workLedgerItemMatch[1] ?? "");
+      const body = (await readJsonBody<unknown>(request)) ?? {};
+      const candidate = body as Record<string, unknown>;
+      const status = parseOptionalEnum(candidate.status, WORK_LEDGER_STATUSES, "status");
+      const item = await options.workLedgerStore.updateItemStatus(id, {
+        status,
+        ownerSpanId: parseUpdateNullableText(candidate, "ownerSpanId"),
+        summary: parseUpdateNullableText(candidate, "summary"),
+        inputSummary: parseUpdateNullableText(candidate, "inputSummary"),
+        outputSummary: parseUpdateNullableText(candidate, "outputSummary"),
+        sourceUrls: parseOptionalStringArray(candidate.sourceUrls, "sourceUrls"),
+        error: parseUpdateNullableText(candidate, "error"),
+        confidence: parseUpdateNullableNumber(candidate, "confidence"),
+        freshnessExpiresAt: parseUpdateNullableText(candidate, "freshnessExpiresAt"),
+        metadata: candidate.metadata !== undefined
+          ? sanitizeLedgerMetadata(candidate.metadata) ?? {}
+          : undefined,
+      });
+      await recordAudit(options, {
+        instanceId: item.instanceId ?? "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "work_ledger.updated",
+        targetType: "work_ledger_item",
+        targetId: item.id,
+        status: "success",
+        runId: item.runId,
+        threadId: item.threadId,
+        summary: `Work ledger item updated: ${item.title} (${item.kind}/${item.status})`,
+        metadata: sanitizeAuditMetadata({
+          workKey: item.workKey,
+          status: item.status,
+        }),
+      });
+      sendJson(response, 200, { item });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid work ledger update";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
+  const workLedgerEvidenceMatch = url.pathname.match(/^\/api\/work-ledger\/([^/]+)\/evidence$/);
+  if (request.method === "POST" && workLedgerEvidenceMatch) {
+    if (!options.workLedgerStore) {
+      sendJson(response, 503, { error: "Work ledger store is not configured" });
+      return;
+    }
+    try {
+      const id = decodeURIComponent(workLedgerEvidenceMatch[1] ?? "");
+      const body = (await readJsonBody<unknown>(request)) ?? {};
+      const evidenceId = parseRequiredText((body as Record<string, unknown>).evidenceId, "evidenceId");
+      const item = await options.workLedgerStore.appendEvidenceLink(id, evidenceId);
+      sendJson(response, 200, { item });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid evidence link";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
+  const workLedgerArtifactMatch = url.pathname.match(/^\/api\/work-ledger\/([^/]+)\/artifacts$/);
+  if (request.method === "POST" && workLedgerArtifactMatch) {
+    if (!options.workLedgerStore) {
+      sendJson(response, 503, { error: "Work ledger store is not configured" });
+      return;
+    }
+    try {
+      const id = decodeURIComponent(workLedgerArtifactMatch[1] ?? "");
+      const body = (await readJsonBody<unknown>(request)) ?? {};
+      const artifactId = parseRequiredText((body as Record<string, unknown>).artifactId, "artifactId");
+      const item = await options.workLedgerStore.appendArtifactLink(id, artifactId);
+      sendJson(response, 200, { item });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid artifact link";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/evidence-ledger") {
+    if (!options.evidenceLedgerStore) {
+      sendJson(response, 503, { error: "Evidence ledger store is not configured" });
+      return;
+    }
+    const threadId = parseOptionalText(url.searchParams.get("threadId"));
+    const runId = parseOptionalText(url.searchParams.get("runId"));
+    const workItemId = parseOptionalText(url.searchParams.get("workItemId"));
+    const artifactId = parseOptionalText(url.searchParams.get("artifactId"));
+    const sourceUrl = parseOptionalText(url.searchParams.get("sourceUrl"));
+    let records;
+    if (workItemId) {
+      records = await options.evidenceLedgerStore.listByWorkItem(workItemId);
+    } else if (artifactId) {
+      records = await options.evidenceLedgerStore.listByArtifact(artifactId);
+    } else if (sourceUrl) {
+      records = await options.evidenceLedgerStore.listBySourceUrl(sourceUrl);
+    } else if (runId) {
+      records = await options.evidenceLedgerStore.listByRun(runId);
+    } else if (threadId) {
+      records = await options.evidenceLedgerStore.listByThread(threadId);
+    } else {
+      sendJson(response, 400, { error: "threadId, runId, workItemId, artifactId, or sourceUrl is required" });
+      return;
+    }
+    sendJson(response, 200, { records });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/evidence-ledger") {
+    if (!options.evidenceLedgerStore) {
+      sendJson(response, 503, { error: "Evidence ledger store is not configured" });
+      return;
+    }
+    try {
+      const body = (await readJsonBody<unknown>(request)) ?? {};
+      const candidate = body as Record<string, unknown>;
+      const kind = parseRequiredEnum(candidate.kind, EVIDENCE_KINDS, "kind");
+      const title = parseRequiredText(candidate.title, "title");
+      const qaStatus = parseOptionalEnum(candidate.qaStatus, EVIDENCE_QA_STATUSES, "qaStatus");
+      const record = await options.evidenceLedgerStore.createEvidence({
+        kind,
+        title,
+        qaStatus,
+        instanceId: parseOptionalText(candidate.instanceId),
+        threadId: parseOptionalText(candidate.threadId),
+        runId: parseOptionalText(candidate.runId),
+        spanId: parseOptionalText(candidate.spanId),
+        workItemId: parseOptionalText(candidate.workItemId),
+        sourceUrl: parseOptionalText(candidate.sourceUrl),
+        provider: parseOptionalText(candidate.provider),
+        toolName: parseOptionalText(candidate.toolName),
+        summary: parseOptionalText(candidate.summary),
+        contentPreview: parseOptionalText(candidate.contentPreview),
+        artifactId: parseOptionalText(candidate.artifactId),
+        confidence: parseOptionalNumber(candidate.confidence),
+        limitations: parseOptionalStringArray(candidate.limitations, "limitations"),
+        metadata: sanitizeLedgerMetadata(candidate.metadata),
+      });
+      await recordAudit(options, {
+        instanceId: record.instanceId ?? "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "evidence_ledger.created",
+        targetType: "evidence_ledger_record",
+        targetId: record.id,
+        status: "success",
+        runId: record.runId,
+        threadId: record.threadId,
+        summary: `Evidence ledger record created: ${record.title} (${record.kind}/${record.qaStatus})`,
+        metadata: sanitizeAuditMetadata({
+          kind: record.kind,
+          qaStatus: record.qaStatus,
+          workItemId: record.workItemId,
+          artifactId: record.artifactId,
+          sourceUrl: record.sourceUrl,
+        }),
+      });
+      sendJson(response, 201, { record });
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : "Invalid evidence record" });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/run-retrospectives") {
+    if (!options.runRetrospectiveStore) {
+      sendJson(response, 503, { error: "Run retrospective store is not configured" });
+      return;
+    }
+    const runId = parseOptionalText(url.searchParams.get("runId"));
+    const threadId = parseOptionalText(url.searchParams.get("threadId"));
+    if (!runId && !threadId) {
+      sendJson(response, 400, { error: "runId or threadId is required" });
+      return;
+    }
+    const records = runId
+      ? await options.runRetrospectiveStore.listByRun(runId)
+      : await options.runRetrospectiveStore.listByThread(threadId!);
+    sendJson(response, 200, { records });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/run-retrospectives") {
+    if (!options.runRetrospectiveStore) {
+      sendJson(response, 503, { error: "Run retrospective store is not configured" });
+      return;
+    }
+    try {
+      const body = (await readJsonBody<unknown>(request)) ?? {};
+      const candidate = body as Record<string, unknown>;
+      const runId = parseRequiredText(candidate.runId, "runId");
+      const runOutcome = parseRequiredEnum(candidate.runOutcome, RUN_RETROSPECTIVE_OUTCOMES, "runOutcome");
+      const status = parseOptionalEnum(candidate.status, RUN_RETROSPECTIVE_STATUSES, "status");
+      const record = await options.runRetrospectiveStore.create({
+        runId,
+        runOutcome,
+        status,
+        instanceId: parseOptionalText(candidate.instanceId),
+        threadId: parseOptionalText(candidate.threadId),
+        whatWorked: parseOptionalStringArray(candidate.whatWorked, "whatWorked"),
+        whatFailed: parseOptionalStringArray(candidate.whatFailed, "whatFailed"),
+        suspectedRootCauses: parseOptionalStringArray(candidate.suspectedRootCauses, "suspectedRootCauses"),
+        duplicatedWork: parseOptionalStringArray(candidate.duplicatedWork, "duplicatedWork"),
+        weakTools: parseOptionalStringArray(candidate.weakTools, "weakTools"),
+        weakModels: parseOptionalStringArray(candidate.weakModels, "weakModels"),
+        missingCapabilities: parseOptionalStringArray(candidate.missingCapabilities, "missingCapabilities"),
+        usefulEvidenceIds: parseOptionalStringArray(candidate.usefulEvidenceIds, "usefulEvidenceIds"),
+        proposedMemoryIds: parseOptionalStringArray(candidate.proposedMemoryIds, "proposedMemoryIds"),
+        proposedToolInvestigationIds: parseOptionalStringArray(
+          candidate.proposedToolInvestigationIds,
+          "proposedToolInvestigationIds",
+        ),
+        proposedPolicyChanges: parseOptionalStringArray(candidate.proposedPolicyChanges, "proposedPolicyChanges"),
+        proposedPromptChanges: parseOptionalStringArray(candidate.proposedPromptChanges, "proposedPromptChanges"),
+        summary: parseOptionalText(candidate.summary),
+        metadata: sanitizeLedgerMetadata(candidate.metadata),
+      });
+      await recordAudit(options, {
+        instanceId: record.instanceId ?? "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "run_retrospective.created",
+        targetType: "run_retrospective",
+        targetId: record.id,
+        status: "success",
+        runId: record.runId,
+        threadId: record.threadId,
+        summary: `Run retrospective created: ${record.runOutcome}`,
+        metadata: sanitizeAuditMetadata({
+          status: record.status,
+          runOutcome: record.runOutcome,
+        }),
+      });
+      sendJson(response, 201, { record });
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : "Invalid run retrospective" });
+    }
+    return;
+  }
+
+  const retrospectiveMatch = url.pathname.match(/^\/api\/run-retrospectives\/([^/]+)$/);
+  if (request.method === "PATCH" && retrospectiveMatch) {
+    if (!options.runRetrospectiveStore) {
+      sendJson(response, 503, { error: "Run retrospective store is not configured" });
+      return;
+    }
+    try {
+      const id = decodeURIComponent(retrospectiveMatch[1] ?? "");
+      const body = (await readJsonBody<unknown>(request)) ?? {};
+      const candidate = body as Record<string, unknown>;
+      const status = parseOptionalEnum(candidate.status, RUN_RETROSPECTIVE_STATUSES, "status");
+      const record = await options.runRetrospectiveStore.updateStatus(id, {
+        status,
+        summary: parseUpdateNullableText(candidate, "summary"),
+        whatWorked: parseOptionalStringArray(candidate.whatWorked, "whatWorked"),
+        whatFailed: parseOptionalStringArray(candidate.whatFailed, "whatFailed"),
+        suspectedRootCauses: parseOptionalStringArray(candidate.suspectedRootCauses, "suspectedRootCauses"),
+        duplicatedWork: parseOptionalStringArray(candidate.duplicatedWork, "duplicatedWork"),
+        weakTools: parseOptionalStringArray(candidate.weakTools, "weakTools"),
+        weakModels: parseOptionalStringArray(candidate.weakModels, "weakModels"),
+        missingCapabilities: parseOptionalStringArray(candidate.missingCapabilities, "missingCapabilities"),
+        usefulEvidenceIds: parseOptionalStringArray(candidate.usefulEvidenceIds, "usefulEvidenceIds"),
+        metadata: candidate.metadata !== undefined
+          ? sanitizeLedgerMetadata(candidate.metadata) ?? {}
+          : undefined,
+      });
+      await recordAudit(options, {
+        instanceId: record.instanceId ?? "instance-local",
+        actorId: "user-admin",
+        actorType: "user",
+        action: "run_retrospective.updated",
+        targetType: "run_retrospective",
+        targetId: record.id,
+        status: "success",
+        runId: record.runId,
+        threadId: record.threadId,
+        summary: `Run retrospective updated: ${record.status}`,
+        metadata: sanitizeAuditMetadata({ status: record.status }),
+      });
+      sendJson(response, 200, { record });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid run retrospective update";
+      sendJson(response, message.includes("was not found") ? 404 : 400, { error: message });
     }
     return;
   }
@@ -4961,6 +5353,24 @@ function parseToolReworkWaitStatus(value: unknown): ToolReworkWaitStatus | undef
   return value as ToolReworkWaitStatus;
 }
 
+function parseUpdateNullableText(
+  candidate: Record<string, unknown>,
+  key: string,
+): string | null | undefined {
+  if (!(key in candidate)) return undefined;
+  const value = candidate[key];
+  if (value === undefined) return undefined;
+  return parseNullableText(value, key);
+}
+
+function parseUpdateNullableNumber(
+  candidate: Record<string, unknown>,
+  key: string,
+): number | null | undefined {
+  if (!(key in candidate)) return undefined;
+  return parseNullableNumber(candidate[key], key);
+}
+
 function parseNullableText(value: unknown, name: string): string | null {
   if (value === null) return null;
   if (typeof value !== "string") {
@@ -5367,6 +5777,33 @@ function parseOptionalNumber(value: unknown): number | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+function parseNullableNumber(value: unknown, name: string): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`${name} must be a finite number or null`);
+  return number;
+}
+
+function parseRequiredEnum<T extends string>(value: unknown, allowed: readonly T[], name: string): T {
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new Error(`${name} must be one of ${allowed.join(", ")}`);
+  }
+  return value as T;
+}
+
+function parseOptionalEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  name: string,
+): T | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new Error(`${name} must be one of ${allowed.join(", ")}`);
+  }
+  return value as T;
 }
 
 function contentType(filePath: string): string {
