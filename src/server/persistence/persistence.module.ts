@@ -70,7 +70,6 @@ import {
   MODEL_PROVIDER_STORE,
   MODEL_TIER_SETTINGS,
   PG_POOL,
-  RELOAD_GENERATED_TOOLS,
   RUN_STORE,
   SECRET_HANDLE_STORE,
   SKILL_MEMORY,
@@ -80,7 +79,6 @@ import {
   TOOL_INVESTIGATION_STORE,
   TOOL_METADATA_STORE,
   TOOL_MIGRATION_STORE,
-  TOOL_PACKAGE_RUNNERS,
   TOOL_PROMOTION_STORE,
   TOOL_REGISTRY,
   TOOL_REWORK_WAIT_STORE,
@@ -88,7 +86,6 @@ import {
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_LOG_STORE,
   TOOL_SERVICE_STATUS_STORE,
-  TOOL_SERVICE_SUPERVISOR,
   UNIVERSAL_AGENT,
   USER_STORE,
 } from "./tokens.js";
@@ -282,10 +279,6 @@ const providers: Provider[] = [
     inject: [LLM_CLIENT, SKILL_MEMORY, TOOL_REGISTRY],
     useFactory: (llm, memory, registry) => new UniversalAgent(llm, memory, registry),
   },
-  // Filled by RuntimeWorkersModule in Phase 4.
-  { provide: TOOL_PACKAGE_RUNNERS, useValue: undefined },
-  { provide: RELOAD_GENERATED_TOOLS, useValue: undefined },
-  { provide: TOOL_SERVICE_SUPERVISOR, useValue: undefined },
 ];
 
 @Global()

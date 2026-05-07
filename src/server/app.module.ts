@@ -1,4 +1,6 @@
+import { resolve } from "node:path";
 import { Module } from "@nestjs/common";
+import { ServeStaticModule } from "@nestjs/serve-static";
 import { CommonModule } from "./common/common.module.js";
 import { ConfigModule } from "./config/config.module.js";
 import { AuditModule } from "./modules/audit/audit.module.js";
@@ -16,11 +18,13 @@ import { ToolServicesModule } from "./modules/tool-services/tool-services.module
 import { ToolsModule } from "./modules/tools/tools.module.js";
 import { UsersModule } from "./modules/users/users.module.js";
 import { PersistenceModule } from "./persistence/persistence.module.js";
+import { RuntimeWorkersModule } from "./workers/runtime-workers.module.js";
 
 @Module({
   imports: [
     ConfigModule,
     PersistenceModule,
+    RuntimeWorkersModule,
     CommonModule,
     HealthModule,
     UsersModule,
@@ -36,6 +40,12 @@ import { PersistenceModule } from "./persistence/persistence.module.js";
     ToolMigrationsModule,
     RunsModule,
     ToolServicesModule,
+    ServeStaticModule.forRoot({
+      rootPath: resolve(process.env.PUBLIC_DIR ?? "public"),
+      serveRoot: "/",
+      exclude: ["/api/(.*)"],
+      serveStaticOptions: { cacheControl: false },
+    }),
   ],
 })
 export class AppModule {}

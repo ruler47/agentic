@@ -21,8 +21,13 @@ import type {
   ToolBuildRequest,
   ToolBuildRequestStore,
 } from "../../../tools/toolBuildRequestStore.js";
+import type { ToolBuildWorkflow } from "../../../tools/toolBuildWorkflow.js";
 import { AuditService } from "../../common/services/audit.service.js";
-import { TOOL_BUILD_REQUEST_STORE } from "../../persistence/tokens.js";
+import {
+  RELOAD_GENERATED_TOOLS,
+  TOOL_BUILD_REQUEST_STORE,
+  TOOL_BUILD_WORKFLOW,
+} from "../../persistence/tokens.js";
 
 type ToolBuildRequestInput = {
   capability: string;
@@ -48,6 +53,8 @@ type ToolBuildRequestInput = {
 export class ToolBuildsService {
   constructor(
     @Inject(TOOL_BUILD_REQUEST_STORE) private readonly store: ToolBuildRequestStore | undefined,
+    @Inject(TOOL_BUILD_WORKFLOW) private readonly workflow: ToolBuildWorkflow | undefined,
+    @Inject(RELOAD_GENERATED_TOOLS) private readonly reload: (() => Promise<void>) | undefined,
     private readonly audit: AuditService,
   ) {}
 
@@ -235,10 +242,15 @@ export class ToolBuildsService {
     return { request: reworkRequest, original };
   }
 
-  // POST /:id/run — executes the workflow. Wired in Phase 3/4 once the
-  // ToolBuildWorkflow provider lands. Until then, the route returns 503.
-  async run(_id: string): Promise<never> {
-    throw new ServiceUnavailableException("Tool build workflow is not configured");
+  async run(id: string) {
+    if (!this.workflow) {
+      throw new ServiceUnavailableException("Tool build workflow is not configured");
+    }
+    const result = await this.workflow.runOnce(id);
+    if (result.request.status === "registered" && !result.activationReport) {
+      await this.reload?.();
+    }
+    return result;
   }
 
   private parseInput(value: unknown): ToolBuildRequestInput {
