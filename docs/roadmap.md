@@ -693,13 +693,16 @@ Remaining registry persistence:
   loaded by adding a runner, unhealthy OCI runtimes are stopped instead of promoted, and
   HTTP/OCI runtimes receive only their declared `requiredConfigurationKeys` and
   `requiredSecretHandles` as scoped runtime envelopes. Missing required runtime values now
-  fail before the external runtime is called.
+  fail before the external runtime is called. The OCI runner now adds Agentic Docker
+  labels, non-secret tool identity environment variables, optional memory/CPU/PID/
+  network/read-only limits, bounded `/run` and service lifecycle call timeouts, service
+  lifecycle proxying, and redacted startup failure logs from `docker logs`.
   Runner inventory is visible through the API and Diagnostics page, and operators can
   explicitly reload generated tools after updating a source-bundle on disk. Remaining
   work is building package folders into OCI images, npm/external package
-  install/sandboxing, production resource/log supervision for containers, redacted runtime
-  logging, container-level config/secret injection policies, and richer runner UI
-  controls. DONE for API/UI package import/export, package workspace writing,
+  install/sandboxing, production container pools, persistent container log streaming,
+  image pull/publish policy, container-level config/secret injection policies, and richer
+  runner UI controls. DONE for API/UI package import/export, package workspace writing,
   package-local build/test QA, active source-bundle promotion, package-only Builder/QA
   flow without project-file writes, package-local HTTP runtime scaffold, local HTTP
   process runner for source-bundles, source-bundle

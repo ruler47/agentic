@@ -34,9 +34,29 @@ export type ToolPackageRunnerInfo = {
   root?: string;
 };
 
+export type OciContainerResources = {
+  memory?: string;
+  cpus?: string;
+  pidsLimit?: number;
+  network?: string;
+  readOnly?: boolean;
+};
+
+export type OciContainerRuntimeStartInput = {
+  image: string;
+  internalPort: number;
+  toolName: string;
+  toolVersion?: string;
+  startupMode?: string;
+  labels?: Record<string, string>;
+  env?: Record<string, string>;
+  resources?: OciContainerResources;
+};
+
 export type OciContainerRuntime = {
-  start(input: { image: string; internalPort: number; toolName: string }): Promise<{ containerId: string; baseUrl: string }>;
+  start(input: OciContainerRuntimeStartInput): Promise<{ containerId: string; baseUrl: string }>;
   stop(containerId: string): Promise<void>;
+  logs?(containerId: string): Promise<string | undefined>;
 };
 
 export class LocalPathToolPackageRunner implements ToolPackageRunner {
@@ -284,6 +304,8 @@ export type OciImageToolPackageRunnerOptions = {
   internalPort?: number;
   startupTimeoutMs?: number;
   pollIntervalMs?: number;
+  callTimeoutMs?: number;
+  resources?: OciContainerResources;
   runtime?: OciContainerRuntime;
   fetchImpl?: typeof fetch;
 };
@@ -294,6 +316,8 @@ export class OciImageToolPackageRunner implements ToolPackageRunner {
   private readonly internalPort: number;
   private readonly startupTimeoutMs: number;
   private readonly pollIntervalMs: number;
+  private readonly callTimeoutMs: number;
+  private readonly resources: OciContainerResources;
   private readonly runtime: OciContainerRuntime;
   private readonly fetchImpl: typeof fetch;
 
@@ -302,6 +326,8 @@ export class OciImageToolPackageRunner implements ToolPackageRunner {
     this.internalPort = options.internalPort ?? Number(process.env.TOOL_OCI_INTERNAL_PORT ?? 8080);
     this.startupTimeoutMs = options.startupTimeoutMs ?? Number(process.env.TOOL_OCI_STARTUP_TIMEOUT_MS ?? 15_000);
     this.pollIntervalMs = options.pollIntervalMs ?? Number(process.env.TOOL_OCI_POLL_INTERVAL_MS ?? 250);
+    this.callTimeoutMs = options.callTimeoutMs ?? Number(process.env.TOOL_OCI_CALL_TIMEOUT_MS ?? 60_000);
+    this.resources = compactOciResources(options.resources ?? ociResourcesFromEnv());
     this.runtime = options.runtime ?? new DockerCliContainerRuntime();
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
@@ -323,6 +349,20 @@ export class OciImageToolPackageRunner implements ToolPackageRunner {
         image: ref,
         internalPort: this.internalPort,
         toolName: metadata.name,
+        toolVersion: metadata.version,
+        startupMode: metadata.startupMode,
+        labels: {
+          "agentic.tool": metadata.name,
+          "agentic.tool.version": metadata.version,
+          "agentic.tool.package-type": "oci-image",
+          "agentic.tool.startup-mode": metadata.startupMode ?? "on-demand",
+        },
+        env: {
+          AGENTIC_TOOL_NAME: metadata.name,
+          AGENTIC_TOOL_VERSION: metadata.version,
+          AGENTIC_TOOL_STARTUP_MODE: metadata.startupMode ?? "on-demand",
+        },
+        resources: Object.keys(this.resources).length ? this.resources : undefined,
       });
       const baseUrl = normalizeBaseUrl(container.baseUrl);
       const health = await waitForHealthyRuntime(
@@ -332,20 +372,27 @@ export class OciImageToolPackageRunner implements ToolPackageRunner {
         this.pollIntervalMs,
       );
       if (!health.ok) {
+        const detail = await healthDetailWithContainerLogs(this.runtime, container.containerId, health.detail);
         await this.runtime.stop(container.containerId);
-        return { loaded: false, detail: health.detail, health };
+        return { loaded: false, detail, health: { ...health, detail } };
       }
 
       attachProcessCleanup(this.runtime, container.containerId);
       return {
         loaded: true,
         detail: `Loaded ${metadata.name} from OCI image ${ref} at ${baseUrl}`,
-        tool: externalHttpProxyTool(metadata, baseUrl, this.fetchImpl),
+        tool: externalHttpProxyTool(metadata, baseUrl, this.fetchImpl, {
+          callTimeoutMs: this.callTimeoutMs,
+          labelPrefix: "OCI image HTTP runtime",
+        }),
         health,
       };
     } catch (error) {
+      const baseDetail = error instanceof Error ? error.message : String(error);
+      const detail = container
+        ? await healthDetailWithContainerLogs(this.runtime, container.containerId, baseDetail)
+        : redactRuntimeText(baseDetail);
       if (container) await bestEffortStop(this.runtime, container.containerId);
-      const detail = error instanceof Error ? error.message : String(error);
       return { loaded: false, detail, health: { ok: false, detail } };
     }
   }
@@ -363,18 +410,17 @@ export class OciImageToolPackageRunner implements ToolPackageRunner {
   }
 }
 
+export type DockerCliContainerRuntimeOptions = {
+  resources?: OciContainerResources;
+};
+
 export class DockerCliContainerRuntime implements OciContainerRuntime {
-  async start(input: { image: string; internalPort: number; toolName: string }): Promise<{ containerId: string; baseUrl: string }> {
-    const { stdout: idOutput } = await execFileAsync("docker", [
-      "run",
-      "--rm",
-      "-d",
-      "--label",
-      `agentic.tool=${input.toolName}`,
-      "-p",
-      `127.0.0.1::${input.internalPort}`,
-      input.image,
-    ]);
+  constructor(private readonly options: DockerCliContainerRuntimeOptions = {}) {}
+
+  async start(input: OciContainerRuntimeStartInput): Promise<{ containerId: string; baseUrl: string }> {
+    const resources = { ...this.options.resources, ...input.resources };
+    const args = dockerRunArgsForToolContainer({ ...input, resources });
+    const { stdout: idOutput } = await execFileAsync("docker", args);
     const containerId = idOutput.trim();
     if (!containerId) throw new Error("Docker did not return a container id.");
 
@@ -391,6 +437,31 @@ export class DockerCliContainerRuntime implements OciContainerRuntime {
   async stop(containerId: string): Promise<void> {
     await execFileAsync("docker", ["stop", containerId]);
   }
+
+  async logs(containerId: string): Promise<string | undefined> {
+    try {
+      const { stdout, stderr } = await execFileAsync("docker", ["logs", "--tail", "80", containerId], {
+        maxBuffer: 128 * 1024,
+      });
+      return `${stdout ?? ""}\n${stderr ?? ""}`.trim();
+    } catch (error) {
+      return commandErrorDetail(error);
+    }
+  }
+}
+
+export function dockerRunArgsForToolContainer(input: OciContainerRuntimeStartInput): string[] {
+  return [
+    "run",
+    "--rm",
+    "-d",
+    ...dockerLabelArgs(input.labels ?? { "agentic.tool": input.toolName }),
+    ...dockerEnvArgs(input.env ?? {}),
+    ...dockerResourceArgs(input.resources ?? {}),
+    "-p",
+    `127.0.0.1::${input.internalPort}`,
+    input.image,
+  ];
 }
 
 export function compiledModulePath(modulePath: string): string {
@@ -524,7 +595,7 @@ function commandErrorDetail(error: unknown): string {
   if (!error || typeof error !== "object") return String(error);
   const detail = error as { message?: string; stdout?: string | Buffer; stderr?: string | Buffer };
   const output = `${detail.stdout ?? ""}\n${detail.stderr ?? ""}`.trim().replace(/\s+/g, " ").slice(-800);
-  return output || detail.message || String(error);
+  return redactRuntimeText(output || detail.message || String(error));
 }
 
 function sourceBundleAutoBuildEnabled(): boolean {
@@ -544,7 +615,9 @@ function externalHttpProxyTool(
   metadata: ToolModuleMetadata,
   baseUrl: string,
   fetchImpl: typeof fetch,
+  options: { callTimeoutMs?: number; labelPrefix?: string } = {},
 ): Tool {
+  const labelPrefix = options.labelPrefix ?? "External tool runtime";
   return {
     name: metadata.name,
     displayName: metadata.displayName,
@@ -564,17 +637,27 @@ function externalHttpProxyTool(
       return fetchHealth(fetchImpl, baseUrl);
     },
     async run(input, context) {
-      const response = await postJson(fetchImpl, `${baseUrl}/run`, {
-        input,
-        context: await executionContextPayload(metadata, context),
-      }, context?.signal);
+      const response = await withOptionalTimeoutSignal(
+        context?.signal,
+        options.callTimeoutMs,
+        `${labelPrefix} /run call`,
+        async (signal) => postJson(fetchImpl, `${baseUrl}/run`, {
+          input,
+          context: await executionContextPayload(metadata, context),
+        }, signal),
+      );
       return parseToolResult(response);
     },
     async startService(context) {
-      await postJson(fetchImpl, `${baseUrl}/service/start`, {
-        context: await serviceContextPayload(metadata, context),
-      }, context.signal);
-      return externalHttpServiceHandle(fetchImpl, metadata, baseUrl, context);
+      await withOptionalTimeoutSignal(
+        context.signal,
+        options.callTimeoutMs,
+        `${labelPrefix} /service/start call`,
+        async (signal) => postJson(fetchImpl, `${baseUrl}/service/start`, {
+          context: await serviceContextPayload(metadata, context),
+        }, signal),
+      );
+      return externalHttpServiceHandle(fetchImpl, metadata, baseUrl, context, options);
     },
   };
 }
@@ -729,7 +812,8 @@ function logRuntimeOutput(
   if (!logger) return;
   const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk ?? "");
   for (const line of text.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
-    const output = line.length > 2_000 ? `${line.slice(0, 2_000)}...` : line;
+    const redacted = redactRuntimeText(line);
+    const output = redacted.length > 2_000 ? `${redacted.slice(0, 2_000)}...` : redacted;
     logger[level](`Source-bundle runtime ${stream}: ${output.slice(0, 180)}`, {
       stream,
       output,
@@ -742,12 +826,19 @@ function externalHttpServiceHandle(
   metadata: ToolModuleMetadata,
   baseUrl: string,
   context: ToolServiceContext,
+  options: { callTimeoutMs?: number; labelPrefix?: string } = {},
 ): ToolServiceHandle {
+  const labelPrefix = options.labelPrefix ?? "External tool runtime";
   return {
     async stop() {
-      await postJson(fetchImpl, `${baseUrl}/service/stop`, {
-        context: await serviceContextPayload(metadata, context),
-      });
+      await withOptionalTimeoutSignal(
+        undefined,
+        options.callTimeoutMs,
+        `${labelPrefix} /service/stop call`,
+        async (signal) => postJson(fetchImpl, `${baseUrl}/service/stop`, {
+          context: await serviceContextPayload(metadata, context),
+        }, signal),
+      );
     },
     async healthcheck() {
       return fetchHealth(fetchImpl, baseUrl, context.signal);
@@ -765,11 +856,11 @@ async function fetchHealth(fetchImpl: typeof fetch, baseUrl: string, signal?: Ab
   if (!response.ok) {
     return {
       ok: false,
-      detail: responseDetail(body) ?? `External tool runtime healthcheck failed with HTTP ${response.status}.`,
+      detail: redactRuntimeText(responseDetail(body) ?? `External tool runtime healthcheck failed with HTTP ${response.status}.`),
     };
   }
   if (isRecord(body) && typeof body.ok === "boolean" && typeof body.detail === "string") {
-    return { ok: body.ok, detail: body.detail };
+    return { ok: body.ok, detail: redactRuntimeText(body.detail) };
   }
   return { ok: true, detail: "External tool runtime healthcheck passed." };
 }
@@ -791,9 +882,18 @@ async function postJson(
   });
   const parsed = await readJsonResponse(response);
   if (!response.ok) {
-    throw new Error(responseDetail(parsed) ?? `External tool runtime call failed with HTTP ${response.status}.`);
+    throw new Error(redactRuntimeText(responseDetail(parsed) ?? `External tool runtime call failed with HTTP ${response.status}.`));
   }
   return parsed;
+}
+
+async function withOptionalTimeoutSignal<T>(
+  upstreamSignal: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+  label: string,
+  action: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  return withTimeoutSignal(upstreamSignal, timeoutMs ?? 0, label, action);
 }
 
 async function withTimeoutSignal<T>(
@@ -1010,7 +1110,7 @@ async function waitForHealthyRuntime(
       if (health.ok) return health;
       lastDetail = health.detail;
     } catch (error) {
-      lastDetail = error instanceof Error ? error.message : String(error);
+      lastDetail = redactRuntimeText(error instanceof Error ? error.message : String(error));
     }
     await delay(pollIntervalMs);
   }
@@ -1038,6 +1138,85 @@ function dockerPortOutputToBaseUrl(value: string): string {
   if (!match) throw new Error(`Could not parse Docker published port: ${firstLine}`);
   const host = match[1] === "0.0.0.0" || match[1] === "::" ? "127.0.0.1" : match[1];
   return `http://${host}:${match[2]}`;
+}
+
+function dockerLabelArgs(labels: Record<string, string>): string[] {
+  return Object.entries(labels)
+    .filter(([, value]) => value.trim() !== "")
+    .flatMap(([key, value]) => ["--label", `${key}=${value}`]);
+}
+
+function dockerEnvArgs(env: Record<string, string>): string[] {
+  return Object.entries(env)
+    .filter(([, value]) => value !== undefined)
+    .flatMap(([key, value]) => ["--env", `${key}=${value}`]);
+}
+
+function dockerResourceArgs(resources: OciContainerResources): string[] {
+  const args: string[] = [];
+  if (resources.memory) args.push("--memory", resources.memory);
+  if (resources.cpus) args.push("--cpus", resources.cpus);
+  if (resources.pidsLimit !== undefined) args.push("--pids-limit", String(resources.pidsLimit));
+  if (resources.network) args.push("--network", resources.network);
+  if (resources.readOnly) args.push("--read-only");
+  return args;
+}
+
+function ociResourcesFromEnv(): OciContainerResources {
+  return compactOciResources({
+    memory: nonEmptyEnv("TOOL_OCI_MEMORY"),
+    cpus: nonEmptyEnv("TOOL_OCI_CPUS"),
+    pidsLimit: positiveIntegerEnv("TOOL_OCI_PIDS_LIMIT"),
+    network: nonEmptyEnv("TOOL_OCI_NETWORK"),
+    readOnly: process.env.TOOL_OCI_READ_ONLY === "enabled",
+  });
+}
+
+function compactOciResources(resources: OciContainerResources): OciContainerResources {
+  return compactRecord({
+    memory: resources.memory,
+    cpus: resources.cpus,
+    pidsLimit: resources.pidsLimit,
+    network: resources.network,
+    readOnly: resources.readOnly || undefined,
+  }) as OciContainerResources;
+}
+
+function nonEmptyEnv(key: string): string | undefined {
+  const value = process.env[key]?.trim();
+  return value || undefined;
+}
+
+function positiveIntegerEnv(key: string): number | undefined {
+  const value = Number(process.env[key]);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+async function healthDetailWithContainerLogs(
+  runtime: OciContainerRuntime,
+  containerId: string,
+  detail: string,
+): Promise<string> {
+  const redactedDetail = redactRuntimeText(detail);
+  if (!runtime.logs) return redactedDetail;
+  let rawLogs = "";
+  try {
+    rawLogs = (await runtime.logs(containerId)) ?? "";
+  } catch (error) {
+    rawLogs = commandErrorDetail(error);
+  }
+  const logs = redactRuntimeText(rawLogs).trim();
+  if (!logs) return redactedDetail;
+  const clipped = logs.length > 2_000 ? `${logs.slice(-2_000)}` : logs;
+  return `${redactedDetail}; container logs: ${clipped}`;
+}
+
+function redactRuntimeText(value: string): string {
+  return value
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/gi, "$1 [redacted]")
+    .replace(/\b(api[_-]?key|token|secret|password|authorization|credential)\b\s*[:=]\s*['"]?[^'"\s,;)}]+/gi, "$1=[redacted]")
+    .replace(/\b[A-Za-z0-9_-]{8,}:[A-Za-z0-9_-]{20,}\b/g, "[redacted-token]")
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, "[redacted-token]");
 }
 
 function attachProcessCleanup(runtime: OciContainerRuntime, containerId: string): void {

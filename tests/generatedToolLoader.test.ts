@@ -10,6 +10,7 @@ import { loadGeneratedTools, compiledModulePath } from "../src/tools/generatedTo
 import { ToolRegistry } from "../src/tools/registry.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import {
+  dockerRunArgsForToolContainer,
   OciImageToolPackageRunner,
   SourceBundleHttpProcessToolPackageRunner,
   ToolPackageRunner,
@@ -965,12 +966,157 @@ test("loadGeneratedTools proxies OCI image packages through the container HTTP r
       image: "registry.local/agentic/echo:1.0.0",
       internalPort: 8080,
       toolName: "generated.oci.echo",
+      toolVersion: "1.0.0",
+      startupMode: "on-demand",
+      labels: {
+        "agentic.tool": "generated.oci.echo",
+        "agentic.tool.version": "1.0.0",
+        "agentic.tool.package-type": "oci-image",
+        "agentic.tool.startup-mode": "on-demand",
+      },
+      env: {
+        AGENTIC_TOOL_NAME: "generated.oci.echo",
+        AGENTIC_TOOL_VERSION: "1.0.0",
+        AGENTIC_TOOL_STARTUP_MODE: "on-demand",
+      },
+      resources: undefined,
     }]);
     assert.equal(stored?.status, "available");
     assert.equal(stored?.lastHealthDetail, "oci runtime healthy");
     assert.equal(output?.content, "oci:hello");
     assert.deepEqual(output?.data, { contextTool: "generated.oci.echo" });
     assert.deepEqual(calls.map((call) => call.path), ["/health", "/run"]);
+  } finally {
+    await close(server);
+  }
+});
+
+test("OCI image package calls are bounded by call timeout", async () => {
+  const server = createServer(async (request, response) => {
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/health") {
+      response.end(JSON.stringify({ ok: true, detail: "oci runtime healthy" }));
+      return;
+    }
+    if (request.url === "/run") {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      response.end(JSON.stringify({ ok: true, content: "too late" }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  const baseUrl = await listen(server);
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+
+  try {
+    await metadata.registerGenerated({
+      name: "generated.oci.slow",
+      version: "1.0.0",
+      description: "Slow OCI tool.",
+      capabilities: ["oci-slow"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.oci.slow",
+        version: "1.0.0",
+        description: "Slow OCI tool.",
+        capabilities: ["oci-slow"],
+        startupMode: "on-demand",
+        package: { type: "oci-image", ref: "registry.local/agentic/slow:1.0.0" },
+      },
+    });
+
+    const runner = new OciImageToolPackageRunner({
+      enabled: true,
+      callTimeoutMs: 25,
+      runtime: {
+        async start() {
+          return { containerId: "container-slow", baseUrl };
+        },
+        async stop() {},
+      },
+    });
+    await loadGeneratedTools(registry, metadata, process.cwd(), [runner]);
+
+    await assert.rejects(
+      () => registry.get("generated.oci.slow")!.run({ value: "hello" }),
+      /OCI image HTTP runtime \/run call timed out after 25 ms/,
+    );
+  } finally {
+    await close(server);
+  }
+});
+
+test("OCI image packages expose always-on service lifecycle handles", async () => {
+  const calls: Array<{ path: string; body?: unknown }> = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const bodyText = Buffer.concat(chunks).toString("utf8");
+    const body = bodyText ? JSON.parse(bodyText) : undefined;
+    calls.push({ path: request.url ?? "", body });
+
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/health") {
+      response.end(JSON.stringify({ ok: true, detail: "oci service healthy" }));
+      return;
+    }
+    if (request.url === "/service/start" || request.url === "/service/stop") {
+      response.end(JSON.stringify({ ok: true, content: "ok" }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  const baseUrl = await listen(server);
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+
+  try {
+    await metadata.registerGenerated({
+      name: "generated.oci.listener",
+      version: "1.0.0",
+      description: "OCI listener.",
+      capabilities: ["oci-listener"],
+      startupMode: "always-on",
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.oci.listener",
+        version: "1.0.0",
+        description: "OCI listener.",
+        capabilities: ["oci-listener"],
+        startupMode: "always-on",
+        package: { type: "oci-image", ref: "registry.local/agentic/listener:1.0.0" },
+      },
+    });
+
+    const runner = new OciImageToolPackageRunner({
+      enabled: true,
+      runtime: {
+        async start() {
+          return { containerId: "container-listener", baseUrl };
+        },
+        async stop() {},
+      },
+    });
+    await loadGeneratedTools(registry, metadata, process.cwd(), [runner]);
+    const tool = registry.get("generated.oci.listener")!;
+    const controller = new AbortController();
+    const handle = await tool.startService!({
+      toolName: tool.name,
+      now: new Date("2026-05-07T12:00:00.000Z"),
+      signal: controller.signal,
+    });
+    const health = await handle.healthcheck?.();
+    await handle.stop?.();
+
+    assert.equal(health?.ok, true);
+    assert.deepEqual(calls.map((call) => call.path), ["/health", "/service/start", "/health", "/service/stop"]);
+    assert.equal(
+      (calls[1]?.body as { context?: { toolName?: string } }).context?.toolName,
+      "generated.oci.listener",
+    );
   } finally {
     await close(server);
   }
@@ -1014,20 +1160,72 @@ test("loadGeneratedTools stops OCI containers when their HTTP runtime fails QA h
         async stop(containerId) {
           stopped.push(containerId);
         },
+        async logs() {
+          return "boot failed apiKey=DO-NOT-LEAK token:abc12345678901234567890";
+        },
       },
     });
     const results = await loadGeneratedTools(registry, metadata, process.cwd(), [runner]);
     const [stored] = await metadata.list();
 
     assert.equal(results[0]?.loaded, false);
-    assert.equal(results[0]?.detail, "runtime not ready");
+    assert.equal(
+      results[0]?.detail,
+      "runtime not ready; container logs: boot failed apiKey=[redacted] token=[redacted]",
+    );
     assert.deepEqual(stopped, ["container-unhealthy"]);
     assert.equal(stored?.status, "failed");
-    assert.equal(stored?.lastHealthDetail, "runtime not ready");
+    assert.equal(stored?.lastHealthDetail, "runtime not ready; container logs: boot failed apiKey=[redacted] token=[redacted]");
     assert.equal(registry.get("generated.oci.unhealthy"), undefined);
   } finally {
     await close(server);
   }
+});
+
+test("docker CLI container runtime args include labels, env, and resource limits", () => {
+  const args = dockerRunArgsForToolContainer({
+    image: "registry.local/agentic/tool:1.2.3",
+    internalPort: 8080,
+    toolName: "generated.oci.args",
+    labels: {
+      "agentic.tool": "generated.oci.args",
+      "agentic.tool.version": "1.2.3",
+    },
+    env: {
+      AGENTIC_TOOL_NAME: "generated.oci.args",
+    },
+    resources: {
+      memory: "256m",
+      cpus: "0.5",
+      pidsLimit: 128,
+      network: "agentic_default",
+      readOnly: true,
+    },
+  });
+
+  assert.deepEqual(args, [
+    "run",
+    "--rm",
+    "-d",
+    "--label",
+    "agentic.tool=generated.oci.args",
+    "--label",
+    "agentic.tool.version=1.2.3",
+    "--env",
+    "AGENTIC_TOOL_NAME=generated.oci.args",
+    "--memory",
+    "256m",
+    "--cpus",
+    "0.5",
+    "--pids-limit",
+    "128",
+    "--network",
+    "agentic_default",
+    "--read-only",
+    "-p",
+    "127.0.0.1::8080",
+    "registry.local/agentic/tool:1.2.3",
+  ]);
 });
 
 function listen(server: ReturnType<typeof createServer>): Promise<string> {

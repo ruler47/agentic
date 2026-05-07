@@ -292,6 +292,9 @@ runners are:
   `TOOL_OCI_RUNNER=enabled`. It starts a Docker container for `package.type="oci-image"`,
   publishes internal port `TOOL_OCI_INTERNAL_PORT` (default `8080`), waits for the same
   `/health` contract, and then proxies runtime calls through the external HTTP adapter.
+  The runner adds Agentic labels, non-secret tool identity environment variables, optional
+  resource/isolation flags, bounded `/run` and lifecycle call timeouts, and redacted
+  container logs when startup health fails.
 
 Future package runners can use the same extension point for npm packages, sandboxed
 process pools, or remote execution platforms. Runner diagnostics include both the generic
@@ -383,10 +386,23 @@ Local-path loading is deliberately constrained:
   external runner can load such a manifest without changing the core loader.
 
 The first OCI runner is intentionally conservative: it starts one HTTP runtime container
-per loaded package and delegates tool semantics to that container. It does not yet pull
-images, rotate containers, stream container logs, enforce resource limits, or pass
-arbitrary environment access into containers. Runtime calls and service lifecycle calls
-receive only declared runtime envelopes:
+per loaded package and delegates tool semantics to that container. It does not yet build
+or publish images, pull missing images, rotate a pool of containers, or scale multiple
+replicas. It does add the operational guardrails needed for local generated-tool
+containers:
+
+- `TOOL_OCI_CALL_TIMEOUT_MS` bounds `/run`, `/service/start`, and `/service/stop` calls
+  after the runtime becomes healthy.
+- Docker labels record tool name, version, package type, and startup mode.
+- Non-secret environment variables expose only tool identity:
+  `AGENTIC_TOOL_NAME`, `AGENTIC_TOOL_VERSION`, and `AGENTIC_TOOL_STARTUP_MODE`.
+- `TOOL_OCI_MEMORY`, `TOOL_OCI_CPUS`, `TOOL_OCI_PIDS_LIMIT`, `TOOL_OCI_NETWORK`, and
+  `TOOL_OCI_READ_ONLY=enabled` map to Docker resource/isolation flags.
+- When startup health fails, the runner stops the container and appends redacted
+  `docker logs --tail 80` output to the failure detail so operators see useful bootstrap
+  diagnostics without leaking obvious token/API-key shapes.
+
+Runtime calls and service lifecycle calls receive only declared runtime envelopes:
 
 - `requiredConfigurationKeys` are resolved through `resolveConfiguration` and sent as
   `{ configurationKeys, configuration, missingConfigurationKeys }`.
@@ -394,8 +410,8 @@ receive only declared runtime envelopes:
   `{ secretHandles, secrets, missingSecretHandles }`.
 
 Undeclared config/secrets are never forwarded by the package runner. Broader transport
-policy, container-level environment injection, and redacted runtime logging belong to the
-next runner-supervisor hardening phase.
+policy, image build/publish, container pool management, log streaming into persistent
+tool service logs, and multi-host supervision remain future runner-supervisor work.
 If a required configuration key or secret handle cannot be resolved, the package runner
 fails before calling the external runtime. This keeps broken configuration visible in the
 run/tool lifecycle instead of leaking partial requests to a package process.
