@@ -57,6 +57,7 @@ import {
   MODEL_PROVIDER_STORE,
   MODEL_TIER_SETTINGS,
   PG_POOL,
+  RELOAD_GENERATED_TOOLS,
   RUN_STORE,
   SECRET_HANDLE_STORE,
   SKILL_MEMORY,
@@ -66,7 +67,9 @@ import {
   TOOL_INVESTIGATION_STORE,
   TOOL_METADATA_STORE,
   TOOL_MIGRATION_STORE,
+  TOOL_PACKAGE_RUNNERS,
   TOOL_PROMOTION_STORE,
+  TOOL_REGISTRY,
   TOOL_REWORK_WAIT_STORE,
   TOOL_RUNTIME_SETTINGS,
   TOOL_SERVICE_EVENT_STORE,
@@ -219,6 +222,12 @@ const providers: Provider[] = [
       return local;
     },
   },
+  // Runtime singletons. These are wired with real instances in Phase 4 from
+  // a runtime/workers module. For Phase 2 they default to undefined so the
+  // services can compile and report 503 where they need them.
+  { provide: TOOL_REGISTRY, useValue: undefined },
+  { provide: TOOL_PACKAGE_RUNNERS, useValue: undefined },
+  { provide: RELOAD_GENERATED_TOOLS, useValue: undefined },
 ];
 
 @Global()
