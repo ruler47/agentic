@@ -5,9 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/cli.ts",
-    "web": "node dist/server/main.js",
-    "web:dev": "tsx src/server/main.ts",
-    "serve": "node dist/db/migrate.js && node dist/server/main.js",
+    "web": "node dist/server/main.nest.js",
+    "web:dev": "tsx src/server/main.nest.ts",
+    "web:legacy": "node dist/server/main.js",
+    "web:legacy:dev": "tsx src/server/main.ts",
+    "serve": "node dist/db/migrate.js && node dist/server/main.nest.js",
+    "serve:legacy": "node dist/db/migrate.js && node dist/server/main.js",
     "test": "tsx --test tests/*.test.ts tests/**/*.test.ts",
     "test:types": "tsc --noEmit -p tsconfig.test.json",
     "verify": "npm run typecheck && npm run test:types && npm test && npm run build",
@@ -17,6 +20,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
+    "@types/express": "^5.0.6",
     "@types/node": "^20.12.12",
     "@types/pg": "^8.20.0",
     "@types/pngjs": "^6.0.5",
@@ -25,6 +29,15 @@
     "typescript": "^5.6.3"
   },
   "dependencies": {
-    "pg": "^8.20.0"
+    "@nestjs/common": "^11.1.19",
+    "@nestjs/core": "^11.1.19",
+    "@nestjs/platform-express": "^11.1.19",
+    "@nestjs/serve-static": "^5.0.5",
+    "@nestjs/swagger": "^11.4.2",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "pg": "^8.20.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
   }
 }
