@@ -49,11 +49,24 @@ import { PostgresArtifactMetadataStore } from "../../artifacts/postgresArtifactM
 import { S3ObjectStore, s3ConfigFromEnv } from "../../artifacts/s3ObjectStore.js";
 import { APP_ENV } from "../config/config.module.js";
 import type { AppEnv } from "../config/env.js";
+import { UniversalAgent } from "../../agents/universalAgent.js";
+import { LlmClient, readLlmConfigFromEnv } from "../../llm/client.js";
+import { ToolRegistry } from "../../tools/registry.js";
+import { FileReadTool, FileWriteTool } from "../../tools/fileTools.js";
+import { WebSearchTool } from "../../tools/webSearchTool.js";
+import { TelegramBotServiceTool } from "../../tools/telegramBotServiceTool.js";
+import { ChartGenerateTool } from "../../tools/chartGenerateTool.js";
+import { MarketTimeseriesTool } from "../../tools/marketTimeseriesTool.js";
+import { BrowserOperateTool } from "../../tools/browserOperateTool.js";
+import { createScopedToolDbClient } from "../../tools/toolScopedDb.js";
+import type { SecretHandleStore } from "../../secrets/secretHandleStore.js";
+import type { ToolMetadataStore } from "../../tools/toolMetadataStore.js";
 import {
   ARTIFACT_STORE,
   AUDIT_EVENT_STORE,
   CONVERSATION_STORE,
   GROUP_PROFILE_STORE,
+  LLM_CLIENT,
   MODEL_PROVIDER_STORE,
   MODEL_TIER_SETTINGS,
   PG_POOL,
@@ -75,6 +88,8 @@ import {
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_LOG_STORE,
   TOOL_SERVICE_STATUS_STORE,
+  TOOL_SERVICE_SUPERVISOR,
+  UNIVERSAL_AGENT,
   USER_STORE,
 } from "./tokens.js";
 
@@ -222,12 +237,55 @@ const providers: Provider[] = [
       return local;
     },
   },
-  // Runtime singletons. These are wired with real instances in Phase 4 from
-  // a runtime/workers module. For Phase 2 they default to undefined so the
-  // services can compile and report 503 where they need them.
-  { provide: TOOL_REGISTRY, useValue: undefined },
+  // Runtime singletons. The registry hosts built-in tools immediately; the
+  // generated-tool loader and supervisors wire in later phases through
+  // OnModuleInit hooks.
+  {
+    provide: TOOL_REGISTRY,
+    inject: [TOOL_METADATA_STORE, PG_POOL, SECRET_HANDLE_STORE, TOOL_RUNTIME_SETTINGS],
+    useFactory: async (
+      metadata: ToolMetadataStore | undefined,
+      pool: PgPool | undefined,
+      secrets: SecretHandleStore | undefined,
+      runtimeSettings: { resolve(toolName: string, key: string): Promise<string | undefined> } | undefined,
+    ) => {
+      const registry = new ToolRegistry();
+      registry.register(new WebSearchTool());
+      registry.register(new TelegramBotServiceTool());
+      registry.register(new FileReadTool());
+      registry.register(new FileWriteTool());
+      registry.register(new ChartGenerateTool());
+      registry.register(new MarketTimeseriesTool());
+      registry.register(new BrowserOperateTool());
+      if (metadata) {
+        await metadata.syncBuiltins(registry.list());
+        registry.setUsageReporter((event) =>
+          metadata.recordUsage(event.toolName, event.outcome, event.at),
+        );
+      }
+      registry.setRuntimeContextProvider(({ tool }) => ({
+        db: pool ? createScopedToolDbClient(pool, tool) : undefined,
+        resolveSecret: secrets?.resolve ? (handle) => secrets.resolve!(handle) : undefined,
+        resolveConfiguration: async (key) =>
+          (runtimeSettings ? await runtimeSettings.resolve(tool.name, key) : undefined) ?? process.env[key],
+      }));
+      return registry;
+    },
+  },
+  {
+    provide: LLM_CLIENT,
+    inject: [MODEL_TIER_SETTINGS],
+    useFactory: (tierSettings) => new LlmClient(readLlmConfigFromEnv(), tierSettings),
+  },
+  {
+    provide: UNIVERSAL_AGENT,
+    inject: [LLM_CLIENT, SKILL_MEMORY, TOOL_REGISTRY],
+    useFactory: (llm, memory, registry) => new UniversalAgent(llm, memory, registry),
+  },
+  // Filled by RuntimeWorkersModule in Phase 4.
   { provide: TOOL_PACKAGE_RUNNERS, useValue: undefined },
   { provide: RELOAD_GENERATED_TOOLS, useValue: undefined },
+  { provide: TOOL_SERVICE_SUPERVISOR, useValue: undefined },
 ];
 
 @Global()
