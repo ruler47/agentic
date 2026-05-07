@@ -33,7 +33,7 @@ import { WORK_LEDGER_STORE } from "../../persistence/tokens.js";
 export class WorkLedgerService {
   constructor(
     @Inject(WORK_LEDGER_STORE) private readonly store: WorkLedgerStore | undefined,
-    private readonly audit: AuditService,
+    @Inject(AuditService) private readonly audit: AuditService,
   ) {}
 
   async list(query: { threadId?: string; runId?: string; workKey?: string }): Promise<WorkLedgerItem[]> {

@@ -36,8 +36,8 @@ export class ToolServicesService {
   constructor(
     @Inject(TOOL_SERVICE_SUPERVISOR) private readonly supervisor: ToolServiceSupervisor | undefined,
     @Inject(TOOL_SERVICE_EVENT_STORE) private readonly events: ToolServiceEventStore | undefined,
-    private readonly audit: AuditService,
-    private readonly runs: RunsService,
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(RunsService) private readonly runs: RunsService,
   ) {}
 
   async listServices() {

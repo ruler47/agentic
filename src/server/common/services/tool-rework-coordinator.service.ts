@@ -48,9 +48,9 @@ export class ToolReworkCoordinatorService {
     @Inject(TOOL_METADATA_STORE) private readonly metadata: ToolMetadataStore | undefined,
     @Inject(RUN_STORE) private readonly runs: RunStore,
     @Inject(APP_ENV) private readonly env: AppEnv,
-    private readonly audit: AuditService,
-    private readonly finalizer: ToolBuildInputFinalizerService,
-    private readonly moduleRef: ModuleRef,
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(ToolBuildInputFinalizerService) private readonly finalizer: ToolBuildInputFinalizerService,
+    @Inject(ModuleRef) private readonly moduleRef: ModuleRef,
   ) {}
 
   createImprovementCoordinator(

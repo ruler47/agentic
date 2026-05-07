@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  Inject,
   Post,
   Query,
 } from "@nestjs/common";
@@ -11,7 +12,7 @@ import { ToolMigrationsService } from "./tool-migrations.service.js";
 
 @Controller("api")
 export class ToolMigrationsController {
-  constructor(private readonly migrations: ToolMigrationsService) {}
+  constructor(@Inject(ToolMigrationsService) private readonly migrations: ToolMigrationsService) {}
 
   @Get("tool-migrations")
   async listMigrations(@Query("toolName") toolName?: string, @Query("status") status?: string) {

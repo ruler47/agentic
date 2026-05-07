@@ -29,7 +29,7 @@ import { EVIDENCE_LEDGER_STORE } from "../../persistence/tokens.js";
 export class EvidenceLedgerService {
   constructor(
     @Inject(EVIDENCE_LEDGER_STORE) private readonly store: EvidenceLedgerStore | undefined,
-    private readonly audit: AuditService,
+    @Inject(AuditService) private readonly audit: AuditService,
   ) {}
 
   async list(query: {

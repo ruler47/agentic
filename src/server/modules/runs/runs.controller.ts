@@ -18,6 +18,7 @@ import { RunsService } from "./runs.service.js";
 @Controller("api")
 export class RunsController {
   constructor(
+    @Inject(RunsService)
     private readonly service: RunsService,
     @Inject(RUN_STORE) private readonly runs: RunStore,
   ) {}

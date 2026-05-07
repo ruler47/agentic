@@ -31,7 +31,7 @@ import { RUN_RETROSPECTIVE_STORE } from "../../persistence/tokens.js";
 export class RunRetrospectivesService {
   constructor(
     @Inject(RUN_RETROSPECTIVE_STORE) private readonly store: RunRetrospectiveStore | undefined,
-    private readonly audit: AuditService,
+    @Inject(AuditService) private readonly audit: AuditService,
   ) {}
 
   async list(query: { runId?: string; threadId?: string }): Promise<RunRetrospectiveRecord[]> {

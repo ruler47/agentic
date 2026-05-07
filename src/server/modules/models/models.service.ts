@@ -27,7 +27,7 @@ export class ModelsService {
   constructor(
     @Inject(MODEL_TIER_SETTINGS) private readonly tiers: ModelTierSettingsStore | undefined,
     @Inject(MODEL_PROVIDER_STORE) private readonly providers: ModelProviderStore | undefined,
-    private readonly audit: AuditService,
+    @Inject(AuditService) private readonly audit: AuditService,
   ) {}
 
   async listTiers(): Promise<ModelTierSettings[]> {

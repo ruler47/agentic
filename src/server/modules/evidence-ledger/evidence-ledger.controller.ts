@@ -1,9 +1,9 @@
-import { Body, Controller, Get, HttpCode, Post, Query } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Inject, Post, Query } from "@nestjs/common";
 import { EvidenceLedgerService } from "./evidence-ledger.service.js";
 
 @Controller("api/evidence-ledger")
 export class EvidenceLedgerController {
-  constructor(private readonly service: EvidenceLedgerService) {}
+  constructor(@Inject(EvidenceLedgerService) private readonly service: EvidenceLedgerService) {}
 
   @Get()
   async list(

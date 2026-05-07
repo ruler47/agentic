@@ -1,9 +1,9 @@
-import { Body, Controller, Get, HttpCode, Param, Patch, Post } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Inject, Param, Patch, Post } from "@nestjs/common";
 import { ToolInvestigationsService } from "./tool-investigations.service.js";
 
 @Controller("api/tool-investigations")
 export class ToolInvestigationsController {
-  constructor(private readonly investigations: ToolInvestigationsService) {}
+  constructor(@Inject(ToolInvestigationsService) private readonly investigations: ToolInvestigationsService) {}
 
   @Get()
   async list() {

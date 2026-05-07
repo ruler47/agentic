@@ -1,7 +1,6 @@
 // Shared validation/parsing helpers used by Nest services.
-// Mirrors the bespoke `parseXxxInput` functions in the legacy
-// src/server/http.ts. Once cutover happens (Phase 5), the legacy file
-// is removed; this one stays as the single source of truth.
+// This is the single source of truth for request parsing after the legacy
+// hand-rolled API cutover.
 
 import type { ToolSchema, ToolStartupMode } from "../../tools/tool.js";
 

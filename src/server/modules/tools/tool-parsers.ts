@@ -1,5 +1,4 @@
-// Heavy parsers for the Tools module group, ported verbatim from
-// src/server/http.ts. The legacy file keeps its own copies until cutover.
+// Heavy parsers for the Tools module group.
 
 import {
   generatedToolInputFromPackageManifest,

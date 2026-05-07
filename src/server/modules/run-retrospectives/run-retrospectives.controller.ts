@@ -1,9 +1,9 @@
-import { Body, Controller, Get, HttpCode, Param, Patch, Post, Query } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Inject, Param, Patch, Post, Query } from "@nestjs/common";
 import { RunRetrospectivesService } from "./run-retrospectives.service.js";
 
 @Controller("api/run-retrospectives")
 export class RunRetrospectivesController {
-  constructor(private readonly service: RunRetrospectivesService) {}
+  constructor(@Inject(RunRetrospectivesService) private readonly service: RunRetrospectivesService) {}
 
   @Get()
   async list(@Query("runId") runId?: string, @Query("threadId") threadId?: string) {

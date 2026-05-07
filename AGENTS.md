@@ -456,7 +456,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   contract, local admin defaults, requester resolution, and CRUD operations.
 - [src/instance/postgresUserStore.ts](src/instance/postgresUserStore.ts) -
   Postgres-backed users and channel identities.
-- [src/server/http.ts](src/server/http.ts) - web API and static UI server.
+- [src/server/main.nest.ts](src/server/main.nest.ts) - NestJS web API and static UI
+  entry point. The legacy hand-rolled API was removed after Nest parity checks.
+- [src/server/app.module.ts](src/server/app.module.ts) - Nest module graph for API,
+  persistence, workers, static assets, and domain services.
 - [docs/modules/web-console.md](docs/modules/web-console.md) - web console API,
   realtime SSE stream, dashboard behavior, conversation continuation, attachments,
   artifacts, and trace rendering.
@@ -829,7 +832,7 @@ For documentation-only changes:
 - Background tool build handoff: when a build request is created (operator promote OR
   agent-driven improvement), `ToolImprovementCoordinator` calls
   `ToolBuildWorker.scheduleImmediate()` if a worker is wired up. The worker's
-  `onAfterCompleted` callback (late-bound by `createWebApp`) emits the same
+  `onAfterCompleted` callback (late-bound by the Nest runtime worker module) emits the same
   `tool_build.registered` audit and `notifyToolBuildRegistered` linkage that the manual
   PATCH/`/run` endpoints use, so background-driven registrations flip matching
   `ToolReworkWait` records to `promoted` automatically. Worker audits use

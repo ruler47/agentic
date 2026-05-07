@@ -1,9 +1,9 @@
-import { Controller, Delete, Get, Param } from "@nestjs/common";
+import { Controller, Delete, Get, Inject, Param } from "@nestjs/common";
 import { ConversationsService } from "./conversations.service.js";
 
 @Controller("api/conversation-threads")
 export class ConversationsController {
-  constructor(private readonly conversations: ConversationsService) {}
+  constructor(@Inject(ConversationsService) private readonly conversations: ConversationsService) {}
 
   @Get()
   async list() {

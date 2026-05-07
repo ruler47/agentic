@@ -1,10 +1,10 @@
-import { Body, Controller, Get, Patch } from "@nestjs/common";
+import { Body, Controller, Get, Inject, Patch } from "@nestjs/common";
 import { UpdateGroupProfileDto } from "./dto/update-group-profile.dto.js";
 import { GroupProfileService } from "./group-profile.service.js";
 
 @Controller("api/group-profile")
 export class GroupProfileController {
-  constructor(private readonly service: GroupProfileService) {}
+  constructor(@Inject(GroupProfileService) private readonly service: GroupProfileService) {}
 
   @Get()
   async get() {

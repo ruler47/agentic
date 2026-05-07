@@ -57,8 +57,9 @@ export class ToolBuildsService {
     @Inject(TOOL_BUILD_REQUEST_STORE) private readonly store: ToolBuildRequestStore | undefined,
     @Inject(TOOL_BUILD_WORKFLOW) private readonly workflow: ToolBuildWorkflow | undefined,
     @Inject(RELOAD_GENERATED_TOOLS) private readonly reload: (() => Promise<void>) | undefined,
-    private readonly audit: AuditService,
-    private readonly finalizer: ToolBuildInputFinalizerService,
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(ToolBuildInputFinalizerService) private readonly finalizer: ToolBuildInputFinalizerService,
+    @Inject(ToolReworkCoordinatorService)
     private readonly reworkCoordinator: ToolReworkCoordinatorService,
   ) {}
 

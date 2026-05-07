@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  Inject,
   Param,
   Patch,
   Post,
@@ -15,7 +16,7 @@ import { MemoryService } from "./memory.service.js";
 
 @Controller("api/memories")
 export class MemoryController {
-  constructor(private readonly memory: MemoryService) {}
+  constructor(@Inject(MemoryService) private readonly memory: MemoryService) {}
 
   @Get()
   async list(@Query() query: Record<string, string>) {

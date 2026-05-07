@@ -8,7 +8,7 @@ import type { UpdateGroupProfileDto } from "./dto/update-group-profile.dto.js";
 export class GroupProfileService {
   constructor(
     @Inject(GROUP_PROFILE_STORE) private readonly store: GroupProfileStore | undefined,
-    private readonly audit: AuditService,
+    @Inject(AuditService) private readonly audit: AuditService,
   ) {}
 
   async get(): Promise<GroupProfileRecord> {

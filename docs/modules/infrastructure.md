@@ -158,7 +158,8 @@ Relevant environment variables:
 - `MINIO_BUCKET`
 - optional `S3_REGION`
 
-When those variables and `DATABASE_URL` are present, `src/server/main.ts` wires
+When those variables and `DATABASE_URL` are present, the Nest server wiring in
+`src/server/main.nest.ts` / `src/server/app.module.ts` wires
 `DurableArtifactStore(PostgresArtifactMetadataStore, S3ObjectStore)` with a local
 fallback. Without them, the app uses `LocalArtifactStore`.
 

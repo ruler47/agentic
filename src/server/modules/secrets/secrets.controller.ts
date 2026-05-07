@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  Inject,
   Param,
   Post,
   Req,
@@ -14,7 +15,7 @@ import { SecretsService } from "./secrets.service.js";
 
 @Controller("api/secret-handles")
 export class SecretsController {
-  constructor(private readonly secrets: SecretsService) {}
+  constructor(@Inject(SecretsService) private readonly secrets: SecretsService) {}
 
   @Get()
   async list() {

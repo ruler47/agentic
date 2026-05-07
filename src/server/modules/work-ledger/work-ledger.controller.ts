@@ -1,9 +1,9 @@
-import { Body, Controller, Get, HttpCode, Param, Patch, Post, Query } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Inject, Param, Patch, Post, Query } from "@nestjs/common";
 import { WorkLedgerService } from "./work-ledger.service.js";
 
 @Controller("api/work-ledger")
 export class WorkLedgerController {
-  constructor(private readonly service: WorkLedgerService) {}
+  constructor(@Inject(WorkLedgerService) private readonly service: WorkLedgerService) {}
 
   @Get()
   async list(

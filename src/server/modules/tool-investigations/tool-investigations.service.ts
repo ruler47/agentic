@@ -31,7 +31,7 @@ import { TOOL_INVESTIGATION_STORE } from "../../persistence/tokens.js";
 export class ToolInvestigationsService {
   constructor(
     @Inject(TOOL_INVESTIGATION_STORE) private readonly store: ToolInvestigationStore | undefined,
-    private readonly rework: ToolReworkCoordinatorService,
+    @Inject(ToolReworkCoordinatorService) private readonly rework: ToolReworkCoordinatorService,
   ) {}
 
   async list(): Promise<ToolInvestigationRecord[]> {

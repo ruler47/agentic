@@ -1,9 +1,9 @@
-import { Body, Controller, Get, HttpCode, Param, Patch, Post } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Inject, Param, Patch, Post } from "@nestjs/common";
 import { ToolReworkWaitsService } from "./tool-rework-waits.service.js";
 
 @Controller("api")
 export class ToolReworkWaitsController {
-  constructor(private readonly waits: ToolReworkWaitsService) {}
+  constructor(@Inject(ToolReworkWaitsService) private readonly waits: ToolReworkWaitsService) {}
 
   @Get("tool-rework-waits")
   async list() {

@@ -21,7 +21,7 @@ Core files:
 - `src/settings/modelProviderStore.ts`
 - `src/settings/postgresModelProviderStore.ts`
 - `src/db/migrate.ts`
-- `src/server/http.ts`
+- `src/server/modules/models`
 
 Each provider stores:
 

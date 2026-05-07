@@ -17,7 +17,7 @@ export class ConversationsService {
   constructor(
     @Inject(CONVERSATION_STORE) private readonly threads: ConversationThreadStore | undefined,
     @Inject(RUN_STORE) private readonly runs: RunStore,
-    private readonly audit: AuditService,
+    @Inject(AuditService) private readonly audit: AuditService,
   ) {}
 
   async list(): Promise<ConversationThreadRecord[]> {

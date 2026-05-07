@@ -23,7 +23,7 @@ import type { UpdateMemoryDto } from "./dto/update-memory.dto.js";
 export class MemoryService {
   constructor(
     @Inject(SKILL_MEMORY) private readonly memory: SkillMemoryStore | undefined,
-    private readonly audit: AuditService,
+    @Inject(AuditService) private readonly audit: AuditService,
   ) {}
 
   async list(query: Record<string, string | undefined>): Promise<SkillMemoryEntry[]> {

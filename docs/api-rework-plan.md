@@ -1,16 +1,15 @@
 # API Rework Plan
 
-Status: draft. Branch: `claude/api-rework`. Owner: api-rework agent.
+Status: complete cutover. The hand-rolled legacy API has been removed and the
+NestJS API is the only supported web server path.
 
-This document is the durable plan for migrating the Agentic web API off the
-hand-rolled `src/server/http.ts` router onto a mature framework. It is the
-working agreement between this branch and the rest of the project. Other
-branches keep modifying the legacy server until cutover; this plan is
-designed so the rework stays mergeable through that.
+This document is the durable record of migrating the Agentic web API off the
+hand-rolled router onto NestJS. It also records the follow-up hardening items
+left after cutover.
 
 ## 1. Why
 
-`src/server/http.ts` is a single file of ~5400 lines that:
+The removed hand-rolled router was a single file of ~5400 lines that:
 
 - routes ~75 endpoints with manual `if (request.method === ... && url.pathname === ...)`
   chains and ~30 ad-hoc regex matchers,
@@ -18,7 +17,7 @@ designed so the rework stays mergeable through that.
 - inlines cross-cutting concerns (audit recording, error → JSON conversion,
   SSE heartbeats, secret redaction) inside each handler,
 - composes ~25 stores/services through a single `WebAppOptions` bag wired in
-  `src/server/main.ts`,
+  the old server bootstrap,
 - mixes orchestration (`createAndStartRun`, `executeRun`, tool builder
   callbacks, auto-retry-after-promotion) with HTTP plumbing.
 
@@ -74,7 +73,7 @@ in the new `src/server/` wrap them, they do not move.
 
 ```text
 src/server/
-  main.ts                          # bootstrap: NestFactory.create(AppModule).listen(port)
+  main.nest.ts                     # bootstrap: NestFactory.create(AppModule).listen(port)
   app.module.ts                    # root composition
   config/
     env.ts                         # typed env, replaces scattered process.env reads
@@ -86,7 +85,7 @@ src/server/
       audit.interceptor.ts         # replaces inline recordAudit() blocks
       sanitize-secrets.interceptor.ts
     pipes/
-      zod-validation.pipe.ts       # or class-validator-based equivalent
+    validation.pipe.ts           # class-validator-based request validation
     decorators/
       @CurrentInstance(), @CurrentUser(), @SseHeartbeat()
     guards/
@@ -113,7 +112,7 @@ src/server/
     tool-investigations/           # /api/tool-investigations
     tool-rework-waits/             # /api/tool-rework-waits + /api/runs/:id/tool-rework-waits
     tool-migrations/               # /api/tool-migrations, /api/tool-promotions
-    static/                        # serves public/ fallback for legacy console
+    static/                        # serves public/ fallback for the browser console
 ```
 
 Rule: every legacy URL is preserved with the **same method and JSON shape**.
@@ -123,18 +122,15 @@ auth, OpenAPI client gen) are tracked as separate follow-ups in section 8.
 ## 4. Phases
 
 Each phase is an independent slice the user can review/test in isolation.
-Phase boundaries are commit boundaries.
+Phase boundaries were commit boundaries during the migration.
 
 ### Phase 0 — Lock the contract
 
 - Create `docs/api-surface.md` listing every URL+method+request shape+
-  response shape harvested from `src/server/http.ts` (the 75 handlers + 30
-  matchers I already mapped). This becomes the diff target for rebases.
-- Add `tests/contract/` snapshot suite that hits the legacy server through
-  Node's `http` against in-memory stores and snapshots the JSON for happy +
-  error paths of every route. These tests must pass against the legacy
-  server today and against the NestJS server at the end of every phase.
-- No production code changes yet.
+  response shape harvested from the previous API. This remains the public
+  contract document after cutover.
+- The full snapshot suite was deferred; `tests/nestApi.test.ts` now covers
+  the high-risk Nest API paths directly.
 
 ### Phase 1 — Skeleton without breaking legacy
 
@@ -145,20 +141,16 @@ Phase boundaries are commit boundaries.
 - Update `tsconfig.json`: `experimentalDecorators`, `emitDecoratorMetadata`.
   Verify ESM + decorators path with `tsx` (or switch to `ts-node` for the
   Nest dev server if needed).
-- Create the new tree under `src/server/` per section 3 but **keep
-  `src/server/http.ts` intact**. The new entry point is
-  `src/server/main.nest.ts`; legacy entry point stays at `src/server/main.ts`.
+- Create the new tree under `src/server/` per section 3. The entry point is
+  `src/server/main.nest.ts`.
 - Add scripts:
-  - `web:nest` → `node dist/server/main.nest.js`
-  - `web:nest:dev` → `tsx src/server/main.nest.ts`
-  - `verify:contract` → run the contract suite against both servers on
-    different ports (e.g. 3000 legacy, 3010 nest) and assert byte-equal JSON.
+  - `web` → `node dist/server/main.nest.js`
+  - `web:dev` → `tsx src/server/main.nest.ts`
 - AppModule imports `ConfigModule`, `PersistenceModule`, `HealthModule`.
 - HealthModule ships first: `/api/health`, `/api/instance`, GET/PATCH
   `/api/group-profile`. Smallest possible vertical slice to validate the
   pipeline end-to-end.
-- `npm run verify` keeps targeting the legacy server. The contract test
-  matrix is opt-in until phase 5.
+- `npm run verify` now targets the Nest server only.
 
 ### Phase 2 — Port flat read/write modules
 
@@ -200,13 +192,12 @@ Per-module rules:
   - SSE: `GET /api/runs/:id/events` via `@Sse` returning
     `Observable<MessageEvent>`. Reuse the 650 ms poll + 15 s heartbeat
     cadence from `streamRunEvents`.
-  - `RunsService` owns `createAndStartRun` (currently `http.ts:2552`) and
-    `executeRun` (currently `http.ts:3114`). It depends on `AgentRunner`,
+  - `RunsService` owns run creation and `executeRun`. It depends on `AgentRunner`,
     `RunStore`, `ConversationStore`, `ArtifactStore`, `AuditService`,
     `ToolImprovementCoordinatorFactory`, `GroupProfileStore`, `UserStore`.
-  - The auto-retry-after-promotion hook (`http.ts:3644`) becomes a method on
-    `RunsService` and is injected into `ToolImprovementCoordinator` via the
-    same `onWaitPromoted` callback shape.
+  - The auto-retry-after-promotion hook lives in the Nest runtime wiring and
+    is injected into `ToolImprovementCoordinator` via the same
+    `onWaitPromoted` callback shape.
 - ToolServicesModule:
   - REST: `/api/tool-services` collection + per-service routes
     (`/start`, `/stop`, `/restart`, `/heartbeat`, `/outbox`,
@@ -227,15 +218,12 @@ Per-module rules:
 ### Phase 5 — Cutover
 
 - `npm run web` points at the NestJS bootstrap.
-- `npm run web:legacy` is kept for one release as a rollback escape hatch.
-- `src/server/http.ts` and the helpers it owns (`parseXxxInput` zoo,
-  `serveStatic`, `sendJson`, `readJsonBody`, `sanitizeObject`,
-  `RunContextError`) are removed; surviving utility functions move to
-  `src/server/common/utils/`.
+- The legacy router, legacy bootstrap, and legacy `webServer.test.ts` are
+  removed. Surviving request parsing lives in `src/server/common/parsers.ts`
+  and module-local parser files.
 - React UI base URL stays the same. No changes in `web-react/src/api/*`.
-- Docker `Dockerfile` `CMD` and `docker-compose.yml` keep the same entry,
-  since `npm run serve` already runs `node dist/server/main.js` — the file
-  is replaced, not the script.
+- Docker `Dockerfile` `CMD` and `docker-compose.yml` keep the same script
+  entry; `npm run serve` now migrates and starts `dist/server/main.nest.js`.
 
 ### Phase 6 — Optional follow-ups (not blocking cutover)
 
@@ -249,47 +237,29 @@ Per-module rules:
 
 ## 5. Coexistence with Other Branches
 
-This is the part that matters most while parallel agents are pushing.
+After cutover, branches must add or change HTTP behaviour in the Nest module
+tree only. If a branch still references the deleted legacy router, rebase it
+and port the change into the matching controller/service pair before merging.
 
-**Invariant**: `src/server/http.ts` keeps working until Phase 5. Any work
-landing on `main` against the legacy router stays valid. The new tree is
-purely additive until cutover.
-
-Per rebase cycle (run when another branch merges to `main`):
+Per rebase cycle:
 
 1. `git fetch origin && git rebase origin/main`.
-2. Diff `src/server/http.ts` against the previous merge base. Three cases:
-   - **No HTTP changes** — only domain code changed (typical for agent /
-     tools / memory work). The new modules continue to work because they
-     wrap the same domain APIs. Run `npm run verify:contract` to confirm
-     parity.
-   - **New legacy route added** — add it to `docs/api-surface.md`, port it
-     into the matching NestJS module, regenerate the contract snapshot, run
-     `verify:contract` against both servers.
-   - **Existing route signature changed** — same as above plus update the
-     DTO and the snapshot. The snapshot diff makes this impossible to miss.
-3. Update `docs/api-rework-plan.md` checklist (section 7) so this branch's
-   progress stays self-explanatory after the rebase.
-
-If two agents touch the same store interface, the conflict surfaces in the
-domain code, not in the controller. Controllers depend on the store
-interfaces, so they ride the same rename or signature change automatically
-once the store provider compiles.
-
-**No force-pushing the rework branch over upstream churn.** Rebase forwards,
-keep the linear history, push to origin with `--force-with-lease` only when
-the user authorises a rebase that rewrites already-pushed commits.
+2. If a new route is added, add it to `docs/api-surface.md`, implement it in
+   the matching Nest module, and add a Nest e2e assertion when the route is
+   user-visible or cross-module.
+3. Run `npm run verify`.
 
 ## 6. Verification Strategy
 
-Three layers, all gated in `npm run verify` by Phase 5:
+Three layers, all gated in `npm run verify`:
 
 - **Unit tests per module** — port the existing `tests/*.test.ts` to use
   `Test.createTestingModule` for the controller layer; keep store-level
   tests as-is (they don't touch HTTP).
-- **Contract snapshot tests** (`tests/contract/`) — same suite runs against
-  legacy and Nest servers on different ports; output JSON must be
-  byte-equal. Catches regressions on every rebase.
+- **Nest API e2e tests** (`tests/nestApi.test.ts`) — boots the real Nest
+  `AppModule` and validates health/static/docs, runs, tool investigations,
+  tool rework waits, inline secret redaction, work/evidence ledgers, run
+  retrospectives, and audit canary redaction.
 - **Manual smoke** — after Phase 3 lands, run `docker compose up --build`
   and exercise each React route (Runs, Tools, Memory, Tool Builds,
   Channels, Approvals, Diagnostics, Models, Settings, Audit Log,
@@ -317,11 +287,9 @@ Three layers, all gated in `npm run verify` by Phase 5:
 - [x] Phase 4: ToolBuildWorker provider + lifecycle (RuntimeWorkersModule)
 - [x] Phase 4: ToolServiceSupervisor provider + lifecycle
 - [x] Phase 4: ServeStaticModule for legacy public/
-- [x] Phase 5: Switch `npm run web` and `npm run serve` (Docker) to Nest;
-      keep `web:legacy` / `serve:legacy` for emergency rollback
-- [~] Phase 5: Delete `src/server/http.ts` + legacy `main.ts` + the
-      hand-rolled webServer.test.ts — held back at the user's request so the
-      branch can be tested before destroying the rollback path
+- [x] Phase 5: Switch `npm run web` and `npm run serve` (Docker) to Nest
+- [x] Phase 5: Delete the legacy router/bootstrap/tests and replace the HTTP
+      regression coverage with `tests/nestApi.test.ts`
 - [x] Phase 6: Swagger at /api/docs (+ /api/docs-json + /api/docs-yaml)
 - [~] Phase 6: Generated typed client for web-react — deferred behind the
       end-to-end test pass; `/api/docs-json` is the input when this lands
@@ -340,11 +308,9 @@ Three layers, all gated in `npm run verify` by Phase 5:
 
 ## 9. Resolved Notes
 
-1. Decorators in ESM — `tsx` does NOT emit `design:paramtypes` under
-   `experimentalDecorators`, so DI fails when running `tsx src/server/main.nest.ts`
-   directly. Fix: run the compiled bundle (`node dist/server/main.nest.js`).
-   Production scripts (`web`, `serve`) already do this; `web:dev` / `web:nest:dev`
-   should be considered "best effort" and re-checked if dev-time DI fails.
+1. Decorators in ESM — `tsx` does not reliably emit `design:paramtypes`, so
+   Nest providers/controllers use explicit `@Inject(...)` for constructor
+   dependencies. `web:dev` and the compiled bundle use the same Nest module graph.
 2. `class-validator` chosen — produces field-level error messages through
    the `ValidationPipe.exceptionFactory` and integrates cleanly with the
    existing controllers.
@@ -356,12 +322,8 @@ Three layers, all gated in `npm run verify` by Phase 5:
    `streamRunEvents` exactly. When `RunStore` grows a real event emitter,
    the SSE controller becomes push-based with no public API change.
 
-## 10. Items Held Back for User Verification
+## 10. Items Held Back
 
-- `src/server/http.ts` (~5,400 lines) and `src/server/main.ts` are still on
-  disk as the rollback target. After the user smoke-tests this branch and
-  confirms parity, a follow-up commit removes them along with
-  `tests/webServer.test.ts` (which imports the legacy `createWebApp`).
 - The generated typed client for `web-react` remains deferred. `/api/docs-json`
   and `/api/docs-yaml` are available as the source of truth for that later
   client generation pass.
@@ -369,8 +331,8 @@ Three layers, all gated in `npm run verify` by Phase 5:
 ## 11. Codex Review Fixes After Cutover
 
 The first Nest cutover smoke found several parity gaps that looked green under
-the legacy `webServer.test.ts` suite because those tests still instantiate the
-old `createWebApp` router. These are now restored in the Nest path:
+the old legacy test suite because it still instantiated the old router.
+These are now restored in the Nest path:
 
 - `RunsService.executeRun` passes Work Ledger, Evidence Ledger, Run
   Retrospective, secret/config resolvers, `requestToolBuild`, and

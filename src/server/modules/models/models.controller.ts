@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  Inject,
   Param,
   Patch,
   Post,
@@ -18,7 +19,7 @@ import { ModelsService } from "./models.service.js";
 
 @Controller("api")
 export class ModelsController {
-  constructor(private readonly models: ModelsService) {}
+  constructor(@Inject(ModelsService) private readonly models: ModelsService) {}
 
   @Get("settings/model-tiers")
   async listTiers() {

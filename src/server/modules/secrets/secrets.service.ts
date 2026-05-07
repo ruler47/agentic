@@ -20,7 +20,7 @@ export type PublicSecretHandleRecord = SecretHandleRecord;
 export class SecretsService {
   constructor(
     @Inject(SECRET_HANDLE_STORE) private readonly store: SecretHandleStore | undefined,
-    private readonly audit: AuditService,
+    @Inject(AuditService) private readonly audit: AuditService,
   ) {}
 
   async list(): Promise<PublicSecretHandleRecord[]> {

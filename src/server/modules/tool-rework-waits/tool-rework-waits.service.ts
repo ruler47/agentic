@@ -28,8 +28,8 @@ import { RunsService } from "../runs/runs.service.js";
 export class ToolReworkWaitsService {
   constructor(
     @Inject(TOOL_REWORK_WAIT_STORE) private readonly store: ToolReworkWaitStore | undefined,
-    private readonly rework: ToolReworkCoordinatorService,
-    private readonly runs: RunsService,
+    @Inject(ToolReworkCoordinatorService) private readonly rework: ToolReworkCoordinatorService,
+    @Inject(RunsService) private readonly runs: RunsService,
   ) {}
 
   async list(): Promise<ToolReworkWaitRecord[]> {

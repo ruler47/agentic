@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  Inject,
   Param,
   Patch,
   Post,
@@ -12,7 +13,7 @@ import { ToolBuildsService } from "./tool-builds.service.js";
 
 @Controller("api/tool-build-requests")
 export class ToolBuildsController {
-  constructor(private readonly builds: ToolBuildsService) {}
+  constructor(@Inject(ToolBuildsService) private readonly builds: ToolBuildsService) {}
 
   @Get()
   async list() {

@@ -1,9 +1,9 @@
-# API Surface (Legacy Reference)
+# API Surface
 
-This is the frozen reference of the legacy router at `src/server/http.ts`. It
-exists so the rework branch can detect drift on every rebase, and so the new
-NestJS modules can be checked for shape parity. Update this document only
-when a route is added or changed on `main`.
+This is the public HTTP contract served by the NestJS API. It was originally
+harvested from the legacy router during the rework, but the hand-rolled router
+has now been removed. Update this document when a route is added or changed on
+`main`.
 
 ## Health & Instance
 

@@ -103,9 +103,9 @@ export class RunsService {
     @Inject(WORK_LEDGER_STORE) private readonly workLedger: WorkLedgerStore | undefined,
     @Inject(EVIDENCE_LEDGER_STORE) private readonly evidenceLedger: EvidenceLedgerStore | undefined,
     @Inject(RUN_RETROSPECTIVE_STORE) private readonly retrospectives: RunRetrospectiveStore | undefined,
-    private readonly audit: AuditService,
-    private readonly finalizer: ToolBuildInputFinalizerService,
-    private readonly rework: ToolReworkCoordinatorService,
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(ToolBuildInputFinalizerService) private readonly finalizer: ToolBuildInputFinalizerService,
+    @Inject(ToolReworkCoordinatorService) private readonly rework: ToolReworkCoordinatorService,
   ) {}
 
   list(): Promise<AgentRunRecord[]> {

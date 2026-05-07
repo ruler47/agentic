@@ -9,8 +9,9 @@ policies, artifacts, and outbound messages.
 
 Main files:
 
-- `src/server/http.ts`
-- `src/server/main.ts`
+- `src/server/main.nest.ts`
+- `src/server/app.module.ts`
+- `src/server/modules/**`
 - `src/runs/inMemoryRunStore.ts`
 - `public/index.html`
 - `public/styles.css`

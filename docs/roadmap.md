@@ -549,7 +549,7 @@ Implementation tasks:
   `ToolBuildWorker.scheduleImmediate()` immediately after creating a build request so a
   promoted investigation or agent-driven improvement does not have to wait for the
   worker's interval tick. `ToolBuildWorker.onAfterCompleted` is late-bound by
-  `createWebApp` to the same `notifyToolBuildRegistered` + `tool_build.registered` audit
+  the Nest runtime worker module to the same `notifyToolBuildRegistered` + `tool_build.registered` audit
   path the manual PATCH/`/run` endpoints already use, so a background-driven
   registration flips matching `ToolReworkWait` records to `promoted` automatically. The
   worker also joins a pending tick instead of double-claiming when ticks overlap. DONE.

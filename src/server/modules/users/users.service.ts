@@ -35,7 +35,7 @@ export class UsersService {
   constructor(
     @Inject(USER_STORE) private readonly users: UserStore,
     @Inject(RUN_STORE) private readonly runs: RunStore,
-    private readonly audit: AuditService,
+    @Inject(AuditService) private readonly audit: AuditService,
   ) {}
 
   async list(): Promise<UserListEntry[]> {

@@ -265,7 +265,7 @@ the Tool Build request id, promoted timestamp, QA summary/checks/reviews, packag
 and storage migration ids. This keeps the active version explainable after restart while
 full transactional promotion is still being hardened.
 
-The worker is enabled by default in `src/server/main.ts`. Set
+The worker is enabled by default by the Nest runtime worker module. Set
 `TOOL_BUILD_WORKER=disabled` for a fully manual queue, or tune polling/batch size with
 `TOOL_BUILD_WORKER_INTERVAL_MS` and `TOOL_BUILD_WORKER_BATCH_SIZE`.
 
