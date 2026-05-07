@@ -81,7 +81,7 @@ export class ToolReworkCoordinatorService {
         });
       },
       finalizeBuildRequestInput: (input) => this.finalizer.finalize(input),
-      backgroundBuildScheduler: this.getBuildWorker()
+      backgroundBuildScheduler: this.env.toolBuildWorkerEnabled && this.getBuildWorker()
         ? {
             scheduleImmediate: () => {
               void this.getBuildWorker()?.scheduleImmediate().catch(() => undefined);
