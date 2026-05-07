@@ -144,6 +144,11 @@ Generated tool package workspace:
   tune the local HTTP process runner readiness wait.
 - `TOOL_SOURCE_BUNDLE_CALL_TIMEOUT_MS` bounds `/run` and service lifecycle HTTP calls for
   source-bundle local process runtimes; default is 60 seconds.
+- `TOOL_SOURCE_BUNDLE_AUTO_BUILD=disabled` disables the default development behavior
+  where source-bundle runners run package-local `npm run build` when the expected
+  `dist/index.js` or `dist/runtime/server.js` entrypoint is missing.
+- `TOOL_SOURCE_BUNDLE_BUILD_TIMEOUT_MS` bounds that package-local build; default is 120
+  seconds.
 - `TOOL_SERVICE_AUTO_RESTART_ON_FAILED_HEARTBEAT=disabled` disables the default bounded
   auto-restart after a failed always-on service heartbeat.
 - `TOOL_SERVICE_MAX_AUTO_RESTARTS` defaults to `3` and limits automatic restarts per
@@ -282,6 +287,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/tools/toolPackageWorkspaceQa.ts](src/tools/toolPackageWorkspaceQa.ts) -
   structural QA for package manifests, build scaffold, Dockerfile, and local Tool
   contract before package snapshots become promotion candidates.
+- [src/tools/toolPackageRunner.ts](src/tools/toolPackageRunner.ts) - source-bundle,
+  external HTTP, OCI, and local-path package runners. Source-bundle runners can build
+  missing local `dist` entrypoints before loading generated package workspaces.
 - [src/tools/toolIntegrationSpec.ts](src/tools/toolIntegrationSpec.ts) - provider-neutral
   Tool Build integration spec inferred from requests for API clients, bots, listeners,
   webhooks, inbound/outbound services, credentials, settings, lifecycle, and QA.
@@ -536,6 +544,9 @@ For documentation-only changes:
 - `tests/toolBuildProviders.test.ts` covers provider-backed TypeScript generation and
   generated metadata registration, including the guarded LLM-backed provider path for
   unknown/custom integrations.
+- `tests/toolBuildReviewers.test.ts` covers deterministic and LLM generated-tool review
+  gates, including provider-specific behavior checks that reject generic service bridges
+  when a request explicitly asks for a real provider adapter.
 - `tests/modelProviderStore.test.ts` covers model provider defaults, normalization, and
   CRUD lifecycle.
 - `tests/userStore.test.ts` covers local user and allowed channel identity resolution.
@@ -568,6 +579,10 @@ For documentation-only changes:
 - Generated always-on tools should record inbound, outbound, ignored, and system events
   through `tool_service_events` so Channels, Audit, Runs, and Conversations can link
   provider activity without provider-specific core tables.
+- Tool Build QA must distinguish a provider-neutral service bridge from a provider
+  adapter. If a request asks for concrete provider behavior such as Telegram Bot API
+  polling or message delivery, review should fail unless the generated package and QA
+  evidence prove that behavior behind the portable service contract.
 - Always-on tools that receive external provider messages should forward normalized
   events to `POST /api/tool-services/:name/inbound`; that path records the inbound event,
   resolves channel identity, creates a normal run, and records the linked queued event.
@@ -1006,10 +1021,11 @@ For documentation-only changes:
   final score. Version 1.2.0 enables Global Ledger Unified search by appending
   `token=supported` to address and tx hash report URLs, so all supported tokens are
   analyzed by default.
-- The first self-service generated capability is `browser-screenshot`. The Docker runtime
-  includes Chromium and project source/tests so the Builder workflow can write generated
-  TypeScript, run targeted tests, rebuild `dist`, register metadata, reload the generated
-  tool, and let the original run save a PNG artifact.
+- The first self-service generated capability is `browser-screenshot`. It should be
+  produced as an isolated source-bundle package under gitignored
+  `tools/generated.browser.screenshot/<version>` and loaded through a package runner.
+  Legacy app-source screenshot variants under `src/tools/generated` were removed so the
+  UI and registry do not show multiple indistinguishable screenshot tools.
 - `browser.operate` must remain domain-neutral and portable. It executes typed browser
   commands and returns structured evidence plus Playwright storage state; agents decide
   the scenario and reviewers decide whether the resulting artifact proves the task.

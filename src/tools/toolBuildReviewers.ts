@@ -63,7 +63,7 @@ export class DeterministicToolCodeReviewer implements ToolBuildReviewer {
 export class DeterministicToolBehaviorReviewer implements ToolBuildReviewer {
   async review(
     request: ToolBuildRequest,
-    _output: ToolBuildOutput,
+    output: ToolBuildOutput,
     qaReport: ToolBuildQaReport,
   ): Promise<ToolBuildReviewReport> {
     const findings: string[] = [];
@@ -80,6 +80,8 @@ export class DeterministicToolBehaviorReviewer implements ToolBuildReviewer {
     if (!qaMentions(qaReport, "build")) {
       findings.push("QA evidence must mention a TypeScript build check.");
     }
+    const providerFinding = requestedProviderBehaviorFinding(request, output, qaReport);
+    if (providerFinding) findings.push(providerFinding);
     return {
       kind: "behavior",
       decision: findings.length === 0 ? "pass" : "needs_revision",
@@ -90,6 +92,50 @@ export class DeterministicToolBehaviorReviewer implements ToolBuildReviewer {
       findings,
     };
   }
+}
+
+function requestedProviderBehaviorFinding(
+  request: ToolBuildRequest,
+  output: ToolBuildOutput,
+  qaReport: ToolBuildQaReport,
+): string | undefined {
+  const requestText = normalize([
+    request.capability,
+    request.displayName,
+    request.reason,
+    request.taskSummary,
+    request.feedback,
+    request.contract.integration?.providerHint,
+  ].filter(Boolean).join("\n"));
+  const outputText = normalize([
+    output.summary,
+    output.docsMarkdown,
+    output.capabilities?.join(" "),
+    qaReport.summary,
+    ...qaReport.checks,
+  ].filter(Boolean).join("\n"));
+
+  const asksTelegramAdapter = requestText.includes("telegram") && (
+    requestText.includes("poll") ||
+    requestText.includes("getupdates") ||
+    requestText.includes("sendmessage") ||
+    requestText.includes("send message") ||
+    requestText.includes("inline button") ||
+    requestText.includes("bot api")
+  );
+  if (!asksTelegramAdapter) return undefined;
+
+  const provesTelegramAdapter = (
+    outputText.includes("getupdates") ||
+    outputText.includes("sendmessage") ||
+    outputText.includes("telegram bot api")
+  ) && !outputText.includes("provider neutral");
+  if (provesTelegramAdapter) return undefined;
+
+  return [
+    "Requested provider-specific Telegram behavior is not covered by the generated artifact.",
+    "The output only proves a generic service bridge; it must implement or explicitly test Telegram Bot API polling/sending before promotion.",
+  ].join(" ");
 }
 
 export type LlmToolBuildReviewerOptions = {

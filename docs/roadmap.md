@@ -99,6 +99,28 @@ Whenever a concrete run fails, the fix should be classified as one of:
 
 ## Recent Systemic Findings
 
+### Capability failure example: generated Telegram bot from scratch
+
+A manual Tool Build E2E for "create a Telegram bot from scratch" found three generic
+Tool Builder issues:
+
+- Source-bundle always-on packages must carry the same service lifecycle contract as
+  in-repo tools. Package-local `src/tools/tool.ts` now includes `ToolServiceContext`,
+  `ToolServiceHandle`, and optional `startService`.
+- The local HTTP source-bundle runner cannot assume `dist/runtime/server.js` is already
+  present. It now auto-builds a package workspace with `npm run build` when the runtime
+  entrypoint is missing, then reloads the tool into the runtime registry.
+- Tool Build requests must not echo raw credential material when an operator pastes a
+  token into the high-level description. Inline credentials detected in `reason`,
+  `taskSummary`, `feedback`, or `credentialNotes` are redacted from queued request text
+  and stored through secret handles when a secret store is configured.
+- A generated always-on "service bridge" is not enough when the request explicitly asks
+  for provider behavior such as Telegram Bot API `getUpdates` polling and `sendMessage`
+  delivery. Deterministic behavior review now rejects those generic bridges unless QA
+  evidence proves provider-specific behavior. The remaining work is a real provider
+  adapter generator/LLM repair loop that can implement and test provider APIs behind the
+  same portable tool contract.
+
 ### Capability failure example: `run_1777798218331_linj0nh2`
 
 The Bitcoin six-month analysis run completed with a failure-style final answer instead
@@ -757,7 +779,12 @@ Next implementation tasks:
   DONE for temporary workspace isolation, command timeouts, targeted tests, isolated build,
   and promotion build verification.
 - Implement `browser.screenshot` as the first self-service tool target. DONE with a
-  Playwright provider that writes module and smoke-test files.
+  Playwright provider that writes an isolated source-bundle package under
+  `tools/generated.browser.screenshot/<version>`. Legacy tracked app-source screenshot
+  modules (`generated.browser.screenshot.manual`, `.isolated`, and the old local-path
+  variant) have been removed from `src/tools/generated`; migrations also delete stale
+  durable registry rows for those legacy names while preserving a source-bundle
+  `generated.browser.screenshot` package manifest when one exists.
 - Implement a reusable document/PDF artifact provider for missing document-generation
   capabilities. DONE for a provider-authored `DocumentArtifactToolBuildProvider` that can
   unblock abstract `pdf-generation`, `document-generation`, and `report-generation`

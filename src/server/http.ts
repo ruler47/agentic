@@ -4407,15 +4407,24 @@ async function attachInlineCredentialHandle<TInput extends ReturnType<typeof par
   input: TInput,
   options: WebAppOptions,
 ): Promise<TInput> {
-  if (!input.credentialNotes?.trim() || input.credentialHandles?.length || !options.secretHandleStore) return input;
+  const credentialSource = input.credentialNotes?.trim() ? input.credentialNotes : input.reason;
+  const inlineSecret = extractInlineCredentialSecret(credentialSource);
+  if (!inlineSecret) return input;
 
-  const handle = await ensureInlineCredentialSecret(input, options);
+  const handle = await ensureInlineCredentialSecret({
+    ...input,
+    credentialNotes: credentialSource,
+  }, options);
+  const redactedReason = redactInlineCredential(input.reason, inlineSecret);
   return {
     ...input,
+    reason: redactedReason,
+    taskSummary: redactOptionalInlineCredential(input.taskSummary, inlineSecret),
+    feedback: redactOptionalInlineCredential(input.feedback, inlineSecret),
     credentialHandles: handle ? [handle] : input.credentialHandles,
     credentialNotes: handle
       ? `Credential material was stored in ${handle}; raw operator notes were redacted before queueing.`
-      : input.credentialNotes,
+      : redactOptionalInlineCredential(input.credentialNotes, inlineSecret),
   };
 }
 
@@ -4456,7 +4465,7 @@ function extractInlineCredentialSecret(notes: string | undefined): string | unde
   for (const pattern of labelledPatterns) {
     const match = value.match(pattern);
     const candidate = sanitizeCredentialCandidate(match?.[1]);
-    if (candidate && looksLikeCredential(candidate)) return candidate;
+    if (candidate && looksLikeLabelledCredential(candidate)) return candidate;
   }
 
   const standalone = value.match(/\b[A-Z0-9]{4,}(?:-[A-Z0-9]{4,}){2,}\b/);
@@ -4476,6 +4485,15 @@ function sanitizeCredentialCandidate(value: string | undefined): string | undefi
     .replace(/^[`'"(<[{]+|[`'")>\]},.;:]+$/g, "");
 }
 
+function redactOptionalInlineCredential(value: string | undefined, secret: string): string | undefined {
+  return value === undefined ? undefined : redactInlineCredential(value, secret);
+}
+
+function redactInlineCredential(value: string, secret: string): string {
+  if (!secret) return value;
+  return value.split(secret).join("[redacted credential]");
+}
+
 function looksLikeCredential(value: string): boolean {
   if (value.length < 5) return false;
   if (/^(should|used|use|with|as|bearer|token|secret|key|ключ)$/i.test(value)) return false;
@@ -4483,6 +4501,13 @@ function looksLikeCredential(value: string): boolean {
   if (/[A-Z]/.test(value) && /\d/.test(value)) return true;
   if (/[-._~+/=]/.test(value) && /\d/.test(value)) return true;
   return value.length >= 24 && /[A-Za-z]/.test(value) && /\d/.test(value);
+}
+
+function looksLikeLabelledCredential(value: string): boolean {
+  if (looksLikeCredential(value)) return true;
+  if (value.length < 8) return false;
+  if (/^(provided|operator|credential|credentials|secret|token|apikey|api|key)$/i.test(value)) return false;
+  return /[A-Za-z]/.test(value) && /[-._~+/=]/.test(value);
 }
 
 function secretHandleFromCapability(capability: string): string {

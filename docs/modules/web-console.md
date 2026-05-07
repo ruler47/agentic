@@ -410,6 +410,10 @@ is broken or because no runner exists for its package type yet.
 `POST /api/tools/reload-generated` reloads generated tools through the installed package
 runners and writes an audit event. Diagnostics exposes this as "Reload generated tools",
 which is useful after updating a source-bundle package on disk without restarting the app.
+For local source-bundle packages, reload can also rebuild the package workspace when the
+expected compiled entrypoint is missing (`dist/index.js` for in-process bundles or
+`dist/runtime/server.js` for HTTP process bundles). This keeps gitignored generated
+packages portable without requiring compiled `dist` output to be committed.
 
 `POST /api/tool-build-requests/:id/stop` marks a request `blocked` with a human status
 detail. `DELETE /api/tool-build-requests/:id` removes a queue card. Both operations write
@@ -433,9 +437,11 @@ label, scopes, and `secretRef` such as `TELEGRAM_BOT_TOKEN`, a vault path, or th
 inline credential material created from a Tool Build form. Raw values (`token`,
 `password`, `apiKey`, `value`) are rejected by the public API shape. The simplified Tool
 Build form may accept free-form credential notes and convert them into a generated
-tool-scoped inline secret handle before QA. `DELETE /api/secret-handles/:handle` removes a
-handle and writes an audit event; list/get responses do not expose the underlying secret
-value.
+tool-scoped inline secret handle before QA. Inline credential detection also scans the
+operator's high-level request text, task summary, and feedback; detected raw credentials
+are redacted from queued Tool Build text before API responses, audit records, or generated
+builder prompts can echo them. `DELETE /api/secret-handles/:handle` removes a handle and
+writes an audit event; list/get responses do not expose the underlying secret value.
 
 `GET /api/tool-migrations` lists tool-owned migration records. Optional query filters are
 `toolName` and `status` (`pending`, `applied`, `failed`, `rolled_back`). `POST
@@ -1057,6 +1063,20 @@ last inbound/outbound events, and start/stop/restart controls.
 Telegram is the first reference always-on tool. The built-in `channel.telegram.bot`
 module is visible in the same lifecycle UI as any future generated bot/listener, not
 hidden in logs.
+
+The Tool Builder must not promote a provider-neutral bridge as if it were a complete
+provider adapter. If a request explicitly asks for provider behavior such as Telegram Bot
+API polling (`getUpdates`) and outbound delivery (`sendMessage`), the generated package
+must implement and test that provider behavior behind the same portable always-on service
+contract. Deterministic behavior review rejects generic service-bridge evidence for those
+requests until a provider adapter generator or LLM repair path supplies the missing
+implementation.
+
+Screenshot generation now uses the same isolated package path as other generated tools:
+`generated.browser.screenshot` is expected to load from a source-bundle package under the
+gitignored `tools/` workspace. Older tracked app-source screenshot variants were removed
+to avoid presenting three similar screenshot tools in the UI; database migrations also
+remove stale legacy rows while preserving the source-bundle package variant.
 
 Contextual tool requests created from Trace Lab spans can be submitted from the wrong
 selected span. The server checks operator feedback against installed tool names, display

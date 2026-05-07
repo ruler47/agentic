@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { symlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { execFile, spawn, ChildProcess } from "node:child_process";
 import { resolve, relative, isAbsolute, join } from "node:path";
@@ -89,7 +90,10 @@ export class SourceBundleToolPackageRunner implements ToolPackageRunner {
   readonly type = "source-bundle";
   private readonly packageRoots: string[];
 
-  constructor(packageRoot: string | string[] = defaultSourceBundleRoots()) {
+  constructor(
+    packageRoot: string | string[] = defaultSourceBundleRoots(),
+    private readonly autoBuildMissingEntrypoint = sourceBundleAutoBuildEnabled(),
+  ) {
     this.packageRoots = Array.isArray(packageRoot) ? packageRoot : [packageRoot];
   }
 
@@ -104,10 +108,15 @@ export class SourceBundleToolPackageRunner implements ToolPackageRunner {
       return { loaded: false, detail, health: { ok: false, detail } };
     }
 
-    const found = findSourceBundlePackage(projectRoot, this.packageRoots, ref, [
-      "dist/index.js",
-      "index.js",
-    ]);
+    const entrypoints = ["dist/index.js", "index.js"];
+    let found = findSourceBundlePackage(projectRoot, this.packageRoots, ref, entrypoints);
+    if (!found?.moduleFile && this.autoBuildMissingEntrypoint) {
+      const build = await buildSourceBundlePackage(projectRoot, this.packageRoots, ref);
+      if (!build.ok) {
+        return { loaded: false, detail: build.detail, health: { ok: false, detail: build.detail } };
+      }
+      found = findSourceBundlePackage(projectRoot, this.packageRoots, ref, entrypoints);
+    }
     if (!found?.moduleFile) {
       const detail = `Source-bundle package has no loadable dist/index.js or index.js under: ${this.packageRoots.join(", ")}`;
       return { loaded: false, detail, health: { ok: false, detail } };
@@ -140,6 +149,7 @@ export class SourceBundleToolPackageRunner implements ToolPackageRunner {
 export type SourceBundleHttpProcessToolPackageRunnerOptions = {
   enabled?: boolean;
   packageRoot?: string | string[];
+  autoBuildMissingRuntime?: boolean;
   startupTimeoutMs?: number;
   pollIntervalMs?: number;
   callTimeoutMs?: number;
@@ -150,6 +160,7 @@ export class SourceBundleHttpProcessToolPackageRunner implements ToolPackageRunn
   readonly type = "source-bundle";
   private readonly enabled: boolean;
   private readonly packageRoots: string[];
+  private readonly autoBuildMissingRuntime: boolean;
   private readonly startupTimeoutMs: number;
   private readonly pollIntervalMs: number;
   private readonly callTimeoutMs: number;
@@ -162,6 +173,7 @@ export class SourceBundleHttpProcessToolPackageRunner implements ToolPackageRunn
     );
     const roots = options.packageRoot ?? defaultSourceBundleRoots();
     this.packageRoots = Array.isArray(roots) ? roots : [roots];
+    this.autoBuildMissingRuntime = options.autoBuildMissingRuntime ?? sourceBundleAutoBuildEnabled();
     this.startupTimeoutMs = options.startupTimeoutMs ?? Number(process.env.TOOL_SOURCE_BUNDLE_STARTUP_TIMEOUT_MS ?? 15_000);
     this.pollIntervalMs = options.pollIntervalMs ?? Number(process.env.TOOL_SOURCE_BUNDLE_POLL_INTERVAL_MS ?? 250);
     this.callTimeoutMs = options.callTimeoutMs ?? Number(process.env.TOOL_SOURCE_BUNDLE_CALL_TIMEOUT_MS ?? 60_000);
@@ -179,7 +191,15 @@ export class SourceBundleHttpProcessToolPackageRunner implements ToolPackageRunn
       return { loaded: false, detail, health: { ok: false, detail } };
     }
 
-    const found = findSourceBundlePackage(projectRoot, this.packageRoots, ref, ["dist/runtime/server.js"]);
+    const entrypoints = ["dist/runtime/server.js"];
+    let found = findSourceBundlePackage(projectRoot, this.packageRoots, ref, entrypoints);
+    if (!found?.moduleFile && this.autoBuildMissingRuntime) {
+      const build = await buildSourceBundlePackage(projectRoot, this.packageRoots, ref);
+      if (!build.ok) {
+        return { loaded: false, detail: build.detail, health: { ok: false, detail: build.detail } };
+      }
+      found = findSourceBundlePackage(projectRoot, this.packageRoots, ref, entrypoints);
+    }
     if (!found?.moduleFile) {
       const detail = `Source-bundle package has no HTTP runtime dist/runtime/server.js under: ${this.packageRoots.join(", ")}`;
       return { loaded: false, detail, health: { ok: false, detail } };
@@ -440,6 +460,80 @@ function findSourceBundlePackage(
     };
   });
   return candidates.find((candidate) => candidate.moduleFile);
+}
+
+function findSourceBundlePackageDir(
+  projectRoot: string,
+  packageRoots: string[],
+  ref: string,
+): string | undefined {
+  return packageRoots
+    .map((root) => safePackagePath(resolve(projectRoot, root), ref))
+    .find((packageDir) => existsSync(join(packageDir, "package.json")));
+}
+
+type SourceBundleBuildResult = {
+  ok: boolean;
+  detail: string;
+};
+
+async function buildSourceBundlePackage(
+  projectRoot: string,
+  packageRoots: string[],
+  ref: string,
+): Promise<SourceBundleBuildResult> {
+  const packageDir = findSourceBundlePackageDir(projectRoot, packageRoots, ref);
+  if (!packageDir) {
+    return {
+      ok: false,
+      detail: `Source-bundle package ${ref} has no package.json under: ${packageRoots.join(", ")}`,
+    };
+  }
+
+  try {
+    await linkRootNodeModulesIfAvailable(projectRoot, packageDir);
+    const { stdout, stderr } = await execFileAsync("npm", ["run", "build"], {
+      cwd: packageDir,
+      timeout: sourceBundleBuildTimeoutMs(),
+      maxBuffer: 1024 * 1024,
+    });
+    const output = `${stdout ?? ""}\n${stderr ?? ""}`.trim().replace(/\s+/g, " ").slice(-500);
+    return {
+      ok: true,
+      detail: `Built source-bundle package ${ref}${output ? `: ${output}` : ""}`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: `Source-bundle package ${ref} build failed: ${commandErrorDetail(error)}`,
+    };
+  }
+}
+
+async function linkRootNodeModulesIfAvailable(projectRoot: string, packageDir: string): Promise<void> {
+  const packageNodeModules = join(packageDir, "node_modules");
+  if (existsSync(packageNodeModules)) return;
+
+  const rootNodeModules = join(resolve(projectRoot), "node_modules");
+  if (!existsSync(rootNodeModules)) return;
+
+  await symlink(rootNodeModules, packageNodeModules, "dir");
+}
+
+function commandErrorDetail(error: unknown): string {
+  if (!error || typeof error !== "object") return String(error);
+  const detail = error as { message?: string; stdout?: string | Buffer; stderr?: string | Buffer };
+  const output = `${detail.stdout ?? ""}\n${detail.stderr ?? ""}`.trim().replace(/\s+/g, " ").slice(-800);
+  return output || detail.message || String(error);
+}
+
+function sourceBundleAutoBuildEnabled(): boolean {
+  return process.env.TOOL_SOURCE_BUNDLE_AUTO_BUILD !== "disabled";
+}
+
+function sourceBundleBuildTimeoutMs(): number {
+  const value = Number(process.env.TOOL_SOURCE_BUNDLE_BUILD_TIMEOUT_MS ?? 120_000);
+  return Number.isFinite(value) && value > 0 ? value : 120_000;
 }
 
 function firstExisting(paths: string[]): string | undefined {

@@ -279,6 +279,15 @@ import { tool } from "../index.js";
 type JsonRecord = Record<string, unknown>;
 
 const port = Number(process.env.PORT ?? "8080");
+let activeService:
+  | {
+      controller: AbortController;
+      handle?: {
+        stop?: () => Promise<void> | void;
+        healthcheck?: () => Promise<{ ok: boolean; detail: string }>;
+      };
+    }
+  | undefined;
 
 const server = createServer(async (request, response) => {
   try {
@@ -302,21 +311,44 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/service/start") {
       const body = await readJsonBody(request);
-      const result = tool.startService
-        ? await tool.startService(asRecord(body.context))
-        : { ok: false, content: "Tool does not expose startService." };
-      response.statusCode = result.ok ? 200 : 400;
-      response.end(JSON.stringify(result));
+      if (!tool.startService) {
+        response.statusCode = 400;
+        response.end(JSON.stringify({ ok: false, content: "Tool does not expose startService." }));
+        return;
+      }
+      if (activeService) {
+        response.statusCode = 200;
+        response.end(JSON.stringify({ ok: true, content: "Service runtime is already started." }));
+        return;
+      }
+      const controller = new AbortController();
+      try {
+        const handle = await tool.startService(serviceContext(asRecord(body.context), controller));
+        activeService = { controller, handle };
+        response.statusCode = 200;
+        response.end(JSON.stringify({ ok: true, content: "Service runtime started." }));
+      } catch (error) {
+        controller.abort();
+        throw error;
+      }
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/service/stop") {
-      const body = await readJsonBody(request);
-      const result = tool.stopService
-        ? await tool.stopService(asRecord(body.context))
-        : { ok: false, content: "Tool does not expose stopService." };
-      response.statusCode = result.ok ? 200 : 400;
-      response.end(JSON.stringify(result));
+      const current = activeService;
+      activeService = undefined;
+      if (!current) {
+        response.statusCode = 200;
+        response.end(JSON.stringify({ ok: true, content: "Service runtime was not running." }));
+        return;
+      }
+      try {
+        await current.handle?.stop?.();
+      } finally {
+        current.controller.abort();
+      }
+      response.statusCode = 200;
+      response.end(JSON.stringify({ ok: true, content: "Service runtime stopped." }));
       return;
     }
 
@@ -343,6 +375,33 @@ async function readJsonBody(request: IncomingMessage): Promise<JsonRecord> {
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
+}
+
+function serviceContext(value: JsonRecord, controller: AbortController) {
+  const nowValue = typeof value.now === "string" ? new Date(value.now) : undefined;
+  const now = nowValue && !Number.isNaN(nowValue.getTime()) ? nowValue : new Date();
+  return {
+    ...value,
+    toolName: typeof value.toolName === "string" && value.toolName ? value.toolName : tool.name,
+    now,
+    signal: controller.signal,
+    fetch,
+    resolveSecret: async (handle: string) => {
+      const secrets = asRecord(value.secrets);
+      const secret = secrets[handle];
+      return typeof secret === "string" ? secret : undefined;
+    },
+    resolveConfiguration: async (key: string) => {
+      const config = asRecord(value.configuration);
+      const configured = config[key];
+      return typeof configured === "string" ? configured : undefined;
+    },
+    logger: {
+      info(message: string, data?: unknown) { console.log(JSON.stringify({ level: "info", message, data })); },
+      warn(message: string, data?: unknown) { console.warn(JSON.stringify({ level: "warn", message, data })); },
+      error(message: string, data?: unknown) { console.error(JSON.stringify({ level: "error", message, data })); }
+    }
+  };
 }
 `;
 }
@@ -384,17 +443,36 @@ export type ToolExecutionContext = {
   caller?: string;
   signal?: AbortSignal;
   logger?: {
-    info?: (message: string, data?: unknown) => void;
-    warn?: (message: string, data?: unknown) => void;
-    error?: (message: string, data?: unknown) => void;
+    info(message: string, data?: unknown): void;
+    warn(message: string, data?: unknown): void;
+    error(message: string, data?: unknown): void;
   };
   resolveSecret?: (handle: string) => Promise<string | undefined> | string | undefined;
   resolveConfiguration?: (key: string, toolName?: string) => Promise<string | undefined> | string | undefined;
   [key: string]: unknown;
 };
 
+export type ToolServiceContext = ToolExecutionContext & {
+  toolName: string;
+  now: Date;
+  signal: AbortSignal;
+  baseUrl?: string;
+  fetch?: typeof fetch;
+  logger?: {
+    info(message: string, data?: unknown): void;
+    warn(message: string, data?: unknown): void;
+    error(message: string, data?: unknown): void;
+  };
+};
+
+export type ToolServiceHandle = {
+  stop?: () => Promise<void> | void;
+  healthcheck?: () => Promise<{ ok: boolean; detail: string }>;
+};
+
 export type Tool = {
   name: string;
+  displayName?: string;
   version: string;
   description: string;
   capabilities: string[];
@@ -405,10 +483,11 @@ export type Tool = {
   requiredSecretHandles?: string[];
   settingsSchema?: ToolSchema;
   storage?: ToolStorageContract;
+  docsMarkdown?: string;
   examples?: unknown[];
   healthcheck?: () => Promise<{ ok: boolean; detail: string }> | { ok: boolean; detail: string };
   run: (input: ToolInput, context?: ToolExecutionContext) => Promise<ToolResult> | ToolResult;
-  startService?: (context?: ToolExecutionContext) => Promise<ToolResult> | ToolResult;
+  startService?: (context: ToolServiceContext) => Promise<ToolServiceHandle> | ToolServiceHandle;
   stopService?: (context?: ToolExecutionContext) => Promise<ToolResult> | ToolResult;
 };
 `;
@@ -1734,7 +1813,7 @@ const state: ServiceState = {
   missingSecrets: [],
 };
 const integrationSpec = ${JSON.stringify(integration, null, 2)} as { mode: string; providerHint?: string } & Record<string, unknown>;
-const requiredSecretHandles = ${JSON.stringify(secretHandles)};
+const requiredSecretHandles: string[] = ${JSON.stringify(secretHandles)};
 
 export const tool: Tool = {
   name: ${JSON.stringify(toolName)},
@@ -1973,7 +2052,8 @@ test("${toolName} starts, reports health, records neutral events, and stops", as
 });
 
 test("${toolName} validates declared runtime secret handles", async () => {
-  if (${JSON.stringify(integration.credentials.handles.length)} === 0) return;
+  const requiredSecretCount: number = ${JSON.stringify(integration.credentials.handles.length)};
+  if (requiredSecretCount === 0) return;
   const controller = new AbortController();
   const handle = await tool.startService?.({
     toolName: tool.name,
