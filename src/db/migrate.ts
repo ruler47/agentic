@@ -588,6 +588,33 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     `);
 
     await pool.query(`
+      delete from tool_module_versions
+      where name in ('generated.browser.screenshot.manual', 'generated.browser.screenshot.isolated')
+         or (
+           name = 'generated.browser.screenshot'
+           and source = 'generated'
+           and (
+             package_manifest is null
+             or module_path = 'src/tools/generated/browser-screenshotTool.ts'
+             or package_manifest #>> '{package,type}' = 'local-path'
+           )
+         );
+    `);
+    await pool.query(`
+      delete from tool_modules
+      where name in ('generated.browser.screenshot.manual', 'generated.browser.screenshot.isolated')
+         or (
+           name = 'generated.browser.screenshot'
+           and source = 'generated'
+           and (
+             package_manifest is null
+             or module_path = 'src/tools/generated/browser-screenshotTool.ts'
+             or package_manifest #>> '{package,type}' = 'local-path'
+           )
+         );
+    `);
+
+    await pool.query(`
       create index if not exists tool_module_versions_name_active_idx
       on tool_module_versions(name, active);
     `);

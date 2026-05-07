@@ -1072,6 +1072,12 @@ contract. Deterministic behavior review rejects generic service-bridge evidence 
 requests until a provider adapter generator or LLM repair path supplies the missing
 implementation.
 
+Screenshot generation now uses the same isolated package path as other generated tools:
+`generated.browser.screenshot` is expected to load from a source-bundle package under the
+gitignored `tools/` workspace. Older tracked app-source screenshot variants were removed
+to avoid presenting three similar screenshot tools in the UI; database migrations also
+remove stale legacy rows while preserving the source-bundle package variant.
+
 Contextual tool requests created from Trace Lab spans can be submitted from the wrong
 selected span. The server checks operator feedback against installed tool names, display
 names, descriptions, and capabilities. If the selected tool clearly does not match the

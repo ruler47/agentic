@@ -779,7 +779,12 @@ Next implementation tasks:
   DONE for temporary workspace isolation, command timeouts, targeted tests, isolated build,
   and promotion build verification.
 - Implement `browser.screenshot` as the first self-service tool target. DONE with a
-  Playwright provider that writes module and smoke-test files.
+  Playwright provider that writes an isolated source-bundle package under
+  `tools/generated.browser.screenshot/<version>`. Legacy tracked app-source screenshot
+  modules (`generated.browser.screenshot.manual`, `.isolated`, and the old local-path
+  variant) have been removed from `src/tools/generated`; migrations also delete stale
+  durable registry rows for those legacy names while preserving a source-bundle
+  `generated.browser.screenshot` package manifest when one exists.
 - Implement a reusable document/PDF artifact provider for missing document-generation
   capabilities. DONE for a provider-authored `DocumentArtifactToolBuildProvider` that can
   unblock abstract `pdf-generation`, `document-generation`, and `report-generation`

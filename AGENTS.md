@@ -1021,10 +1021,11 @@ For documentation-only changes:
   final score. Version 1.2.0 enables Global Ledger Unified search by appending
   `token=supported` to address and tx hash report URLs, so all supported tokens are
   analyzed by default.
-- The first self-service generated capability is `browser-screenshot`. The Docker runtime
-  includes Chromium and project source/tests so the Builder workflow can write generated
-  TypeScript, run targeted tests, rebuild `dist`, register metadata, reload the generated
-  tool, and let the original run save a PNG artifact.
+- The first self-service generated capability is `browser-screenshot`. It should be
+  produced as an isolated source-bundle package under gitignored
+  `tools/generated.browser.screenshot/<version>` and loaded through a package runner.
+  Legacy app-source screenshot variants under `src/tools/generated` were removed so the
+  UI and registry do not show multiple indistinguishable screenshot tools.
 - `browser.operate` must remain domain-neutral and portable. It executes typed browser
   commands and returns structured evidence plus Playwright storage state; agents decide
   the scenario and reviewers decide whether the resulting artifact proves the task.
