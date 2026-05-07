@@ -21,6 +21,12 @@ import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import { InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
 import { InMemoryToolPromotionStore } from "../src/tools/toolPromotionStore.js";
 import { ToolBuildWorkflow } from "../src/tools/toolBuildWorkflow.js";
+import {
+  GeneratedToolFileBuilder,
+  MetadataToolRegistrar,
+} from "../src/tools/toolBuildProviders.js";
+import { TelegramBotToolBuildProvider } from "../src/tools/telegramBotToolBuildProvider.js";
+import { ToolPackageWorkspaceStore } from "../src/tools/toolPackageWorkspaceStore.js";
 import { ToolBuildWorker } from "../src/tools/toolBuildWorker.js";
 import { InMemoryAuditEventStore } from "../src/audit/inMemoryAuditEventStore.js";
 import { InMemoryGroupProfileStore } from "../src/instance/groupProfileStore.js";
@@ -2572,6 +2578,133 @@ test("/auto-retry endpoint is idempotent and returns 409 for non-promoted waits"
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("Telegram tool build request flows through TelegramBotToolBuildProvider and registers as a second always-on tool", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const projectRoot = await mkdtemp(join(tmpdir(), "agentic-telegram-build-root-"));
+  const packageWorkspaceRoot = join(projectRoot, "tools");
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  // Seed the metadata store with the existing built-in Telegram reference so the test
+  // can assert both bots coexist after the generated bot registers.
+  const toolMetadataStore = new InMemoryToolMetadataStore();
+  await toolMetadataStore.syncBuiltins([
+    {
+      name: "channel.telegram.bot",
+      version: "1.0.0",
+      description: "Built-in Telegram bot reference.",
+      capabilities: ["telegram", "channel", "messaging"],
+      startupMode: "always-on",
+      async run() {
+        return { ok: true, content: "ok" };
+      },
+    },
+  ]);
+
+  const builder = new GeneratedToolFileBuilder([new TelegramBotToolBuildProvider()], projectRoot, {
+    packageWorkspaceStore: new ToolPackageWorkspaceStore(projectRoot, "tools"),
+    writePackageWorkspace: true,
+    writeProjectFiles: false,
+  });
+  // Skip the heavy isolated `npx tsx --test` QA runner: the dedicated provider test suite
+  // already proves the generated source's runtime behavior. This smoke focuses on HTTP
+  // wiring and registry visibility.
+  const fakeQa = {
+    async run() {
+      return {
+        ok: true,
+        summary: "Generated Telegram tool QA passed (fake runner).",
+        checks: [
+          "isolated targeted generated tool tests: pass (fake)",
+          "isolated TypeScript build: pass (fake)",
+          "fake Telegram getUpdates served one update",
+          "fake Telegram sendMessage delivered chunked answer with Continue thread inline keyboard",
+        ],
+      };
+    },
+  };
+  const workflow = new ToolBuildWorkflow(
+    toolBuildRequestStore,
+    builder,
+    fakeQa,
+    new MetadataToolRegistrar(toolMetadataStore),
+  );
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolBuildRequestStore,
+    toolMetadataStore,
+    toolBuildWorkflow: workflow,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+
+    const createResponse = await fetch(`${baseUrl}/api/tool-build-requests`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        capability: "channel.telegram.family-assistant",
+        displayName: "Family Telegram Assistant Bot",
+        desiredToolName: "generated.telegram.family-assistant-bot",
+        startupMode: "always-on",
+        credentialHandles: ["secret.telegram.family.bot.token"],
+        reason:
+          "Create an always-on Telegram bot integration for a second bot. " +
+          "It should poll Telegram getUpdates, forward inbound text from allowed users, " +
+          "send sendMessage replies, split long answers, and attach a Continue thread inline keyboard. " +
+          "The bot token is provided via secret handle secret.telegram.family.bot.token (no real token in this request).",
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+    const created = (await createResponse.json()) as { request: { id: string; contract: { toolName: string } } };
+    const buildId = created.request.id;
+    assert.equal(created.request.contract.toolName, "generated.telegram.family-assistant-bot");
+
+    const runResponse = await fetch(
+      `${baseUrl}/api/tool-build-requests/${encodeURIComponent(buildId)}/run`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.equal(runResponse.status, 200);
+    const runResult = (await runResponse.json()) as {
+      request: { status: string; registeredToolName?: string };
+      registeredToolName?: string;
+    };
+    assert.equal(runResult.request.status, "registered");
+    assert.equal(runResult.registeredToolName, "generated.telegram.family-assistant-bot");
+
+    const listResponse = await fetch(`${baseUrl}/api/tools`);
+    const list = (await listResponse.json()) as {
+      tools: Array<{ name: string; startupMode?: string; capabilities?: string[]; source?: string }>;
+    };
+    const generated = list.tools.find((tool) => tool.name === "generated.telegram.family-assistant-bot");
+    const reference = list.tools.find((tool) => tool.name === "channel.telegram.bot");
+    assert.ok(generated, "/api/tools must expose the new generated Telegram bot");
+    assert.equal(generated!.startupMode, "always-on");
+    assert.ok(generated!.capabilities?.includes("provider:telegram"));
+    assert.equal(generated!.source, "generated");
+    assert.ok(reference, "built-in channel.telegram.bot must remain available alongside the generated bot");
+    assert.equal(reference!.source, "builtin");
+
+    // The /run endpoint does not emit the `tool_build.registered` audit (that's a
+    // worker-only path); we instead assert the registry visibility above and confirm no
+    // real Telegram token shape leaks through any audit metadata that DID get written.
+    const auditList = await auditEventStore.list();
+    const seenAuditJson = JSON.stringify(auditList);
+    assert.ok(
+      !/\b\d{8,}:[A-Za-z0-9_-]{20,}\b/.test(seenAuditJson),
+      "audit metadata must not contain anything that looks like a real Telegram bot token",
+    );
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+    await rm(projectRoot, { recursive: true, force: true });
   }
 });
 

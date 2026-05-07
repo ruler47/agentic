@@ -457,6 +457,23 @@ Implementation tasks:
   path the manual PATCH/`/run` endpoints already use, so a background-driven
   registration flips matching `ToolReworkWait` records to `promoted` automatically. The
   worker also joins a pending tick instead of double-claiming when ticks overlap. DONE.
+- Generated Telegram adapter: `TelegramBotToolBuildProvider`
+  (`src/tools/telegramBotToolBuildProvider.ts`) recognizes Telegram bot integration
+  requests in the Tool Build matrix and emits an isolated source-bundle package under
+  `tools/<system-name>/<version>` that implements the Telegram Bot API surface
+  (`getUpdates`, `sendMessage`, inline `Continue thread` keyboard, ack) on top of the
+  existing neutral `/api/tool-services/:name/inbound` and `/outbox` endpoints. The
+  generated tool resolves its bot token exclusively through
+  `context.resolveSecret(handle)`, declares allowed user/chat allowlists in its
+  settings schema, and runs as `always-on` under the existing service supervisor — so
+  a second Telegram bot can coexist with the built-in `channel.telegram.bot`
+  reference without replacing it. The shared deterministic behavior reviewer keeps
+  rejecting Telegram-shaped requests that only produce a provider-neutral bridge.
+  DONE for the build/QA/registration handoff. Remaining work: rework the built-in
+  `channel.telegram.bot` into the first generated provider once parity is full,
+  expose the Telegram allowlist settings inline in the Channels UI, and ship the
+  generic media/file/voice intake layer that all generated provider adapters can
+  share.
 - Auto retry orchestrator: `ToolReworkAutoRetryCoordinator`
   (`src/tools/toolReworkAutoRetryCoordinator.ts`) hangs off
   `ToolImprovementCoordinator.notifyBuildRegistered` through an `onWaitPromoted` hook.

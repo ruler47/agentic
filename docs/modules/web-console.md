@@ -1064,6 +1064,30 @@ Telegram is the first reference always-on tool. The built-in `channel.telegram.b
 module is visible in the same lifecycle UI as any future generated bot/listener, not
 hidden in logs.
 
+A second Telegram bot is onboarded as a generated isolated tool through Tool Builder,
+not as a fork of the built-in module. Submit a Tool Build request with:
+
+- `displayName`: human-readable bot name (for example, "Family Telegram Assistant Bot");
+- `desiredToolName`: stable system name (for example, `generated.telegram.family-assistant-bot`);
+- `startupMode`: `always-on`;
+- `credentialHandles`: a stored secret handle pointing at the bot token (the request
+  body must NOT contain the raw token);
+- `reason`: a natural-language description that mentions Telegram, polling
+  (`getUpdates`), sending (`sendMessage`), splitting long messages, the inline
+  `Continue thread` button, and any allowed-user constraints.
+
+`TelegramBotToolBuildProvider` claims the request before the generic service provider,
+writes a portable source-bundle package under `tools/<system-name>/<version>` that
+implements the Telegram Bot API surface on top of the existing
+`/api/tool-services/:name/inbound` and `/outbox` endpoints, and registers the new
+bot as `always-on` so the Channels lifecycle UI lists it next to the built-in
+reference. Allowed Telegram user IDs / usernames / chat IDs live in the generated
+tool's `settingsSchema` (operators edit them through the Tools detail UI without
+re-building). The built-in `channel.telegram.bot` keeps running until the
+generated `generated.telegram.*` adapters reach feature parity (artifacts, voice
+intake, etc.) — both bots can run side by side as separate provider integrations
+with separate secret handles.
+
 The Tool Builder must not promote a provider-neutral bridge as if it were a complete
 provider adapter. If a request explicitly asks for provider behavior such as Telegram Bot
 API polling (`getUpdates`) and outbound delivery (`sendMessage`), the generated package
