@@ -347,7 +347,14 @@ changed, which QA/reviews promoted it, and which package/migrations are linked b
 activating or rolling back a generated version. Tool cards also show the matching
 always-on service runtime when one exists, including running/stopped state and heartbeat
 age, so the operator does not need to open Channels just to see whether a bot/listener is
-active.
+active. The same service panel exposes start, stop, restart, and heartbeat actions from
+the tool detail view so always-on tools do not require a separate provider-specific page
+for basic lifecycle operations.
+
+The Models page resolves tier policy from selectable model IDs rather than free-text
+comma fields. Each tier can build an ordered fallback list from the discovered local
+OpenAI-compatible `/models` catalog plus manually registered local/remote providers; saved
+model IDs that are not currently reachable stay visible as removable fallback chips.
 
 `GET /api/tool-build-requests/:id` and `PATCH /api/tool-build-requests/:id` provide the
 builder lifecycle handoff. Builder, QA, and Registrar agents can mark a request as
@@ -787,10 +794,21 @@ Trace Lab:
   that produced them, while the context panel keeps linked artifact references visible.
 - Run Workspace and Conversation Detail render sanitized Markdown for final answers and
   messages. Bold text, Markdown links, and application-local artifact URLs are clickable;
-  image artifacts get compact previews where space allows. Text-like artifacts show a
-  short content preview when `contentPreview` is available, while binary/PDF/source
+  image artifacts get compact previews where space allows and open in a lightbox with
+  zoom, previous/next navigation, and keyboard close/navigation. Text-like artifacts show
+  a short content preview when `contentPreview` is available, while binary/PDF/source
   artifacts show typed preview tiles instead of only a path and filename. Artifact QA
-  badges are shown when `quality` metadata exists.
+  badges are shown when `quality` metadata exists. Trace Lab inspector also renders
+  artifact references from the selected span payload so screenshot/file evidence is not
+  hidden in raw JSON.
+- Trace Lab graph mode uses explicit arrowheads for parent/dependency edges. Hovering a
+  node highlights both incoming and outgoing connected edges, dims unrelated edges/cards,
+  and renders the highlighted edges last so they sit visually above the rest. Clicking a
+  node pins the same highlight until the operator clicks the graph canvas. Failed-edge
+  arrows stay red even without hover. The MiniMap should show all nodes with
+  status-colored dots. Trace mode (`Timeline`, `Graph`, `Logs`) and graph layout
+  (`category`, `depth`) persist in local storage so refresh/navigation keeps the
+  operator's last inspection mode.
 - PNG browser screenshots are visually and semantically QA-checked before storage.
   Near-empty screenshots, loader/blocker browser evidence, and task-mismatched browser
   context are emitted as failed artifact trace events instead of being presented as useful
@@ -1076,17 +1094,19 @@ not as a fork of the built-in module. Submit a Tool Build request with:
   (`getUpdates`), sending (`sendMessage`), splitting long messages, the inline
   `Continue thread` button, and any allowed-user constraints.
 
-`TelegramBotToolBuildProvider` claims the request before the generic service provider,
-writes a portable source-bundle package under `tools/<system-name>/<version>` that
-implements the Telegram Bot API surface on top of the existing
-`/api/tool-services/:name/inbound` and `/outbox` endpoints, and registers the new
-bot as `always-on` so the Channels lifecycle UI lists it next to the built-in
-reference. Allowed Telegram user IDs / usernames / chat IDs live in the generated
-tool's `settingsSchema` (operators edit them through the Tools detail UI without
-re-building). The built-in `channel.telegram.bot` keeps running until the
-generated `generated.telegram.*` adapters reach feature parity (artifacts, voice
-intake, etc.) — both bots can run side by side as separate provider integrations
-with separate secret handles.
+`MessagingServiceToolBuildProvider` claims concrete messaging-provider requests before
+the generic service provider. It is intentionally a provider-family builder, not a
+special provider path in the run runtime: each supported provider spec must generate a
+portable source-bundle package under `tools/<system-name>/<version>` and communicate with
+Agentic only through the neutral `/api/tool-services/:name/inbound` and `/outbox`
+endpoints. The first provider spec is Telegram Bot API, so requests that name that API produce a real
+`getUpdates`/`sendMessage` adapter with long-message splitting and the inline
+`Continue thread` button. The service registers as `always-on`, appears in Tools/Channels
+lifecycle UI, and stores provider allowlists in the generated tool `settingsSchema`
+(operators edit them through the Tools detail UI without rebuilding). The built-in
+`channel.telegram.bot` remains only as a reference adapter until generated packages reach
+feature parity (artifacts, voice intake, etc.); both can run side by side with separate
+secret handles.
 
 The Tool Builder must not promote a provider-neutral bridge as if it were a complete
 provider adapter. If a request explicitly asks for provider behavior such as Telegram Bot

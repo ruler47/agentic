@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TelegramBotToolBuildProvider } from "../src/tools/telegramBotToolBuildProvider.js";
+import { MessagingServiceToolBuildProvider } from "../src/tools/messagingServiceToolBuildProvider.js";
 import {
   DeterministicToolBehaviorReviewer,
   DeterministicToolCodeReviewer,
@@ -28,8 +28,8 @@ function buildRequest(input: ToolBuildRequestInput): ToolBuildRequest {
   };
 }
 
-test("TelegramBotToolBuildProvider claims Telegram-shaped requests and rejects unrelated ones", () => {
-  const provider = new TelegramBotToolBuildProvider();
+test("MessagingServiceToolBuildProvider claims Telegram Bot API requests and rejects unrelated ones", () => {
+  const provider = new MessagingServiceToolBuildProvider();
 
   const telegramRequest = buildRequest({
     capability: "channel.telegram.family-assistant",
@@ -58,8 +58,8 @@ test("TelegramBotToolBuildProvider claims Telegram-shaped requests and rejects u
   assert.equal(provider.canBuild(apiRequest), false);
 });
 
-test("TelegramBotToolBuildProvider produces an isolated source bundle with Telegram Bot API surface", () => {
-  const provider = new TelegramBotToolBuildProvider();
+test("MessagingServiceToolBuildProvider produces an isolated source bundle with Telegram Bot API surface", () => {
+  const provider = new MessagingServiceToolBuildProvider();
   const request = buildRequest({
     capability: "channel.telegram.family-assistant",
     displayName: "Family Telegram Assistant Bot",
@@ -137,8 +137,8 @@ test("TelegramBotToolBuildProvider produces an isolated source bundle with Teleg
   assert.deepEqual(output.packageManifest!.requiredSecretHandles, output.requiredSecretHandles);
 });
 
-test("TelegramBotToolBuildProvider runs cleanly inside an isolated tsx workspace against a fake Telegram server", async () => {
-  const provider = new TelegramBotToolBuildProvider();
+test("MessagingServiceToolBuildProvider runs cleanly inside an isolated tsx workspace against a fake Telegram server", async () => {
+  const provider = new MessagingServiceToolBuildProvider();
   const request = buildRequest({
     capability: "channel.telegram.family-assistant",
     displayName: "Family Telegram Assistant Bot",
@@ -222,12 +222,12 @@ test("DeterministicToolBehaviorReviewer rejects a provider-neutral bridge for Te
   assert.equal(behaviorReview.decision, "needs_revision");
   assert.ok(
     behaviorReview.findings.some((finding) => /Telegram/.test(finding)),
-    "behavior reviewer must call out missing Telegram-specific behavior",
+    "behavior reviewer must call out missing named-provider behavior",
   );
 });
 
 test("DeterministicToolBehaviorReviewer accepts a generated Telegram adapter with provider QA evidence", async () => {
-  const provider = new TelegramBotToolBuildProvider();
+  const provider = new MessagingServiceToolBuildProvider();
   const request = buildRequest({
     capability: "channel.telegram.family-assistant",
     displayName: "Family Telegram Assistant Bot",

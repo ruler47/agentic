@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { useConversation, useCreateContinuationRun, useDeleteConversation } from "@/api/conversations";
 import { useRuns } from "@/api/runs";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
 import type { ConversationThreadMessage } from "@/api/types";
@@ -174,7 +175,9 @@ function MessageBubble({ message }: { message: ConversationThreadMessage }) {
         </span>
         <span className="text-[10px] text-app-text-muted">{formatRelative(message.createdAt)}</span>
       </div>
-      <p className="mt-1 whitespace-pre-wrap">{message.content}</p>
+      <div className="mt-1">
+        <MarkdownContent value={message.content} />
+      </div>
     </article>
   );
 }

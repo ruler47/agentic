@@ -3145,9 +3145,19 @@ async function executeRun(
   });
 
   try {
+    const [groupProfile, requesterUser] = await Promise.all([
+      options.groupProfileStore?.get().catch(() => undefined) ?? Promise.resolve(undefined),
+      run?.requesterUserId
+        ? getUserStore(options).get(run.requesterUserId).catch(() => undefined)
+        : Promise.resolve(undefined),
+    ]);
     const result = await options.agent.run(task, {
       inputArtifacts,
       threadContext: context.threadContext,
+      instanceContext: {
+        groupProfile,
+        requesterUser,
+      },
       runId: id,
       instanceId: run?.instanceId ?? "group-local",
       requesterUserId: run?.requesterUserId ?? "user-admin",

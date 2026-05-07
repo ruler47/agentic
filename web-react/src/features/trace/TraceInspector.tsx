@@ -1,6 +1,8 @@
 import type { TraceNode } from "@/features/trace/buildTraceNodes";
 import { modelTierForNode } from "@/features/trace/buildTraceNodes";
+import { ArtifactGallery } from "@/components/ArtifactPreview";
 import { GenericBadge } from "@/components/StatusBadge";
+import { readArtifactRefs } from "@/features/investigations/buildSpanInvestigationDraft";
 import { formatDuration, formatRelative, truncate } from "@/lib/format";
 import type { ToolReworkWaitRecord } from "@/api/types";
 import {
@@ -16,11 +18,12 @@ import { Link } from "react-router-dom";
 
 type TraceInspectorProps = {
   node: TraceNode | undefined;
+  runId?: string;
   reworkWait: ToolReworkWaitRecord | undefined;
   onCreateInvestigation?: (node: TraceNode) => void;
 };
 
-export function TraceInspector({ node, reworkWait, onCreateInvestigation }: TraceInspectorProps) {
+export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation }: TraceInspectorProps) {
   const resume = useResumeReworkWait();
   const createRetry = useCreateRetryRunForWait();
   const autoRetry = useAutoRetryReworkWait();
@@ -37,6 +40,7 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
   const selfCheck = readSelfCheck(node.payload);
   const memoryHits = readMemoryEntries(node.payload);
   const toolEvidence = readToolEvidence(node.payload);
+  const artifacts = runId ? readArtifactRefs(node.payload, runId) : [];
   const tier = modelTierForNode(node);
 
   return (
@@ -63,16 +67,16 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
       </header>
 
       <Section title="Output / detail">
-        <p className="whitespace-pre-wrap text-[11px]">
+        <p className="whitespace-pre-wrap break-words text-[11px]">
           {truncate(node.detail ?? "—", 1200)}
         </p>
       </Section>
 
       {node.dependencySpanIds.length > 0 ? (
         <Section title="Dependency spans">
-          <ul className="text-[11px] font-mono text-app-text-muted">
+          <ul className="min-w-0 text-[11px] font-mono text-app-text-muted">
             {node.dependencySpanIds.map((spanId) => (
-              <li key={spanId}>{spanId}</li>
+              <li key={spanId} className="break-all">{spanId}</li>
             ))}
           </ul>
         </Section>
@@ -87,12 +91,12 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
             {callFrame.parentSpanId ? <Field label="caller span">{callFrame.parentSpanId}</Field> : null}
           </dl>
           {callFrame.localTask ? (
-            <p className="mt-2 whitespace-pre-wrap text-[11px]">
+            <p className="mt-2 whitespace-pre-wrap break-words text-[11px]">
               <span className="text-app-text-muted">Local task:</span> {truncate(callFrame.localTask, 360)}
             </p>
           ) : null}
           {callFrame.outputContract ? (
-            <p className="mt-1 whitespace-pre-wrap text-[11px]">
+            <p className="mt-1 whitespace-pre-wrap break-words text-[11px]">
               <span className="text-app-text-muted">Output contract:</span> {truncate(callFrame.outputContract, 360)}
             </p>
           ) : null}
@@ -111,15 +115,15 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
                 ].join(" ")}
               >
                 <span className="font-mono text-[10px] uppercase">{check.ok ? "pass" : "fail"}</span>
-                <span>{check.name ?? "check"}</span>
+                  <span className="min-w-0 break-words">{check.name ?? "check"}</span>
                 {check.reason ? (
-                  <span className="text-app-text-muted">— {truncate(check.reason, 120)}</span>
+                  <span className="min-w-0 break-words text-app-text-muted">— {truncate(check.reason, 120)}</span>
                 ) : null}
               </li>
             ))}
           </ul>
           {selfCheck.warnings && selfCheck.warnings.length > 0 ? (
-            <p className="mt-2 text-[11px] text-app-warning">
+            <p className="mt-2 whitespace-pre-wrap break-words text-[11px] text-app-warning">
               {selfCheck.warnings.map((warning) => truncate(warning, 200)).join("\n")}
             </p>
           ) : null}
@@ -133,7 +137,7 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
               <li key={index}>
                 <p className="font-medium">{memory.title}</p>
                 {memory.summary ? (
-                  <p className="text-app-text-muted">{truncate(memory.summary, 160)}</p>
+                  <p className="break-words text-app-text-muted">{truncate(memory.summary, 160)}</p>
                 ) : null}
               </li>
             ))}
@@ -143,7 +147,22 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
 
       {toolEvidence ? (
         <Section title="Tool evidence">
-          <pre className="whitespace-pre-wrap text-[11px] text-app-text-muted">{toolEvidence}</pre>
+          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{toolEvidence}</pre>
+        </Section>
+      ) : null}
+
+      {artifacts.length > 0 ? (
+        <Section title={`Artifacts (${artifacts.length})`}>
+          <ArtifactGallery
+            compact
+            artifacts={artifacts.map((artifact, index) => ({
+              id: artifact.id ?? `${node.spanId}-artifact-${index}`,
+              filename: artifact.filename ?? artifact.id ?? `artifact-${index + 1}`,
+              url: artifact.url ?? "",
+              mimeType: artifact.mimeType,
+              kind: "output",
+            }))}
+          />
         </Section>
       ) : null}
 
@@ -152,7 +171,7 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
           <p className="text-[10px] font-semibold uppercase tracking-wider text-app-warning">
             Tool rework wait
           </p>
-          <p className="mt-1 font-mono">{reworkWait.id}</p>
+          <p className="mt-1 break-all font-mono">{reworkWait.id}</p>
           <p className="mt-1">
             Status: <span className="font-mono">{reworkWait.status}</span>
             {reworkWait.toolName ? (
@@ -165,7 +184,7 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
             ) : null}
           </p>
           {reworkWait.reason ? (
-            <p className="mt-1 text-app-text-muted">{truncate(reworkWait.reason, 220)}</p>
+            <p className="mt-1 break-words text-app-text-muted">{truncate(reworkWait.reason, 220)}</p>
           ) : null}
           {reworkWait.retryRunId ? (
             <p className="mt-1 text-app-text-muted">
@@ -246,9 +265,9 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-md border border-app-border bg-app-surface-2 p-3">
+    <section className="min-w-0 rounded-md border border-app-border bg-app-surface-2 p-3">
       <h4 className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">{title}</h4>
-      <div className="mt-1.5">{children}</div>
+      <div className="mt-1.5 min-w-0">{children}</div>
     </section>
   );
 }
@@ -257,7 +276,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return (
     <div>
       <dt className="text-[10px] uppercase tracking-wider text-app-text-muted">{label}</dt>
-      <dd className="font-mono">{children}</dd>
+      <dd className="break-words font-mono">{children}</dd>
     </div>
   );
 }

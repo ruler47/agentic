@@ -249,6 +249,47 @@ test("UniversalAgent answers direct tasks without creating subtasks", async () =
   }
 });
 
+test("UniversalAgent injects group and requester context into runtime prompts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new CapturingFakeLlm();
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+
+  try {
+    await agent.run("Забронируй столик на вечер", {
+      instanceContext: {
+        groupProfile: {
+          id: "group-local",
+          instanceId: "instance-local",
+          name: "Family Ops",
+          description: "Family living in Spain.",
+          preferences: { city: "Malaga", language: "ru" },
+          createdAt: new Date(0).toISOString(),
+          updatedAt: new Date(0).toISOString(),
+        },
+        requesterUser: {
+          id: "user-admin",
+          displayName: "Admin",
+          role: "admin",
+          roles: ["admin"],
+          identities: [],
+          createdAt: new Date(0).toISOString(),
+          updatedAt: new Date(0).toISOString(),
+        },
+      },
+    });
+
+    const joined = fakeLlm.prompts.join("\n\n---\n\n");
+    assert.match(joined, /Instance and requester context/);
+    assert.match(joined, /Group profile: Family Ops/);
+    assert.match(joined, /city: Malaga/);
+    assert.match(joined, /Requester: Admin/);
+    assert.match(joined, /Use this context as default task context/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent records a tool build request when a required capability is missing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));

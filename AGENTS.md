@@ -73,6 +73,10 @@ policies without leaking context.
   artifacts.
 - Model tier settings must support local OpenAI-compatible endpoints and remote providers
   such as the OpenAI API, with remote API keys stored through secret handles.
+- In the React Models UI, tier model selection should use discovered local catalog and
+  manually registered provider model IDs as selectable options, not raw comma-separated
+  text fields. Saved-but-currently-unreachable IDs should remain visible as fallback
+  chips.
 
 ## Local Model
 
@@ -382,15 +386,16 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/tools/telegramBotServiceTool.ts](src/tools/telegramBotServiceTool.ts) - reference
   provider module for the generic always-on runtime: polls Telegram, forwards normalized
   inbound events, delivers neutral outbox events, and acknowledges provider delivery.
-- [src/tools/telegramBotToolBuildProvider.ts](src/tools/telegramBotToolBuildProvider.ts)
-  - Tool Build provider that recognizes Telegram bot integration requests and emits an
-  isolated source-bundle package implementing the same neutral inbound/outbox contract
-  as `channel.telegram.bot`. The generated module exports `tool`,
-  `runTelegramBotServiceCycle`, and `splitTelegramMessage`; it never imports Agentic
-  internals and resolves the Telegram bot token through `context.resolveSecret(handle)`.
-  Registered BEFORE `GenericServiceToolBuildProvider` in main.ts so Telegram-shaped
-  requests get a real Telegram Bot API adapter (with `getUpdates` / `sendMessage` /
-  inline keyboard / ack) instead of a provider-neutral bridge.
+- [src/tools/messagingServiceToolBuildProvider.ts](src/tools/messagingServiceToolBuildProvider.ts)
+  - Provider-family Tool Build provider for always-on messaging service adapters. It
+  keeps provider specifics inside generated isolated source bundles while the core
+  runtime sees only the neutral service contract. The first provider spec is Telegram
+  Bot API; its generated module exports `tool`, `runTelegramBotServiceCycle`, and
+  `splitTelegramMessage`, never imports Agentic internals, and resolves the token
+  through `context.resolveSecret(handle)`. Registered BEFORE
+  `GenericServiceToolBuildProvider` in main.ts so provider requests that name Telegram
+  Bot API get a concrete messaging adapter (with `getUpdates` / `sendMessage` / inline
+  keyboard / ack) instead of a provider-neutral bridge.
 - [src/tools/toolBuildProviders.ts](src/tools/toolBuildProviders.ts) - provider-backed
   generated tool source writer, including browser screenshot, document/PDF artifact, and
   generic HTTP API and always-on service providers, plus isolated command QA runner and
@@ -473,6 +478,7 @@ Web/Telegram/API request
   -> resolve instance, requester, and permissions
   -> attach compact thread summary when continuing
   -> create one run
+  -> inject compact group profile and requester context
   -> retrieve scoped global/group/user memory
   -> execute agent DAG and tools
   -> return answer or create auditable outbound action
@@ -530,14 +536,14 @@ For documentation-only changes:
   investigation -> coordinator nudges scheduler -> worker registers -> linked wait flips
   to `promoted` automatically -> retry-run endpoint becomes reachable, all without a
   manual PATCH and with secret-shaped audit metadata redacted.
-- `tests/telegramBotToolBuildProvider.test.ts` covers the Telegram-specific Tool Build
-  provider: it claims Telegram-shaped requests (and skips browser/API ones), produces an
-  isolated source-bundle with `getUpdates`/`sendMessage`/inline keyboard/ack, declares
-  required secret handles + allowlist settings + storage contract, runs the generated
-  test source inside a temp workspace against a fake Telegram and fake Agentic outbox,
-  proves long-message splitting + Continue thread on the final chunk, and asserts the
-  shared deterministic behavior reviewer rejects a generic bridge for the same request
-  while accepting the new Telegram adapter when QA evidence mentions Telegram.
+- `tests/messagingServiceToolBuildProvider.test.ts` covers the messaging-service provider
+  family builder: it claims provider requests that name Telegram Bot API (and skips browser/API
+  ones), produces an isolated source-bundle with `getUpdates`/`sendMessage`/inline
+  keyboard/ack, declares required secret handles + allowlist settings + storage contract,
+  runs the generated test source inside a temp workspace against a fake provider and fake
+  Agentic outbox, proves long-message splitting + Continue thread on the final chunk, and asserts the
+  shared deterministic behavior reviewer rejects a generic bridge for the same provider
+  request while accepting the new adapter when QA evidence covers the named provider API.
 - `tests/toolReworkAutoRetryCoordinator.test.ts` covers the auto-retry orchestrator:
   promoted wait creates a linked retry run, non-promoted/cancelled/orphan waits do not,
   idempotency on second call, disabled policy stays manual, max-depth enforcement walks
@@ -618,14 +624,14 @@ For documentation-only changes:
   The Approvals page derives pending service restart decisions from that same state and
   uses normal lifecycle actions to approve/reject. Durable external process/webhook
   runners are still a roadmap item.
-- A second Telegram bot must be onboarded as a generated isolated package through
-  `TelegramBotToolBuildProvider` (POST a Tool Build request with a Telegram-flavored
-  description and a secret handle for the bot token). The generated package writes
-  under `tools/<system-name>/<version>` and runs alongside the built-in
-  `channel.telegram.bot` reference rather than replacing it. Do not introduce
-  Telegram-specific branches into the core run orchestration or write the generated
-  source to `src/tools/generated`; the lifecycle goes through Tool Builder + the
-  package workspace + the existing always-on supervisor.
+- New chat/channel integrations must be onboarded as generated isolated packages through
+  the messaging-service provider family (POST a Tool Build request with provider docs,
+  behavior, and secret handles). Telegram is only the first provider spec. Generated
+  packages write under `tools/<system-name>/<version>` and run alongside any built-in
+  reference adapters rather than replacing them. Do not introduce provider-specific
+  branches into the core run orchestration or write generated source to
+  `src/tools/generated`; the lifecycle goes through Tool Builder + the package workspace
+  + the existing always-on supervisor.
 - The built-in `channel.telegram.bot` module is a reference always-on provider tool. It
   resolves `secret.telegram.bot.token` (or `TELEGRAM_BOT_SECRET_HANDLE`), polls Telegram
   updates, forwards text messages to the generic inbound endpoint with provider user/chat
@@ -694,9 +700,17 @@ For documentation-only changes:
   Artifact list lines such as `- file.png: /api/runs/.../artifacts/...` should remain
   clickable download links; nested bullet lists, basic emphasis, and common inline TeX
   symbols such as `$\rightarrow$` should render cleanly.
+- Image artifacts in Run Workspace, Conversation Detail, Artifacts, and Trace Lab should
+  render compact thumbnails and open in a lightbox with zoom, previous/next, and close
+  controls instead of appearing only as raw artifact paths.
 - Trace Lab graph edges encode direct `parentSpanId` calls and additional
   `payload.dependencySpanIds` dependencies. Edges that target failed spans must stay red
   even without hover so failure paths remain visible.
+- Trace Lab graph hover should highlight all incoming/outgoing edges for the hovered
+  node, preserve arrowheads, and keep MiniMap nodes visible.
+- Trace Lab selected mode and graph layout are user preferences. Persist them in local
+  storage so refresh and route changes do not reset an operator's current inspection
+  workflow.
 - Trace Lab graph mode supports both category columns and call-depth columns. Preserve
   `parentSpanId` and dependency payloads so both layouts can draw direct arrows and
   dependency arrows correctly.

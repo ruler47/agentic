@@ -315,6 +315,8 @@ function MemoryEditor({ memory }: { memory: SkillMemoryEntry }) {
 
 function ReviewQueuePanel({ reviews }: { reviews: MemoryReviewEntry[] }) {
   const update = useUpdateMemory();
+  const validReviews = reviews.filter((entry) => entry.memory);
+  const invalidCount = reviews.length - validReviews.length;
   return (
     <article className="rounded-[var(--radius-card)] border border-app-warning/40 bg-app-warning-soft p-4 text-xs">
       <h3 className="text-sm font-semibold text-app-warning">Review queue</h3>
@@ -323,7 +325,7 @@ function ReviewQueuePanel({ reviews }: { reviews: MemoryReviewEntry[] }) {
         reject to keep them out of agent prompts.
       </p>
       <div className="mt-3 grid gap-2 md:grid-cols-2">
-        {reviews.map((entry) => (
+        {validReviews.map((entry) => (
           <article
             key={entry.memory.id}
             className="rounded-md border border-app-warning/30 bg-app-surface-2 p-3"
@@ -362,6 +364,15 @@ function ReviewQueuePanel({ reviews }: { reviews: MemoryReviewEntry[] }) {
             </div>
           </article>
         ))}
+        {invalidCount > 0 ? (
+          <article className="rounded-md border border-app-danger/30 bg-app-danger-soft p-3 text-[11px] text-app-danger">
+            {invalidCount} review queue entr{invalidCount === 1 ? "y references" : "ies reference"} a memory that is no
+            longer available. Refreshing or rejecting the stale proposal from the backend will clear it.
+          </article>
+        ) : null}
+        {validReviews.length === 0 && invalidCount === 0 ? (
+          <p className="text-[11px] text-app-text-muted">No proposed memories are waiting.</p>
+        ) : null}
       </div>
     </article>
   );

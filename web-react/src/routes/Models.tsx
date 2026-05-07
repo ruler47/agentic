@@ -11,6 +11,7 @@ import {
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
 import type { ModelProviderInput, ModelProviderRecord, ModelTier, ModelTierSettings } from "@/api/types";
+import type { ModelCatalogResponse } from "@/api/models";
 
 const TIERS: ModelTier[] = ["S", "M", "L", "XL"];
 
@@ -25,11 +26,15 @@ export function ModelsPage() {
   const tiers = useModelTiers();
   const providers = useModelProviders();
   const catalog = useModelCatalog();
+  const chatModelOptions = useMemo(
+    () => collectChatModelOptions(catalog.data, providers.data),
+    [catalog.data, providers.data],
+  );
 
   return (
     <section className="flex flex-col gap-4">
       <CatalogPanel catalog={catalog.data} />
-      <TiersPanel tiers={tiers.data} loading={tiers.isLoading} />
+      <TiersPanel tiers={tiers.data} loading={tiers.isLoading} modelOptions={chatModelOptions} />
       <ProvidersPanel providers={providers.data} loading={providers.isLoading} />
     </section>
   );
@@ -109,12 +114,14 @@ function CatalogPanel({ catalog }: { catalog: ReturnType<typeof useModelCatalog>
 function TiersPanel({
   tiers,
   loading,
+  modelOptions,
 }: {
   tiers: ModelTierSettings[] | undefined;
   loading: boolean;
+  modelOptions: ModelOption[];
 }) {
   const save = useSaveModelTiers();
-  const [draft, setDraft] = useState<Record<ModelTier, string>>({ S: "", M: "", L: "", XL: "" });
+  const [draft, setDraft] = useState<Record<ModelTier, string[]>>({ S: [], M: [], L: [], XL: [] });
   const [maxAttempts, setMaxAttempts] = useState<Record<ModelTier, number>>({ S: 2, M: 2, L: 2, XL: 2 });
   const [escalate, setEscalate] = useState<Record<ModelTier, boolean>>({
     S: true, M: true, L: true, XL: true,
@@ -122,11 +129,11 @@ function TiersPanel({
 
   useEffect(() => {
     if (!tiers) return;
-    const nextDraft: Record<ModelTier, string> = { S: "", M: "", L: "", XL: "" };
+    const nextDraft: Record<ModelTier, string[]> = { S: [], M: [], L: [], XL: [] };
     const nextAttempts: Record<ModelTier, number> = { S: 2, M: 2, L: 2, XL: 2 };
     const nextEscalate: Record<ModelTier, boolean> = { S: true, M: true, L: true, XL: true };
     for (const tier of tiers) {
-      nextDraft[tier.tier] = tier.models.join(", ");
+      nextDraft[tier.tier] = tier.models;
       nextAttempts[tier.tier] = tier.maxAttempts;
       nextEscalate[tier.tier] = tier.escalateOnFailure;
     }
@@ -140,10 +147,7 @@ function TiersPanel({
     save.mutate({
       tiers: TIERS.map((tier) => ({
         tier,
-        models: draft[tier]
-          .split(",")
-          .map((value) => value.trim())
-          .filter(Boolean),
+        models: draft[tier].map((value) => value.trim()).filter(Boolean),
         maxAttempts: maxAttempts[tier],
         escalateOnFailure: escalate[tier],
       })),
@@ -156,9 +160,10 @@ function TiersPanel({
         <div>
           <h2 className="text-base font-semibold">Model tier policy</h2>
           <p className="mt-1 text-xs text-app-text-muted">
-            Comma-separated fallback list per tier. The runtime tries them in order with
-            up to <code>maxAttempts</code> retries; <code>escalate</code> moves to the next
-            tier on persistent failure.
+            Select fallback models from discovered local `/models` responses and manually
+            registered providers. The runtime tries them in order with up to{" "}
+            <code>maxAttempts</code> retries; <code>escalate</code> moves to the next tier
+            on persistent failure.
           </p>
         </div>
         {save.isSuccess ? (
@@ -168,25 +173,24 @@ function TiersPanel({
       {loading ? (
         <p className="text-xs text-app-text-muted">Loading…</p>
       ) : (
-        <form onSubmit={submit} className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <form onSubmit={submit} className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-4">
           {TIERS.map((tier) => (
             <fieldset
               key={tier}
-              className="flex flex-col gap-2 rounded-md border border-app-border bg-app-surface-2 p-3 text-xs"
+              className="min-w-0 overflow-hidden rounded-md border border-app-border bg-app-surface-2 p-3 text-xs"
             >
-              <legend className="px-1 text-sm font-semibold">Tier {tier}</legend>
-              <p className="text-[11px] text-app-text-muted">{TIER_DESCRIPTION[tier]}</p>
+              <div className="flex min-w-0 flex-col gap-2">
+              <legend className="px-1 text-sm font-semibold leading-tight">Tier {tier}</legend>
+              <p className="break-words text-[11px] text-app-text-muted">{TIER_DESCRIPTION[tier]}</p>
               <label className="flex flex-col gap-0.5">
                 <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
-                  models (comma-separated)
+                  fallback models
                 </span>
-                <input
+                <TierModelSelector
+                  tier={tier}
                   value={draft[tier]}
-                  onChange={(event) =>
-                    setDraft((prev) => ({ ...prev, [tier]: event.target.value }))
-                  }
-                  placeholder="model-id, fallback-id"
-                  className="rounded border border-app-border bg-app-surface px-2 py-1 font-mono outline-none focus:border-app-accent/60"
+                  modelOptions={mergeCurrentModelOptions(modelOptions, draft[tier])}
+                  onChange={(models) => setDraft((prev) => ({ ...prev, [tier]: models }))}
                 />
               </label>
               <label className="flex items-center justify-between gap-2">
@@ -214,9 +218,10 @@ function TiersPanel({
                 />
                 <span>Escalate on failure</span>
               </label>
+              </div>
             </fieldset>
           ))}
-          <div className="md:col-span-2 xl:col-span-4 flex items-center justify-end gap-2">
+          <div className="flex items-center justify-end gap-2 lg:col-span-2 2xl:col-span-4">
             {save.isError ? (
               <p className="text-[11px] text-app-danger">{save.error.message}</p>
             ) : null}
@@ -232,6 +237,118 @@ function TiersPanel({
       )}
     </article>
   );
+}
+
+type ModelOption = {
+  id: string;
+  label: string;
+  source: string;
+};
+
+function TierModelSelector({
+  tier,
+  value,
+  modelOptions,
+  onChange,
+}: {
+  tier: ModelTier;
+  value: string[];
+  modelOptions: ModelOption[];
+  onChange: (models: string[]) => void;
+}) {
+  const available = modelOptions.filter((option) => !value.includes(option.id));
+  return (
+    <div className="min-w-0 max-w-full overflow-hidden flex flex-col gap-2">
+      <div className="flex min-w-0 max-w-full flex-wrap gap-1.5 overflow-hidden">
+        {value.length === 0 ? (
+          <span className="rounded border border-dashed border-app-border px-2 py-1 text-[11px] text-app-text-muted">
+            No model selected
+          </span>
+        ) : (
+          value.map((modelId, index) => (
+            <span
+              key={`${modelId}-${index}`}
+              className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full bg-app-surface px-2 py-0.5 font-mono text-[10px]"
+            >
+              <span className="min-w-0 truncate">{modelId}</span>
+              <button
+                type="button"
+                onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}
+                className="text-app-text-muted hover:text-app-danger"
+                title={`Remove ${modelId}`}
+              >
+                ×
+              </button>
+            </span>
+          ))
+        )}
+      </div>
+      <select
+        value=""
+        onChange={(event) => {
+          const modelId = event.target.value;
+          if (!modelId) return;
+          onChange([...value, modelId]);
+          event.currentTarget.value = "";
+        }}
+        className="min-w-0 w-full max-w-full rounded border border-app-border bg-app-surface px-2 py-1 font-mono outline-none focus:border-app-accent/60"
+        aria-label={`Add model to tier ${tier}`}
+      >
+        <option value="">Add fallback model…</option>
+        {available.map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      {modelOptions.length === 0 ? (
+        <p className="text-[11px] text-app-warning">
+          No discovered or registered chat models yet. Add a provider below or start the local model endpoint.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function collectChatModelOptions(
+  catalog: ModelCatalogResponse | undefined,
+  providers: ModelProviderRecord[] | undefined,
+): ModelOption[] {
+  const options = new Map<string, ModelOption>();
+  for (const model of catalog?.chat?.models ?? []) {
+    if (!model.id) continue;
+    options.set(model.id, {
+      id: model.id,
+      label: `${model.id} · local catalog`,
+      source: "local catalog",
+    });
+  }
+  for (const provider of providers ?? []) {
+    if (provider.kind !== "chat") continue;
+    for (const modelId of provider.modelIds ?? []) {
+      if (!modelId) continue;
+      const source = provider.label || provider.id;
+      options.set(modelId, {
+        id: modelId,
+        label: `${modelId} · ${source}`,
+        source,
+      });
+    }
+  }
+  return [...options.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function mergeCurrentModelOptions(options: ModelOption[], current: string[]): ModelOption[] {
+  const merged = new Map(options.map((option) => [option.id, option]));
+  for (const modelId of current) {
+    if (!modelId || merged.has(modelId)) continue;
+    merged.set(modelId, {
+      id: modelId,
+      label: `${modelId} · saved setting`,
+      source: "saved setting",
+    });
+  }
+  return [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function ProvidersPanel({

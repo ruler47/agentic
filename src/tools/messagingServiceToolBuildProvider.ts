@@ -13,20 +13,19 @@ const TELEGRAM_KEYWORDS = /telegram|tg[\.\-_]?bot|@?botfather/i;
 const SECONDARY_BOT_KEYWORDS = /\b(bot|messenger|chat|listener|adapter|integration|polling|webhook|always[-\s]?on)\b/i;
 
 /**
- * Tool Build provider that recognizes Telegram bot integration requests and writes a
- * portable, isolated source-bundle package implementing the existing neutral inbound /
- * outbox runtime contract. The generated package is intentionally a sibling of the
- * built-in `channel.telegram.bot` reference: it does NOT replace it and it does NOT
- * import Agentic internals — every dependency goes through `context.resolveSecret`,
- * `context.fetch`, and the documented `/api/tool-services/...` endpoints.
+ * Provider-family Tool Build provider for always-on messaging integrations. Each
+ * provider spec lives behind the same neutral inbound/outbox service contract; this file
+ * currently contains the Telegram Bot API spec because that is the first concrete
+ * provider we support, not because Telegram is a core-runtime branch.
  *
  * Behavior reviewer (`DeterministicToolBehaviorReviewer.requestedProviderBehaviorFinding`)
  * already rejects generated outputs that only declare a generic service bridge for a
- * Telegram-shaped request. This provider's docs/source/capabilities mention the
- * Telegram Bot API surface (`getUpdates`, `sendMessage`, inline keyboard, ack) so the
- * existing reviewer accepts the new artifact while the generic-only output is rejected.
+ * request that explicitly names a provider API. This provider's docs/source/capabilities
+ * mention the Telegram Bot API surface (`getUpdates`, `sendMessage`, inline keyboard,
+ * ack) so the existing reviewer accepts the new artifact while the generic-only output
+ * is rejected.
  */
-export class TelegramBotToolBuildProvider implements ToolBuildProvider {
+export class MessagingServiceToolBuildProvider implements ToolBuildProvider {
   canBuild(request: ToolBuildRequest): boolean {
     const text = [
       request.capability,
@@ -700,7 +699,7 @@ function jsonResponse(body: unknown, ok = true): Response {
   }) as unknown as Response;
 }
 
-test("${toolName} exposes a generated Telegram-shaped Tool contract", () => {
+test("${toolName} exposes a generated Telegram Bot API Tool contract", () => {
   assert.equal(tool.name, ${JSON.stringify(toolName)});
   assert.equal(tool.startupMode, "always-on");
   assert.equal(typeof tool.startService, "function");

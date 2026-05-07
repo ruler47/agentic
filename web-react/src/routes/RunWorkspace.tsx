@@ -7,6 +7,8 @@ import {
   useResumeReworkWait,
 } from "@/api/reworkWaits";
 import { useRunStream } from "@/api/sse";
+import { ArtifactGallery } from "@/components/ArtifactPreview";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
 import type { AgentEvent, AgentRunRecord, ToolReworkWaitRecord } from "@/api/types";
@@ -77,6 +79,20 @@ export function RunWorkspacePage() {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
+            <Link
+              to="/runs"
+              className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1 text-xs font-semibold text-app-text hover:border-app-accent/40 hover:text-app-accent"
+            >
+              Back to Runs
+            </Link>
+            {data.threadId ? (
+              <Link
+                to={`/conversation/${data.threadId}`}
+                className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1 text-xs font-semibold text-app-text hover:border-app-accent/40 hover:text-app-accent"
+              >
+                Open Conversation
+              </Link>
+            ) : null}
             {isLive ? (
               <button
                 type="button"
@@ -100,36 +116,17 @@ export function RunWorkspacePage() {
 
         <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-5">
           <h3 className="text-sm font-semibold">Final answer</h3>
-          <p className="mt-2 whitespace-pre-wrap text-sm text-app-text">{finalAnswer}</p>
+          <div className="mt-2">
+            <MarkdownContent value={finalAnswer} />
+          </div>
         </article>
 
         {data.result?.artifacts?.length ? (
           <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-5">
             <h3 className="text-sm font-semibold">Artifacts</h3>
-            <ul className="mt-3 grid gap-2 sm:grid-cols-2">
-              {data.result.artifacts.map((artifact) => (
-                <li
-                  key={artifact.id}
-                  className="rounded-md border border-app-border bg-app-surface-2 p-3 text-xs"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="truncate font-mono">{artifact.filename}</span>
-                    <span className="text-[10px] text-app-text-muted">{artifact.kind}</span>
-                  </div>
-                  <p className="mt-1 text-[11px] text-app-text-muted">
-                    {artifact.mimeType} · {Math.max(0, Math.round((artifact.sizeBytes ?? 0) / 1024))} KB
-                  </p>
-                  <a
-                    href={artifact.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-1 inline-block text-[11px] text-app-accent underline"
-                  >
-                    Download
-                  </a>
-                </li>
-              ))}
-            </ul>
+            <div className="mt-3">
+              <ArtifactGallery artifacts={data.result.artifacts} />
+            </div>
           </article>
         ) : null}
       </div>

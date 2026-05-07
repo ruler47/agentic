@@ -30,6 +30,8 @@ const MODE_LABELS: Record<TraceMode, string> = {
   graph: "Graph",
   logs: "Logs",
 };
+const TRACE_MODE_STORAGE_KEY = "agentic.trace.mode";
+const TRACE_LAYOUT_STORAGE_KEY = "agentic.trace.graphLayout";
 
 export function TraceLabRunPage() {
   const params = useParams<{ runId: string }>();
@@ -40,8 +42,8 @@ export function TraceLabRunPage() {
   const openInvestigationModal = useInvestigationModal((state) => state.openWith);
   useRunStream(runId);
 
-  const [mode, setMode] = useState<TraceMode>("timeline");
-  const [layoutMode, setLayoutMode] = useState<TraceGraphLayoutMode>("category");
+  const [mode, setMode] = useState<TraceMode>(() => readStoredTraceMode());
+  const [layoutMode, setLayoutMode] = useState<TraceGraphLayoutMode>(() => readStoredTraceLayoutMode());
   const [filters, setFilters] = useState<TraceFilters>(emptyTraceFilters);
   const [selectedSpanId, setSelectedSpanId] = useState<string | undefined>();
 
@@ -63,9 +65,17 @@ export function TraceLabRunPage() {
   useEffect(() => {
     if (!selectedSpanId) return;
     if (!visibleNodes.some((node) => node.spanId === selectedSpanId)) {
-      setSelectedSpanId(visibleNodes[0]?.spanId);
+      setSelectedSpanId(undefined);
     }
   }, [visibleNodes, selectedSpanId]);
+
+  useEffect(() => {
+    writeStoredTracePreference(TRACE_MODE_STORAGE_KEY, mode);
+  }, [mode]);
+
+  useEffect(() => {
+    writeStoredTracePreference(TRACE_LAYOUT_STORAGE_KEY, layoutMode);
+  }, [layoutMode]);
 
   if (!runId) {
     return <p className="text-sm text-app-text-muted">Run id is missing.</p>;
@@ -151,7 +161,7 @@ export function TraceLabRunPage() {
               <TraceGraph
                 nodes={visibleNodes}
                 layoutMode={layoutMode}
-                selectedSpanId={selectedNode?.spanId}
+                selectedSpanId={selectedSpanId}
                 onSelect={setSelectedSpanId}
               />
             )
@@ -166,6 +176,7 @@ export function TraceLabRunPage() {
         </div>
         <TraceInspector
           node={selectedNode}
+          runId={run.data.id}
           reworkWait={linkedWait}
           onCreateInvestigation={(node) => {
             if (!run.data) return;
@@ -383,4 +394,23 @@ function EmptyTracePanel({ filtersActive, message }: { filtersActive: boolean; m
       {message ?? (filtersActive ? "Filters hide every span. Clear them to see the trace." : "No spans yet.")}
     </div>
   );
+}
+
+function readStoredTraceMode(): TraceMode {
+  if (typeof window === "undefined") return "timeline";
+  const value = window.localStorage.getItem(TRACE_MODE_STORAGE_KEY);
+  if (value === "timeline" || value === "graph" || value === "logs") return value;
+  return "timeline";
+}
+
+function readStoredTraceLayoutMode(): TraceGraphLayoutMode {
+  if (typeof window === "undefined") return "category";
+  const value = window.localStorage.getItem(TRACE_LAYOUT_STORAGE_KEY);
+  if (value === "category" || value === "depth") return value;
+  return "category";
+}
+
+function writeStoredTracePreference(key: string, value: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(key, value);
 }

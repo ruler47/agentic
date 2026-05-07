@@ -11,10 +11,10 @@ import type { TraceNode } from "@/features/trace/buildTraceNodes";
 
 export type TraceGraphLayoutMode = "category" | "depth";
 
-const COLUMN_WIDTH = 240;
-const NODE_HEIGHT = 96;
-const ROW_GAP = 24;
-const COLUMN_GAP = 80;
+const COLUMN_WIDTH = 260;
+const NODE_HEIGHT = 116;
+const ROW_GAP = 28;
+const COLUMN_GAP = 140;
 
 const SEMANTIC_COLUMNS = [
   "Coordinator",

@@ -31,6 +31,14 @@ Every request also has provenance:
 The current implementation is still single-user in code, but future changes should keep
 this one-instance/one-group provenance model in mind.
 
+Runtime prompts now receive compact instance context before classification, planning,
+worker delegation, and synthesis: the active group profile name/description/preferences
+and the requester profile are appended alongside thread and artifact context. Stable
+profile facts such as city, locale, language, household/company preferences, or default
+constraints should be used as defaults when the user omits them. The agent should still
+ask for clarification when that profile context is missing, conflicting, stale, or too
+weak for the requested action.
+
 Continuation runs receive compact thread context, not the full transcript. That context
 includes summary, accepted facts, rejected attempts, open questions, and recent artifact
 metadata such as filename, MIME type, URL, content preview, and QA status. Agents should
@@ -570,8 +578,9 @@ their provider, then call `POST /api/tool-services/:name/outbox/:eventId/ack` to
 It is still an ordinary tool: it resolves a token through the secret-handle registry,
 polls Telegram, forwards source user/chat/message ids to the generic inbound endpoint,
 delivers neutral outbox events back through Telegram, and records sent/failed
-acknowledgements. A generated Telegram replacement should follow the same contract rather
-than adding Telegram-specific branches to the core runtime.
+acknowledgements. Generated replacements for Telegram or any other messaging provider
+should follow the same contract rather than adding provider-specific branches to the core
+runtime.
 
 Thread resolution should prefer provider metadata such as reply-to messages, chat/thread
 IDs, forum topics, or webhook thread IDs, then use a bounded classifier over recent

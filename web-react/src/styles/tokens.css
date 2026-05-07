@@ -48,3 +48,30 @@ pre,
 kbd {
   font-family: var(--font-mono);
 }
+
+.trace-flow-edge .react-flow__edge-path,
+.trace-flow-edge .react-flow__edge-interaction {
+  transition:
+    stroke 140ms ease,
+    stroke-width 140ms ease,
+    opacity 140ms ease;
+}
+
+.trace-flow-edge-highlighted .react-flow__edge-path {
+  stroke: var(--color-app-accent) !important;
+  stroke-width: 2.6px !important;
+  opacity: 1 !important;
+}
+
+.trace-flow-edge-dimmed .react-flow__edge-path {
+  opacity: 0.22 !important;
+}
+
+.trace-flow-edge-failed .react-flow__edge-path {
+  stroke: var(--color-app-danger) !important;
+  opacity: 1 !important;
+}
+
+.trace-flow-edge-failed.trace-flow-edge-highlighted .react-flow__edge-path {
+  stroke: var(--color-app-danger) !important;
+}

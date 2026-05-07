@@ -1,4 +1,6 @@
 import { LlmClient } from "../llm/client.js";
+import type { GroupProfileRecord } from "../instance/groupProfileStore.js";
+import type { UserRecord } from "../instance/userStore.js";
 import {
   MemoryScopeFilter,
   normalizeMemoryConfidence,
@@ -98,6 +100,10 @@ type RunOptions = {
     openQuestions: string[];
     relevantArtifactIds: string[];
     relevantArtifacts?: AgentArtifact[];
+  };
+  instanceContext?: {
+    groupProfile?: GroupProfileRecord;
+    requesterUser?: UserRecord;
   };
   memoryScopes?: MemoryScopeFilter[];
   allowSensitiveMemory?: boolean;
@@ -219,7 +225,10 @@ export class UniversalAgent {
     }
 
     const taskContext = appendRuntimeContext(
-      appendThreadContext(appendArtifactContext(task, artifacts), options.threadContext),
+      appendInstanceContext(
+        appendThreadContext(appendArtifactContext(task, artifacts), options.threadContext),
+        options.instanceContext,
+      ),
       runStartedAt,
       options.timeZone,
     );
@@ -2874,6 +2883,62 @@ function appendThreadContext(
   return `${task}
 
 ${lines.join("\n")}`;
+}
+
+function appendInstanceContext(
+  task: string,
+  instanceContext?: {
+    groupProfile?: GroupProfileRecord;
+    requesterUser?: UserRecord;
+  },
+): string {
+  if (!instanceContext?.groupProfile && !instanceContext?.requesterUser) return task;
+
+  const lines: string[] = ["Instance and requester context:"];
+  const profile = instanceContext.groupProfile;
+  if (profile) {
+    lines.push(`Group profile: ${profile.name} (${profile.instanceId})`);
+    if (profile.description.trim()) lines.push(`Group description: ${profile.description.trim()}`);
+    const preferences = formatPreferenceContext(profile.preferences);
+    if (preferences) {
+      lines.push(`Group preferences and stable facts:\n${preferences}`);
+    }
+  }
+
+  const user = instanceContext.requesterUser;
+  if (user) {
+    lines.push(`Requester: ${user.displayName} (${user.id})`);
+    lines.push(`Requester roles: ${(user.roles?.length ? user.roles : [user.role]).join(", ")}`);
+    const identities = (user.identities ?? [])
+      .filter((identity) => identity.allowStatus === "allowed")
+      .map((identity) => `${identity.provider}:${identity.providerUserId}`);
+    if (identities.length > 0) lines.push(`Allowed requester channel identities: ${identities.join(", ")}`);
+  }
+
+  lines.push(
+    "Use this context as default task context when the user omits stable details such as city, locale, language, or household/company preferences. Ask a clarification only when the profile is absent, conflicting, stale, or insufficient for the requested action.",
+  );
+
+  return `${task}
+
+${lines.join("\n")}`;
+}
+
+function formatPreferenceContext(preferences: Record<string, unknown>): string | undefined {
+  const entries = Object.entries(preferences).filter(([, value]) => value !== undefined && value !== null && value !== "");
+  if (entries.length === 0) return undefined;
+  return entries
+    .slice(0, 24)
+    .map(([key, value]) => `- ${key}: ${formatPreferenceValue(value)}`)
+    .join("\n");
+}
+
+function formatPreferenceValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(formatPreferenceValue).join(", ");
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }
 
 function listContext(title: string, values: string[]): string | undefined {

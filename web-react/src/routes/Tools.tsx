@@ -11,14 +11,16 @@ import {
   useToolSettings,
   useTools,
 } from "@/api/tools";
+import { useToolServiceAction, useToolServices } from "@/api/toolServices";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
-import type { ToolModuleMetadata } from "@/api/types";
+import type { ToolModuleMetadata, ToolServiceStatus } from "@/api/types";
 
 export function ToolsPage() {
   const tools = useTools();
   const toolSettings = useToolSettings();
   const packageRunners = useToolPackageRunners();
+  const toolServices = useToolServices();
   const reload = useReloadGeneratedTools();
   const runHealth = useRunToolHealthchecks();
 
@@ -47,6 +49,10 @@ export function ToolsPage() {
   }, [tools.data, search]);
 
   const settingsMap = useMemo(() => settingsByTool(toolSettings.data), [toolSettings.data]);
+  const serviceMap = useMemo(
+    () => new Map((toolServices.data ?? []).map((service) => [service.toolName, service])),
+    [toolServices.data],
+  );
   const selectedTool = filteredTools.find((tool) => tool.name === selected) ?? filteredTools[0];
 
   return (
@@ -99,7 +105,14 @@ export function ToolsPage() {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <strong className="truncate">{tool.displayName ?? tool.name}</strong>
-                    <GenericBadge tone={statusTone(tool.status)}>{tool.status}</GenericBadge>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <GenericBadge tone={statusTone(tool.status)}>{tool.status}</GenericBadge>
+                      {serviceMap.has(tool.name) ? (
+                        <GenericBadge tone={serviceTone(serviceMap.get(tool.name)?.status)}>
+                          {serviceMap.get(tool.name)?.status}
+                        </GenericBadge>
+                      ) : null}
+                    </div>
                   </div>
                   <p className="truncate font-mono text-[10px] text-app-text-muted">
                     {tool.name} · v{tool.version}
@@ -124,6 +137,7 @@ export function ToolsPage() {
           <ToolDetail
             tool={selectedTool}
             settings={settingsMap.get(selectedTool.name) ?? {}}
+            service={serviceMap.get(selectedTool.name)}
           />
         ) : (
           <div className="rounded-[var(--radius-card)] border border-dashed border-app-border bg-app-surface p-8 text-sm text-app-text-muted">
@@ -138,13 +152,16 @@ export function ToolsPage() {
 function ToolDetail({
   tool,
   settings,
+  service,
 }: {
   tool: ToolModuleMetadata;
   settings: Record<string, string>;
+  service?: ToolServiceStatus;
 }) {
   const setSetting = useSetToolSetting();
   const deleteSetting = useDeleteToolSetting();
   const deleteGenerated = useDeleteGeneratedTool();
+  const serviceAction = useToolServiceAction();
 
   const requiredKeys = tool.requiredConfigurationKeys ?? [];
   const requiredSecretHandles = tool.requiredSecretHandles ?? [];
@@ -178,8 +195,58 @@ function ToolDetail({
               {tool.lastHealthOk ? "healthy" : "unhealthy"}
             </GenericBadge>
           ) : null}
+          {service ? (
+            <GenericBadge tone={serviceTone(service.status)}>
+              service {service.status}
+            </GenericBadge>
+          ) : null}
         </div>
       </header>
+
+      {service ? (
+        <Section title="Service lifecycle">
+          <div className="rounded-md border border-app-border bg-app-surface-2 p-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p>
+                  Runtime: <span className="font-mono">{service.status}</span> · desired{" "}
+                  <span className="font-mono">{service.desiredState}</span>
+                </p>
+                <p className="mt-1 text-[11px] text-app-text-muted">
+                  {service.detail || "No lifecycle detail."}
+                </p>
+                {service.lastHeartbeatAt ? (
+                  <p className="mt-1 text-[11px] text-app-text-muted">
+                    heartbeat {formatRelative(service.lastHeartbeatAt)}
+                  </p>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {(["start", "stop", "restart", "heartbeat"] as const).map((action) => (
+                  <button
+                    key={action}
+                    type="button"
+                    disabled={serviceAction.isPending}
+                    onClick={() => serviceAction.mutate({ name: tool.name, action })}
+                    className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] font-medium capitalize hover:border-app-accent/40 disabled:opacity-50"
+                  >
+                    {action}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {serviceAction.isError ? (
+              <p className="mt-2 text-[11px] text-app-danger">{serviceAction.error.message}</p>
+            ) : null}
+          </div>
+        </Section>
+      ) : tool.startupMode === "always-on" ? (
+        <Section title="Service lifecycle">
+          <p className="rounded-md border border-app-warning/30 bg-app-warning-soft px-3 py-2 text-xs text-app-warning">
+            This tool declares an always-on startup mode, but no service status is currently registered.
+          </p>
+        </Section>
+      ) : null}
 
       {tool.lastHealthDetail ? (
         <p className="rounded-md border border-app-border bg-app-surface-2 px-3 py-2 text-xs text-app-text-muted">
@@ -427,6 +494,13 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function statusTone(status?: string): "ok" | "warn" | "danger" | "muted" {
   if (status === "available") return "ok";
   if (status === "disabled") return "muted";
+  if (status === "failed") return "danger";
+  return "muted";
+}
+
+function serviceTone(status?: string): "ok" | "warn" | "danger" | "muted" | "running" {
+  if (status === "running") return "running";
+  if (status === "starting") return "warn";
   if (status === "failed") return "danger";
   return "muted";
 }

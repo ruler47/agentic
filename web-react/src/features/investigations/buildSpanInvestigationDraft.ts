@@ -105,7 +105,7 @@ function matchToolForSpan(
   return installedTools.find((tool) => candidates.has(tool.name));
 }
 
-function readArtifactRefs(
+export function readArtifactRefs(
   payload: unknown,
   runId: string,
 ): Array<{ id?: string; filename?: string; mimeType?: string; url?: string }> {

@@ -25,7 +25,7 @@ import {
   GeneratedToolFileBuilder,
   MetadataToolRegistrar,
 } from "../src/tools/toolBuildProviders.js";
-import { TelegramBotToolBuildProvider } from "../src/tools/telegramBotToolBuildProvider.js";
+import { MessagingServiceToolBuildProvider } from "../src/tools/messagingServiceToolBuildProvider.js";
 import { ToolPackageWorkspaceStore } from "../src/tools/toolPackageWorkspaceStore.js";
 import { ToolBuildWorker } from "../src/tools/toolBuildWorker.js";
 import { InMemoryAuditEventStore } from "../src/audit/inMemoryAuditEventStore.js";
@@ -2581,7 +2581,7 @@ test("/auto-retry endpoint is idempotent and returns 409 for non-promoted waits"
   }
 });
 
-test("Telegram tool build request flows through TelegramBotToolBuildProvider and registers as a second always-on tool", async () => {
+test("Telegram tool build request flows through MessagingServiceToolBuildProvider and registers as a second always-on tool", async () => {
   const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
   await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
   const projectRoot = await mkdtemp(join(tmpdir(), "agentic-telegram-build-root-"));
@@ -2603,7 +2603,7 @@ test("Telegram tool build request flows through TelegramBotToolBuildProvider and
     },
   ]);
 
-  const builder = new GeneratedToolFileBuilder([new TelegramBotToolBuildProvider()], projectRoot, {
+  const builder = new GeneratedToolFileBuilder([new MessagingServiceToolBuildProvider()], projectRoot, {
     packageWorkspaceStore: new ToolPackageWorkspaceStore(projectRoot, "tools"),
     writePackageWorkspace: true,
     writeProjectFiles: false,
@@ -4306,6 +4306,64 @@ test("web server exposes and updates the single-instance group profile", async (
     assert.equal(updated.groupProfile.name, "Family Ops");
     assert.equal(updated.groupProfile.preferences.notes, "Prefer concise answers and cite medical sources.");
     assert.equal(audit.events[0].action, "group_profile.updated");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server passes group profile and requester context into agent runs", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  let capturedContext: unknown;
+  class ContextCapturingAgent {
+    async run(_task: string, options?: { instanceContext?: unknown }): Promise<AgentRunResult> {
+      capturedContext = options?.instanceContext;
+      return {
+        finalAnswer: "context captured",
+        complexity: { mode: "direct", reason: "fake", domains: ["test"], riskLevel: "low" },
+        subtasks: [],
+        workerResults: [],
+        reviews: [],
+      };
+    }
+  }
+
+  const server = createWebApp({
+    agent: new ContextCapturingAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    groupProfileStore: new InMemoryGroupProfileStore({
+      name: "Family Ops",
+      description: "Family profile for restaurant booking.",
+      preferences: { city: "Malaga", language: "ru" },
+    }),
+    userStore: new InMemoryUserStore({
+      users: [{ id: "user-admin", displayName: "Admin", role: "admin", roles: ["admin"] }],
+    }),
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "Забронируй столик на вечер" }),
+    });
+    const created = (await createResponse.json()) as { run: { id: string } };
+    await waitForRun(baseUrl, created.run.id);
+
+    assert.equal(createResponse.status, 202);
+    const context = capturedContext as {
+      groupProfile: { name: string; description: string; preferences: Record<string, unknown> };
+      requesterUser: { id: string; displayName: string; roles: string[] };
+    };
+    assert.equal(context.groupProfile.name, "Family Ops");
+    assert.equal(context.groupProfile.description, "Family profile for restaurant booking.");
+    assert.deepEqual(context.groupProfile.preferences, { city: "Malaga", language: "ru" });
+    assert.equal(context.requesterUser.id, "user-admin");
+    assert.equal(context.requesterUser.displayName, "Admin");
+    assert.deepEqual(context.requesterUser.roles, ["admin"]);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

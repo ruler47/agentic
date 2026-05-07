@@ -457,18 +457,21 @@ Implementation tasks:
   path the manual PATCH/`/run` endpoints already use, so a background-driven
   registration flips matching `ToolReworkWait` records to `promoted` automatically. The
   worker also joins a pending tick instead of double-claiming when ticks overlap. DONE.
-- Generated Telegram adapter: `TelegramBotToolBuildProvider`
-  (`src/tools/telegramBotToolBuildProvider.ts`) recognizes Telegram bot integration
-  requests in the Tool Build matrix and emits an isolated source-bundle package under
-  `tools/<system-name>/<version>` that implements the Telegram Bot API surface
-  (`getUpdates`, `sendMessage`, inline `Continue thread` keyboard, ack) on top of the
-  existing neutral `/api/tool-services/:name/inbound` and `/outbox` endpoints. The
-  generated tool resolves its bot token exclusively through
-  `context.resolveSecret(handle)`, declares allowed user/chat allowlists in its
-  settings schema, and runs as `always-on` under the existing service supervisor — so
-  a second Telegram bot can coexist with the built-in `channel.telegram.bot`
-  reference without replacing it. The shared deterministic behavior reviewer keeps
-  rejecting Telegram-shaped requests that only produce a provider-neutral bridge.
+- Messaging service adapter builder: `MessagingServiceToolBuildProvider`
+  (`src/tools/messagingServiceToolBuildProvider.ts`) is the first provider-family
+  implementation for always-on messaging adapters. It is not a Telegram branch in the
+  core runtime: provider-specific behavior is isolated behind a build-provider spec,
+  while the generated package still talks to Agentic only through the neutral
+  `/api/tool-services/:name/inbound` and `/outbox` service contract. The first supported
+  provider spec is Telegram Bot API (`getUpdates`, `sendMessage`, inline
+  `Continue thread` keyboard, ack), emitted as a portable source bundle under
+  `tools/<system-name>/<version>`. The generated tool resolves its token exclusively
+  through `context.resolveSecret(handle)`, declares provider allowlists in its settings
+  schema, and runs as `always-on` under the existing service supervisor. Future provider
+  specs (Slack, WhatsApp, email, custom chat gateways) should extend this family model
+  instead of adding one-off core branches. The shared deterministic behavior reviewer keeps
+  rejecting requests that explicitly name a provider API when the generated output only
+  produces a provider-neutral bridge.
   DONE for the build/QA/registration handoff. Remaining work: rework the built-in
   `channel.telegram.bot` into the first generated provider once parity is full,
   expose the Telegram allowlist settings inline in the Channels UI, and ship the

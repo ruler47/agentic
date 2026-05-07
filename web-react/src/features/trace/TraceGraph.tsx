@@ -1,9 +1,10 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Background,
   BackgroundVariant,
   Controls,
   Handle,
+  MarkerType,
   MiniMap,
   Position,
   ReactFlow,
@@ -22,39 +23,65 @@ type TraceGraphProps = {
   nodes: TraceNode[];
   layoutMode: TraceGraphLayoutMode;
   selectedSpanId: string | undefined;
-  onSelect: (spanId: string) => void;
+  onSelect: (spanId: string | undefined) => void;
 };
 
 type SpanNodeData = {
   node: TraceNode;
   selected: boolean;
+  highlighted: boolean;
+  dimmed: boolean;
+  onHover: (spanId: string) => void;
+  onLeave: () => void;
 };
 
 const nodeTypes = { span: SpanNode };
 
 export function TraceGraph({ nodes, layoutMode, selectedSpanId, onSelect }: TraceGraphProps) {
+  const [hoveredSpanId, setHoveredSpanId] = useState<string | undefined>();
+  const activeSpanId = hoveredSpanId ?? selectedSpanId;
   const { positions, columns } = useMemo(
     () => layoutTrace(nodes, layoutMode),
     [nodes, layoutMode],
   );
+  const connectedSpanIds = useMemo(() => {
+    if (!activeSpanId) return new Set<string>();
+    const connected = new Set<string>([activeSpanId]);
+    for (const node of nodes) {
+      if (node.parentSpanId === activeSpanId) connected.add(node.spanId);
+      if (node.spanId === activeSpanId && node.parentSpanId) connected.add(node.parentSpanId);
+      if (node.dependencySpanIds.includes(activeSpanId)) connected.add(node.spanId);
+      if (node.spanId === activeSpanId) {
+        for (const dependencySpanId of node.dependencySpanIds) connected.add(dependencySpanId);
+      }
+    }
+    return connected;
+  }, [activeSpanId, nodes]);
 
   const flowNodes = useMemo<Node<SpanNodeData>[]>(() => {
     return nodes.map((node) => {
       const position = positions.get(node.spanId) ?? { x: 0, y: 0 };
+      const highlighted = connectedSpanIds.has(node.spanId);
       return {
         id: node.spanId,
         position,
         data: {
           node,
           selected: node.spanId === selectedSpanId,
+          highlighted,
+          dimmed: Boolean(activeSpanId) && !highlighted,
+          onHover: setHoveredSpanId,
+          onLeave: () => setHoveredSpanId(undefined),
         },
         type: "span",
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
-        style: { width: 220 },
+        width: 240,
+        height: 112,
+        style: { width: 240, height: 112 },
       } satisfies Node<SpanNodeData>;
     });
-  }, [nodes, positions, selectedSpanId]);
+  }, [activeSpanId, connectedSpanIds, nodes, positions, selectedSpanId]);
 
   const flowEdges = useMemo<Edge[]>(() => {
     const presentSpanIds = new Set(nodes.map((node) => node.spanId));
@@ -68,7 +95,10 @@ export function TraceGraph({ nodes, layoutMode, selectedSpanId, onSelect }: Trac
           target: node.spanId,
           type: "smoothstep",
           animated: false,
-          style: edgeStyle(node, "parent"),
+          style: edgeStyle(node, "parent", edgeState(activeSpanId, node.parentSpanId, node.spanId)),
+          markerEnd: edgeMarker(node, "parent", edgeState(activeSpanId, node.parentSpanId, node.spanId)),
+          className: edgeClassName(node, edgeState(activeSpanId, node.parentSpanId, node.spanId)),
+          zIndex: edgeZIndex(node, edgeState(activeSpanId, node.parentSpanId, node.spanId)),
         });
       }
       for (const dependencySpanId of node.dependencySpanIds) {
@@ -80,12 +110,18 @@ export function TraceGraph({ nodes, layoutMode, selectedSpanId, onSelect }: Trac
           target: node.spanId,
           type: "smoothstep",
           animated: false,
-          style: { ...edgeStyle(node, "dependency"), strokeDasharray: "5 4" },
+          style: {
+            ...edgeStyle(node, "dependency", edgeState(activeSpanId, dependencySpanId, node.spanId)),
+            strokeDasharray: "5 4",
+          },
+          markerEnd: edgeMarker(node, "dependency", edgeState(activeSpanId, dependencySpanId, node.spanId)),
+          className: edgeClassName(node, edgeState(activeSpanId, dependencySpanId, node.spanId)),
+          zIndex: edgeZIndex(node, edgeState(activeSpanId, dependencySpanId, node.spanId)),
         });
       }
     }
-    return edges;
-  }, [nodes]);
+    return edges.sort((left, right) => edgeRenderRank(left) - edgeRenderRank(right));
+  }, [activeSpanId, nodes]);
 
   const handleNodeClick = useCallback<NonNullable<React.ComponentProps<typeof ReactFlow>["onNodeClick"]>>(
     (_event, node) => {
@@ -102,6 +138,12 @@ export function TraceGraph({ nodes, layoutMode, selectedSpanId, onSelect }: Trac
         edges={flowEdges}
         nodeTypes={nodeTypes}
         onNodeClick={handleNodeClick}
+        onNodeMouseEnter={(_event, node) => setHoveredSpanId(node.id)}
+        onNodeMouseLeave={() => setHoveredSpanId(undefined)}
+        onPaneClick={() => {
+          setHoveredSpanId(undefined);
+          onSelect(undefined);
+        }}
         proOptions={{ hideAttribution: true }}
         fitView
         fitViewOptions={{ padding: 0.2, maxZoom: 1.2 }}
@@ -117,7 +159,15 @@ export function TraceGraph({ nodes, layoutMode, selectedSpanId, onSelect }: Trac
           zoomable
           maskColor="rgba(11,13,18,0.7)"
           nodeColor={(reactFlowNode) => statusColor((reactFlowNode.data as SpanNodeData).node.status)}
-          style={{ background: "var(--color-app-surface-2)" }}
+          nodeStrokeColor={(reactFlowNode) =>
+            (reactFlowNode.data as SpanNodeData).selected ? "#35e6c1" : "rgba(255,255,255,0.35)"
+          }
+          nodeStrokeWidth={2}
+          nodeBorderRadius={6}
+          style={{
+            background: "var(--color-app-surface-2)",
+            border: "1px solid var(--color-app-border)",
+          }}
         />
         <Controls showInteractive={false} className="!bg-app-surface !text-app-text-muted" />
       </ReactFlow>
@@ -156,16 +206,19 @@ function ColumnLegend({
 }
 
 function SpanNode({ data }: NodeProps<Node<SpanNodeData>>) {
-  const { node, selected } = data;
+  const { node, selected, highlighted, dimmed, onHover, onLeave } = data;
   const statusTone = statusBgClass(node.status);
+  const activeTone = activeNodeClass(node.status, highlighted, selected);
   return (
     <div
+      onMouseEnter={() => onHover(node.spanId)}
+      onMouseLeave={onLeave}
       className={[
         "rounded-md border bg-app-surface-2 px-3 py-2 text-left text-xs shadow-sm transition-colors",
         statusTone,
-        selected
-          ? "border-app-accent ring-1 ring-app-accent"
-          : "border-app-border hover:border-app-accent/40",
+        activeTone,
+        dimmed ? "opacity-45" : "",
+        selected || highlighted ? "" : "border-app-border hover:border-app-accent/40",
       ].join(" ")}
     >
       <Handle type="target" position={Position.Left} className="!opacity-0" />
@@ -196,14 +249,64 @@ function SpanNode({ data }: NodeProps<Node<SpanNodeData>>) {
   );
 }
 
-function edgeStyle(target: TraceNode, kind: "parent" | "dependency"): React.CSSProperties {
+type EdgeState = "neutral" | "highlighted" | "dimmed";
+
+function edgeState(activeSpanId: string | undefined, source: string, target: string): EdgeState {
+  if (!activeSpanId) return "neutral";
+  return activeSpanId === source || activeSpanId === target ? "highlighted" : "dimmed";
+}
+
+function edgeStyle(target: TraceNode, kind: "parent" | "dependency", state: EdgeState = "neutral"): React.CSSProperties {
+  const color = edgeColor(target, kind, state);
+  const baseWidth = state === "highlighted" ? 2.6 : target.status === "failed" ? 1.8 : 1.5;
+  const opacity = state === "dimmed" ? 0.22 : state === "highlighted" ? 1 : kind === "dependency" ? 0.7 : 0.8;
+  return { stroke: color, strokeWidth: baseWidth, strokeOpacity: opacity };
+}
+
+function edgeMarker(target: TraceNode, kind: "parent" | "dependency", state: EdgeState = "neutral") {
+  return {
+    type: MarkerType.ArrowClosed,
+    color: edgeColor(target, kind, state),
+    width: state === "highlighted" ? 18 : 14,
+    height: state === "highlighted" ? 18 : 14,
+  };
+}
+
+function edgeClassName(target: TraceNode, state: EdgeState = "neutral"): string {
+  return [
+    "trace-flow-edge",
+    target.status === "failed" ? "trace-flow-edge-failed" : "",
+    state === "highlighted" ? "trace-flow-edge-highlighted" : "",
+    state === "dimmed" ? "trace-flow-edge-dimmed" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function edgeZIndex(target: TraceNode, state: EdgeState = "neutral"): number {
+  if (state === "highlighted") return 20;
+  if (target.status === "failed") return 10;
+  if (state === "dimmed") return 0;
+  return 2;
+}
+
+function edgeRenderRank(edge: Edge): number {
+  const classes = edge.className ?? "";
+  if (classes.includes("trace-flow-edge-highlighted")) return 3;
+  if (classes.includes("trace-flow-edge-failed")) return 2;
+  if (classes.includes("trace-flow-edge-dimmed")) return 0;
+  return 1;
+}
+
+function edgeColor(target: TraceNode, kind: "parent" | "dependency", state: EdgeState = "neutral"): string {
   if (target.status === "failed") {
-    return { stroke: "var(--color-app-danger)", strokeWidth: 1.5 };
+    return "var(--color-app-danger)";
   }
+  if (state === "highlighted") return "var(--color-app-accent)";
   if (kind === "dependency") {
-    return { stroke: "var(--color-app-text-muted)", strokeWidth: 1.2, strokeOpacity: 0.7 };
+    return "var(--color-app-text-muted)";
   }
-  return { stroke: "var(--color-app-accent)", strokeWidth: 1.5, strokeOpacity: 0.8 };
+  return "var(--color-app-accent)";
 }
 
 function statusColor(status: TraceNode["status"]): string {
@@ -216,6 +319,14 @@ function statusBgClass(status: TraceNode["status"]): string {
   if (status === "failed") return "border-app-danger/40";
   if (status === "completed") return "";
   return "";
+}
+
+function activeNodeClass(status: TraceNode["status"], highlighted: boolean, selected: boolean): string {
+  if (!highlighted && !selected) return "";
+  if (status === "failed") {
+    return "border-app-danger ring-1 ring-app-danger shadow-[0_0_0_1px_rgba(255,84,112,0.35)]";
+  }
+  return "border-app-accent ring-1 ring-app-accent shadow-[0_0_0_1px_rgba(53,230,193,0.35)]";
 }
 
 function statusBadgeClass(status: TraceNode["status"]): string {
