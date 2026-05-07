@@ -16,6 +16,9 @@ import { InMemoryRunStore } from "../src/runs/inMemoryRunStore.js";
 import { ToolImprovementCoordinator } from "../src/tools/toolImprovementCoordinator.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { Tool } from "../src/tools/tool.js";
+import { InMemoryWorkLedgerStore } from "../src/work-ledger/workLedgerStore.js";
+import { InMemoryEvidenceLedgerStore } from "../src/work-ledger/evidenceLedgerStore.js";
+import { InMemoryRunRetrospectiveStore } from "../src/work-ledger/runRetrospectiveStore.js";
 import { PNG } from "pngjs";
 
 class FakeLlm {
@@ -2639,6 +2642,244 @@ test("UniversalAgent uses ToolImprovementCoordinator to open a rework wait when 
       result.finalAnswer.includes(waits[0]!.id),
       "final answer references the open wait id so the operator knows what is blocking",
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function makeWorkLedgerFakeLlmResponses(): string[] {
+  return [
+    '{"mode":"delegated","reason":"needs current research","domains":["research"],"riskLevel":"medium"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "research",
+          title: "Find current Schengen visa rules",
+          role: "researcher",
+          prompt: "Research current Schengen visa rules for short-stay visitors and produce a summary.",
+          expectedOutput: "Summary citing the search evidence.",
+          reviewCriteria: ["Cites the search evidence"],
+          requiredTools: ["web-search"],
+        },
+      ],
+    }),
+    "Worker summary using the search evidence about Schengen rules.",
+    '{"subtaskId":"research","verdict":"pass","notes":"Cites the search evidence."}',
+    "Final answer summarising Schengen short-stay rules with cited evidence.",
+    '{"shouldStore":false}',
+  ];
+}
+
+test("UniversalAgent records work + evidence + retrospective when stores are wired and reuses on a second matching run", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-ledger-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const workLedgerStore = new InMemoryWorkLedgerStore();
+  const evidenceLedgerStore = new InMemoryEvidenceLedgerStore();
+  const runRetrospectiveStore = new InMemoryRunRetrospectiveStore();
+  const searchInputs: unknown[] = [];
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "web.search",
+    description: "Fake web search",
+    capabilities: ["web-search"],
+    async run(input) {
+      searchInputs.push(input);
+      return {
+        ok: true,
+        content:
+          "1. Schengen short-stay rules\nhttps://example.org/schengen-rules\nA Schengen short-stay visa allows up to 90 days within any 180-day period.",
+      };
+    },
+  });
+
+  try {
+    const firstAgent = new UniversalAgent(
+      new FakeLlm(makeWorkLedgerFakeLlmResponses()) as unknown as LlmClient,
+      memory,
+      registry,
+    );
+    const firstEvents: AgentEvent[] = [];
+    const firstResult = await firstAgent.run("Research current Schengen short-stay visa rules.", {
+      runId: "run-A1",
+      threadId: "thread-A",
+      workLedgerStore,
+      evidenceLedgerStore,
+      runRetrospectiveStore,
+      onEvent: (event) => {
+        firstEvents.push(event);
+      },
+    });
+
+    assert.ok(searchInputs.length >= 1, "first run actually invoked web.search");
+    const callsAfterFirstRun = searchInputs.length;
+
+    const workItemsRunA1 = await workLedgerStore.listByRun("run-A1");
+    assert.equal(workItemsRunA1.length, 1, "exactly one work item created in the first run");
+    assert.equal(workItemsRunA1[0]?.kind, "search");
+    assert.equal(workItemsRunA1[0]?.status, "completed");
+    assert.ok(workItemsRunA1[0]?.outputSummary, "completed work item carries an outputSummary for reuse");
+    assert.equal(workItemsRunA1[0]?.evidenceIds.length, 1, "work item is linked to its evidence");
+
+    const evidenceRunA1 = await evidenceLedgerStore.listByRun("run-A1");
+    assert.equal(evidenceRunA1.length, 1, "search_result evidence is recorded");
+    assert.equal(evidenceRunA1[0]?.kind, "search_result");
+    assert.equal(evidenceRunA1[0]?.workItemId, workItemsRunA1[0]?.id);
+
+    const retrospectivesRunA1 = await runRetrospectiveStore.listByRun("run-A1");
+    assert.equal(retrospectivesRunA1.length, 1, "exactly one proposed retrospective per run");
+    assert.equal(retrospectivesRunA1[0]?.status, "proposed");
+    assert.equal(retrospectivesRunA1[0]?.runOutcome, "completed");
+    assert.deepEqual(retrospectivesRunA1[0]?.usefulEvidenceIds, [evidenceRunA1[0]!.id]);
+    assert.ok(
+      (retrospectivesRunA1[0]?.whatWorked.length ?? 0) >= 1,
+      "retrospective tracks whatWorked signals from the runtime",
+    );
+
+    const firstRunClaimEvents = firstEvents.filter((event) => event.type === "work-ledger-claim-created");
+    assert.equal(firstRunClaimEvents.length, 1, "first run emits one work-ledger-claim-created event");
+    const firstRunEvidenceEvents = firstEvents.filter((event) => event.type === "evidence-ledger-recorded");
+    assert.equal(firstRunEvidenceEvents.length, 1, "first run emits one evidence-ledger-recorded event");
+    const firstRunRetroEvents = firstEvents.filter((event) => event.type === "run-retrospective-proposed");
+    assert.equal(firstRunRetroEvents.length, 1, "first run emits one run-retrospective-proposed event");
+
+    assert.equal(firstResult.reviews[0]?.verdict, "pass");
+
+    const secondAgent = new UniversalAgent(
+      new FakeLlm(makeWorkLedgerFakeLlmResponses()) as unknown as LlmClient,
+      memory,
+      registry,
+    );
+    const secondEvents: AgentEvent[] = [];
+    const secondResult = await secondAgent.run("Research current Schengen short-stay visa rules.", {
+      runId: "run-A2",
+      threadId: "thread-A",
+      workLedgerStore,
+      evidenceLedgerStore,
+      runRetrospectiveStore,
+      onEvent: (event) => {
+        secondEvents.push(event);
+      },
+    });
+
+    assert.equal(
+      searchInputs.length,
+      callsAfterFirstRun,
+      "second run reuses the prior completed work item without re-invoking web.search",
+    );
+
+    const reuseEvents = secondEvents.filter((event) => event.type === "work-ledger-reused");
+    assert.equal(reuseEvents.length, 1, "second run emits work-ledger-reused");
+    assert.equal(reuseEvents[0]?.actor, "runtime-ledger");
+    const reusePayload = reuseEvents[0]?.payload as { decision?: string } | undefined;
+    assert.equal(reusePayload?.decision, "reuse_completed");
+
+    const retrospectivesRunA2 = await runRetrospectiveStore.listByRun("run-A2");
+    assert.equal(retrospectivesRunA2.length, 1);
+    assert.ok(
+      retrospectivesRunA2[0]?.duplicatedWork.some((entry) => entry.startsWith("reuse_completed:search:")),
+      "retrospective for the reused run records a duplicatedWork signal",
+    );
+    assert.ok(secondResult.finalAnswer.length > 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent records limitation evidence and a failed work item when web search returns a non-OK result", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-ledger-fail-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const workLedgerStore = new InMemoryWorkLedgerStore();
+  const evidenceLedgerStore = new InMemoryEvidenceLedgerStore();
+  const runRetrospectiveStore = new InMemoryRunRetrospectiveStore();
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "web.search",
+    description: "Fake failing web search",
+    capabilities: ["web-search"],
+    async run() {
+      return { ok: false, content: "External provider unavailable." };
+    },
+  });
+
+  const fakeLlm = new FakeLlm(makeWorkLedgerFakeLlmResponses());
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const events: AgentEvent[] = [];
+
+  try {
+    await agent.run("Research current Schengen short-stay visa rules.", {
+      runId: "run-fail-1",
+      threadId: "thread-fail",
+      workLedgerStore,
+      evidenceLedgerStore,
+      runRetrospectiveStore,
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    const workItems = await workLedgerStore.listByRun("run-fail-1");
+    assert.equal(workItems.length, 1);
+    assert.equal(workItems[0]?.status, "failed");
+    assert.ok(workItems[0]?.error?.includes("External provider unavailable"));
+
+    const evidence = await evidenceLedgerStore.listByRun("run-fail-1");
+    assert.equal(evidence.length, 1);
+    assert.equal(evidence[0]?.kind, "limitation");
+    assert.equal(evidence[0]?.qaStatus, "failed");
+    assert.ok(evidence[0]?.limitations.some((line) => /web search/i.test(line)));
+
+    const retrospectives = await runRetrospectiveStore.listByRun("run-fail-1");
+    assert.equal(retrospectives.length, 1);
+    assert.ok(
+      retrospectives[0]?.whatFailed.some((entry) => /web search failed/i.test(entry)),
+      "retrospective whatFailed reflects the search failure",
+    );
+    assert.ok(retrospectives[0]?.weakTools.includes("web.search"));
+
+    const evidenceEvents = events.filter((event) => event.type === "evidence-ledger-recorded");
+    assert.equal(evidenceEvents.length, 1);
+    const evidencePayload = evidenceEvents[0]?.payload as { kind?: string } | undefined;
+    assert.equal(evidencePayload?.kind, "limitation");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent skips ledger work when no stores are wired so existing flows are unaffected", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-ledger-skip-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "web.search",
+    description: "Fake web search",
+    capabilities: ["web-search"],
+    async run() {
+      return { ok: true, content: "1. Result\nhttps://example.org/page\nSnippet." };
+    },
+  });
+  const fakeLlm = new FakeLlm(makeWorkLedgerFakeLlmResponses());
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const events: AgentEvent[] = [];
+
+  try {
+    const result = await agent.run("Research current Schengen short-stay visa rules.", {
+      runId: "run-skip-1",
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    assert.equal(result.reviews[0]?.verdict, "pass");
+    const ledgerEvents = events.filter((event) =>
+      [
+        "work-ledger-claim-created",
+        "work-ledger-reused",
+        "work-ledger-waiting-existing",
+        "evidence-ledger-recorded",
+        "run-retrospective-proposed",
+      ].includes(event.type),
+    );
+    assert.equal(ledgerEvents.length, 0, "no ledger events emitted when stores are absent");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

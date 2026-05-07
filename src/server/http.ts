@@ -3555,6 +3555,9 @@ async function executeRun(
       requesterUserId: run?.requesterUserId ?? "user-admin",
       threadId: run?.threadId,
       toolImprovementCoordinator: agentToolImprovementCoordinator,
+      workLedgerStore: options.workLedgerStore,
+      evidenceLedgerStore: options.evidenceLedgerStore,
+      runRetrospectiveStore: options.runRetrospectiveStore,
       memoryScopes: [
         { scope: "global" },
         { scope: "group", scopeId: run?.instanceId ?? "group-local" },

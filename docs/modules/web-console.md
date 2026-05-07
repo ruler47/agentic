@@ -704,6 +704,19 @@ The current runtime emits `memory`, `planning`, `worker`, `review`, `synthesis`,
 artifacts, and missing tool capabilities appear as trace cards. Future adapters for file
 reads/writes, screenshots, and database operations should use the same event contract.
 
+When the Work / Evidence / Run-Retrospective stores are configured, the runtime adds
+five more event types that flow through the same SSE contract:
+`work-ledger-claim-created`, `work-ledger-reused`, `work-ledger-waiting-existing`,
+`evidence-ledger-recorded`, and `run-retrospective-proposed`. Each event has
+`activity: "coordination"` and `actor: "runtime-ledger"`, so existing trace cards
+already render them; their payloads expose `workItemId`, `workKey`, `decision`,
+`evidenceId`, `kind`, `qaStatus`, and (for the retrospective) the proposed record id.
+Trace Lab can be filtered on these activity values to inspect dedupe decisions
+inline with normal spans. There is no dedicated console view for the ledgers in this
+slice — operators query the HTTP endpoints (`/api/work-ledger`,
+`/api/evidence-ledger`, `/api/run-retrospectives`) directly until a UI surface lands
+in a later phase.
+
 ## Attachments And Artifacts
 
 The task form includes a multiple-file attachment control. Files are encoded in the

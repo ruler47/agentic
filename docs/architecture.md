@@ -520,10 +520,32 @@ on instance/thread/run/workKey/status/sourceUrl. The web API exposes narrow CRUD
 endpoints (`/api/work-ledger`, `/api/evidence-ledger`, `/api/run-retrospectives`) for
 operator and runtime plumbing.
 
-This is foundation only. UniversalAgent prompt integration — checking the work ledger
-before doing external work, citing evidence from the evidence ledger, and writing a
-retrospective at the end of every run — is intentionally a separate task and is not
-wired into the agent runtime in this slice.
+UniversalAgent runtime integration (Phase 1) is now wired through
+[src/work-ledger/runtimeLedgerCoordinator.ts](../src/work-ledger/runtimeLedgerCoordinator.ts):
+
+- The web server passes the three stores through `executeRun` into `agent.run()` as
+  optional dependencies. When any store is wired, the agent constructs a per-run
+  `RuntimeLedgerCoordinator` keyed by `runId` so deeply nested helpers can resolve
+  it from `toolExecutionContext.runId`.
+- Web search (`web.search`) and screenshot/artifact tool calls (`browser-screenshot`
+  and other artifact-producing tools) claim a Work Ledger entry before running,
+  short-circuit on `reuse_completed` when the prior item carries a usable
+  `outputSummary`, and on `wait_for_inflight` simply continue while emitting a trace
+  event so the operator can see the dedupe decision.
+- Successful runs record `search_result`/`screenshot`/`artifact` evidence; non-OK
+  tool results, semantic-QA failures, and CAPTCHA/loader blockers record
+  `limitation` evidence and mark the work item failed.
+- At run end the coordinator writes a deterministic, non-LLM retrospective draft
+  with `status: "proposed"` and aggregates whatWorked/whatFailed/weakTools/
+  duplicatedWork signals it observed during the run.
+- New `AgentEvent` types (`work-ledger-claim-created`, `work-ledger-reused`,
+  `work-ledger-waiting-existing`, `evidence-ledger-recorded`,
+  `run-retrospective-proposed`) appear in the existing run trace stream so the
+  console renders ledger activity inline with normal spans.
+
+The slice does not yet cover URL visits, market timeseries, generic API/tool-use
+call sites, distributed claim locks across replicas, an LLM-driven retrospective,
+or a console UI for the new ledgers. Those remain on the recursive-agent roadmap.
 
 ### Model Tiers
 

@@ -4677,6 +4677,147 @@ test("work ledger HTTP API persists items, validates input, and redacts secret-s
   }
 });
 
+test("web server threads work/evidence/retrospective stores into agent.run() and the HTTP API surfaces what the runtime wrote", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+
+  const workLedgerStore = new InMemoryWorkLedgerStore();
+  const evidenceLedgerStore = new InMemoryEvidenceLedgerStore();
+  const runRetrospectiveStore = new InMemoryRunRetrospectiveStore();
+  const auditEventStore = new InMemoryAuditEventStore();
+
+  // FakeAgent that stands in for UniversalAgent and proves the executeRun path threaded
+  // the three stores into agent.run() options. It writes one record per store, mirroring
+  // what the real RuntimeLedgerCoordinator does in production. Includes secret-shaped
+  // metadata so the test can confirm the store-layer redaction still kicks in.
+  class LedgerWiringFakeAgent {
+    capturedOptionStoreNames: string[] = [];
+
+    async run(task: string, options?: {
+      onEvent?: AgentEventSink;
+      runId?: string;
+      threadId?: string;
+      workLedgerStore?: InMemoryWorkLedgerStore;
+      evidenceLedgerStore?: InMemoryEvidenceLedgerStore;
+      runRetrospectiveStore?: InMemoryRunRetrospectiveStore;
+    }): Promise<AgentRunResult> {
+      assert.ok(options?.workLedgerStore, "executeRun must pass workLedgerStore");
+      assert.ok(options?.evidenceLedgerStore, "executeRun must pass evidenceLedgerStore");
+      assert.ok(options?.runRetrospectiveStore, "executeRun must pass runRetrospectiveStore");
+      this.capturedOptionStoreNames = ["workLedgerStore", "evidenceLedgerStore", "runRetrospectiveStore"];
+
+      const work = await options.workLedgerStore.createItem({
+        kind: "search",
+        workKey: `search:any:any:any:${task.toLowerCase()}`,
+        title: `Runtime search for ${task}`,
+        runId: options.runId,
+        threadId: options.threadId,
+        status: "completed",
+        outputSummary: "Search produced runtime evidence.",
+        metadata: { task, apiToken: "RUNTIME-WORK-CANARY" },
+      });
+      const evidence = await options.evidenceLedgerStore.createEvidence({
+        kind: "search_result",
+        title: `Runtime evidence for ${task}`,
+        summary: "Runtime search snippet.",
+        runId: options.runId,
+        threadId: options.threadId,
+        workItemId: work.id,
+        metadata: { task, secret: "RUNTIME-EVIDENCE-CANARY" },
+      });
+      await options.workLedgerStore.appendEvidenceLink(work.id, evidence.id);
+      await options.runRetrospectiveStore.create({
+        runId: options.runId!,
+        threadId: options.threadId,
+        runOutcome: "completed",
+        whatWorked: ["Runtime captured search evidence"],
+        usefulEvidenceIds: [evidence.id],
+        metadata: { task, password: "RUNTIME-RETRO-CANARY" },
+      });
+
+      await options?.onEvent?.({
+        id: "event-runtime",
+        spanId: "run-span",
+        type: "run-completed",
+        actor: "coordinator",
+        activity: "coordination",
+        status: "completed",
+        title: "Runtime ledger demo run completed",
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        finalAnswer: `runtime answer for ${task}`,
+        complexity: { mode: "delegated", reason: "fake", domains: ["test"], riskLevel: "low" },
+        subtasks: [],
+        workerResults: [],
+        reviews: [],
+      };
+    }
+  }
+
+  const fakeAgent = new LedgerWiringFakeAgent();
+  const server = createWebApp({
+    agent: fakeAgent as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    workLedgerStore,
+    evidenceLedgerStore,
+    runRetrospectiveStore,
+    auditEventStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const create = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "find anything" }),
+    });
+    assert.equal(create.status, 202);
+    const created = (await create.json()) as { run: { id: string } };
+    const completed = await waitForRun(baseUrl, created.run.id);
+    assert.equal(completed.run.status, "completed");
+
+    assert.deepEqual(fakeAgent.capturedOptionStoreNames, [
+      "workLedgerStore",
+      "evidenceLedgerStore",
+      "runRetrospectiveStore",
+    ]);
+
+    const workList = await (await fetch(`${baseUrl}/api/work-ledger?runId=${created.run.id}`)).json();
+    assert.equal(workList.items.length, 1, "work item from the runtime is queryable via HTTP");
+    assert.equal(workList.items[0].status, "completed");
+    assert.equal(
+      workList.items[0].metadata?.apiToken,
+      "[redacted]",
+      "store layer redacts secret-shaped metadata from runtime writes",
+    );
+
+    const evidenceList = await (await fetch(`${baseUrl}/api/evidence-ledger?runId=${created.run.id}`)).json();
+    assert.equal(evidenceList.records.length, 1);
+    assert.equal(evidenceList.records[0].kind, "search_result");
+    assert.equal(evidenceList.records[0].metadata?.secret, "[redacted]");
+
+    const retroList = await (await fetch(`${baseUrl}/api/run-retrospectives?runId=${created.run.id}`)).json();
+    assert.equal(retroList.records.length, 1);
+    assert.equal(retroList.records[0].status, "proposed");
+    assert.equal(retroList.records[0].metadata?.password, "[redacted]");
+
+    const responseJson = JSON.stringify({ workList, evidenceList, retroList });
+    for (const canary of [
+      "RUNTIME-WORK-CANARY",
+      "RUNTIME-EVIDENCE-CANARY",
+      "RUNTIME-RETRO-CANARY",
+    ]) {
+      assert.ok(!responseJson.includes(canary), `HTTP responses must not leak ${canary}`);
+    }
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
 async function listen(server: ReturnType<typeof createWebApp>): Promise<string> {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;

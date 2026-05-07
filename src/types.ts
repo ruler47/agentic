@@ -183,7 +183,12 @@ export type AgentEventType =
   | "synthesis-started"
   | "synthesis-completed"
   | "learning-completed"
-  | "run-completed";
+  | "run-completed"
+  | "work-ledger-claim-created"
+  | "work-ledger-reused"
+  | "work-ledger-waiting-existing"
+  | "evidence-ledger-recorded"
+  | "run-retrospective-proposed";
 
 export type AgentActivity =
   | "coordination"

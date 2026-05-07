@@ -47,6 +47,13 @@ import {
   ToolImprovementResult,
 } from "../tools/toolImprovementCoordinator.js";
 import { ToolReworkWaitRecord } from "../runs/toolReworkWaitStore.js";
+import {
+  EvidenceLedgerStore,
+  RunRetrospectiveStore,
+  WorkLedgerStore,
+} from "../work-ledger/types.js";
+import { searchQueryWorkKey, toolCallWorkKey } from "../work-ledger/workKey.js";
+import { RuntimeLedgerCoordinator } from "../work-ledger/runtimeLedgerCoordinator.js";
 import { Tool, ToolExecutionContext, ToolInput, ToolResult } from "../tools/tool.js";
 
 type AgentImproveToolFn = (request: ToolImprovementRequest) => Promise<ToolImprovementResult>;
@@ -112,6 +119,9 @@ type RunOptions = {
   requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>;
   toolImprovementCoordinator?: ToolImprovementCoordinator;
   toolExecutionContext?: Partial<Omit<ToolExecutionContext, "toolName" | "now">>;
+  workLedgerStore?: WorkLedgerStore;
+  evidenceLedgerStore?: EvidenceLedgerStore;
+  runRetrospectiveStore?: RunRetrospectiveStore;
   now?: Date;
   timeZone?: string;
 };
@@ -156,11 +166,44 @@ const promptBudget = {
 };
 
 export class UniversalAgent {
+  /**
+   * Per-run RuntimeLedgerCoordinator instances keyed by `runId`. Stored on the agent
+   * instance so deeply nested helpers (`runWebSearch`, `runArtifactTool`, …) can
+   * recover the coordinator from `toolExecutionContext.runId` without threading it
+   * through every signature. Concurrent runs are safe because each call writes its
+   * own `runId` slot and clears it in a try/finally; runs without a `runId` (CLI /
+   * test fixtures without HTTP wiring) simply skip the ledger.
+   */
+  private readonly runScopedLedgers = new Map<string, RuntimeLedgerCoordinator>();
+
   constructor(
     private readonly llm: LlmClient,
     private readonly skillMemory: SkillMemoryStore,
     private readonly tools = new ToolRegistry(),
   ) {}
+
+  private resolveLedgerFromContext(
+    toolExecutionContext: BaseToolExecutionContext | undefined,
+  ): RuntimeLedgerCoordinator | undefined {
+    const runId = toolExecutionContext?.runId;
+    if (typeof runId !== "string" || runId === "") return undefined;
+    return this.runScopedLedgers.get(runId);
+  }
+
+  private async finalizeRunLedger(
+    ledger: RuntimeLedgerCoordinator | undefined,
+    runOutcome: "completed" | "failed" | "cancelled" | "waiting_tool_rework",
+    runId: string | undefined,
+    parentSpanId: string,
+  ): Promise<void> {
+    try {
+      if (ledger) {
+        await ledger.writeRetrospective(runOutcome, parentSpanId);
+      }
+    } finally {
+      if (runId) this.runScopedLedgers.delete(runId);
+    }
+  }
 
   async run(task: string, options: RunOptions = {}): Promise<AgentRunResult> {
     const emit = createEmitter(options.onEvent);
@@ -170,6 +213,23 @@ export class UniversalAgent {
     const runStartedAt = options.now ?? new Date();
     const artifacts: AgentArtifact[] = [...(options.inputArtifacts ?? [])];
     const toolExecutionContext = buildToolExecutionContext(options);
+    // Optional Work / Evidence / Run-Retrospective runtime adapter. When no stores are
+    // wired up the coordinator short-circuits every method, so this slice is purely
+    // additive for existing CLI / fake-LLM flows.
+    const ledger = (options.workLedgerStore || options.evidenceLedgerStore || options.runRetrospectiveStore)
+      ? new RuntimeLedgerCoordinator({
+          workLedgerStore: options.workLedgerStore,
+          evidenceLedgerStore: options.evidenceLedgerStore,
+          runRetrospectiveStore: options.runRetrospectiveStore,
+          runId: options.runId,
+          threadId: options.threadId,
+          instanceId: options.instanceId,
+          emit,
+        })
+      : undefined;
+    if (ledger && options.runId) {
+      this.runScopedLedgers.set(options.runId, ledger);
+    }
     const pendingToolImprovements: ToolReworkWaitRecord[] = [];
     const improveTool: AgentImproveToolFn | undefined = options.toolImprovementCoordinator
       ? async (request) => {
@@ -367,6 +427,7 @@ export class UniversalAgent {
         payload: { finalAnswer, artifacts },
       });
 
+      await this.finalizeRunLedger(ledger, "completed", options.runId, runSpanId);
       return {
         finalAnswer,
         complexity,
@@ -505,6 +566,7 @@ export class UniversalAgent {
       payload: { finalAnswer, artifacts },
     });
 
+    await this.finalizeRunLedger(ledger, "completed", options.runId, runSpanId);
     return {
       finalAnswer,
       complexity,
@@ -893,6 +955,30 @@ export class UniversalAgent {
     const queries = buildSearchQueries(subtask, contextText);
     const query = queries.join(" | ");
 
+    // Work Ledger claim: a sibling subtask in the same run/thread that asks for the
+    // same merged query string can reuse our completed evidence instead of issuing
+    // another search round-trip. Reuse never silently skips required work — if the
+    // existing item has no evidence to anchor on, the agent still proceeds.
+    const ledger = this.resolveLedgerFromContext(toolExecutionContext);
+    const claim = await ledger?.claim(
+      {
+        kind: "search",
+        workKey: searchQueryWorkKey({
+          query,
+          provider: webSearch.name,
+        }),
+        title: `Web search: ${query.slice(0, 96)}`,
+        ownerSpanId: spanId,
+        inputSummary: limitText(query, 600),
+        metadata: { tool: webSearch.name, role: subtask.role },
+      },
+      parentSpanId,
+    );
+    if (claim?.decision.status === "reuse_completed" && claim.item.outputSummary) {
+      ledger?.trackWhatWorked(`Reused web search evidence for "${query.slice(0, 80)}"`);
+      return `External tool evidence from ${webSearch.name} (reused via Work Ledger ${claim.item.id}):\n${limitText(claim.item.outputSummary, promptBudget.toolEvidenceChars)}`;
+    }
+
     await emit({
       spanId,
       parentSpanId,
@@ -903,7 +989,7 @@ export class UniversalAgent {
       title: `Tool: ${webSearch.name}`,
       detail: query,
       startedAt: startedAt.toISOString(),
-      payload: { tool: webSearch.name, query },
+      payload: { tool: webSearch.name, query, workItemId: claim?.item.id },
     });
 
     const results = await Promise.all(
@@ -931,6 +1017,47 @@ export class UniversalAgent {
       durationMs: elapsedMs(startedAt),
       payload: result,
     });
+
+    if (claim) {
+      if (result.ok) {
+        await ledger?.markCompleted(claim.item.id, {
+          outputSummary: limitText(result.content, 4_000),
+        });
+        ledger?.trackWhatWorked(`Web search returned evidence for "${query.slice(0, 80)}"`);
+        await ledger?.recordEvidence(
+          {
+            kind: "search_result",
+            title: `Web search: ${query.slice(0, 96)}`,
+            summary: limitText(result.content, 600),
+            contentPreview: limitText(result.content, 2_000),
+            provider: webSearch.name,
+            toolName: webSearch.name,
+            workItemId: claim.item.id,
+            qaStatus: "unchecked",
+            metadata: { query, role: subtask.role },
+          },
+          parentSpanId,
+        );
+      } else {
+        await ledger?.markFailed(claim.item.id, limitText(result.content, 600));
+        ledger?.trackWhatFailed(`Web search failed for "${query.slice(0, 80)}"`);
+        ledger?.trackWeakTool(webSearch.name);
+        await ledger?.recordEvidence(
+          {
+            kind: "limitation",
+            title: `Web search failed: ${query.slice(0, 96)}`,
+            summary: limitText(result.content, 600),
+            provider: webSearch.name,
+            toolName: webSearch.name,
+            workItemId: claim.item.id,
+            qaStatus: "failed",
+            limitations: ["External web search returned a non-OK tool result."],
+            metadata: { query, role: subtask.role },
+          },
+          parentSpanId,
+        );
+      }
+    }
 
     return result.ok
       ? `External tool evidence from ${webSearch.name}:\n${limitText(result.content, promptBudget.toolEvidenceChars)}`
@@ -1710,6 +1837,26 @@ export class UniversalAgent {
   ): Promise<AgentArtifact | undefined> {
     const spanId = createSpanId(`tool-${tool.name}`);
     const startedAt = new Date();
+    // Work Ledger claim covers the reusable artifact-tool contract: same tool name +
+    // same input payload + same capability ⇒ same workKey. Reuse here is conservative:
+    // we never substitute a cached artifact for a real one because the agent still
+    // needs the AgentArtifact record returned by saveArtifact. Instead we annotate the
+    // span/payload with the existing work item id and proceed; the dedupe value comes
+    // from the retrospective draft tagging duplicated work signals.
+    const ledger = this.resolveLedgerFromContext(toolExecutionContext);
+    const ledgerKind = capability === "browser-screenshot" ? "screenshot" : "artifact_generation";
+    const claim = await ledger?.claim(
+      {
+        kind: ledgerKind,
+        workKey: toolCallWorkKey(tool.name, { capability, ...input }),
+        title: `${artifactTitle} via ${tool.name}`,
+        ownerSpanId: spanId,
+        inputSummary: limitText(detail, 600),
+        metadata: { capability, tool: tool.name },
+      },
+      parentSpanId,
+    );
+
     await emit({
       spanId,
       parentSpanId,
@@ -1720,7 +1867,7 @@ export class UniversalAgent {
       title: `Tool: ${tool.name}`,
       detail,
       startedAt: startedAt.toISOString(),
-      payload: { tool: tool.name, capability },
+      payload: { tool: tool.name, capability, workItemId: claim?.item.id },
     });
 
     const toolResult = await this.executeTool(tool, input, toolExecutionContext, {
@@ -1744,6 +1891,24 @@ export class UniversalAgent {
         durationMs: elapsedMs(startedAt),
         payload: sanitizeToolPayload(toolResult),
       });
+      if (claim) {
+        await ledger?.markFailed(claim.item.id, limitText(toolResult.content, 600));
+        ledger?.trackWhatFailed(`${artifactTitle} failed via ${tool.name}`);
+        ledger?.trackWeakTool(tool.name);
+        await ledger?.recordEvidence(
+          {
+            kind: "limitation",
+            title: `${artifactTitle} failed: ${tool.name}`,
+            summary: limitText(toolResult.content, 600),
+            toolName: tool.name,
+            workItemId: claim.item.id,
+            qaStatus: "failed",
+            limitations: [`${tool.name} returned an unusable ${artifactTitle.toLowerCase()} payload.`],
+            metadata: { capability, role: "artifact" },
+          },
+          parentSpanId,
+        );
+      }
       const buildRequest = await this.handleInsufficientToolCapability(
         {
           tool,
@@ -1824,6 +1989,25 @@ export class UniversalAgent {
           payload: { artifact: sanitizeArtifactInput(artifactInput), artifactQa },
         });
         if (artifactQa.decision === "blocked_or_loader") {
+          if (claim) {
+            await ledger?.markFailed(claim.item.id, limitText(artifactQa.reason, 400));
+            ledger?.trackWhatFailed(`${artifactTitle} blocked by external page (${tool.name})`);
+            await ledger?.recordEvidence(
+              {
+                kind: "limitation",
+                title: `${artifactTitle} blocked by external page`,
+                summary: limitText(artifactQa.reason, 400),
+                toolName: tool.name,
+                workItemId: claim.item.id,
+                qaStatus: "blocked",
+                limitations: [
+                  "External page presented a CAPTCHA / loader / login wall and could not be screenshot.",
+                ],
+                metadata: { capability, decision: artifactQa.decision },
+              },
+              parentSpanId,
+            );
+          }
           await this.recordExternalArtifactBlocker(
             {
               tool,
@@ -1836,6 +2020,24 @@ export class UniversalAgent {
             artifactSpanId,
           );
           return undefined;
+        }
+        if (claim) {
+          await ledger?.markFailed(claim.item.id, limitText(artifactQa.reason, 400));
+          ledger?.trackWhatFailed(`${artifactTitle} rejected by semantic QA (${tool.name})`);
+          ledger?.trackWeakTool(tool.name);
+          await ledger?.recordEvidence(
+            {
+              kind: "limitation",
+              title: `${artifactTitle} rejected by semantic QA`,
+              summary: limitText(artifactQa.reason, 400),
+              toolName: tool.name,
+              workItemId: claim.item.id,
+              qaStatus: "failed",
+              limitations: [`Artifact failed semantic QA: ${artifactQa.reason}`],
+              metadata: { capability, decision: artifactQa.decision },
+            },
+            parentSpanId,
+          );
         }
         const buildRequest = await this.handleInsufficientToolCapability(
           {
@@ -1908,6 +2110,26 @@ export class UniversalAgent {
       durationMs: elapsedMs(artifactStartedAt),
       payload: { artifact },
     });
+    if (claim) {
+      await ledger?.markCompleted(claim.item.id, {
+        outputSummary: `${artifactTitle} produced by ${tool.name}: ${artifact.filename}`,
+      });
+      ledger?.trackWhatWorked(`${artifactTitle} produced via ${tool.name}`);
+      const evidenceKind = capability === "browser-screenshot" ? "screenshot" : "artifact";
+      await ledger?.recordEvidence(
+        {
+          kind: evidenceKind,
+          title: `${artifactTitle}: ${artifact.filename}`,
+          summary: limitText(artifact.url, 400),
+          toolName: tool.name,
+          workItemId: claim.item.id,
+          artifactId: artifact.id,
+          qaStatus: "passed",
+          metadata: { capability, mimeType: artifact.mimeType, filename: artifact.filename },
+        },
+        parentSpanId,
+      );
+    }
 
     return artifact;
   }

@@ -42,10 +42,33 @@ work-key builders and a pure `decideWorkReuse` decision function returning
 implementations plus durable migrations; recursively redacts secret-shaped metadata;
 and exposes narrow operator/runtime HTTP endpoints
 (`/api/work-ledger`, `/api/evidence-ledger`, `/api/run-retrospectives`) with audit
-events and 503 fall-through when stores are not configured. The UniversalAgent prompt
-plumbing that will actually consult the ledgers, claim work, append evidence, and
-write a retrospective at run end is intentionally separate and lives in the next
-runtime-integration slice; this foundation is the storage/model/API layer only.
+events and 503 fall-through when stores are not configured.
+
+### Runtime integration slice — Phase 1 (DONE)
+
+`UniversalAgent` now consults the ledgers when their stores are wired through
+`agent.run()` options or, equivalently, through the web server's executeRun. A
+per-run `RuntimeLedgerCoordinator`
+([src/work-ledger/runtimeLedgerCoordinator.ts](../src/work-ledger/runtimeLedgerCoordinator.ts))
+claims work before web-search and screenshot/artifact tool calls, short-circuits
+on `reuse_completed`, records `search_result` / `screenshot` / `artifact` /
+`limitation` evidence, and writes a deterministic, non-LLM retrospective draft at
+run end. New trace events (`work-ledger-claim-created`, `work-ledger-reused`,
+`work-ledger-waiting-existing`, `evidence-ledger-recorded`,
+`run-retrospective-proposed`) flow through the existing event sink so the run
+trace renders ledger activity inline. When no stores are wired the entire path
+short-circuits and the runtime keeps its previous behaviour.
+
+Phase 1 limitations to address in later slices:
+
+- URL visit, market timeseries, declared API calls, and other tool-use call sites
+  are not yet covered — only `web.search` and the artifact-producing tools (with
+  `browser-screenshot` capability the most common).
+- There is no console UI surface for the new ledgers yet; operators query the
+  HTTP endpoints directly.
+- Distributed claim ownership across replicas is not enforced at the store layer.
+- The retrospective draft is rule-based; an LLM-driven retrospective with
+  proposed memory/tool/policy/prompt actions is a separate later slice.
 
 
 

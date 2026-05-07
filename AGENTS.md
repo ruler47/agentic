@@ -66,16 +66,20 @@ policies without leaking context.
 - Continuation runs should receive compact prior artifact metadata in thread context and
   reuse those artifacts when they satisfy the follow-up instead of reacquiring identical
   data by default.
-- Future recursive-agent work should add a Thread/Run Work Ledger plus Evidence Ledger:
-  agents must record planned/claimed/running/completed/failed/stale work, search queries,
-  URLs, API calls, screenshots, datasets, files, owner spans, freshness, QA status, and
-  dedupe keys so sibling branches can reuse evidence or wait instead of doing the same
-  external work twice.
-- Future runs should produce a structured retrospective after completion/failure:
-  what worked, what failed, probable root causes, duplicated work, weak tools/models,
-  useful evidence, and proposed memory/tool/prompt/policy follow-ups. Retrospectives feed
-  review queues and improvement tickets; they do not automatically become accepted
-  memory.
+- The Thread/Run Work Ledger and Evidence Ledger are now partially wired into the
+  UniversalAgent runtime: web-search and screenshot/artifact tool calls go through a
+  Work Ledger claim before they execute, evidence and limitations are recorded as the
+  tool returns, and a proposed retrospective is written at run end. When the stores
+  are not provided, the runtime falls back to its previous behaviour. The slice does
+  not yet cover URL visits, market timeseries, or generic API/tool-use call sites,
+  and there is no UI surface for the new ledgers — those are tracked for follow-up
+  phases of the recursive-agent program.
+- Runs produce a deterministic, non-LLM retrospective draft after completion/failure:
+  what worked, what failed, observed weak tools, missing capabilities, duplicated-work
+  signals, and the evidence ids it considered useful. The draft is written with status
+  `proposed`; operators (or a later LLM-driven step) accept, reject, or expand it.
+  Retrospectives feed review queues and improvement tickets; they do not automatically
+  become accepted memory.
 - Council planning is an allowed universal-agent strategy for ambiguous/high-risk/
   multi-domain work: the agent may ask several child agents or model tiers to propose or
   critique a plan, then synthesize the result while using the Work Ledger to prevent
@@ -460,8 +464,14 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/runs/postgresRunStore.ts](src/runs/postgresRunStore.ts) - Postgres-backed run store.
 - [src/db/migrate.ts](src/db/migrate.ts) - database migrations.
 - [src/work-ledger/types.ts](src/work-ledger/types.ts) - shared types for the Work
-  Ledger, Evidence Ledger, and Run Retrospective domain stores (foundation only; the
-  UniversalAgent runtime is not yet wired into the ledgers).
+  Ledger, Evidence Ledger, and Run Retrospective domain stores. The UniversalAgent
+  runtime now writes work claims, evidence, and proposed retrospectives through these
+  contracts when the stores are wired (web-search and screenshot/artifact tool sites).
+  Threading is optional — runs without stores keep their previous behaviour.
+- [src/work-ledger/runtimeLedgerCoordinator.ts](src/work-ledger/runtimeLedgerCoordinator.ts) -
+  per-run adapter that the agent uses to claim work, record evidence, and emit a
+  proposed retrospective at run end. Resolved through a per-run map keyed by
+  `runId` so deeply nested helpers do not need to thread an extra argument.
 - [src/work-ledger/workKey.ts](src/work-ledger/workKey.ts) - deterministic work-key
   builders for search queries, URL visits, tool/API calls, and artifact intents.
 - [src/work-ledger/decideWorkReuse.ts](src/work-ledger/decideWorkReuse.ts) - pure
