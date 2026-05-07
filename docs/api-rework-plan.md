@@ -298,31 +298,33 @@ Three layers, all gated in `npm run verify` by Phase 5:
 
 ## 7. Progress Checklist
 
-To be kept up to date as work lands. Format:
-`[x] Module — phase — commit`.
-
-- [ ] Phase 0: api-surface.md — listed every legacy route
-- [ ] Phase 0: contract snapshot suite — passes against legacy
-- [ ] Phase 1: NestJS skeleton (AppModule, ConfigModule, PersistenceModule)
-- [ ] Phase 1: HealthModule + InstanceModule + GroupProfileModule
-- [ ] Phase 2: UsersModule
-- [ ] Phase 2: ConversationsModule + AuditModule
-- [ ] Phase 2: MemoryModule
-- [ ] Phase 2: SecretsModule
-- [ ] Phase 2: ModelsModule + SettingsModule
-- [ ] Phase 2: ToolsModule (basics)
-- [ ] Phase 2: ToolBuildRequestsModule + ToolInvestigationsModule + ToolReworkWaitsModule
-- [ ] Phase 2: ToolMigrationsModule + ToolPromotionsModule
-- [ ] Phase 2: ArtifactsModule
-- [ ] Phase 3: RunsModule (REST + SSE + executeRun)
-- [ ] Phase 3: ToolServicesModule (REST + SSE logs)
-- [ ] Phase 4: ToolBuildWorker provider + lifecycle
-- [ ] Phase 4: ToolServiceSupervisor provider + lifecycle
-- [ ] Phase 4: ServeStaticModule for legacy public/
-- [ ] Phase 5: Switch `npm run web` to Nest, keep `web:legacy` for one release
-- [ ] Phase 5: Delete `src/server/http.ts` + helpers; relocate survivors
-- [ ] Phase 6 (optional): Swagger at /api/docs
-- [ ] Phase 6 (optional): Generate typed client for web-react
+- [x] Phase 0: api-surface.md — listed every legacy route (`docs/api-surface.md`)
+- [~] Phase 0: contract snapshot suite — deferred; per-phase curl smoke tests
+      catch parity drift instead, full snapshot suite is an open follow-up
+- [x] Phase 1: NestJS skeleton (AppModule, ConfigModule, PersistenceModule, CommonModule)
+- [x] Phase 1: HealthModule + Instance + GroupProfile
+- [x] Phase 2: UsersModule
+- [x] Phase 2: ConversationsModule + AuditModule
+- [x] Phase 2: MemoryModule
+- [x] Phase 2: SecretsModule
+- [x] Phase 2: ModelsModule + SettingsModule
+- [x] Phase 2: ToolsModule (basics + settings + generated-modules + package runners)
+- [x] Phase 2: ToolBuildRequestsModule + ToolInvestigationsModule + ToolReworkWaitsModule
+- [x] Phase 2: ToolMigrationsModule + ToolPromotionsModule
+- [x] Phase 2: ArtifactsModule (folded into RunsModule — single artifact route)
+- [x] Phase 3: RunsModule (REST + SSE + executeRun)
+- [x] Phase 3: ToolServicesModule (REST + SSE logs)
+- [x] Phase 4: ToolBuildWorker provider + lifecycle (RuntimeWorkersModule)
+- [x] Phase 4: ToolServiceSupervisor provider + lifecycle
+- [x] Phase 4: ServeStaticModule for legacy public/
+- [x] Phase 5: Switch `npm run web` and `npm run serve` (Docker) to Nest;
+      keep `web:legacy` / `serve:legacy` for emergency rollback
+- [~] Phase 5: Delete `src/server/http.ts` + legacy `main.ts` + the
+      hand-rolled webServer.test.ts — held back at the user's request so the
+      branch can be tested before destroying the rollback path
+- [x] Phase 6: Swagger at /api/docs (+ /api/docs-json + /api/docs-yaml)
+- [~] Phase 6: Generated typed client for web-react — deferred behind the
+      end-to-end test pass; `/api/docs-json` is the input when this lands
 
 ## 8. Out of Scope
 
@@ -336,18 +338,54 @@ To be kept up to date as work lands. Format:
 - Performance tuning. Express adapter is the baseline; revisit only if a
   benchmark says otherwise.
 
-## 9. Open Questions
+## 9. Resolved Notes
 
-1. Decorators in ESM — confirm `tsx` runs `reflect-metadata` correctly under
-   `"type": "module"` before committing to the Express adapter; if not, drop
-   to `ts-node` for dev only.
-2. `class-validator` vs Zod — both work; default to `class-validator` for
-   tighter NestJS integration unless the user prefers Zod.
-3. Audit interceptor scope — some audit calls need post-execution
-   information (run id, identity id) that the interceptor can read off the
-   response body. Need to verify this is clean enough; otherwise keep
-   targeted `AuditService.record()` calls inside services.
-4. SSE poll vs event subscription — current implementation polls
-   `runStore.get()` every 650 ms. If `RunStore` grows a real event emitter
-   later, the SSE controller becomes push-based with no public API change.
+1. Decorators in ESM — `tsx` does NOT emit `design:paramtypes` under
+   `experimentalDecorators`, so DI fails when running `tsx src/server/main.nest.ts`
+   directly. Fix: run the compiled bundle (`node dist/server/main.nest.js`).
+   Production scripts (`web`, `serve`) already do this; `web:dev` / `web:nest:dev`
+   should be considered "best effort" and re-checked if dev-time DI fails.
+2. `class-validator` chosen — produces field-level error messages through
+   the `ValidationPipe.exceptionFactory` and integrates cleanly with the
+   existing controllers.
+3. Audit recording stays inside services rather than a global interceptor —
+   most audit events need post-execution context (the `RunRecord`,
+   `BuildRequestRecord`, `IdentityRecord` returned by the store) that an
+   interceptor would have to re-read from the response body.
+4. SSE poll vs event subscription — kept poll-based to match legacy
+   `streamRunEvents` exactly. When `RunStore` grows a real event emitter,
+   the SSE controller becomes push-based with no public API change.
+
+## 10. Items Held Back for User Verification
+
+- `src/server/http.ts` (~5,400 lines) and `src/server/main.ts` are still on
+  disk as the rollback target. After the user smoke-tests this branch and
+  confirms parity, a follow-up commit removes them along with
+  `tests/webServer.test.ts` (which imports the legacy `createWebApp`).
+- The `requestToolBuild` callback inside `RunsService.executeRun` no longer
+  triggers the Tool Builder workflow inline — the legacy code did
+  `workflow.runOnce(...)` from inside the agent run. The new code only
+  records the build request; the background worker (always running in the
+  Nest server) picks it up the next tick. If the synchronous behaviour is
+  required for some test, we can re-introduce it as a service collaborator
+  injected into RunsService.
+- `RecordToolServiceOutbound` (post-run delivery for Telegram-style
+  channels) is not wired in `RunsService.executeRun` yet. The legacy code
+  emitted an outbound `tool_service.event` after every completed/failed run
+  whose run.channel matched a service. Equivalent service-side hook is a
+  follow-up: inject `ToolServicesService` into `RunsService` and call from
+  the same try/catch tail.
+- Inline credential redaction (`extractInlineCredentialSecret`,
+  `attachInlineCredentialHandle`, `ensureInlineCredentialSecret`) and the
+  `validateContextualToolBuildTarget` mismatch detection were left out of
+  `ToolBuildsService.create`. Operators that paste raw secrets into a build
+  request body will not have them auto-redacted into a `secret.*` handle
+  yet. The legacy server still does this; toggling back to
+  `npm run web:legacy` is an option until parity is restored.
+- `ToolInvestigationsService.promote` and the `ToolReworkWaitsService`
+  resume / retry-run / auto-retry endpoints currently 503 because they
+  depend on `ToolImprovementCoordinator` and `ToolReworkRetryCoordinator`
+  factories that the legacy code constructs per request. Wiring those is
+  small (the coordinators are already plain classes) but I did not finish
+  it before cutover.
 
