@@ -79,6 +79,7 @@ import {
   GeneratedToolFileBuilder,
   MetadataToolRegistrar,
 } from "../tools/toolBuildProviders.js";
+import { TelegramBotToolBuildProvider } from "../tools/telegramBotToolBuildProvider.js";
 import { ToolPackageWorkspaceStore } from "../tools/toolPackageWorkspaceStore.js";
 import { LlmToolBuildProvider } from "../tools/llmToolBuildProvider.js";
 import { createScopedToolDbClient } from "../tools/toolScopedDb.js";
@@ -191,6 +192,10 @@ const toolBuildWorkflow = new ToolBuildWorkflow(
     [
       new BrowserScreenshotToolBuildProvider(),
       new DocumentArtifactToolBuildProvider(),
+      // Telegram-specific provider runs BEFORE the generic service provider so that
+      // Telegram-shaped requests get a real Telegram Bot API adapter (with getUpdates /
+      // sendMessage / inline keyboard) instead of a provider-neutral bridge.
+      new TelegramBotToolBuildProvider(),
       new GenericServiceToolBuildProvider(),
       new GenericApiToolBuildProvider(),
       ...(process.env.TOOL_BUILD_LLM_PROVIDER === "disabled"
