@@ -1604,7 +1604,8 @@ test("web server exposes tool build requests", async () => {
       true,
     );
     assert.deepEqual(created.request.credentialHandles, ["secret.pdf.vendor"]);
-    assert.equal(created.request.credentialNotes, "api key 12312, secret 8978");
+    assert.equal(created.request.credentialNotes, "api key [redacted credential], secret 8978");
+    assert.doesNotMatch(JSON.stringify(created.request), /12312/);
     assert.ok(
       created.request.contract.builderInstructions.some((instruction: string) => instruction.includes("secret.pdf.vendor")),
     );
@@ -1621,7 +1622,8 @@ test("web server exposes tool build requests", async () => {
     assert.equal(rework.request.status, "requested");
     assert.equal(rework.request.reworkOf, created.request.id);
     assert.deepEqual(rework.request.credentialHandles, ["secret.pdf.vendor"]);
-    assert.equal(rework.request.credentialNotes, "api key 12312, secret 8978");
+    assert.equal(rework.request.credentialNotes, "api key [redacted credential], secret 8978");
+    assert.doesNotMatch(JSON.stringify(rework.request), /12312/);
     assert.equal(rework.request.displayName, "PDF Report");
     assert.match(rework.request.feedback, /stricter artifact validation/);
     assert.match(rework.request.reason, /Original build context/);
@@ -1689,6 +1691,47 @@ test("web server infers tool build capability from human request fields", async 
     assert.doesNotMatch(body.request.credentialNotes, /12312/);
     assert.deepEqual(body.request.credentialHandles, ["secret.api.wallet-risk-lookup"]);
     assert.equal(await secretHandleStore.resolve?.("secret.api.wallet-risk-lookup"), "12312");
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server stores inline credentials from reason as secret handles and redacts queued request text", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
+  const secretHandleStore = new InMemorySecretHandleStore();
+  const rawSecret = "REASON-SECRET-NODIGIT";
+  const server = createWebApp({
+    agent: new FakeAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    toolBuildRequestStore,
+    secretHandleStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const response = await fetch(`${baseUrl}/api/tool-build-requests`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        displayName: "Personal Assistant Telegram Bot",
+        reason: `Create an always-on Telegram bot. Credentials: bot token ${rawSecret}.`,
+        startupMode: "always-on",
+      }),
+    });
+    const body = await response.json();
+    const list = await (await fetch(`${baseUrl}/api/tool-build-requests`)).json();
+
+    assert.equal(response.status, 201);
+    assert.equal(body.request.capability, "api.personal-assistant-telegram-bot");
+    assert.deepEqual(body.request.credentialHandles, ["secret.api.personal-assistant-telegram-bot"]);
+    assert.match(body.request.reason, /redacted credential/);
+    assert.doesNotMatch(JSON.stringify(body), new RegExp(rawSecret));
+    assert.doesNotMatch(JSON.stringify(list), new RegExp(rawSecret));
+    assert.equal(await secretHandleStore.resolve?.("secret.api.personal-assistant-telegram-bot"), rawSecret);
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });

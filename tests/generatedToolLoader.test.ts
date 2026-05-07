@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
@@ -303,6 +304,117 @@ test("loadGeneratedTools can execute source-bundles through local HTTP process r
     assert.equal(stored?.status, "available");
     assert.match(stored?.lastHealthDetail ?? "", /entrypoint is present/);
     assert.equal(output?.content, "hello http process");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("source-bundle HTTP process runner builds TypeScript package when runtime dist is missing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentic-source-http-autobuild-"));
+  const packageDir = join(root, "tool-packages/autobuild");
+  const metadata = new InMemoryToolMetadataStore();
+  const registry = new ToolRegistry();
+
+  try {
+    if (existsSync(join(process.cwd(), "node_modules"))) {
+      await symlink(join(process.cwd(), "node_modules"), join(root, "node_modules"), "dir");
+    }
+    await mkdir(join(packageDir, "runtime"), { recursive: true });
+    await writeFile(
+      join(packageDir, "package.json"),
+      JSON.stringify({
+        name: "generated.bundle.autobuild",
+        version: "1.0.0",
+        private: true,
+        type: "module",
+        scripts: { build: "tsc -p tsconfig.json" },
+        devDependencies: { "@types/node": "^20.12.12", typescript: "^5.6.3" },
+      }, null, 2),
+    );
+    await writeFile(
+      join(packageDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          strict: true,
+          outDir: "dist",
+          rootDir: ".",
+        },
+        include: ["index.ts", "runtime/**/*.ts"],
+      }, null, 2),
+    );
+    await writeFile(
+      join(packageDir, "index.ts"),
+      `
+        export const tool = {
+          name: "generated.bundle.autobuild",
+          version: "1.0.0",
+          description: "Autobuilt HTTP runtime source bundle.",
+          capabilities: ["text-normalization"],
+          async run(input: Record<string, unknown>) {
+            return { ok: true, content: String(input.text ?? "").toUpperCase() };
+          }
+        };
+      `,
+    );
+    await writeFile(
+      join(packageDir, "runtime/server.ts"),
+      `
+        import { createServer } from "node:http";
+        import { tool } from "../index.js";
+        const port = Number(process.env.PORT ?? 8080);
+        const server = createServer(async (request, response) => {
+          response.setHeader("content-type", "application/json");
+          if (request.method === "GET" && request.url === "/health") {
+            response.end(JSON.stringify({ ok: true, detail: "autobuilt runtime healthy" }));
+            return;
+          }
+          if (request.method === "POST" && request.url === "/run") {
+            const chunks = [];
+            for await (const chunk of request) chunks.push(Buffer.from(chunk));
+            const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            response.end(JSON.stringify(await tool.run(body.input ?? {})));
+            return;
+          }
+          response.statusCode = 404;
+          response.end(JSON.stringify({ ok: false, error: "not found" }));
+        });
+        server.listen(port, "127.0.0.1");
+      `,
+    );
+    await metadata.registerGenerated({
+      name: "generated.bundle.autobuild",
+      version: "1.0.0",
+      description: "Autobuilt HTTP runtime source bundle.",
+      capabilities: ["text-normalization"],
+      packageManifest: {
+        schemaVersion: "agentic.tool-package.v1",
+        name: "generated.bundle.autobuild",
+        version: "1.0.0",
+        description: "Autobuilt HTTP runtime source bundle.",
+        capabilities: ["text-normalization"],
+        startupMode: "on-demand",
+        package: { type: "source-bundle", ref: "autobuild" },
+      },
+    });
+
+    assert.equal(existsSync(join(packageDir, "dist/runtime/server.js")), false);
+
+    const results = await loadGeneratedTools(registry, metadata, root, [
+      new SourceBundleHttpProcessToolPackageRunner({
+        enabled: true,
+        packageRoot: "tool-packages",
+        startupTimeoutMs: 5000,
+        pollIntervalMs: 50,
+      }),
+    ]);
+    const output = await registry.get("generated.bundle.autobuild")?.run({ text: "hello" });
+
+    assert.equal(results[0]?.loaded, true, JSON.stringify(results[0], null, 2));
+    assert.equal(existsSync(join(packageDir, "dist/runtime/server.js")), true);
+    assert.equal(output?.content, "HELLO");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

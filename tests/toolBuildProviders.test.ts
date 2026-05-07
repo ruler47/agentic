@@ -310,6 +310,45 @@ test("GeneratedToolFileBuilder creates provider-neutral always-on service module
   }
 });
 
+test("GeneratedToolFileBuilder mirrors always-on services into a package workspace that builds", async () => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "agentic-builder-"));
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const request = await requestStore.create({
+    capability: "messaging.provider.bot",
+    displayName: "Provider Bot",
+    reason: "Create an always-on bot integration that receives messages, sends replies, uses a token, and allows a whitelist.",
+    desiredToolName: "generated.messaging.provider.bot",
+    startupMode: "always-on",
+    credentialHandles: ["secret.messaging.provider.bot"],
+  });
+  const builder = new GeneratedToolFileBuilder(
+    [new GenericServiceToolBuildProvider()],
+    projectRoot,
+    { packageWorkspaceStore: new ToolPackageWorkspaceStore(projectRoot, "tools") },
+  );
+
+  try {
+    const output = await builder.build(request);
+    assert.ok(output.packageWorkspace);
+    const packageToolContract = await readFile(
+      join(projectRoot, "tools/generated.messaging.provider.bot/1.0.0/src/tools/tool.ts"),
+      "utf8",
+    );
+    assert.match(packageToolContract, /export type ToolServiceContext/);
+    assert.match(packageToolContract, /export type ToolServiceHandle/);
+    assert.ok(packageToolContract.includes("startService?: (context: ToolServiceContext)"));
+
+    const packageQa = await validateAndBuildToolPackageWorkspace(
+      projectRoot,
+      output.packageWorkspace,
+      { linkNodeModulesFrom: process.cwd() },
+    );
+    assert.equal(packageQa.ok, true, JSON.stringify(packageQa, null, 2));
+  } finally {
+    await rm(projectRoot, { recursive: true, force: true });
+  }
+});
+
 test("GeneratedToolFileBuilder captures integration metadata for provider-like service requests", async () => {
   const projectRoot = await mkdtemp(join(tmpdir(), "agentic-builder-"));
   const requestStore = new InMemoryToolBuildRequestStore();
