@@ -21,12 +21,7 @@ export function PlaceholderPage({ title, description, apiHints, children }: Plac
       </header>
 
       <div className="rounded-md border border-dashed border-app-border bg-app-surface-2 px-4 py-3 text-sm text-app-text-muted">
-        Not ported to React yet. Open the legacy console at
-        {" "}
-        <a className="text-app-accent underline" href="http://127.0.0.1:3000" target="_blank" rel="noreferrer">
-          http://127.0.0.1:3000
-        </a>
-        {" "}for the same screen.
+        Not ported to React yet. Open the legacy console on the backend server for the same screen.
       </div>
 
       {apiHints && apiHints.length > 0 ? (

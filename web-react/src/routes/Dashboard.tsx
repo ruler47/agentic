@@ -111,7 +111,7 @@ export function DashboardPage() {
               {health.dataUpdatedAt ? new Date(health.dataUpdatedAt).toLocaleTimeString() : "—"}
             </Definition>
             <Definition label="Refetch">10s</Definition>
-            <Definition label="Proxy target">127.0.0.1:3000</Definition>
+            <Definition label="API route">Vite /api proxy</Definition>
           </dl>
         </article>
 

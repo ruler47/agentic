@@ -53,6 +53,17 @@ describe("layoutTrace category", () => {
     expect(w1.x).toBe(w2.x);
     expect(w1.y).toBeLessThan(w2.y);
   });
+
+  it("omits empty semantic columns so short traces stay readable", () => {
+    const nodes: TraceNode[] = [
+      makeNode({ spanId: "coord", activity: "coordination", title: "Coordinator run" }),
+      makeNode({ spanId: "classifier", activity: "planning", title: "Task classified as direct" }),
+    ];
+    const { positions, columns } = layoutTrace(nodes, "category");
+    expect(columns.map((c) => c.label)).toEqual(["Coordinator", "Memory & Classifier"]);
+    expect(positions.get("coord")!.x).toBe(0);
+    expect(positions.get("classifier")!.x).toBeGreaterThan(0);
+  });
 });
 
 describe("layoutTrace depth", () => {

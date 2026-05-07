@@ -197,8 +197,9 @@ function RunWaitPanel({ waits }: { waits: ToolReworkWaitRecord[] }) {
       </header>
       <p className="text-xs text-app-text-muted">
         This run paused because a registered tool needs to be improved or rebuilt before retrying. Once the new tool version
-        is promoted, click <em>Mark ready for retry</em> on the wait card; the wait closes and the run returns to <code>failed</code>
-        so an operator can re-issue the task with the new tool. Automatic recursive retry arrives in Phase 2.
+        is promoted, click <em>Mark ready for retry</em> on the wait card; the wait closes and the run returns to{" "}
+        <code>failed</code> so an operator can re-issue the task with the new tool. Automatic retry is managed by the
+        separate retry/auto-retry flow.
       </p>
       <ul className="mt-3 flex flex-col gap-2">
         {waits.map((wait) => (

@@ -3,6 +3,7 @@ import { modelTierForNode } from "@/features/trace/buildTraceNodes";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatDuration, formatRelative, truncate } from "@/lib/format";
 import type { ToolReworkWaitRecord } from "@/api/types";
+import { useResumeReworkWait } from "@/api/reworkWaits";
 
 type TraceInspectorProps = {
   node: TraceNode | undefined;
@@ -11,6 +12,8 @@ type TraceInspectorProps = {
 };
 
 export function TraceInspector({ node, reworkWait, onCreateInvestigation }: TraceInspectorProps) {
+  const resume = useResumeReworkWait();
+
   if (!node) {
     return (
       <aside className="rounded-[var(--radius-card)] border border-dashed border-app-border bg-app-surface p-5 text-sm text-app-text-muted">
@@ -153,6 +156,19 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
           {reworkWait.reason ? (
             <p className="mt-1 text-app-text-muted">{truncate(reworkWait.reason, 220)}</p>
           ) : null}
+          {reworkWait.status === "promoted" ? (
+            <button
+              type="button"
+              onClick={() => resume.mutate({ id: reworkWait.id })}
+              disabled={resume.isPending}
+              className="mt-2 rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
+            >
+              {resume.isPending ? "Closing…" : "Mark ready for retry"}
+            </button>
+          ) : null}
+          {resume.isError ? (
+            <p className="mt-1 text-[11px] text-app-danger">{resume.error.message}</p>
+          ) : null}
         </section>
       ) : null}
 
@@ -162,12 +178,12 @@ export function TraceInspector({ node, reworkWait, onCreateInvestigation }: Trac
           className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-xs font-medium text-app-text transition-colors hover:border-app-accent/40 hover:text-app-accent disabled:opacity-50"
           disabled={!onCreateInvestigation}
           onClick={() => onCreateInvestigation?.(node)}
-          title={onCreateInvestigation ? "Open the Tool Investigation modal (Phase 3)" : "Phase 3 will hook this to the investigation modal"}
+          title={onCreateInvestigation ? "Open the Tool Investigation modal" : "Investigation creation is unavailable for this view"}
         >
           Create tool request / bug
         </button>
         <p className="text-[10px] text-app-text-muted">
-          Phase 3 will open a Tool Investigation Ticket modal here so the failure context is preserved before any rebuild.
+          Opens a Tool Investigation Ticket modal so the failure context is preserved before any rebuild.
         </p>
         <p className="text-[10px] text-app-text-muted">
           First seen {formatRelative(node.firstTimestamp)} · last update {formatRelative(node.lastTimestamp)}

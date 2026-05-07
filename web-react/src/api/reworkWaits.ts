@@ -7,8 +7,7 @@ import type { ToolReworkWaitRecord, ToolReworkWaitStatus } from "@/api/types";
  * Closes a promoted wait so the operator can retry the original task with the
  * new tool version. The button is labelled "Mark ready for retry" — the API
  * path is still /resume for backwards compatibility, but it does NOT auto-run
- * a retry. The recursive retry engine ships in Phase 2 of the orchestrator
- * roadmap.
+ * a retry. Automatic retry uses the separate retry/auto-retry endpoints.
  */
 export function useResumeReworkWait() {
   const queryClient = useQueryClient();

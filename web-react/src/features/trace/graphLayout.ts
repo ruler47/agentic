@@ -80,7 +80,10 @@ export function layoutTrace(nodes: TraceNode[], mode: TraceGraphLayoutMode): Lay
   const positions = new Map<string, { x: number; y: number }>();
 
   if (mode === "category") {
-    const columns = SEMANTIC_COLUMNS.map((label, index) => ({
+    const usedColumns = SEMANTIC_COLUMNS.filter((label) =>
+      nodes.some((node) => semanticColumn(node) === label),
+    );
+    const columns = usedColumns.map((label, index) => ({
       id: label,
       label,
       x: index * (COLUMN_WIDTH + COLUMN_GAP),

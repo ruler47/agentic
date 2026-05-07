@@ -63,7 +63,7 @@ export function WaitCard({ wait }: WaitCardProps) {
             onClick={() => resume.mutate({ id: wait.id })}
             disabled={resume.isPending}
             className="rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
-            title="Closes the wait. Run returns to failed so an operator can re-issue the task with the new tool version. Phase 2 will run the actual retry automatically."
+            title="Closes the wait. Run returns to failed so an operator can re-issue the task with the new tool version. Automatic retry is handled by the separate retry flow."
           >
             {resume.isPending ? "Closing…" : "Mark ready for retry"}
           </button>
