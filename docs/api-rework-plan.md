@@ -362,30 +362,42 @@ Three layers, all gated in `npm run verify` by Phase 5:
   disk as the rollback target. After the user smoke-tests this branch and
   confirms parity, a follow-up commit removes them along with
   `tests/webServer.test.ts` (which imports the legacy `createWebApp`).
-- The `requestToolBuild` callback inside `RunsService.executeRun` no longer
-  triggers the Tool Builder workflow inline — the legacy code did
-  `workflow.runOnce(...)` from inside the agent run. The new code only
-  records the build request; the background worker (always running in the
-  Nest server) picks it up the next tick. If the synchronous behaviour is
-  required for some test, we can re-introduce it as a service collaborator
-  injected into RunsService.
-- `RecordToolServiceOutbound` (post-run delivery for Telegram-style
-  channels) is not wired in `RunsService.executeRun` yet. The legacy code
-  emitted an outbound `tool_service.event` after every completed/failed run
-  whose run.channel matched a service. Equivalent service-side hook is a
-  follow-up: inject `ToolServicesService` into `RunsService` and call from
-  the same try/catch tail.
-- Inline credential redaction (`extractInlineCredentialSecret`,
-  `attachInlineCredentialHandle`, `ensureInlineCredentialSecret`) and the
-  `validateContextualToolBuildTarget` mismatch detection were left out of
-  `ToolBuildsService.create`. Operators that paste raw secrets into a build
-  request body will not have them auto-redacted into a `secret.*` handle
-  yet. The legacy server still does this; toggling back to
-  `npm run web:legacy` is an option until parity is restored.
-- `ToolInvestigationsService.promote` and the `ToolReworkWaitsService`
-  resume / retry-run / auto-retry endpoints currently 503 because they
-  depend on `ToolImprovementCoordinator` and `ToolReworkRetryCoordinator`
-  factories that the legacy code constructs per request. Wiring those is
-  small (the coordinators are already plain classes) but I did not finish
-  it before cutover.
+- The generated typed client for `web-react` remains deferred. `/api/docs-json`
+  and `/api/docs-yaml` are available as the source of truth for that later
+  client generation pass.
 
+## 11. Codex Review Fixes After Cutover
+
+The first Nest cutover smoke found several parity gaps that looked green under
+the legacy `webServer.test.ts` suite because those tests still instantiate the
+old `createWebApp` router. These are now restored in the Nest path:
+
+- `RunsService.executeRun` passes Work Ledger, Evidence Ledger, Run
+  Retrospective, secret/config resolvers, `requestToolBuild`, and
+  `ToolImprovementCoordinator` into `UniversalAgent.run()`.
+- `requestToolBuild` now finalizes operator input, stores/audits the request,
+  runs `ToolBuildWorkflow.runOnce(...)`, reloads generated tools after
+  registration, and notifies rework waits so promoted waits can auto-retry.
+- `RunsService` records neutral outbound `tool_service_events` for completed or
+  failed runs whose `channel` maps to an always-on service provider.
+- `ToolBuildsService.create()` and `rework()` now share
+  `ToolBuildInputFinalizerService`: inline credentials are extracted into
+  `secret.*` handles, queued text is redacted, generated tool names avoid
+  installed/queued collisions, and clearly wrong `replacesToolName` choices
+  return `400` instead of silently retargeting.
+- `ToolInvestigationsService.promote()` is backed by
+  `ToolReworkCoordinatorService` and creates the build request plus linked wait
+  in one deterministic handoff.
+- `ToolReworkWaitsService` implements create/resume/retry-run/auto-retry
+  through the same domain coordinators and validates referenced runs/builds.
+- `RuntimeWorkersModule` wires Tool Builder completion into
+  `notifyBuildRegistered(...)`, emits the `tool_build.registered` audit event,
+  and lets promoted waits invoke the auto-retry orchestrator.
+- Public secret-handle API responses redact inline `secretRef` values while
+  keeping env/external references visible. Runtime resolvers still read the raw
+  inline secret from the store.
+
+Manual Nest smoke on port `3407` covered health/static/docs, inline credential
+redaction, wrong-target `400`, missing-run wait `400`, investigation promote →
+wait → registered → retry-run, Work/Evidence/Retrospective endpoints, and audit
+canary checks for all secret-shaped values.

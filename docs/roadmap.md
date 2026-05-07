@@ -1218,6 +1218,37 @@ Additional target behavior:
   request tool;
 - inter-instance answers must include provenance and audit records.
 
+Approved implementation path after the Nest API cutover:
+
+1. **Agent call-frame runtime.** Introduce a single `AgentInvocation` contract for every
+   agent call: local task, caller frame, scope/provenance, allowed tools, model tier,
+   output contract, budget, deadline, and cancellation signal. The current coordinator,
+   worker, reviewer, synthesizer, tool-builder, tool-QA, and future council participants
+   should all run through this contract instead of special-case method paths.
+2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
+   broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
+   within depth, budget, deadline, and policy limits. A parent only receives compact child
+   returns, artifacts, evidence references, and self-check results.
+3. **Council mode.** Make "ask a council" one ordinary strategy available to the
+   universal agent. The council can ask several agents, models, or tiers to propose or
+   critique a plan, then a synthesis agent chooses a final plan. Council branches must
+   still claim Work Ledger entries before external work so two advisors do not repeat the
+   same search, screenshot, scrape, or API request.
+4. **Work Ledger integration.** Before costly/reusable work, every agent claims a
+   deterministic work key. Fresh completed evidence is reused, in-flight sibling work is
+   waited on or observed, failed/stale work is revalidated with a reason, and every claim
+   links to Evidence Ledger records and artifact ids. This is the dedupe spine for
+   parallel recursive branches.
+5. **Tool improvement loop.** When a child agent finds that a required capability is
+   missing or a tool output is insufficient, it creates a Tool Investigation/Rework
+   request with the exact span context, waits for background build/QA/promotion when
+   policy allows, then retries either the failed span or the whole run. Tool requests are
+   not special UI actions; they are agent-call outcomes that join the same trace.
+6. **Retrospective learning.** Every run ends with a structured retrospective: what
+   worked, what failed, which tools or prompts were weak, where work duplicated, which
+   evidence was useful, and which memories/tool tickets/policy updates should enter
+   review. These records stay proposed until accepted by policy/operator review.
+
 Remaining recursive-agent gaps:
 
 - Replace the central one-shot planner with an agent runtime that can recursively spawn

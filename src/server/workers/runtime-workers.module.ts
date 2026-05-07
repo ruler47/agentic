@@ -8,6 +8,7 @@ import {
   OnApplicationShutdown,
   type Provider,
 } from "@nestjs/common";
+import { ModuleRef } from "@nestjs/core";
 import { LlmClient } from "../../llm/client.js";
 import {
   ExternalHttpToolPackageRunner,
@@ -49,13 +50,19 @@ import type { ToolServiceStatusStore } from "../../tools/toolServiceStatusStore.
 import type { ToolServiceLogStore } from "../../tools/toolServiceLogStore.js";
 import type { SecretHandleStore } from "../../secrets/secretHandleStore.js";
 import type { ToolRuntimeSettingsStore } from "../../settings/toolRuntimeSettings.js";
+import type { RunStore } from "../../runs/types.js";
 import type { PgPool } from "../../db/pool.js";
 import { APP_ENV } from "../config/config.module.js";
 import type { AppEnv } from "../config/env.js";
+import { CommonModule } from "../common/common.module.js";
+import { AuditService } from "../common/services/audit.service.js";
+import { ToolReworkCoordinatorService } from "../common/services/tool-rework-coordinator.service.js";
+import { RunsService } from "../modules/runs/runs.service.js";
 import {
   LLM_CLIENT,
   PG_POOL,
   RELOAD_GENERATED_TOOLS,
+  RUN_STORE,
   SECRET_HANDLE_STORE,
   TOOL_BUILD_MIGRATION_QA_POOL,
   TOOL_BUILD_REQUEST_STORE,
@@ -252,10 +259,77 @@ class RuntimeBootstrapper implements OnApplicationBootstrap, OnApplicationShutdo
     @Inject(TOOL_PACKAGE_RUNNERS) private readonly runners: ToolPackageRunner[],
     @Inject(TOOL_SERVICE_SUPERVISOR) private readonly supervisor: ToolServiceSupervisor,
     @Inject(TOOL_BUILD_WORKER) private readonly buildWorker: ToolBuildWorker,
+    @Inject(RUN_STORE) private readonly runsStore: RunStore,
     @Inject(APP_ENV) private readonly env: AppEnv,
+    private readonly rework: ToolReworkCoordinatorService,
+    private readonly moduleRef: ModuleRef,
+    private readonly audit: AuditService,
   ) {}
 
   async onApplicationBootstrap() {
+    this.buildWorker.setOnAfterCompleted(async (workflowResult) => {
+      if (workflowResult.request.status !== "registered") return;
+      const sourceRunId = workflowResult.request.sourceRunId;
+      const sourceRun = sourceRunId
+        ? await this.runsStore.get(sourceRunId).catch(() => undefined)
+        : undefined;
+      await this.audit.record({
+        instanceId: sourceRun?.instanceId ?? "instance-local",
+        actorId: "tool-build-worker",
+        actorType: "agent",
+        action: "tool_build.registered",
+        targetType: "tool",
+        targetId:
+          workflowResult.registeredToolName ??
+          workflowResult.request.registeredToolName ??
+          workflowResult.request.id,
+        runId: sourceRunId,
+        threadId: sourceRun?.threadId,
+        requesterUserId: sourceRun?.requesterUserId,
+        channel: sourceRun?.channel,
+        summary: `Tool build registered (background worker): ${
+          workflowResult.registeredToolName ??
+          workflowResult.request.registeredToolName ??
+          workflowResult.request.id
+        }`,
+        metadata: {
+          capability: workflowResult.request.capability,
+          requestId: workflowResult.request.id,
+          backgroundWorker: true,
+        },
+      });
+      await this.rework.notifyBuildRegistered(
+        workflowResult.request.id,
+        workflowResult.registeredToolName ?? workflowResult.request.registeredToolName,
+        workflowResult.request.contract?.version,
+        {
+          actorId: "tool-build-worker",
+          actorType: "agent",
+          instanceId: sourceRun?.instanceId,
+          threadId: sourceRun?.threadId,
+          requesterUserId: sourceRun?.requesterUserId,
+          channel: sourceRun?.channel,
+        },
+        async (wait) => {
+          const auto = this.rework.createAutoRetryCoordinator({
+            actorId: "auto-retry-orchestrator",
+            actorType: "agent",
+            instanceId: sourceRun?.instanceId,
+            threadId: sourceRun?.threadId,
+            requesterUserId: sourceRun?.requesterUserId,
+            channel: sourceRun?.channel,
+          });
+          const result = await auto?.tryAutoRetry(wait.id);
+          if (result?.status === "created" && result.retryRun) {
+            const runs = this.moduleRef.get(RunsService, { strict: false });
+            void runs.executeRun(result.retryRun.id, result.retryRun.task, [], {
+              threadId: result.retryRun.threadId,
+            });
+          }
+        },
+      );
+    });
+
     if (this.metadata) {
       const results = await loadGeneratedTools(this.registry, this.metadata, process.cwd(), this.runners);
       const loaded = results.filter((entry) => entry.loaded).length;
@@ -279,6 +353,7 @@ class RuntimeBootstrapper implements OnApplicationBootstrap, OnApplicationShutdo
 
 @Global()
 @Module({
+  imports: [CommonModule],
   providers: [
     packageRunnersProvider,
     reloadGeneratedToolsProvider,

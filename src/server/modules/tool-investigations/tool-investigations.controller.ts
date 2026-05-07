@@ -28,7 +28,7 @@ export class ToolInvestigationsController {
 
   @Post(":id/promote")
   @HttpCode(201)
-  async promote(@Param("id") id: string) {
-    return this.investigations.promote(decodeURIComponent(id));
+  async promote(@Param("id") id: string, @Body() body: unknown) {
+    return this.investigations.promote(decodeURIComponent(id), body);
   }
 }

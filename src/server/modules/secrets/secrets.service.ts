@@ -14,6 +14,8 @@ import { AuditService } from "../../common/services/audit.service.js";
 import { SECRET_HANDLE_STORE } from "../../persistence/tokens.js";
 import type { CreateSecretHandleDto } from "./dto/create-secret-handle.dto.js";
 
+export type PublicSecretHandleRecord = SecretHandleRecord;
+
 @Injectable()
 export class SecretsService {
   constructor(
@@ -21,11 +23,11 @@ export class SecretsService {
     private readonly audit: AuditService,
   ) {}
 
-  async list(): Promise<SecretHandleRecord[]> {
-    return this.store ? this.store.list() : [];
+  async list(): Promise<PublicSecretHandleRecord[]> {
+    return this.store ? (await this.store.list()).map(toPublicSecretHandle) : [];
   }
 
-  async create(rawBody: unknown, dto: CreateSecretHandleDto): Promise<SecretHandleRecord> {
+  async create(rawBody: unknown, dto: CreateSecretHandleDto): Promise<PublicSecretHandleRecord> {
     if (!this.store) {
       throw new ServiceUnavailableException("Secret handle store is not configured");
     }
@@ -49,11 +51,11 @@ export class SecretsService {
         summary: `Secret handle created: ${record.handle}`,
         metadata: {
           provider: record.provider,
-          secretRef: record.secretRef,
+          secretRef: publicSecretRef(record),
           scopes: record.scopes,
         },
       });
-      return record;
+      return toPublicSecretHandle(record);
     } catch (error) {
       throw new BadRequestException(
         error instanceof Error ? error.message : "Invalid secret handle request",
@@ -61,16 +63,16 @@ export class SecretsService {
     }
   }
 
-  async get(handle: string): Promise<SecretHandleRecord> {
+  async get(handle: string): Promise<PublicSecretHandleRecord> {
     if (!this.store) {
       throw new ServiceUnavailableException("Secret handle store is not configured");
     }
     const record = await this.store.get(handle);
     if (!record) throw new NotFoundException("Secret handle not found");
-    return record;
+    return toPublicSecretHandle(record);
   }
 
-  async delete(handle: string): Promise<{ deleted: true; secretHandle: SecretHandleRecord }> {
+  async delete(handle: string): Promise<{ deleted: true; secretHandle: PublicSecretHandleRecord }> {
     if (!this.store) {
       throw new ServiceUnavailableException("Secret handle store is not configured");
     }
@@ -88,10 +90,21 @@ export class SecretsService {
       summary: `Secret handle deleted: ${handle}`,
       metadata: {
         provider: existing.provider,
-        secretRef: existing.secretRef,
+        secretRef: publicSecretRef(existing),
         scopes: existing.scopes,
       },
     });
-    return { deleted: true, secretHandle: existing };
+    return { deleted: true, secretHandle: toPublicSecretHandle(existing) };
   }
+}
+
+function toPublicSecretHandle(record: SecretHandleRecord): PublicSecretHandleRecord {
+  return {
+    ...record,
+    secretRef: publicSecretRef(record),
+  };
+}
+
+function publicSecretRef(record: Pick<SecretHandleRecord, "provider" | "secretRef">): string {
+  return record.provider === "inline" ? "[redacted inline secret]" : record.secretRef;
 }

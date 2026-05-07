@@ -23,6 +23,8 @@ import type {
 } from "../../../tools/toolBuildRequestStore.js";
 import type { ToolBuildWorkflow } from "../../../tools/toolBuildWorkflow.js";
 import { AuditService } from "../../common/services/audit.service.js";
+import { ToolBuildInputFinalizerService } from "../../common/services/tool-build-input-finalizer.service.js";
+import { ToolReworkCoordinatorService } from "../../common/services/tool-rework-coordinator.service.js";
 import {
   RELOAD_GENERATED_TOOLS,
   TOOL_BUILD_REQUEST_STORE,
@@ -56,6 +58,8 @@ export class ToolBuildsService {
     @Inject(TOOL_BUILD_WORKFLOW) private readonly workflow: ToolBuildWorkflow | undefined,
     @Inject(RELOAD_GENERATED_TOOLS) private readonly reload: (() => Promise<void>) | undefined,
     private readonly audit: AuditService,
+    private readonly finalizer: ToolBuildInputFinalizerService,
+    private readonly reworkCoordinator: ToolReworkCoordinatorService,
   ) {}
 
   async list(): Promise<ToolBuildRequest[]> {
@@ -78,6 +82,13 @@ export class ToolBuildsService {
     let input: ToolBuildRequestInput;
     try {
       input = this.parseInput(rawBody);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : "Invalid tool build request",
+      );
+    }
+    try {
+      input = await this.finalizer.finalize(input);
     } catch (error) {
       throw new BadRequestException(
         error instanceof Error ? error.message : "Invalid tool build request",
@@ -123,7 +134,16 @@ export class ToolBuildsService {
       );
     }
     try {
-      return await this.store.updateStatus(id, update);
+      const buildRequest = await this.store.updateStatus(id, update);
+      if (buildRequest.status === "registered") {
+        await this.reworkCoordinator.notifyBuildRegistered(
+          buildRequest.id,
+          buildRequest.registeredToolName,
+          buildRequest.contract?.version,
+          { actorId: "user-admin", actorType: "user" },
+        );
+      }
+      return buildRequest;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid tool build request update";
       throw message.includes("was not found")
@@ -205,28 +225,36 @@ export class ToolBuildsService {
         error instanceof Error ? error.message : "Invalid tool build rework request",
       );
     }
-    const reworkRequest = await this.store.create({
-      capability: original.capability,
-      displayName: original.displayName,
-      reason: this.formatReworkReason(original, feedback),
-      sourceRunId: original.sourceRunId,
-      sourceSpanId: original.sourceSpanId,
-      taskSummary: original.taskSummary,
-      desiredToolName: original.desiredToolName,
-      requiredInputs: original.requiredInputs,
-      requiredOutputs: original.requiredOutputs,
-      qaCriteria: this.uniqueStrings([
-        ...(original.qaCriteria ?? []),
-        `Rework feedback must be addressed: ${feedback}`,
-      ]),
-      credentialHandles: original.credentialHandles,
-      credentialNotes: original.credentialNotes,
-      reworkOf: original.id,
-      feedback,
-      replacesToolName: original.replacesToolName,
-      replacesVersion: original.replacesVersion,
-      startupMode: original.contract.startupMode,
-    });
+    let reworkRequestInput: ToolBuildRequestInput;
+    try {
+      reworkRequestInput = await this.finalizer.finalize({
+        capability: original.capability,
+        displayName: original.displayName,
+        reason: this.formatReworkReason(original, feedback),
+        sourceRunId: original.sourceRunId,
+        sourceSpanId: original.sourceSpanId,
+        taskSummary: original.taskSummary,
+        desiredToolName: original.desiredToolName,
+        requiredInputs: original.requiredInputs,
+        requiredOutputs: original.requiredOutputs,
+        qaCriteria: this.uniqueStrings([
+          ...(original.qaCriteria ?? []),
+          `Rework feedback must be addressed: ${feedback}`,
+        ]),
+        credentialHandles: original.credentialHandles,
+        credentialNotes: original.credentialNotes,
+        reworkOf: original.id,
+        feedback,
+        replacesToolName: original.replacesToolName,
+        replacesVersion: original.replacesVersion,
+        startupMode: original.contract.startupMode,
+      });
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : "Invalid tool build rework request",
+      );
+    }
+    const reworkRequest = await this.store.create(reworkRequestInput);
     await this.audit.record({
       instanceId: "instance-local",
       actorId: "user-admin",
@@ -249,6 +277,14 @@ export class ToolBuildsService {
     const result = await this.workflow.runOnce(id);
     if (result.request.status === "registered" && !result.activationReport) {
       await this.reload?.();
+    }
+    if (result.request.status === "registered") {
+      await this.reworkCoordinator.notifyBuildRegistered(
+        result.request.id,
+        result.registeredToolName ?? result.request.registeredToolName,
+        result.request.contract?.version,
+        { actorId: "user-admin", actorType: "user" },
+      );
     }
     return result;
   }

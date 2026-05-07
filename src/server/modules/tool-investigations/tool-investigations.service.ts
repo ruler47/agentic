@@ -13,6 +13,7 @@ import {
   sanitizeAuditMetadata,
   sanitizeObject,
 } from "../../common/parsers.js";
+import { ToolReworkCoordinatorService } from "../../common/services/tool-rework-coordinator.service.js";
 import {
   TOOL_INVESTIGATION_SOURCES,
   TOOL_INVESTIGATION_STATUSES,
@@ -30,6 +31,7 @@ import { TOOL_INVESTIGATION_STORE } from "../../persistence/tokens.js";
 export class ToolInvestigationsService {
   constructor(
     @Inject(TOOL_INVESTIGATION_STORE) private readonly store: ToolInvestigationStore | undefined,
+    private readonly rework: ToolReworkCoordinatorService,
   ) {}
 
   async list(): Promise<ToolInvestigationRecord[]> {
@@ -77,11 +79,45 @@ export class ToolInvestigationsService {
     }
   }
 
-  // POST /:id/promote — promotes investigation to a Build Request and creates a
-  // ToolReworkWait. This depends on ToolImprovementCoordinator which is wired in
-  // Phase 3/4. Until then the route returns 503.
-  async promote(_id: string): Promise<never> {
-    throw new ServiceUnavailableException("Tool investigation promotion is not configured");
+  async promote(id: string, rawBody: unknown) {
+    if (!this.store) throw new ServiceUnavailableException("Tool investigation store is not configured");
+    const investigation = await this.store.get(id);
+    if (!investigation) throw new NotFoundException("Tool investigation not found");
+    const override = this.parsePromoteOverride(rawBody);
+    const result = await this.rework.requestImprovement({
+      source: "investigation_promote",
+      investigationId: id,
+      operatorComment: override.operatorComment,
+      override,
+    });
+    if (result.status === "failed_to_request") {
+      throw new BadRequestException({
+        error: result.error ?? "Tool investigation promotion failed",
+        code: result.errorCode,
+      });
+    }
+    if (result.status === "unavailable") {
+      throw new ServiceUnavailableException(result.error ?? "Tool investigation promotion is not configured");
+    }
+    return {
+      investigation: result.investigation,
+      request: result.buildRequest,
+      wait: result.wait,
+    };
+  }
+
+  private parsePromoteOverride(value: unknown): {
+    capability?: string;
+    desiredToolName?: string;
+    operatorComment?: string;
+  } {
+    if (value === undefined || value === null) return {};
+    if (!isRecord(value)) throw new BadRequestException("tool investigation promote request must be an object");
+    return {
+      capability: parseOptionalText(value.capability),
+      desiredToolName: parseOptionalText(value.desiredToolName),
+      operatorComment: parseOptionalText(value.operatorComment),
+    };
   }
 
   private parseCreateInput(value: unknown): ToolInvestigationCreateInput {
