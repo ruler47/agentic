@@ -256,6 +256,7 @@ export class UniversalAgent {
         `Pending tool rework waits:\n${lines.join("\n")}`;
     };
 
+    try {
     await emit({
       spanId: runSpanId,
       type: "run-started",
@@ -576,6 +577,12 @@ export class UniversalAgent {
       artifacts,
       learnedSkill,
     };
+    } catch (error) {
+      ledger?.trackWhatFailed(`Run failed: ${formatErrorMessage(error)}`);
+      await ledger?.markUnfinishedWorkFailed(limitText(formatErrorMessage(error), 600));
+      await this.finalizeRunLedger(ledger, "failed", options.runId, runSpanId);
+      throw error;
+    }
   }
 
   private async classify(

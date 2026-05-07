@@ -137,6 +137,20 @@ export class RuntimeLedgerCoordinator {
     return next;
   }
 
+  async markUnfinishedWorkFailed(error: string): Promise<void> {
+    if (!this.deps.workLedgerStore) return;
+    const unfinished = [...this.observedWorkItems.values()].filter((item) =>
+      item.status === "planned" || item.status === "claimed" || item.status === "running"
+    );
+    for (const item of unfinished) {
+      const next = await this.deps.workLedgerStore.updateItemStatus(item.id, {
+        status: "failed",
+        error,
+      });
+      this.observedWorkItems.set(next.id, next);
+    }
+  }
+
   async recordEvidence(
     input: EvidenceCreateInput,
     parentSpanId: string,

@@ -2845,6 +2845,61 @@ test("UniversalAgent records limitation evidence and a failed work item when web
   }
 });
 
+test("UniversalAgent finalizes ledger retrospectives when a tool throws", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-ledger-throw-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const workLedgerStore = new InMemoryWorkLedgerStore();
+  const evidenceLedgerStore = new InMemoryEvidenceLedgerStore();
+  const runRetrospectiveStore = new InMemoryRunRetrospectiveStore();
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "web.search",
+    description: "Throwing web search",
+    capabilities: ["web-search"],
+    async run() {
+      throw new Error("Search backend unreachable");
+    },
+  });
+
+  const fakeLlm = new FakeLlm(makeWorkLedgerFakeLlmResponses());
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const events: AgentEvent[] = [];
+
+  try {
+    await assert.rejects(
+      () => agent.run("Research current Schengen short-stay visa rules.", {
+        runId: "run-throw-1",
+        threadId: "thread-throw",
+        workLedgerStore,
+        evidenceLedgerStore,
+        runRetrospectiveStore,
+        onEvent: (event) => {
+          events.push(event);
+        },
+      }),
+      /Search backend unreachable/,
+    );
+
+    const workItems = await workLedgerStore.listByRun("run-throw-1");
+    assert.equal(workItems.length, 1);
+    assert.equal(workItems[0]?.status, "failed");
+    assert.match(workItems[0]?.error ?? "", /Search backend unreachable/);
+
+    const retrospectives = await runRetrospectiveStore.listByRun("run-throw-1");
+    assert.equal(retrospectives.length, 1, "failed thrown runs still create one retrospective");
+    assert.equal(retrospectives[0]?.runOutcome, "failed");
+    assert.ok(
+      retrospectives[0]?.whatFailed.some((entry) => /Search backend unreachable/.test(entry)),
+      "retrospective records the thrown failure reason",
+    );
+
+    const retroEvents = events.filter((event) => event.type === "run-retrospective-proposed");
+    assert.equal(retroEvents.length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent skips ledger work when no stores are wired so existing flows are unaffected", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-ledger-skip-"));
   const memory = new SkillMemory(join(dir, "skills.json"));
