@@ -61,15 +61,23 @@ import { BrowserOperateTool } from "../../tools/browserOperateTool.js";
 import { createScopedToolDbClient } from "../../tools/toolScopedDb.js";
 import type { SecretHandleStore } from "../../secrets/secretHandleStore.js";
 import type { ToolMetadataStore } from "../../tools/toolMetadataStore.js";
+import { InMemoryWorkLedgerStore } from "../../work-ledger/workLedgerStore.js";
+import { PostgresWorkLedgerStore } from "../../work-ledger/postgresWorkLedgerStore.js";
+import { InMemoryEvidenceLedgerStore } from "../../work-ledger/evidenceLedgerStore.js";
+import { PostgresEvidenceLedgerStore } from "../../work-ledger/postgresEvidenceLedgerStore.js";
+import { InMemoryRunRetrospectiveStore } from "../../work-ledger/runRetrospectiveStore.js";
+import { PostgresRunRetrospectiveStore } from "../../work-ledger/postgresRunRetrospectiveStore.js";
 import {
   ARTIFACT_STORE,
   AUDIT_EVENT_STORE,
   CONVERSATION_STORE,
+  EVIDENCE_LEDGER_STORE,
   GROUP_PROFILE_STORE,
   LLM_CLIENT,
   MODEL_PROVIDER_STORE,
   MODEL_TIER_SETTINGS,
   PG_POOL,
+  RUN_RETROSPECTIVE_STORE,
   RUN_STORE,
   SECRET_HANDLE_STORE,
   SKILL_MEMORY,
@@ -88,6 +96,7 @@ import {
   TOOL_SERVICE_STATUS_STORE,
   UNIVERSAL_AGENT,
   USER_STORE,
+  WORK_LEDGER_STORE,
 } from "./tokens.js";
 
 const providers: Provider[] = [
@@ -233,6 +242,24 @@ const providers: Provider[] = [
       }
       return local;
     },
+  },
+  {
+    provide: WORK_LEDGER_STORE,
+    inject: [PG_POOL],
+    useFactory: (pool: PgPool | undefined) =>
+      pool ? new PostgresWorkLedgerStore(pool) : new InMemoryWorkLedgerStore(),
+  },
+  {
+    provide: EVIDENCE_LEDGER_STORE,
+    inject: [PG_POOL],
+    useFactory: (pool: PgPool | undefined) =>
+      pool ? new PostgresEvidenceLedgerStore(pool) : new InMemoryEvidenceLedgerStore(),
+  },
+  {
+    provide: RUN_RETROSPECTIVE_STORE,
+    inject: [PG_POOL],
+    useFactory: (pool: PgPool | undefined) =>
+      pool ? new PostgresRunRetrospectiveStore(pool) : new InMemoryRunRetrospectiveStore(),
   },
   // Runtime singletons. The registry hosts built-in tools immediately; the
   // generated-tool loader and supervisors wire in later phases through

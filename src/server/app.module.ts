@@ -9,8 +9,11 @@ import { HealthModule } from "./modules/health/health.module.js";
 import { MemoryModule } from "./modules/memory/memory.module.js";
 import { ModelsModule } from "./modules/models/models.module.js";
 import { SecretsModule } from "./modules/secrets/secrets.module.js";
+import { EvidenceLedgerModule } from "./modules/evidence-ledger/evidence-ledger.module.js";
+import { RunRetrospectivesModule } from "./modules/run-retrospectives/run-retrospectives.module.js";
 import { RunsModule } from "./modules/runs/runs.module.js";
 import { ToolBuildsModule } from "./modules/tool-builds/tool-builds.module.js";
+import { WorkLedgerModule } from "./modules/work-ledger/work-ledger.module.js";
 import { ToolInvestigationsModule } from "./modules/tool-investigations/tool-investigations.module.js";
 import { ToolMigrationsModule } from "./modules/tool-migrations/tool-migrations.module.js";
 import { ToolReworkWaitsModule } from "./modules/tool-rework-waits/tool-rework-waits.module.js";
@@ -40,6 +43,9 @@ import { RuntimeWorkersModule } from "./workers/runtime-workers.module.js";
     ToolMigrationsModule,
     RunsModule,
     ToolServicesModule,
+    WorkLedgerModule,
+    EvidenceLedgerModule,
+    RunRetrospectivesModule,
     ServeStaticModule.forRoot({
       rootPath: resolve(process.env.PUBLIC_DIR ?? "public"),
       serveRoot: "/",

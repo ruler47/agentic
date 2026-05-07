@@ -153,6 +153,57 @@ export function parseNullableText(value: unknown, name: string): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
+export function parseOptionalNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+export function parseNullableNumber(value: unknown, name: string): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`${name} must be a finite number or null`);
+  return number;
+}
+
+export function parseUpdateNullableText(
+  candidate: Record<string, unknown>,
+  key: string,
+): string | null | undefined {
+  if (!(key in candidate)) return undefined;
+  const value = candidate[key];
+  if (value === undefined) return undefined;
+  return parseNullableText(value, key);
+}
+
+export function parseUpdateNullableNumber(
+  candidate: Record<string, unknown>,
+  key: string,
+): number | null | undefined {
+  if (!(key in candidate)) return undefined;
+  return parseNullableNumber(candidate[key], key);
+}
+
+export function parseRequiredEnum<T extends string>(value: unknown, allowed: readonly T[], name: string): T {
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new Error(`${name} must be one of ${allowed.join(", ")}`);
+  }
+  return value as T;
+}
+
+export function parseOptionalEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  name: string,
+): T | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new Error(`${name} must be one of ${allowed.join(", ")}`);
+  }
+  return value as T;
+}
+
 export function parseLimit(value: string | null, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number.parseInt(value, 10);
