@@ -727,6 +727,12 @@ runner. Worker and reviewer wrappers preserve the proven delegated-DAG implement
 tool execution, artifact QA, revision, and hard review gates; the generic runner adds the
 normalized parent/child call contract and return check that Trace Lab can render across
 all agent roles.
+After the root invocation is created, the runtime also appends a compact "Agent runtime
+strategy" block to planner/worker/synthesizer prompts. It contains the selected strategy,
+allowed actions, matched tools, missing capability hints, Work Ledger policy, child
+budget, and anti-duplication/tool-improvement rules. This is intentionally not injected
+into the classification prompt; it is the post-classification capability menu for agents
+that are about to execute work.
 The domain runner behind future child-agent execution is
 `agentInvocationRunner.ts`: it enforces depth-budget limits and the same output-contract
 self-check before an invocation can be considered completed. Council advisory branches,

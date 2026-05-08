@@ -118,6 +118,11 @@ artifact, ledger, revision, and reviewer hard-gate behavior, while every
 planning/worker/reviewer/synthesis trace node exposes the same caller, local-task,
 parent-invocation, output-contract, model-tier, and self-check contract that recursive
 child agents will use.
+The strategy decision is also injected into the post-classification task context for the
+planner, workers, and synthesizer. That compact runtime block tells each role its allowed
+actions, matched tools, missing capability hints, Work Ledger policy, child budget, and
+the rule to reuse/wait for existing evidence before repeating costly work. This makes the
+strategy an executable local capability menu instead of only a trace annotation.
 Before the root invocation returns, the runtime emits `agent-invocation-return-checked`.
 That generic check validates the invocation output contract, non-empty output, and
 required evidence/artifact counts. This gives direct, delegated, and future recursive

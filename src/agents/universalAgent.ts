@@ -76,6 +76,7 @@ import {
   createWorkerCallFrame,
 } from "./callFrame.js";
 import { decideAgentStrategy } from "./agentStrategy.js";
+import type { AgentStrategyDecision } from "./agentStrategy.js";
 import {
   buildAgentInvocationReturnCheck,
   createCouncilInvocations,
@@ -417,6 +418,13 @@ export class UniversalAgent {
       durationMs: elapsedMs(invocationStartedAt),
       payload: rootInvocation,
     });
+    const agentTaskContext = appendAgentRuntimeStrategyContext(
+      taskContext,
+      strategy,
+      rootInvocation,
+      Boolean(ledger),
+      pendingToolImprovements.length,
+    );
 
     const councilStartedAt = new Date();
     const councilInvocations = strategy.council
@@ -450,12 +458,12 @@ export class UniversalAgent {
       });
     }
     const councilNotes = strategy.council
-      ? await this.executeCouncilInvocations(taskContext, councilInvocations, emit, strategySpanId)
+      ? await this.executeCouncilInvocations(agentTaskContext, councilInvocations, emit, strategySpanId)
       : [];
 
     if (complexity.mode === "direct") {
       const generatedArtifact = await this.createRequestedArtifact(
-        taskContext,
+        agentTaskContext,
         [],
         emit,
         runSpanId,
@@ -503,7 +511,7 @@ export class UniversalAgent {
             {
               role: "user",
               content: synthesizePrompt(
-                limitText(taskContext, promptBudget.taskContextChars),
+                limitText(agentTaskContext, promptBudget.taskContextChars),
                 complexity,
                 [],
                 [],
@@ -598,7 +606,7 @@ export class UniversalAgent {
       completedTitle: "Planner completed",
       failedTitle: "Planner failed",
       handler: async () => {
-        const subtasks = await this.plan(withCouncilNotes(taskContext, councilNotes), complexity, memories, planningTier);
+        const subtasks = await this.plan(withCouncilNotes(agentTaskContext, councilNotes), complexity, memories, planningTier);
         return {
           output: JSON.stringify({ subtasks }),
           metadata: { subtasks },
@@ -633,7 +641,7 @@ export class UniversalAgent {
     });
 
     const reviewedWorkerResults = await this.executeSubtaskDag(
-      taskContext,
+      agentTaskContext,
       complexity,
       executionPlan,
       memories,
@@ -649,7 +657,7 @@ export class UniversalAgent {
     const reviews = reviewedWorkerResults.flatMap((result) => result.reviews);
     pushUniqueArtifacts(artifacts, getApprovedArtifacts(reviewedWorkerResults));
     const generatedArtifact = await this.createRequestedArtifact(
-      taskContext,
+      agentTaskContext,
       workerResults,
       emit,
       runSpanId,
@@ -697,7 +705,7 @@ export class UniversalAgent {
           {
             role: "user",
             content: synthesizePrompt(
-              limitText(taskContext, promptBudget.taskContextChars),
+              limitText(agentTaskContext, promptBudget.taskContextChars),
               complexity,
               compactWorkerResultsForPrompt(workerResults, promptBudget.synthesisWorkerOutputChars),
               reviews,
@@ -3772,6 +3780,53 @@ ${artifacts
   })
   .join("\n")}
 Use these artifacts as prior evidence when they satisfy the follow-up request. Do not reacquire the same data unless it is stale, missing, or insufficient.`;
+}
+
+function appendAgentRuntimeStrategyContext(
+  task: string,
+  strategy: AgentStrategyDecision,
+  rootInvocation: AgentInvocation,
+  hasLedger: boolean,
+  pendingToolImprovementCount: number,
+): string {
+  const matchedTools = strategy.toolPolicy.matchedToolNames.length > 0
+    ? strategy.toolPolicy.matchedToolNames.join(", ")
+    : "none";
+  const missingCapabilities = strategy.toolPolicy.missingCapabilityHints.length > 0
+    ? strategy.toolPolicy.missingCapabilityHints.join(", ")
+    : "none";
+  const council = strategy.council
+    ? [
+        `Council: ${strategy.council.reason}`,
+        `Council participants: ${strategy.council.participants.map((participant) =>
+          `${participant.role}/${participant.modelTier}`,
+        ).join(", ")}`,
+      ]
+    : ["Council: not required"];
+
+  return `${task}
+
+Agent runtime strategy:
+- Primary strategy: ${strategy.primary}
+- Invocation: ${summarizeAgentInvocation(rootInvocation)}
+- Allowed actions: ${strategy.actions.join(", ")}
+- Model tier: ${strategy.modelTier}
+- Review strictness: ${strategy.reviewStrictness}
+- Child budget: maxDepth=${strategy.maxChildDepth}, maxParallelChildren=${strategy.maxParallelChildren}
+- Work Ledger available: ${hasLedger ? "yes" : "no"}
+- Work Ledger policy: check=${strategy.ledgerPolicy.shouldCheck}, reuseFresh=${strategy.ledgerPolicy.reuseFreshEvidence}, waitForInFlight=${strategy.ledgerPolicy.waitForInFlight}, revalidateStaleOrFailed=${strategy.ledgerPolicy.revalidateStaleOrFailed}
+- Matched tools: ${matchedTools}
+- Missing capability hints: ${missingCapabilities}
+- Tool policy: mayCall=${strategy.toolPolicy.mayCallTools}, mayRequestBuild=${strategy.toolPolicy.mayRequestBuild}, mayRequestRework=${strategy.toolPolicy.mayRequestRework}
+- Pending tool improvement waits: ${pendingToolImprovementCount}
+${council.map((line) => `- ${line}`).join("\n")}
+
+Agent operating rules:
+- Use the allowed actions above as your local capability menu; do not invent hidden abilities.
+- Before repeating search, browser, API, file, or artifact work, prefer reusable thread artifacts and Work Ledger evidence when available.
+- If another branch is already doing the same expensive work, wait for or reuse that evidence instead of duplicating it.
+- If an available tool is insufficient, describe a reusable versioned tool improvement with acceptance criteria rather than a one-off workaround.
+- Before returning to the caller, self-check that the answer, evidence, artifacts, and limitations satisfy the local invocation contract.`;
 }
 
 function appendRuntimeContext(task: string, now: Date, timeZone = process.env.AGENT_TIME_ZONE ?? process.env.TZ ?? "Europe/Madrid"): string {

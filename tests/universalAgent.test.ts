@@ -211,6 +211,48 @@ class CapturingFakeLlm {
   }
 }
 
+class CapturingDelegatedStrategyLlm {
+  prompts: string[] = [];
+
+  async complete(messages: Message[]): Promise<string> {
+    const text = messages.map((message) => message.content).join("\n");
+    this.prompts.push(text);
+
+    if (text.includes("Classify this single user task")) {
+      return '{"mode":"delegated","reason":"requires live evidence","domains":["research"],"riskLevel":"medium"}';
+    }
+    if (text.includes("Create a delegation plan")) {
+      return JSON.stringify({
+        subtasks: [
+          {
+            id: "research",
+            title: "Search evidence",
+            role: "researcher",
+            prompt: "Use web evidence and avoid duplicated searches.",
+            expectedOutput: "Evidence summary.",
+            reviewCriteria: ["Uses tool evidence"],
+            requiredTools: ["web-search"],
+          },
+        ],
+      });
+    }
+    if (text.includes("focused worker agent")) {
+      return "Worker result using web evidence.";
+    }
+    if (text.includes("You are a reviewer agent")) {
+      return '{"subtaskId":"research","verdict":"pass","notes":"Uses tool evidence."}';
+    }
+    if (text.includes("Synthesize the final answer")) {
+      return "Final answer using reused web evidence.";
+    }
+    if (text.includes("Extract one reusable skill-memory entry")) {
+      return '{"shouldStore":false}';
+    }
+
+    throw new Error(`Unexpected fake LLM prompt: ${text.slice(0, 160)}`);
+  }
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -309,6 +351,59 @@ test("UniversalAgent injects group and requester context into runtime prompts", 
     assert.match(joined, /city: Malaga/);
     assert.match(joined, /Requester: Admin/);
     assert.match(joined, /Use this context as default task context/);
+    assert.match(joined, /Agent runtime strategy/);
+    assert.match(joined, /Primary strategy: direct_answer/);
+    assert.match(joined, /Allowed actions: self_check_return, answer_directly/);
+    assert.match(joined, /Use the allowed actions above as your local capability menu/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent injects strategy capabilities into planner, worker, and synthesis prompts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new CapturingDelegatedStrategyLlm();
+  const registry = new ToolRegistry();
+  const searchInputs: unknown[] = [];
+  registry.register({
+    name: "web.search",
+    description: "Fake web search",
+    capabilities: ["web-search"],
+    async run(input) {
+      searchInputs.push(input);
+      return {
+        ok: true,
+        content: "1. Evidence source\nhttps://example.org/source\nUseful evidence.",
+      };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+
+  try {
+    await agent.run("Search the web for reusable evidence and avoid duplicate work.", {
+      runId: "run-strategy-context",
+      threadId: "thread-strategy-context",
+      workLedgerStore: new InMemoryWorkLedgerStore(),
+      evidenceLedgerStore: new InMemoryEvidenceLedgerStore(),
+      runRetrospectiveStore: new InMemoryRunRetrospectiveStore(),
+    });
+
+    const joined = fakeLlm.prompts.join("\n\n---\n\n");
+    const planningPrompt = fakeLlm.prompts.find((prompt) => prompt.includes("Create a delegation plan")) ?? "";
+    const workerPrompt = fakeLlm.prompts.find((prompt) => prompt.includes("focused worker agent")) ?? "";
+    const synthesisPrompt = fakeLlm.prompts.find((prompt) => prompt.includes("Synthesize the final answer")) ?? "";
+
+    assert.equal(searchInputs.length, 1);
+    assert.match(planningPrompt, /Agent runtime strategy/);
+    assert.match(planningPrompt, /Primary strategy: ledger_reuse_or_wait/);
+    assert.match(planningPrompt, /Allowed actions: .*check_work_ledger.*reuse_evidence.*wait_for_sibling_work.*call_tool/s);
+    assert.match(planningPrompt, /Matched tools: web\.search/);
+    assert.match(planningPrompt, /Work Ledger available: yes/);
+    assert.match(workerPrompt, /Agent runtime strategy/);
+    assert.match(workerPrompt, /Before repeating search, browser, API, file, or artifact work/);
+    assert.match(synthesisPrompt, /Tool policy: mayCall=true/);
+    assert.match(joined, /If another branch is already doing the same expensive work/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

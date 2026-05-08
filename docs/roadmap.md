@@ -1248,8 +1248,12 @@ Approved implementation path after the Nest API cutover:
    Worker and reviewer wrappers intentionally preserve the mature delegated-DAG behavior:
    tool execution, artifact QA, ledger writes, revision loops, and reviewer hard gates
    remain in the existing role code while the normalized invocation lifecycle becomes
-   visible in Trace Lab. Full recursive worker/tool child execution still needs the
-   recursive runtime before the central planner can be replaced.
+   visible in Trace Lab. PARTIAL: after the root invocation is created, the selected
+   strategy is injected into planner/worker/synthesizer prompts as a compact runtime
+   capability menu: allowed actions, matched tools, missing capability hints, Work Ledger
+   policy, child budget, anti-duplication rules, and tool-improvement guidance. Full
+   recursive worker/tool child execution still needs the recursive runtime before the
+   central planner can be replaced.
 2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
    broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
    within depth, budget, deadline, and policy limits. A parent only receives compact child
@@ -1278,10 +1282,11 @@ Remaining recursive-agent gaps:
 
 - Replace the central one-shot planner with an agent runtime that can recursively spawn
   workers, reviewers, tool builders, tool QA agents, and tool users.
-- Add Thread/Run Work Ledger and Evidence Ledger stores, including work keys, claim
-  states, owner spans, freshness, QA status, and reuse decisions.
-- Add the run retrospective pipeline and review queue that turns structured reflection
-  into memory proposals, tool investigations, prompt/policy improvement tickets, and
+- Add the Work Ledger claim coordinator to the runtime once the parallel backend slice
+  lands, then replace the current advisory ledger policy text with actual claim/reuse/wait
+  decisions before every expensive search, browser, API, file, and artifact action.
+- Add the retrospective review queue that turns structured reflection into accepted or
+  rejected memory proposals, tool investigations, prompt/policy improvement tickets, and
   limitation records without auto-polluting accepted memory.
 - Add council-planning as a universal-agent strategy: multiple model tiers/providers can
   propose or critique plans, then a synthesis agent merges the plan while dedupe ledger

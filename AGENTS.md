@@ -102,6 +102,11 @@ policies without leaking context.
   tool execution, artifact QA, ledger writes, revision, and reviewer hard gates, but
   trace consumers can now follow all major agent calls through the normalized
   `agent-invocation-*` lifecycle.
+- After classification, the runtime appends a compact `Agent runtime strategy` block to
+  planner, worker, and synthesizer prompts. It lists the selected strategy, allowed
+  actions, matched tools, missing capability hints, Work Ledger policy, child budget,
+  anti-duplication rules, and tool-improvement rule. Do not inject this block into
+  classification prompts; it is the post-classification capability menu for execution.
 - Root invocations also emit `agent-invocation-return-checked` before the run returns.
   The generic return check validates non-empty output and required evidence against the
   invocation output contract. Council participants use the same return gate before
