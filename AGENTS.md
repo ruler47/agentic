@@ -103,6 +103,11 @@ policies without leaking context.
   so future child agents and non-agent runtime call sites can ask for a
   reuse/wait/revalidate decision instead of blindly creating duplicate work. The payload
   is secret-redacted before storage and audit.
+- The React console has a first-class Ledger page at `/ledger`. It scopes by run, thread,
+  or work key; shows Work Ledger claims, Evidence Ledger records, and Run Retrospective
+  proposals together; lets operators create/test manual claims through the same endpoint
+  agents use; allows work status updates and retrospective review/archive; and Run
+  Workspace links directly to the scoped ledger for a run.
 - Runtime retrospectives now include suspected root causes, failed work item ids,
   duplicated-work signals, and proposed tool/policy/prompt follow-ups when the run saw
   weak tools, missing capabilities, external blockers, or repeated work.
@@ -542,6 +547,11 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   `wait_for_active` / `created_new` / `revalidate` / `blocked` decisions, and writes
   paired `limitation` evidence on failure / blockers when the evidence store is
   wired. It is available to callers through `POST /api/work-ledger/claim`.
+- [web-react/src/routes/Ledger.tsx](web-react/src/routes/Ledger.tsx) - operator UX for
+  Work Ledger, Evidence Ledger, and Run Retrospective review, with scoped run/thread/
+  work-key views and manual claim creation.
+- [web-react/src/features/ledger/ledgerPresentation.ts](web-react/src/features/ledger/ledgerPresentation.ts)
+  - presentation helpers for ledger health metrics, search filtering, and status tones.
 - [src/work-ledger/workKey.ts](src/work-ledger/workKey.ts) - deterministic work-key
   builders for search queries, URL visits, tool/API calls, and artifact intents.
 - [src/work-ledger/decideWorkReuse.ts](src/work-ledger/decideWorkReuse.ts) - pure
@@ -640,6 +650,8 @@ For documentation-only changes:
   `/api/work-ledger/claim`: deterministic intent keys, secret redaction, reuse/wait/
   revalidate/blocked decisions, evidence/artifact attachment, and concurrent same-key
   claims.
+- `web-react/src/features/ledger/ledgerPresentation.test.ts` covers React ledger health
+  summaries, shared search filtering, and status-tone mapping.
 - `tests/json.test.ts` covers JSON extraction from model output.
 - `tests/skillMemory.test.ts` covers file-backed skill memory.
 - `tests/memoryRetrievalEvaluation.test.ts` covers retrieval quality fixture scoring.

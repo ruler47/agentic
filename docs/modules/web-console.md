@@ -746,12 +746,15 @@ the proposed record id. The revalidation and blocked events come from the shared
 `WorkLedgerClaimCoordinator`, which keeps runtime decisions aligned with future
 recursive child agents. Web search, market time-series, inferred API JSON tools,
 declared tool inputs, and artifact-producing tools now feed those events; dedicated URL
-visit/file tools and a first-class ledger console remain future UI slices.
+visit/file tools remain future runtime slices.
 Trace Lab can be filtered on these activity values to inspect dedupe decisions
-inline with normal spans. There is no dedicated console view for the ledgers in this
-slice — operators query the HTTP endpoints (`/api/work-ledger`,
-`/api/evidence-ledger`, `/api/run-retrospectives`) directly until a UI surface lands
-in a later phase.
+inline with normal spans. The React console also exposes a first-class **Ledger** page
+under Analysis. It can scope by run, thread, or work key; shows Work Ledger claims,
+Evidence Ledger records, and Run Retrospective proposals side by side; includes health
+metrics for active claims, weak evidence, reusable results, and review backlog; lets an
+operator create/test a claim through the same `/api/work-ledger/claim` endpoint agents
+use; and provides review/archive actions for retrospectives plus status updates for work
+items. Run Workspace links directly to `/ledger?runId=<id>` with a compact ledger summary.
 `POST /api/work-ledger/claim` exposes the same domain claim coordinator to runtime and
 future child-agent callers. The payload includes `runId`, `ownerSpanId`, `kind`,
 `taskSummary`, `requestedBy`, and either a precomputed `workKey` or structured

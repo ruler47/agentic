@@ -70,8 +70,14 @@ Phase 1 limitations to address in later slices:
 - Dedicated URL visit tools, file read/write tools, and some specialized future tool-use
   call sites are not yet covered. Web search, market time-series, inferred API JSON
   tools, declared tool inputs, and artifact-producing tools are covered.
-- There is no console UI surface for the new ledgers yet; operators query the
-  HTTP endpoints directly.
+- React console UX for the new ledgers is now available at `/ledger`. It supports run,
+  thread, and work-key scopes; shows Work Ledger claims, Evidence Ledger records, and
+  Run Retrospective proposals together; summarizes active claims, reusable results, weak
+  evidence, duplicate-work signals, and review backlog; lets operators create/test manual
+  claims through the same endpoint child agents use; and links Run Workspace directly
+  into the scoped ledger view. Remaining UX work: richer thread-level rollups, a dedicated
+  evidence detail drawer, proposal-to-memory/tool-ticket actions, and graph overlays for
+  ledger relationships.
 - Distributed claim ownership across replicas is not enforced at the store layer.
 - The retrospective draft is rule-based; an LLM-driven retrospective with
   proposed memory/tool/policy/prompt actions is a separate later slice.

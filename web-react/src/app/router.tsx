@@ -27,6 +27,7 @@ const ConversationDetailPage = lazy(() =>
   import("@/routes/ConversationDetail").then((m) => ({ default: m.ConversationDetailPage })),
 );
 const MemoryPage = lazy(() => import("@/routes/Memory").then((m) => ({ default: m.MemoryPage })));
+const LedgerPage = lazy(() => import("@/routes/Ledger").then((m) => ({ default: m.LedgerPage })));
 const ArtifactsPage = lazy(() =>
   import("@/routes/Artifacts").then((m) => ({ default: m.ArtifactsPage })),
 );
@@ -80,6 +81,7 @@ export const router = createBrowserRouter([
       { path: "trace/:runId", element: lazyRoute(<TraceLabRunPage />) },
 
       { path: "memory", element: lazyRoute(<MemoryPage />) },
+      { path: "ledger", element: lazyRoute(<LedgerPage />) },
       { path: "artifacts", element: lazyRoute(<ArtifactsPage />) },
 
       { path: "tools", element: lazyRoute(<ToolsPage />) },

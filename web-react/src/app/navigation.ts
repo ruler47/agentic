@@ -29,6 +29,7 @@ export const navigation: NavGroup[] = [
     group: "Analysis",
     items: [
       { id: "trace", label: "Trace Lab", description: "Debug agent timelines, graphs, and logs.", path: "/trace" },
+      { id: "ledger", label: "Ledger", description: "Work claims, evidence, and run retrospectives.", path: "/ledger" },
       { id: "memory", label: "Memory", description: "Review scoped knowledge and proposed facts.", path: "/memory" },
       { id: "artifacts", label: "Artifacts", description: "Browse generated files and proof.", path: "/artifacts" },
     ],

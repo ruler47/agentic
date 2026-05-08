@@ -1,5 +1,10 @@
 import { Link, useParams } from "react-router-dom";
 
+import {
+  useEvidenceLedger,
+  useRunRetrospectives,
+  useWorkLedger,
+} from "@/api/ledger";
 import { useCancelRun, useRun, useRunWaits } from "@/api/runs";
 import {
   useAutoRetryReworkWait,
@@ -22,6 +27,9 @@ export function RunWorkspacePage() {
   const runId = params.runId;
   const run = useRun(runId);
   const waits = useRunWaits(runId);
+  const workLedger = useWorkLedger({ runId });
+  const evidenceLedger = useEvidenceLedger({ runId });
+  const retrospectives = useRunRetrospectives({ runId });
   const cancelRun = useCancelRun();
   useRunStream(runId);
 
@@ -114,6 +122,17 @@ export function RunWorkspacePage() {
 
         {activeWaits.length > 0 ? <RunWaitPanel waits={activeWaits} /> : null}
 
+        <RunLedgerPanel
+          runId={data.id}
+          workCount={workLedger.data?.length ?? 0}
+          evidenceCount={evidenceLedger.data?.length ?? 0}
+          retrospectiveCount={retrospectives.data?.length ?? 0}
+          weakEvidenceCount={(evidenceLedger.data ?? []).filter((record) =>
+            record.qaStatus === "failed" || record.qaStatus === "blocked" || record.qaStatus === "partial"
+          ).length}
+          proposedRetrospectiveCount={(retrospectives.data ?? []).filter((record) => record.status === "proposed").length}
+        />
+
         <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-5">
           <h3 className="text-sm font-semibold">Final answer</h3>
           <div className="mt-2">
@@ -148,6 +167,57 @@ export function RunWorkspacePage() {
         </article>
       </aside>
     </section>
+  );
+}
+
+function RunLedgerPanel({
+  runId,
+  workCount,
+  evidenceCount,
+  retrospectiveCount,
+  weakEvidenceCount,
+  proposedRetrospectiveCount,
+}: {
+  runId: string;
+  workCount: number;
+  evidenceCount: number;
+  retrospectiveCount: number;
+  weakEvidenceCount: number;
+  proposedRetrospectiveCount: number;
+}) {
+  const needsAttention = weakEvidenceCount > 0 || proposedRetrospectiveCount > 0;
+  const headline = weakEvidenceCount > 0
+    ? `${weakEvidenceCount} weak evidence item${weakEvidenceCount === 1 ? "" : "s"}`
+    : proposedRetrospectiveCount > 0
+      ? `${proposedRetrospectiveCount} retrospective${proposedRetrospectiveCount === 1 ? "" : "s"} waiting review`
+      : "Run coordination record";
+  return (
+    <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">
+            Work / Evidence Ledger
+          </p>
+          <h3 className="text-sm font-semibold">
+            {headline}
+          </h3>
+          <p className="mt-1 text-xs text-app-text-muted">
+            {workCount} claims · {evidenceCount} evidence records · {retrospectiveCount} retrospectives
+          </p>
+        </div>
+        <Link
+          to={`/ledger?runId=${encodeURIComponent(runId)}`}
+          className={[
+            "rounded-md border px-3 py-1.5 text-xs font-semibold",
+            needsAttention
+              ? "border-app-warning/40 bg-app-warning-soft text-app-warning"
+              : "border-app-border bg-app-surface-2 text-app-text hover:border-app-accent/40 hover:text-app-accent",
+          ].join(" ")}
+        >
+          Open Ledger
+        </Link>
+      </div>
+    </article>
   );
 }
 

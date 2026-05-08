@@ -610,9 +610,14 @@ UniversalAgent runtime integration (Phase 1) is now wired through
   `run-retrospective-proposed`) appear in the existing run trace stream so the
   console renders ledger activity inline with normal spans.
 
-The slice does not yet cover dedicated URL visit tools, file read/write tools,
-distributed claim locks across replicas, an LLM-driven retrospective, or a console UI
-for the new ledgers. Those remain on the recursive-agent roadmap.
+The React console exposes the first operator UX for these ledgers at `/ledger`: scope by
+run/thread/work key, inspect work claims and evidence beside run retrospectives, create a
+manual claim through the same coordinator endpoint used by agents, update work status,
+and mark retrospective proposals reviewed or archived. Run Workspace includes a compact
+ledger summary that links to the scoped view. The slice does not yet cover dedicated URL
+visit tools, file read/write tools, distributed claim locks across replicas, an
+LLM-driven retrospective, or proposal-to-memory/tool-ticket conversion actions. Those
+remain on the recursive-agent roadmap.
 
 A higher-level domain helper for those future call sites lives in
 [src/work-ledger/workLedgerClaimCoordinator.ts](../src/work-ledger/workLedgerClaimCoordinator.ts).

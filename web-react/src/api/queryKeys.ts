@@ -31,4 +31,7 @@ export const queryKeys = {
   memories: ["memories"] as const,
   memoryReviews: ["memories", "review-queue"] as const,
   auditEvents: ["audit-events"] as const,
+  workLedger: (scope: string) => ["work-ledger", scope] as const,
+  evidenceLedger: (scope: string) => ["evidence-ledger", scope] as const,
+  runRetrospectives: (scope: string) => ["run-retrospectives", scope] as const,
 } as const;

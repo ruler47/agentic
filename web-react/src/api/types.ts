@@ -137,6 +137,24 @@ export type {
   ToolServiceEventStatus,
 } from "@server/tools/toolServiceEventStore";
 
+export type {
+  EvidenceCreateInput,
+  EvidenceKind,
+  EvidenceQaStatus,
+  EvidenceRecord,
+  RunRetrospectiveCreateInput,
+  RunRetrospectiveOutcome,
+  RunRetrospectiveRecord,
+  RunRetrospectiveStatus,
+  RunRetrospectiveUpdateInput,
+  WorkClaim,
+  WorkLedgerCreateInput,
+  WorkLedgerItem,
+  WorkLedgerKind,
+  WorkLedgerStatus,
+  WorkLedgerUpdateInput,
+} from "@server/work-ledger/types";
+
 // Convenience derived types -----------------------------------------------
 
 export type RunListResponse = { runs: import("@server/runs/types").AgentRunRecord[] };
