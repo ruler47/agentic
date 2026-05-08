@@ -480,10 +480,16 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   generated tool source writer, including browser screenshot, document/PDF artifact, and
   generic HTTP API and always-on service providers, plus isolated command QA runner and
   metadata registrar.
+- [src/tools/toolBuildBlueprint.ts](src/tools/toolBuildBlueprint.ts) - generic Tool
+  Builder blueprint extractor for arbitrary docs/instructions. It turns pasted docs,
+  cURL examples, endpoints, fixtures, credential notes, lifecycle hints, and previous QA
+  failures into explicit build obligations before the LLM fallback is prompted.
 - [src/tools/llmToolBuildProvider.ts](src/tools/llmToolBuildProvider.ts) - guarded
   LLM-backed Tool Build provider for unknown/custom capability families. It asks the
-  configured XL-tier model for a TypeScript module/test pair, rejects unsafe paths and
-  raw-looking secrets, then hands output to the same isolated QA and registrar lifecycle.
+  configured XL-tier model for a TypeScript module/test pair using the Tool Build
+  Blueprint, rejects unsafe paths, raw-looking secrets, ignored documented operations,
+  missing secret handles, missing fixture coverage, and missing always-on lifecycle
+  behavior, then hands output to the same isolated QA and registrar lifecycle.
 - [src/tools/fileTools.ts](src/tools/fileTools.ts) - sandboxed workspace file tools.
 - [src/settings/modelTierSettings.ts](src/settings/modelTierSettings.ts) - model tier
   policy contract and in-memory implementation.
@@ -694,9 +700,11 @@ For documentation-only changes:
 - `tests/toolPromotionCoordinator.test.ts` covers the generated-tool promotion boundary.
 - `tests/toolBuildWorkflow.test.ts` covers Builder/QA/Registrar orchestration and failed
   QA registration blocking.
+- `tests/toolBuildBlueprint.test.ts` covers generic Tool Builder blueprint extraction,
+  repair context, operation/fixture/auth parsing, and raw-secret validation.
 - `tests/toolBuildProviders.test.ts` covers provider-backed TypeScript generation and
   generated metadata registration, including the guarded LLM-backed provider path for
-  unknown/custom integrations.
+  unknown/custom integrations and blueprint-enforced endpoint/fixture behavior.
 - `tests/toolBuildReviewers.test.ts` covers deterministic and LLM generated-tool review
   gates, including provider-specific behavior checks that reject generic service bridges
   when a request explicitly asks for a real provider adapter.
@@ -741,6 +749,11 @@ For documentation-only changes:
   docs, webhook docs, browser workflow instructions, protocol notes, examples, or plain
   operator instructions; the builder should classify the reusable capability family
   before generating code.
+- LLM-backed generic builds must go through `ToolBuildBlueprint`: the blueprint is the
+  source of truth for documented operations, fixtures, credential handles, raw-secret
+  candidates, lifecycle, settings, and repair checks. Do not let a model ignore pasted
+  docs and emit a placeholder bridge; reject output that does not reference documented
+  operations or leaks raw credential material.
 - Always-on tools that receive external provider messages should forward normalized
   events to `POST /api/tool-services/:name/inbound`; that path records the inbound event,
   resolves channel identity, creates a normal run, and records the linked queued event.
@@ -1131,9 +1144,10 @@ For documentation-only changes:
   attempts are exhausted.
 - `LlmToolBuildProvider` is enabled by default as a guarded fallback for unknown/custom
   Tool Build requests and can be disabled with `TOOL_BUILD_LLM_PROVIDER=disabled`. Its
-  output is not trusted: generated files must match the request contract, avoid raw
-  secrets, pass isolated generated-tool tests, pass isolated build, pass promotion tests,
-  and pass promotion build before registration.
+  output is not trusted: generated files must match the request contract, follow the Tool
+  Build Blueprint, avoid raw secrets, cover documented fixtures when available, pass
+  isolated generated-tool tests, pass isolated build, pass promotion tests, and pass
+  promotion build before registration.
 - Optional LLM code/behavior reviewers can be enabled with `TOOL_BUILD_LLM_REVIEW=enabled`.
   They read the durable request contract, QA report, and generated module/test previews,
   then return structured `pass`, `needs_revision`, or `fail` decisions. Treat their output

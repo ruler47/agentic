@@ -9,12 +9,22 @@ import {
   ToolBuildProvider,
   ToolBuildProviderOutput,
 } from "./toolBuildProviders.js";
+import {
+  blueprintToPromptSection,
+  createToolBuildBlueprint,
+  ToolBuildBlueprint,
+  validateToolBuilderResponseAgainstBlueprint,
+} from "./toolBuildBlueprint.js";
 import { ToolPackageManifest, normalizeToolPackageManifest } from "./toolPackage.js";
 
 type LlmToolBuilderResponse = {
   summary: string;
   displayName?: string;
   capabilities?: string[];
+  implementationPlan?: string[];
+  operations?: Array<Record<string, unknown>>;
+  qaFixtures?: Array<Record<string, unknown>>;
+  limitations?: string[];
   inputSchema?: ToolSchema;
   outputSchema?: ToolSchema;
   requiredSecretHandles?: string[];
@@ -42,11 +52,13 @@ export class LlmToolBuildProvider implements ToolBuildProvider {
     request: ToolBuildRequest,
     context?: ToolBuildAttemptContext,
   ): Promise<ToolBuildProviderOutput> {
-    const raw = await this.llm.complete(buildPrompt(request, context), {
+    const blueprint = createToolBuildBlueprint(request, context);
+    const raw = await this.llm.complete(buildPrompt(request, blueprint, context), {
       temperature: 0.1,
       modelTier: "XL",
     });
     const parsed = normalizeBuilderResponse(extractJson<unknown>(raw), request);
+    validateToolBuilderResponseAgainstBlueprint(parsed, blueprint);
     const packageManifest =
       parsed.packageManifest ??
       genericToolPackageManifest({
@@ -88,7 +100,11 @@ export class LlmToolBuildProvider implements ToolBuildProvider {
   }
 }
 
-function buildPrompt(request: ToolBuildRequest, context?: ToolBuildAttemptContext): Message[] {
+function buildPrompt(
+  request: ToolBuildRequest,
+  blueprint: ToolBuildBlueprint,
+  context?: ToolBuildAttemptContext,
+): Message[] {
   const repairContext = context?.previousQaReport
     ? [
         "Previous generated output failed QA. Repair the implementation instead of repeating the same failure.",
@@ -127,15 +143,19 @@ function buildPrompt(request: ToolBuildRequest, context?: ToolBuildAttemptContex
     {
       role: "system",
       content: [
-        "You are a senior TypeScript Tool Builder for Agentic.",
-        "Generate a reusable, self-contained Tool module and a focused node:test test file.",
+        "You are a senior generic TypeScript Tool Builder for Agentic.",
+        "Generate a reusable, self-contained Tool module and a focused node:test test file from arbitrary API/docs/integration instructions.",
+        "Use the Tool Build Blueprint as the source of truth for operations, fixtures, credentials, lifecycle, and repair obligations.",
         "Return only one JSON object. No Markdown outside JSON.",
         "The generated source must implement the Tool interface from ../tool.js.",
         "Do not import Agentic private runtime internals except ../tool.js types.",
         "Never include raw secrets. Use only declared secret handles and context.resolveSecret.",
+        "When documentation includes endpoints, implement those endpoint presets instead of a placeholder generic bridge.",
+        "When documentation includes fixtures, tests must assert them or equivalent behavior.",
         "Expected bad inputs must return { ok: false, content: string }, not throw.",
         "Always include tests for contract, success behavior, and at least one failure path.",
         "For always-on integrations, implement startService(context), healthcheck, start/stop behavior, and neutral event docs.",
+        "For repair attempts, explain the behavioral change in changeSummary and add a regression test for the previous failure.",
       ].join("\n"),
     },
     {
@@ -143,12 +163,25 @@ function buildPrompt(request: ToolBuildRequest, context?: ToolBuildAttemptContex
       content: [
         "Build a tool from this contract.",
         contractJson,
+        blueprintToPromptSection(blueprint),
         "Required JSON response shape:",
         JSON.stringify(
           {
             summary: "short build summary",
             displayName: request.displayName ?? request.contract.displayName,
             capabilities: [request.capability],
+            implementationPlan: ["derive documented operations", "implement tool", "test fixtures"],
+            operations: [
+              {
+                id: "operation id from blueprint",
+                method: "GET",
+                path: "/documented/path",
+                requestFields: [],
+                responseFields: [],
+              },
+            ],
+            qaFixtures: [{ name: "fixture name", input: {}, expectedOutput: {} }],
+            limitations: [],
             inputSchema: request.contract.inputSchema,
             outputSchema: request.contract.outputSchema,
             requiredSecretHandles: request.credentialHandles ?? [],
@@ -180,6 +213,8 @@ function normalizeBuilderResponse(value: unknown, request: ToolBuildRequest): Ll
   const summary = readRequiredText(candidate.summary, "summary");
   const files = readFiles(candidate.files, request);
   const capabilities = readOptionalStringArray(candidate.capabilities, "capabilities");
+  const implementationPlan = readOptionalStringArray(candidate.implementationPlan, "implementationPlan");
+  const limitations = readOptionalStringArray(candidate.limitations, "limitations");
   const requiredSecretHandles = readOptionalStringArray(candidate.requiredSecretHandles, "requiredSecretHandles");
   const requiredConfigurationKeys = readOptionalStringArray(
     candidate.requiredConfigurationKeys,
@@ -208,6 +243,10 @@ function normalizeBuilderResponse(value: unknown, request: ToolBuildRequest): Ll
     summary,
     displayName: readOptionalText(candidate.displayName, "displayName"),
     capabilities,
+    implementationPlan,
+    operations: readOptionalObjectArray(candidate.operations, "operations"),
+    qaFixtures: readOptionalObjectArray(candidate.qaFixtures, "qaFixtures"),
+    limitations,
     inputSchema: readOptionalSchema(candidate.inputSchema, "inputSchema"),
     outputSchema: readOptionalSchema(candidate.outputSchema, "outputSchema"),
     requiredSecretHandles,
@@ -305,6 +344,17 @@ function readOptionalStringArray(value: unknown, field: string): string[] | unde
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) throw new Error(`${field} must be an array.`);
   return value.map((item, index) => readRequiredText(item, `${field}[${index}]`));
+}
+
+function readOptionalObjectArray(value: unknown, field: string): Array<Record<string, unknown>> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array.`);
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`${field}[${index}] must be an object.`);
+    }
+    return item as Record<string, unknown>;
+  });
 }
 
 function readRequiredText(value: unknown, field: string): string {

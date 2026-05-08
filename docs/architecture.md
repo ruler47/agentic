@@ -410,6 +410,18 @@ reload. Disable this fallback with `TOOL_BUILD_LLM_PROVIDER=disabled` when an in
 should only use deterministic providers. Enable `TOOL_BUILD_LLM_REVIEW=enabled` when the
 instance should add LLM code/behavior reviewers before promotion.
 
+Before the LLM fallback is prompted, the request is compiled into a **Tool Build
+Blueprint**. The blueprint is a provider-neutral contract extracted from the operator
+request, pasted docs, cURL examples, endpoint lines, credential notes, required
+inputs/outputs, and previous QA reports. It records documentation URLs/snippets,
+operations, request/response fields, fixtures, secret handles, raw credential candidates,
+runtime lifecycle, settings, and repair obligations. The prompt must follow this
+blueprint, and the parser rejects output that ignores documented operations, omits
+required secret handles, fails to cover any available fixture, leaks raw credential
+candidates, or forgets always-on lifecycle behavior. This is the first generic Tool
+Builder layer: still bounded by QA/review/promotion, but no longer a freeform “write me
+some code” fallback.
+
 The registry also has a portable package-manifest import/export layer. Generated tools
 can expose `agentic.tool-package.v1` manifests through the API, and operators can import
 the same manifest shape back into the registry. Local-path packages remain compatible

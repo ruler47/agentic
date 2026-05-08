@@ -903,10 +903,13 @@ Next implementation tasks:
 - Add a Tool Builder agent contract. PARTIAL: persistent build request contracts,
   deterministic provider-based generated source writers, and a guarded LLM-backed
   fallback provider for unknown/custom capability families exist. Deterministic providers
-  run first; the LLM path can write only the requested TypeScript module/test pair,
-  rejects unsafe paths/raw-looking secrets, and still requires isolated QA plus promotion
-  checks before registration. Remaining work is richer docs ingestion, separate
-  code/behavior reviewers, and out-of-process build sandboxes.
+  run first; the LLM path now receives a normalized Tool Build Blueprint extracted from
+  operator docs, cURL examples, endpoint lines, fixtures, credential handles, lifecycle
+  hints, and previous QA failures. The builder output is validated against documented
+  operations, fixture coverage, required secret handles, raw-secret leakage, and
+  always-on lifecycle obligations before isolated QA plus promotion checks can run.
+  Remaining work is live docs fetching/chunking, richer endpoint/schema inference,
+  separate model-worker pools, and out-of-process build sandboxes.
 - Add a Tool QA/review agent contract. PARTIAL: generated QA criteria, isolated
   generated-tool test execution, TypeScript build verification, promotion checks, and
   deterministic code/behavior review gates now exist. Optional LLM code/behavior
@@ -974,9 +977,14 @@ Remaining Phase 3 gaps:
 - Replace provider-authored source with a higher-level Tool Builder agent that can create
   new providers/modules for unknown capability families. PARTIAL: `LlmToolBuildProvider`
   now acts as the guarded unknown-capability fallback after deterministic providers using
-  the configured XL-tier model and the same QA/registrar pipeline. Remaining work is real
-  provider-doc chunking, iterative repair from richer QA failures, semantic code review,
-  behavior review with live smoke evidence, and execution outside the main app process.
+  the configured XL-tier model and the same QA/registrar pipeline. DONE for the first
+  generic contract layer: `ToolBuildBlueprint` parses arbitrary pasted docs/instructions
+  into documentation URLs/snippets, endpoint presets, request/response fields, fixtures,
+  credential handles/raw-secret candidates, runtime lifecycle, and repair context; the
+  LLM prompt and validator must follow that blueprint. Remaining work is live provider-doc
+  retrieval/chunking, stronger schema synthesis from OpenAPI/HTML/PDF, semantic code
+  review, behavior review with live smoke evidence, and execution outside the main app
+  process.
 - Fold API-docs onboarding into Tool Builds: admin uploads/pastes documentation, desired
   use cases, and credential setup notes; the builder creates a scoped TypeScript tool
   contract, tests, QA report, and registry metadata. PARTIAL: the UI/API can create
@@ -991,11 +999,13 @@ Remaining Phase 3 gaps:
   than only saying "HTTP 200". The Global Ledger AML adapter has exercised versioned
   rework in practice: v1.1.0 switched final score extraction to root `totalFunds` and
   source evidence to `sources[].funds.name`/`sources[].share`, and v1.2.0 added Unified
-  search by forcing `token=supported` for address and transaction report URLs. Remaining
-  work is autonomous docs parsing into endpoint
-  presets, encrypted/secret-manager-backed material storage for pasted credentials, richer
-  provider-specific schemas, and policy-aware runtime credential resolution for all
-  generated tools.
+  search by forcing `token=supported` for address and transaction report URLs. Generic
+  LLM-backed builds now compile pasted docs into a Tool Build Blueprint before prompting,
+  so endpoint presets, fixtures, response fields, and credential handles are explicit
+  obligations instead of freeform prompt text. Remaining work is live docs upload/fetch
+  chunking, encrypted/secret-manager-backed material storage for pasted credentials,
+  richer provider-specific schemas, and policy-aware runtime credential resolution for
+  all generated tools.
 - Make generated tools manageable from the registry. DONE for human display names,
   generated-system-name handoff, persistent `display_name` columns, Tools-page delete
   buttons, full-text-ish Tools-page search across labels/system ids/descriptions/tags/docs
@@ -1036,6 +1046,12 @@ Remaining Phase 3 gaps:
   and redact raw credential notes before queueing. Remaining work is encrypted or external
   secret-manager-backed storage for inline material and policy-aware runtime resolution
   for every generated tool/model/always-on module.
+- The LLM-backed generic Tool Builder must never treat pasted docs as freeform vibes.
+  The request is first compiled into a Tool Build Blueprint. Generated output must mention
+  the documented operation(s), include declared secret handles, cover at least one
+  documented fixture when fixtures exist, and address previous QA checks during repair.
+  Raw credential candidates extracted from credential notes are rejected if they appear in
+  generated source, tests, docs, manifests, examples, or fixture output.
 - Add instance/user tool policy so a tool can be installed globally but enabled only for
   this instance, specific roles, or specific users.
 - Move generated-tool QA from temporary workspace isolation to a stricter worker service

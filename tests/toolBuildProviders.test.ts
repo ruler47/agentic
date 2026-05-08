@@ -443,9 +443,166 @@ test("LlmToolBuildProvider turns unknown integration requests into QA-able gener
     assert.match(writtenModule, /generated.provider.customCrm/);
     assert.match(writtenTest, /exposes a reusable contract/);
     assert.equal(llm.calls.length, 1);
+    const prompt = JSON.stringify(llm.calls[0]?.messages);
+    assert.match(prompt, /Tool Build Blueprint/);
+    assert.match(prompt, /secret\.custom\.crm/);
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
   }
+});
+
+test("LlmToolBuildProvider drives arbitrary API docs through blueprint operations and fixtures", async () => {
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const request = await requestStore.create({
+    capability: "api.risk.score",
+    displayName: "Risk Score API",
+    reason: [
+      "Build from provider docs https://docs.example.com/risk.",
+      "GET https://risk.example.com/v1/entities/{entityId}/score",
+      "Header: x-api-key: <secret>",
+      "Response:",
+      "```json",
+      '{ "riskScore": 87, "reasons": ["pep"] }',
+      "```",
+    ].join("\n"),
+    requiredInputs: ["entityId"],
+    requiredOutputs: ["riskScore", "reasons"],
+    credentialHandles: ["secret.risk.apiKey"],
+    desiredToolName: "generated.api.riskScore",
+  });
+  const moduleSource = [
+    'import { Tool } from "../tool.js";',
+    "export const tool: Tool = {",
+    '  name: "generated.api.riskScore",',
+    '  version: "1.0.0",',
+    '  description: "Risk score API client.",',
+    '  capabilities: ["api.risk.score"],',
+    '  requiredSecretHandles: ["secret.risk.apiKey"],',
+    '  inputSchema: { type: "object", properties: { entityId: { type: "string" } }, required: ["entityId"] },',
+    '  outputSchema: { type: "object", properties: { ok: { type: "boolean" }, content: { type: "string" }, data: { type: "object" } }, required: ["ok", "content"] },',
+    '  async run(input, context) {',
+    '    const entityId = String(input.entityId ?? "");',
+    '    if (!entityId) return { ok: false, content: "entityId is required" };',
+    '    const key = await context?.resolveSecret?.("secret.risk.apiKey");',
+    '    if (!key) return { ok: false, content: "Missing secret.risk.apiKey" };',
+    '    return { ok: true, content: "Risk score 87", data: { endpoint: "GET https://risk.example.com/v1/entities/{entityId}/score", riskScore: 87, reasons: ["pep"] } };',
+    "  }",
+    "};",
+  ].join("\n");
+  const testSource = [
+    'import test from "node:test";',
+    'import assert from "node:assert/strict";',
+    'import { tool } from "../../src/tools/generated/api-risk-scoreTool.js";',
+    'test("uses documented fixture", async () => {',
+    '  const result = await tool.run({ entityId: "entity-1" }, { now: new Date(), toolName: tool.name, resolveSecret: async () => "secret" });',
+    '  assert.equal(result.ok, true);',
+    '  assert.equal((result.data as any).riskScore, 87);',
+    '  assert.deepEqual((result.data as any).reasons, ["pep"]);',
+    "});",
+  ].join("\n");
+  const llm = new FakeToolBuilderLlm([
+    JSON.stringify({
+      summary: "Generated risk score API client.",
+      capabilities: ["api.risk.score"],
+      implementationPlan: ["Use documented GET /v1/entities/{entityId}/score endpoint."],
+      operations: [
+        {
+          id: "get-score",
+          method: "GET",
+          path: "/v1/entities/{entityId}/score",
+          requestFields: ["entityId"],
+          responseFields: ["riskScore", "reasons"],
+        },
+      ],
+      qaFixtures: [{ name: "json-fixture-1", input: { entityId: "entity-1" }, expectedOutput: { riskScore: 87 } }],
+      requiredSecretHandles: ["secret.risk.apiKey"],
+      docsMarkdown: "Calls GET https://risk.example.com/v1/entities/{entityId}/score with x-api-key and returns riskScore/reasons.",
+      examples: [{ title: "score", input: { entityId: "entity-1" }, output: { ok: true, data: { riskScore: 87 } } }],
+      files: [
+        { path: request.contract.modulePath, content: moduleSource },
+        { path: request.contract.testPath, content: testSource },
+      ],
+    }),
+  ]);
+
+  const output = await new LlmToolBuildProvider(llm).build(request);
+
+  assert.equal(output.displayName, "Risk Score API");
+  assert.deepEqual(output.requiredSecretHandles, ["secret.risk.apiKey"]);
+  assert.match(output.docsMarkdown ?? "", /risk\.example\.com\/v1\/entities/);
+  assert.equal(output.examples?.[0]?.title, "score");
+  const prompt = JSON.stringify(llm.calls[0]?.messages);
+  assert.match(prompt, /Tool Build Blueprint/);
+  assert.match(prompt, /https:\/\/docs\.example\.com\/risk/);
+  assert.match(prompt, /riskScore/);
+});
+
+test("LlmToolBuildProvider rejects outputs that ignore blueprint docs or leak raw credentials", async () => {
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const request = await requestStore.create({
+    capability: "api.risk.score",
+    reason: [
+      "GET https://risk.example.com/v1/entities/{entityId}/score",
+      "api key: RAWSECRET1234567890RAWSECRET1234567890",
+      "```json",
+      '{ "riskScore": 87 }',
+      "```",
+    ].join("\n"),
+    credentialHandles: ["secret.risk.apiKey"],
+    desiredToolName: "generated.api.riskScore",
+  });
+  const llm = new FakeToolBuilderLlm([
+    JSON.stringify({
+      summary: "bad output",
+      capabilities: ["api.risk.score"],
+      requiredSecretHandles: ["secret.risk.apiKey"],
+      operations: [{ id: "placeholder", method: "GET", path: "/placeholder" }],
+      docsMarkdown: "Uses secret.risk.apiKey",
+      files: [
+        {
+          path: request.contract.modulePath,
+          content: "const token = 'RAWSECRET1234567890RAWSECRET1234567890'; export {};",
+        },
+        { path: request.contract.testPath, content: "test('placeholder', () => {})" },
+      ],
+    }),
+  ]);
+
+  await assert.rejects(() => new LlmToolBuildProvider(llm).build(request), /raw credential|documented operation/);
+});
+
+test("LlmToolBuildProvider includes repair QA context in the blueprint prompt", async () => {
+  const requestStore = new InMemoryToolBuildRequestStore();
+  const request = await requestStore.create({
+    capability: "api.repairable",
+    reason: "Create a generic API tool.",
+    desiredToolName: "generated.api.repairable",
+  });
+  const llm = new FakeToolBuilderLlm([
+    JSON.stringify({
+      summary: "repaired",
+      capabilities: ["api.repairable"],
+      changeSummary: "Added regression for previous timeout.",
+      files: [
+        { path: request.contract.modulePath, content: "export {};" },
+        { path: request.contract.testPath, content: "test('previous-qa-regression timeout', () => {})" },
+      ],
+    }),
+  ]);
+
+  await new LlmToolBuildProvider(llm).build(request, {
+    attempt: 3,
+    previousQaReport: {
+      ok: false,
+      summary: "Timed out against documented endpoint.",
+      checks: ["timeout was not bounded", "missing regression test"],
+    },
+  });
+
+  const prompt = JSON.stringify(llm.calls[0]?.messages);
+  assert.match(prompt, /previous-qa-regression/);
+  assert.match(prompt, /Timed out against documented endpoint/);
+  assert.match(prompt, /missing regression test/);
 });
 
 test("LlmToolBuildProvider rejects unsafe file paths and raw-looking secrets", async () => {

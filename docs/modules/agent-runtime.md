@@ -474,6 +474,13 @@ Current artifact behavior:
 - Synthesis receives artifact links and should mention useful files in the final answer.
 - If no registered tool provides a required capability, the runtime emits a `tool-missing`
   trace event and can persist a Tool Build Request with a builder/QA contract.
+- Unknown/custom Tool Build requests can be handled by the guarded LLM-backed generic
+  builder after deterministic providers decline them. Before the model is prompted, the
+  request is compiled into a Tool Build Blueprint containing docs URLs/snippets,
+  endpoint presets, request/response fields, fixtures, credential handles, lifecycle
+  hints, and prior QA repair context. The model output is rejected if it ignores the
+  documented operations, omits required secret handles, leaks raw credential candidates,
+  misses available fixtures, or forgets always-on lifecycle behavior.
 
 Known limitation: artifact generation is deterministic and narrow today. It does not yet
 create missing tools autonomously, execute arbitrary plotting code, create screenshots, or
