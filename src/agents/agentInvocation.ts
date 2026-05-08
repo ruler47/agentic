@@ -306,6 +306,59 @@ export function createReviewerInvocation(input: {
   };
 }
 
+export function createSynthesizerInvocation(input: {
+  rootInvocation: AgentInvocation;
+  spanId: string;
+  parentSpanId: string;
+  task: string;
+  workerResults?: WorkerResult[];
+  modelTier: ModelTier;
+  createdAt?: string;
+}): AgentInvocation {
+  const createdAt = input.createdAt ?? new Date().toISOString();
+  const workerSpanIds = (input.workerResults ?? [])
+    .map((result) => result.traceSpanId)
+    .filter((spanId): spanId is string => Boolean(spanId));
+  return {
+    id: invocationId(input.rootInvocation.runId, input.spanId),
+    runId: input.rootInvocation.runId,
+    spanId: input.spanId,
+    parentInvocationId: input.rootInvocation.id,
+    caller: {
+      kind: "agent",
+      runId: input.rootInvocation.runId,
+      spanId: input.parentSpanId,
+      frameId: input.rootInvocation.id,
+      actor: input.rootInvocation.actor,
+    },
+    role: "synthesizer",
+    actor: "synthesizer",
+    localTask: [
+      "Synthesize the final answer for the caller.",
+      `Original task: ${input.task}`,
+      workerSpanIds.length > 0 ? `Worker spans: ${workerSpanIds.join(", ")}` : "No worker spans.",
+    ].join("\n"),
+    outputContract: {
+      format: "answer",
+      description: "Return the final answer using reviewed worker outputs, artifacts, and stated limitations.",
+      requiredEvidence: input.rootInvocation.outputContract.requiredEvidence,
+      requiresSelfCheck: true,
+    },
+    depth: input.rootInvocation.depth + 1,
+    status: "started",
+    strategy: input.rootInvocation.strategy,
+    allowedActions: ["self_check_return"],
+    allowedToolNames: [],
+    modelTier: input.modelTier,
+    reviewStrictness: input.rootInvocation.reviewStrictness,
+    budget: {
+      ...input.rootInvocation.budget,
+      remainingDepth: Math.max(0, input.rootInvocation.budget.remainingDepth - 1),
+    },
+    createdAt,
+  };
+}
+
 export function summarizeAgentInvocation(invocation: AgentInvocation): string {
   return [
     `${invocation.actor} (${invocation.role})`,

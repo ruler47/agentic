@@ -98,9 +98,9 @@ policies without leaking context.
   invocation budget, emit started/completed/failed invocation events plus their own
   return checks, and append compact notes to the planning prompt. Broader worker/tool
   child execution still uses the existing coordinator path until the recursive runtime
-  replaces it, but worker and reviewer spans now include compatible `payload.invocation`
-  contracts next to `payload.callFrame` so trace consumers can already follow
-  parent/child agent calls.
+  replaces it, but worker, reviewer, and synthesizer spans now include compatible
+  `payload.invocation` contracts next to their legacy payloads so trace consumers can
+  already follow parent/child agent calls.
 - Root invocations also emit `agent-invocation-return-checked` before the run returns.
   The generic return check validates non-empty output and required evidence against the
   invocation output contract. Council participants use the same return gate before

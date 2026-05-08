@@ -259,6 +259,9 @@ test("UniversalAgent answers direct tasks without creating subtasks", async () =
     assert.equal((invocationEvent?.payload as any).localTask, "Define universal agent in one sentence");
     assert.equal((invocationEvent?.payload as any).outputContract.requiresSelfCheck, true);
     assert.equal((invocationEvent?.payload as any).strategy, "direct_answer");
+    const synthesisStarted = events.find((event) => event.type === "synthesis-started");
+    assert.equal((synthesisStarted?.payload as any).invocation.role, "synthesizer");
+    assert.equal((synthesisStarted?.payload as any).invocation.parentInvocationId, (invocationEvent?.payload as any).id);
     const returnCheckEvent = events.find((event) => event.type === "agent-invocation-return-checked");
     assert.equal((returnCheckEvent?.payload as any).selfCheck.readyToReturn, true);
     assert.equal((returnCheckEvent?.payload as any).selfCheck.invocationId, (invocationEvent?.payload as any).id);
@@ -2441,6 +2444,8 @@ test("UniversalAgent persists worker and reviewer call frames with return self-c
     const reviewStarted = events.find((event) => event.type === "review-started");
     const reviewCompleted = events.find((event) => event.type === "review-completed");
     const rootInvocation = events.find((event) => event.type === "agent-invocation-created");
+    const synthesisStarted = events.find((event) => event.type === "synthesis-started");
+    const synthesisCompleted = events.find((event) => event.type === "synthesis-completed");
     const selfChecks = events.filter((event) => event.type === "agent-self-check-completed");
     const workerInvocation = (workerStarted?.payload as { invocation?: { id?: string; parentInvocationId?: string; role?: string; caller?: { kind?: string; frameId?: string }; outputContract?: { requiresSelfCheck?: boolean } } } | undefined)?.invocation;
     const completedWorkerInvocation = (workerCompleted?.payload as { invocation?: { id?: string; status?: string } } | undefined)?.invocation;
@@ -2483,6 +2488,9 @@ test("UniversalAgent persists worker and reviewer call frames with return self-c
     assert.equal(reviewInvocation?.role, "reviewer");
     assert.equal(reviewInvocation?.caller?.frameId, workerInvocation?.id);
     assert.equal(reviewInvocation?.outputContract?.format, "critique");
+    assert.equal((synthesisStarted?.payload as any).invocation.role, "synthesizer");
+    assert.equal((synthesisStarted?.payload as any).invocation.parentInvocationId, (rootInvocation?.payload as any).id);
+    assert.equal((synthesisCompleted?.payload as any).invocation.status, "completed");
     assert.equal(
       ((reviewCompleted?.payload as { callFrame?: { parentFrameId?: string } } | undefined)?.callFrame
         ?.parentFrameId),

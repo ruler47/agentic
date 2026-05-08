@@ -5,6 +5,7 @@ import {
   createCouncilInvocations,
   createReviewerInvocation,
   createRootAgentInvocation,
+  createSynthesizerInvocation,
   createWorkerInvocation,
   summarizeAgentInvocation,
 } from "../src/agents/agentInvocation.js";
@@ -211,4 +212,57 @@ test("worker and reviewer invocations preserve parent-child contracts", () => {
   assert.equal(reviewer.outputContract.format, "critique");
   assert.deepEqual(reviewer.allowedActions, ["self_check_return"]);
   assert.match(reviewer.localTask, /Review subtask: Research evidence/);
+});
+
+test("synthesizer invocation links final answer work back to the root", () => {
+  const strategy = decideAgentStrategy({
+    task: "Merge reviewed worker outputs.",
+    complexity: {
+      mode: "delegated",
+      reason: "needs synthesis",
+      domains: ["planning"],
+      riskLevel: "medium",
+    },
+    tools: [],
+    hasWorkLedger: true,
+  });
+  const root = createRootAgentInvocation({
+    runId: "run_synthesis",
+    spanId: "run-span",
+    task: "Merge reviewed worker outputs.",
+    strategy,
+    createdAt: "2026-05-08T00:00:00.000Z",
+  });
+  const workerResults = [
+    {
+      subtask: {
+        id: "worker-a",
+        title: "Worker A",
+        role: "analyst",
+        prompt: "Analyze A.",
+        expectedOutput: "A",
+        reviewCriteria: [],
+      },
+      output: "A",
+      traceSpanId: "worker-span-a",
+    },
+  ];
+
+  const synthesizer = createSynthesizerInvocation({
+    rootInvocation: root,
+    spanId: "synthesis-span",
+    parentSpanId: "run-span",
+    task: root.localTask,
+    workerResults,
+    modelTier: "L",
+    createdAt: "2026-05-08T00:00:03.000Z",
+  });
+
+  assert.equal(synthesizer.parentInvocationId, root.id);
+  assert.equal(synthesizer.caller.frameId, root.id);
+  assert.equal(synthesizer.role, "synthesizer");
+  assert.equal(synthesizer.outputContract.format, "answer");
+  assert.equal(synthesizer.outputContract.requiresSelfCheck, true);
+  assert.deepEqual(synthesizer.allowedActions, ["self_check_return"]);
+  assert.match(synthesizer.localTask, /Worker spans: worker-span-a/);
 });

@@ -81,6 +81,7 @@ import {
   createCouncilInvocations,
   createReviewerInvocation,
   createRootAgentInvocation,
+  createSynthesizerInvocation,
   createWorkerInvocation,
   summarizeAgentInvocation,
 } from "./agentInvocation.js";
@@ -464,6 +465,15 @@ export class UniversalAgent {
       const synthesisSpanId = createSpanId("synthesis");
       const synthesisStartedAt = new Date();
       const synthesisTier = selectModelTier("synthesis", complexity);
+      const synthesisInvocation = createSynthesizerInvocation({
+        rootInvocation,
+        spanId: synthesisSpanId,
+        parentSpanId: runSpanId,
+        task: taskContext,
+        workerResults: [],
+        modelTier: synthesisTier,
+        createdAt: synthesisStartedAt.toISOString(),
+      });
       await emit({
         spanId: synthesisSpanId,
         parentSpanId: runSpanId,
@@ -473,7 +483,7 @@ export class UniversalAgent {
         status: "started",
         title: "Direct answer synthesis started",
         startedAt: synthesisStartedAt.toISOString(),
-        payload: { modelTier: synthesisTier },
+        payload: { modelTier: synthesisTier, invocation: synthesisInvocation },
       });
       const rawFinalAnswer = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
@@ -501,7 +511,11 @@ export class UniversalAgent {
         startedAt: synthesisStartedAt.toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: elapsedMs(synthesisStartedAt),
-        payload: { finalAnswer, modelTier: synthesisTier },
+        payload: {
+          finalAnswer,
+          modelTier: synthesisTier,
+          invocation: { ...synthesisInvocation, status: "completed" },
+        },
       });
       await this.emitInvocationReturnCheck(rootInvocation, finalAnswer, artifacts, 0, emit, synthesisSpanId);
 
@@ -605,6 +619,15 @@ export class UniversalAgent {
     const synthesisSpanId = createSpanId("synthesis");
     const synthesisStartedAt = new Date();
     const synthesisTier = selectModelTier("synthesis", complexity);
+    const synthesisInvocation = createSynthesizerInvocation({
+      rootInvocation,
+      spanId: synthesisSpanId,
+      parentSpanId: runSpanId,
+      task: taskContext,
+      workerResults,
+      modelTier: synthesisTier,
+      createdAt: synthesisStartedAt.toISOString(),
+    });
     await emit({
       spanId: synthesisSpanId,
       parentSpanId: runSpanId,
@@ -614,7 +637,7 @@ export class UniversalAgent {
       status: "started",
       title: "Final synthesis started",
       startedAt: synthesisStartedAt.toISOString(),
-      payload: { modelTier: synthesisTier },
+      payload: { modelTier: synthesisTier, invocation: synthesisInvocation },
     });
     const rawFinalAnswer = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
@@ -642,7 +665,11 @@ export class UniversalAgent {
       startedAt: synthesisStartedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(synthesisStartedAt),
-      payload: { finalAnswer, modelTier: synthesisTier },
+      payload: {
+        finalAnswer,
+        modelTier: synthesisTier,
+        invocation: { ...synthesisInvocation, status: "completed" },
+      },
     });
     await this.emitInvocationReturnCheck(
       rootInvocation,
