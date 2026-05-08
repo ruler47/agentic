@@ -100,8 +100,9 @@ now turns each selected strategy into an explicit `AgentInvocation` and emits
 output contract, allowed actions, allowed tool names, model tier, review strictness,
 depth/budget, and status. When the strategy is `council`, the runtime also emits
 `agent-council-planned` with planned participant invocation contracts. Those council
-participants are still planned, not executed recursively yet; the trace now preserves the
-shape the future recursive executor will consume.
+participants now execute through the recursive executor as advisory child invocations;
+the trace preserves their caller/parent links, return checks, and compact notes for the
+parent planner.
 Before the root invocation returns, the runtime emits `agent-invocation-return-checked`.
 That generic check validates the invocation output contract, non-empty output, and
 required evidence/artifact counts. This gives direct, delegated, and future recursive
@@ -110,10 +111,13 @@ child agents the same "ready to return to caller" gate instead of separate ad ho
 executor for that contract. It runs an invocation handler through depth-budget validation,
 normalizes handler failures into invocation failures, and attaches the same return
 self-check before a result can be marked completed. The current coordinator still uses
-the established direct/delegated path for workers, but council participants now execute
-through this runner as advisory child invocations. Their notes are appended to the
-planning context so the central planner can account for independent critique, risks,
-evidence needs, and duplicated-work warnings before building the DAG.
+the established direct/delegated path for workers, but
+[recursiveAgentExecutor.ts](../src/agents/recursiveAgentExecutor.ts) can now execute an
+invocation decision, spawn recursive child/council invocations within depth and parallel
+budgets, synthesize compact child returns, and emit lifecycle/self-check trace events.
+Council participants use this executor first. Their notes are appended to the planning
+context so the central planner can account for independent critique, risks, evidence
+needs, and duplicated-work warnings before building the DAG.
 
 The next runtime slice of that model is event-backed call frames. Worker and reviewer
 spans persist a structured `callFrame` payload with local task, output contract, caller
@@ -644,6 +648,16 @@ direct-classified task into delegated execution when the task needs external too
 ledger coordination, council planning, or a capability build/rework. Local artifact-tool
 work stays eligible for the direct path so lightweight artifact QA and bounded rework do
 not pay the full planner cost.
+
+The first generic recursive executor lives in
+[src/agents/recursiveAgentExecutor.ts](../src/agents/recursiveAgentExecutor.ts). It wraps
+an `AgentInvocation` in the same return self-check used by the root runner, asks a small
+decision handler whether to answer, call/request a tool, wait for a tool, delegate child
+agents, or ask a council, and recursively executes child invocations in bounded batches.
+This is the runtime scaffold for "an agent can call another agent" without forcing every
+child through the top-level planner. Full UniversalAgent worker/reviewer/tool-builder
+migration, durable call-frame persistence, ledger-aware child handlers, and span-level
+recursive retry remain follow-up work.
 
 ### Model Tiers
 

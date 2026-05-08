@@ -87,13 +87,10 @@ import {
 } from "./agentInvocation.js";
 import type { AgentInvocation } from "./agentInvocation.js";
 import {
-  AgentInvocationRunnerError,
-  runAgentInvocation,
-} from "./agentInvocationRunner.js";
-import {
   buildRecursiveAgentLoopPlan,
   RecursiveAgentLoopPlan,
 } from "./recursiveAgentLoop.js";
+import { runRecursiveAgentExecutor } from "./recursiveAgentExecutor.js";
 
 type PlanResponse = {
   subtasks: Subtask[];
@@ -782,100 +779,58 @@ export class UniversalAgent {
     emit: AgentEventEmitter,
     parentSpanId: string,
   ): Promise<string[]> {
-    const notes: string[] = [];
-
-    for (const invocation of invocations) {
-      const startedAt = new Date();
-      await emit({
-        spanId: invocation.spanId,
-        parentSpanId,
-        type: "agent-invocation-started",
-        actor: invocation.actor,
-        activity: "agent",
-        status: "started",
-        title: `Council agent started: ${invocation.actor}`,
-        detail: summarizeAgentInvocation(invocation),
-        startedAt: startedAt.toISOString(),
-        payload: invocation,
-      });
-
-      try {
-        const result = await runAgentInvocation({
-          invocation,
-          handler: async ({ invocation: currentInvocation }) => {
-            const output = await this.llm.complete([
-              { role: "system", content: coordinatorSystemPrompt },
-              {
-                role: "user",
-                content: buildCouncilParticipantPrompt(taskContext, currentInvocation),
-              },
-            ], { modelTier: currentInvocation.modelTier });
-            return {
-              output,
-              metadata: {
-                councilParticipant: currentInvocation.councilParticipant,
-              },
-            };
-          },
-        });
-        notes.push(formatCouncilNote(result.invocation, result.output));
-        await emit({
-          spanId: invocation.spanId,
-          parentSpanId,
-          type: "agent-invocation-completed",
-          actor: invocation.actor,
-          activity: "agent",
-          status: "completed",
-          title: `Council agent completed: ${invocation.actor}`,
-          detail: limitText(result.output, 900),
-          startedAt: result.startedAt,
-          completedAt: result.completedAt,
-          durationMs: Date.parse(result.completedAt) - Date.parse(result.startedAt),
-          payload: result,
-        });
-        await emit({
-          spanId: createSpanId("agent-invocation-return-check"),
-          parentSpanId: invocation.spanId,
-          type: "agent-invocation-return-checked",
-          actor: invocation.actor,
-          activity: "agent",
-          status: "completed",
-          title: `Invocation return self-check: ${invocation.actor}`,
-          detail: "Ready to return.",
-          startedAt: result.returnCheck.checkedAt,
-          completedAt: result.returnCheck.checkedAt,
-          durationMs: 0,
-          payload: {
-            invocation: result.invocation,
-            selfCheck: result.returnCheck,
-          },
-        });
-      } catch (error) {
-        const failure = error instanceof AgentInvocationRunnerError ? error.failure : undefined;
-        await emit({
-          spanId: invocation.spanId,
-          parentSpanId,
-          type: "agent-invocation-failed",
-          actor: invocation.actor,
-          activity: "agent",
-          status: "failed",
-          title: `Council agent failed: ${invocation.actor}`,
-          detail: formatErrorMessage(error),
-          startedAt: failure?.startedAt ?? startedAt.toISOString(),
-          completedAt: failure?.completedAt ?? new Date().toISOString(),
-          durationMs: failure ? Date.parse(failure.completedAt) - Date.parse(failure.startedAt) : elapsedMs(startedAt),
-          payload: failure ?? {
-            invocation: {
-              ...invocation,
-              status: "failed",
+    const results = await Promise.all(
+      invocations.map(async (invocation) => {
+        try {
+          return await runRecursiveAgentExecutor({
+            invocation,
+            emit: async (event) => {
+              await emit({
+                spanId: event.spanId,
+                parentSpanId: event.parentSpanId ?? parentSpanId,
+                type: event.type,
+                actor: event.actor,
+                activity: event.activity,
+                status: event.status,
+                title: event.title,
+                detail: event.detail,
+                startedAt: event.startedAt,
+                completedAt: event.completedAt,
+                durationMs: event.durationMs,
+                payload: event.payload,
+              });
             },
-            error: formatErrorMessage(error),
-          },
-        });
-      }
-    }
+            handlers: {
+              decide: async () => ({
+                action: "answer_self",
+                reason: "Council participant returns an independent advisory note.",
+              }),
+              answerSelf: async ({ invocation: currentInvocation }) => {
+                const output = await this.llm.complete([
+                  { role: "system", content: coordinatorSystemPrompt },
+                  {
+                    role: "user",
+                    content: buildCouncilParticipantPrompt(taskContext, currentInvocation),
+                  },
+                ], { modelTier: currentInvocation.modelTier });
+                return {
+                  output,
+                  metadata: {
+                    councilParticipant: currentInvocation.councilParticipant,
+                  },
+                };
+              },
+            },
+          });
+        } catch {
+          return undefined;
+        }
+      }),
+    );
 
-    return notes;
+    return results
+      .filter((result): result is NonNullable<typeof result> => Boolean(result))
+      .map((result) => formatCouncilNote(result.invocation, result.output));
   }
 
   private async classify(

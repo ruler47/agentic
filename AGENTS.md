@@ -117,10 +117,12 @@ policies without leaking context.
   invocation output contract. Future child/council agents should use the same return gate
   before handing results back to their caller.
 - Council participants are the first real child invocations. When strategy selection
-  chooses `council`, each planned participant runs through `agentInvocationRunner.ts`,
-  emits invocation started/completed/failed events, returns an advisory note, and the
-  parent appends those notes to the planning prompt. They are advisory only for now; full
-  recursive tool/ledger-enabled child execution remains future work.
+  chooses `council`, each planned participant runs through
+  `recursiveAgentExecutor.ts`, emits invocation started/completed/failed/return-check
+  events, returns an advisory note, and the parent appends those notes to the planning
+  prompt. The executor can also recursively spawn generic child invocations in bounded
+  parallel batches. They are advisory/scaffolded only for now; full UniversalAgent
+  worker/reviewer/tool/ledger child execution remains future work.
 - Agents will eventually send auditable outbound messages/reminders to a group or
   individual when policy allows.
 - Tools should be easy to onboard from API documentation and access credentials, but
@@ -293,6 +295,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/agents/agentInvocationRunner.ts](src/agents/agentInvocationRunner.ts) - generic
   invocation execution helper that runs a handler through depth-budget checks, output
   contract self-check, and normalized completed/failed invocation status.
+- [src/agents/recursiveAgentExecutor.ts](src/agents/recursiveAgentExecutor.ts) - generic
+  recursive invocation executor for answer/tool-request/delegate/council decisions,
+  bounded child batches, compact child synthesis, and invocation lifecycle events.
 - [src/agents/modelTier.ts](src/agents/modelTier.ts) - model tier selection policy.
 - [src/settings/modelProviderStore.ts](src/settings/modelProviderStore.ts) - durable
   model provider registry contract for chat and embedding endpoints.
@@ -645,6 +650,9 @@ For documentation-only changes:
   recursive root decision-loop events, return self-check events, and ledgered tool
   execution for web search, market/API tools, declared browser operations, and artifact
   paths.
+- `tests/recursiveAgentExecutor.test.ts` covers direct recursive invocation execution,
+  child/grandchild delegation, compact child synthesis, lifecycle trace emission, and
+  depth-budget failure behavior.
 - `tests/artifactStore.test.ts` covers local artifact persistence, durable
   metadata/object payload separation, and download metadata.
 - `tests/auditEventStore.test.ts` covers normalized in-memory audit events.

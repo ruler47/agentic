@@ -1302,8 +1302,8 @@ Approved implementation path after the Nest API cutover:
    that decision into a root `AgentInvocation` trace payload (`agent-invocation-created`)
    with caller, local task, output contract, allowed actions/tools, model tier, review
    strictness, and depth budget. Council strategies also emit planned participant
-   invocations through `agent-council-planned`; those participant invocations are not
-   executed recursively yet. The root invocation now emits
+   invocations through `agent-council-planned`; those participant invocations now run
+   through the recursive executor as advisory child calls. The root invocation now emits
    `agent-invocation-return-checked` before the run returns, using the same generic
    output-contract self-check that child/council invocations will use later. PARTIAL:
    [agentInvocationRunner.ts](../src/agents/agentInvocationRunner.ts) adds a reusable
@@ -1316,16 +1316,26 @@ Approved implementation path after the Nest API cutover:
    `agent-decision-loop-completed`, chooses `answer`, `delegate`, or `wait_for_tool`,
    and can upgrade a direct-classified task into delegated execution for external tool
    work, ledger coordination, council planning, or tool build/rework. General recursive
-   child execution still remains.
+   child execution is now started by
+   [recursiveAgentExecutor.ts](../src/agents/recursiveAgentExecutor.ts), which can run one
+   invocation decision, spawn recursive child/council invocations in bounded parallel
+   batches, synthesize compact child returns, and emit invocation started/completed/
+   failed/return-check events. Remaining work is wiring the full UniversalAgent worker,
+   reviewer, tool-builder, ledger, and retry flows through this executor.
 2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
    broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
    within depth, budget, deadline, and policy limits. A parent only receives compact child
-   returns, artifacts, evidence references, and self-check results.
+   returns, artifacts, evidence references, and self-check results. PARTIAL:
+   `runRecursiveAgentExecutor()` supports recursive child spawning, depth-budget
+   enforcement, parallel batch execution, synthesized child returns, and lifecycle trace
+   emission. The remaining slice is replacing the current central worker/reviewer DAG with
+   executor-backed child handlers that can call tools, claim ledger work, and request
+   improvements without special-case top-level code.
 3. **Council mode.** Make "ask a council" one ordinary strategy available to the
    universal agent. PARTIAL: council participant invocations now run through the generic
-   invocation runner and produce advisory notes before planning. The next slices should
-   let those participants call tools/ledger safely when allowed, run in parallel under
-   budget, and have a synthesis agent choose or merge a final plan. Council branches must
+   recursive executor and produce advisory notes before planning. The next slices should
+   let those participants call tools/ledger safely when allowed, run under policy-specific
+   budgets, and have a synthesis agent choose or merge a final plan. Council branches must
    still claim Work Ledger entries before external work so two advisors do not repeat the
    same search, screenshot, scrape, or API request.
 4. **Work Ledger integration.** Before costly/reusable work, every agent claims a
@@ -1361,9 +1371,10 @@ Remaining recursive-agent gaps:
 - Add council-planning as a universal-agent strategy: multiple model tiers/providers can
   propose or critique plans, then a synthesis agent merges the plan while dedupe ledger
   entries prevent duplicate external work. PARTIAL: the strategy selector now flags
-  council mode and emits participant hints; the invocation layer now writes planned
-  council participant call contracts to trace, but the runtime still falls back to the
-  existing delegated DAG executor until recursive child invocation lands.
+  council mode and emits participant hints; the invocation layer writes council
+  participant call contracts to trace; the recursive executor now runs those participant
+  calls as advisory notes. Tool/ledger-enabled council participants and a dedicated
+  synthesis invocation remain future work.
 - Persist agent call frames so a child agent has a local task/caller/output contract
   without needing full global context. PARTIAL: worker and reviewer spans now carry a
   structured `callFrame` payload with local task, output contract, caller span,

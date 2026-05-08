@@ -166,6 +166,55 @@ export function createCouncilInvocations(input: {
   });
 }
 
+export function createChildAgentInvocation(input: {
+  parentInvocation: AgentInvocation;
+  spanId: string;
+  localTask: string;
+  actor: string;
+  role?: AgentInvocation["role"];
+  strategy?: AgentStrategyKind;
+  allowedActions?: AgentStrategyAction[];
+  allowedToolNames?: string[];
+  modelTier?: ModelTier;
+  outputContract?: Partial<AgentInvocationOutputContract>;
+  createdAt?: string;
+}): AgentInvocation {
+  const createdAt = input.createdAt ?? new Date().toISOString();
+  const strategy = input.strategy ?? input.parentInvocation.strategy;
+  return {
+    id: invocationId(input.parentInvocation.runId, input.spanId),
+    runId: input.parentInvocation.runId,
+    spanId: input.spanId,
+    parentInvocationId: input.parentInvocation.id,
+    caller: {
+      kind: "agent",
+      runId: input.parentInvocation.runId,
+      spanId: input.parentInvocation.spanId,
+      frameId: input.parentInvocation.id,
+      actor: input.parentInvocation.actor,
+    },
+    role: input.role ?? "worker",
+    actor: input.actor,
+    localTask: input.localTask,
+    outputContract: {
+      ...outputContractForStrategy(strategy),
+      ...input.outputContract,
+    },
+    depth: input.parentInvocation.depth + 1,
+    status: "planned",
+    strategy,
+    allowedActions: input.allowedActions ?? input.parentInvocation.allowedActions,
+    allowedToolNames: input.allowedToolNames ?? input.parentInvocation.allowedToolNames,
+    modelTier: input.modelTier ?? input.parentInvocation.modelTier,
+    reviewStrictness: input.parentInvocation.reviewStrictness,
+    budget: {
+      ...input.parentInvocation.budget,
+      remainingDepth: Math.max(0, input.parentInvocation.budget.remainingDepth - 1),
+    },
+    createdAt,
+  };
+}
+
 export function summarizeAgentInvocation(invocation: AgentInvocation): string {
   return [
     `${invocation.actor} (${invocation.role})`,
