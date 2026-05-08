@@ -75,6 +75,7 @@ import {
   createReviewerCallFrame,
   createWorkerCallFrame,
 } from "./callFrame.js";
+import { decideAgentStrategy } from "./agentStrategy.js";
 
 type PlanResponse = {
   subtasks: Subtask[];
@@ -339,6 +340,39 @@ export class UniversalAgent {
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(classificationStartedAt),
       payload: { ...complexity, modelTier: classificationTier },
+    });
+
+    const strategy = decideAgentStrategy({
+      task,
+      complexity,
+      memories,
+      tools: this.tools.list(),
+      hasWorkLedger: Boolean(ledger),
+      pendingToolImprovements: pendingToolImprovements.length,
+    });
+    await emit({
+      spanId: createSpanId("agent-strategy"),
+      parentSpanId: classificationSpanId,
+      type: "agent-strategy-selected",
+      actor: "coordinator",
+      activity: "agent",
+      status: "completed",
+      title: `Agent strategy selected: ${strategy.primary}`,
+      detail: [
+        `Actions: ${strategy.actions.join(", ")}`,
+        `Review: ${strategy.reviewStrictness}`,
+        `Model tier: ${strategy.modelTier}`,
+        ...strategy.reasons,
+        strategy.council
+          ? `Council planned with ${strategy.council.participants.length} participant(s); execution remains delegated-DAG until recursive runtime lands.`
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: 0,
+      payload: strategy,
     });
 
     if (complexity.mode === "direct") {

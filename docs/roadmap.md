@@ -1225,6 +1225,12 @@ Approved implementation path after the Nest API cutover:
    output contract, budget, deadline, and cancellation signal. The current coordinator,
    worker, reviewer, synthesizer, tool-builder, tool-QA, and future council participants
    should all run through this contract instead of special-case method paths.
+   PARTIAL: [agentStrategy.ts](../src/agents/agentStrategy.ts) now creates an advisory
+   `AgentStrategyDecision` after classification and emits it as `agent-strategy-selected`.
+   The decision records whether the agent should answer directly, delegate, ask a council,
+   call tools, request tool build/rework, or check/reuse/wait on the Work Ledger. It also
+   records model-tier and review-strictness recommendations for the future invocation
+   runner.
 2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
    broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
    within depth, budget, deadline, and policy limits. A parent only receives compact child
@@ -1260,7 +1266,9 @@ Remaining recursive-agent gaps:
   limitation records without auto-polluting accepted memory.
 - Add council-planning as a universal-agent strategy: multiple model tiers/providers can
   propose or critique plans, then a synthesis agent merges the plan while dedupe ledger
-  entries prevent duplicate external work.
+  entries prevent duplicate external work. PARTIAL: the strategy selector now flags
+  council mode and emits participant hints, but the runtime still falls back to the
+  existing delegated DAG executor until recursive child invocation lands.
 - Persist agent call frames so a child agent has a local task/caller/output contract
   without needing full global context. PARTIAL: worker and reviewer spans now carry a
   structured `callFrame` payload with local task, output contract, caller span,

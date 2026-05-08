@@ -239,14 +239,22 @@ test("UniversalAgent answers direct tasks without creating subtasks", async () =
     '{"shouldStore":false}',
   ]);
   const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+  const events: AgentEvent[] = [];
 
   try {
-    const result = await agent.run("Define universal agent in one sentence");
+    const result = await agent.run("Define universal agent in one sentence", {
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
 
     assert.equal(result.complexity.mode, "direct");
     assert.equal(result.subtasks.length, 0);
     assert.match(result.finalAnswer, /coordinates/);
     assert.equal(fakeLlm.callCount, 3);
+    const strategyEvent = events.find((event) => event.type === "agent-strategy-selected");
+    assert.equal((strategyEvent?.payload as any).primary, "direct_answer");
+    assert.deepEqual((strategyEvent?.payload as any).actions, ["self_check_return", "answer_directly"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -2176,6 +2184,7 @@ test("UniversalAgent emits observable lifecycle events", async () => {
       "run-started",
       "memory-search-completed",
       "classification-completed",
+      "agent-strategy-selected",
       "synthesis-started",
       "synthesis-completed",
       "learning-completed",

@@ -167,6 +167,7 @@ export type AgentEventType =
   | "artifact-created"
   | "memory-search-completed"
   | "classification-completed"
+  | "agent-strategy-selected"
   | "planning-completed"
   | "worker-started"
   | "worker-completed"
