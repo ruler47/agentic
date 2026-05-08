@@ -748,6 +748,14 @@ clearing the persisted desired running state, so app startup can reconcile servi
 should still be running. It does not yet spawn durable background processes or own
 webhook routing; those must be added as generic runners behind the same tool contract.
 
+The Channels UI is the operator surface for this provider-neutral runtime. It shows
+service health, desired state, restart policy, lifecycle logs, inbound/outbound/system
+events, source identity metadata, links back to runs/conversations, and channel identity
+allow/block/delete controls. An ignored inbound event can be promoted into normal channel
+identities through `POST /api/tool-service-events/:eventId/allow-identity`; the endpoint
+maps the event provider (`toolName`), `sourceUserId`, and aliases into the existing
+`users`/`channel_identities` model rather than introducing provider-specific tables.
+
 `GenericServiceToolBuildProvider` is the first generated-tool builder for this shape. It
 creates a reusable service bridge rather than a provider-specific hack: generated modules
 record neutral inbound/outbound/system events, expose health through `startService`, and

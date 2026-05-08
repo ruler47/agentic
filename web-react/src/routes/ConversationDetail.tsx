@@ -3,16 +3,18 @@ import { Link, useParams } from "react-router-dom";
 
 import { useConversation, useCreateContinuationRun, useDeleteConversation } from "@/api/conversations";
 import { useRuns } from "@/api/runs";
+import { useToolServiceEvents } from "@/api/toolServices";
 import { MarkdownContent } from "@/components/MarkdownContent";
-import { RunStatusBadge } from "@/components/StatusBadge";
+import { GenericBadge, RunStatusBadge } from "@/components/StatusBadge";
 import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
-import type { ConversationThreadMessage } from "@/api/types";
+import type { ConversationThreadMessage, ToolServiceEventRecord } from "@/api/types";
 
 export function ConversationDetailPage() {
   const params = useParams<{ threadId: string }>();
   const threadId = params.threadId;
   const conversation = useConversation(threadId);
   const runs = useRuns();
+  const channelEvents = useToolServiceEvents({ limit: 200 });
   const create = useCreateContinuationRun();
   const remove = useDeleteConversation();
   const [task, setTask] = useState("");
@@ -33,6 +35,10 @@ export function ConversationDetailPage() {
 
   const thread = conversation.data;
   const threadRuns = (runs.data ?? []).filter((run) => run.threadId === thread.id);
+  const threadRunIds = new Set(threadRuns.map((run) => run.id));
+  const linkedChannelEvents = (channelEvents.data ?? []).filter(
+    (event) => event.threadId === thread.id || (event.runId ? threadRunIds.has(event.runId) : false),
+  );
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -155,6 +161,7 @@ export function ConversationDetailPage() {
           title="Open questions"
           body={(thread.openQuestions ?? []).join("\n") || "None."}
         />
+        <ChannelActivityBlock events={linkedChannelEvents} />
       </aside>
     </section>
   );
@@ -187,6 +194,45 @@ function ContextBlock({ title, body }: { title: string; body: string }) {
     <section className="rounded-md border border-app-border bg-app-surface-2 p-3 text-xs">
       <h4 className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">{title}</h4>
       <p className="mt-1 whitespace-pre-wrap">{body || "—"}</p>
+    </section>
+  );
+}
+
+function ChannelActivityBlock({ events }: { events: ToolServiceEventRecord[] }) {
+  return (
+    <section className="rounded-md border border-app-border bg-app-surface-2 p-3 text-xs">
+      <h4 className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">
+        Channel activity
+      </h4>
+      <ul className="mt-2 flex max-h-80 flex-col gap-2 overflow-y-auto pr-1">
+        {events.map((event) => (
+          <li key={event.id} className="rounded border border-app-border bg-app-surface px-2 py-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <GenericBadge tone={event.direction === "outbound" ? "ok" : event.direction === "inbound" ? "warn" : "muted"}>
+                {event.direction}
+              </GenericBadge>
+              <GenericBadge tone={event.status === "failed" ? "danger" : event.status === "sent" ? "ok" : "muted"}>
+                {event.status}
+              </GenericBadge>
+              <span className="text-[10px] text-app-text-muted">{formatRelative(event.createdAt)}</span>
+            </div>
+            <p className="mt-1 break-words">{truncate(event.summary, 180)}</p>
+            <p className="mt-1 break-all font-mono text-[10px] text-app-text-muted">
+              {event.toolName}
+              {event.sourceUserId ? ` · user ${event.sourceUserId}` : ""}
+              {event.sourceMessageId ? ` · message ${event.sourceMessageId}` : ""}
+            </p>
+            {event.runId ? (
+              <Link to={`/run/${event.runId}`} className="mt-1 inline-block text-[10px] text-app-accent underline">
+                open run
+              </Link>
+            ) : null}
+          </li>
+        ))}
+        {events.length === 0 ? (
+          <li className="text-[11px] text-app-text-muted">No channel-linked events yet.</li>
+        ) : null}
+      </ul>
     </section>
   );
 }

@@ -142,6 +142,7 @@ GET /api/tools/health
 GET /api/tool-services
 GET /api/tool-service-events?toolName=optional&direction=optional&limit=100
 POST /api/tool-service-events
+POST /api/tool-service-events/:eventId/allow-identity
 GET /api/tool-services/logs?toolName=optional&limit=100
 GET /api/tool-services/logs/events?toolName=optional
 POST /api/tool-services/:name/inbound
@@ -227,6 +228,11 @@ always-on generated tools. Events use `direction=inbound|outbound|system` and
 and sanitized payload metadata. `POST /api/tool-service-events` is the durable handoff
 for service tools to record inbound messages, outbound deliveries, ignored/denied
 messages, and system events without adding Telegram/Slack/provider branches to the core.
+`POST /api/tool-service-events/:eventId/allow-identity` converts an observed provider
+event into normal channel identities for the local admin user. It uses the event
+`toolName` as the provider, maps `sourceUserId` plus any `payload.sourceUserAliases`,
+updates existing identities when present, creates missing ones as allowed, and writes a
+redacted audit event.
 `POST /api/tool-services/:name/inbound` is the generic intake handoff for an always-on
 tool that already received a provider event. It accepts `task`, `text`, or `message`,
 optional source identity fields including `sourceUserAliases`, writes a redacted inbound
@@ -911,11 +917,16 @@ Users:
 
 Channels:
 
-- installed always-on tool health;
-- whitelist and mapped users for integrations that support them;
-- incoming/outgoing message history;
-- denied inbound attempts;
-- future bots/listeners/webhooks created through Tool Builds.
+- installed always-on tool health, desired state, heartbeat, restart counters, and
+  start/stop/restart/heartbeat controls;
+- provider-neutral identity management for any always-on tool, including manual add,
+  allow/block/delete, and `Allow as Admin` from ignored inbound events;
+- incoming, outgoing, and system event history with source user/chat/message ids,
+  links back to runs and conversations, and sanitized payload details;
+- lifecycle logs filtered by service, including supervisor events and child-runtime
+  output;
+- future bots/listeners/webhooks created through Tool Builds, without provider-specific
+  core tables.
 
 Conversations:
 

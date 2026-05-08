@@ -525,6 +525,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   entry point. The legacy hand-rolled API was removed after Nest parity checks.
 - [src/server/app.module.ts](src/server/app.module.ts) - Nest module graph for API,
   persistence, workers, static assets, and domain services.
+- [src/server/modules/tool-services/](src/server/modules/tool-services/) - always-on
+  service lifecycle, neutral inbound/outbound events, outbox, logs, and channel-identity
+  allow endpoints.
 - [docs/modules/web-console.md](docs/modules/web-console.md) - web console API,
   realtime SSE stream, dashboard behavior, conversation continuation, attachments,
   artifacts, and trace rendering.
@@ -731,7 +734,12 @@ For documentation-only changes:
 - `tests/modelProviderStore.test.ts` covers model provider defaults, normalization, and
   CRUD lifecycle.
 - `tests/userStore.test.ts` covers local user and allowed channel identity resolution.
+- `tests/nestApi.test.ts` covers the Nest API smoke path, tool rework endpoints, inline
+  credential handling, ledger endpoints, and channel-event `Allow as Admin` identity
+  mapping with audit redaction.
 - `tests/webUiStatic.test.ts` covers the page-based web console information architecture.
+- `web-react/src/features/channels/channelPresentation.test.ts` covers Channels-page
+  health summaries, event filtering, and channel identity flattening.
 
 ## Maintenance Rules
 
@@ -807,7 +815,9 @@ For documentation-only changes:
   acknowledgements. Channel identities must use provider `channel.telegram.bot`.
 - Operators can add Telegram users either on the Users page by adding a
   `channel.telegram.bot` identity, or on the Channels page by approving an ignored
-  inbound event with the `Allow as Admin` shortcut.
+  inbound event with the `Allow as Admin` shortcut. The shortcut is provider-neutral:
+  it maps the event `toolName`, `sourceUserId`, and forwarded aliases into ordinary
+  channel identities for the local admin user.
 - Outbound actions must be auditable and permission-checked before delivery.
 - Preserve trace parent links when adding orchestration steps; the UI depends on
   `parentSpanId` to draw direct arrows.

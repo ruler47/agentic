@@ -1551,6 +1551,8 @@ Dashboard:
 Run Workspace:
 
 - run header: status, duration, group profile, requester, channel, thread, source message;
+- channel-source panel for non-web/provider-created runs with provider, source user/chat,
+  source message/thread ids, and links back to Channels, Conversation, and Trace. DONE
 - answer panel;
 - artifacts panel;
 - outbound action panel;
@@ -1575,10 +1577,15 @@ Admin pages:
   remain.
 - Users: identities, memberships, personal memory, notification preferences, allowed
   tools, recent requests.
-- Channels: installed always-on tool health, chat mappings, incoming/outgoing message
-  history. New bots/listeners/webhooks are requested and built through Tool Builds.
+- Channels: installed always-on tool health, lifecycle logs, restart policy controls,
+  provider-neutral identity mappings, incoming/outgoing/system event history, links to
+  runs/conversations, and `Allow as Admin` from ignored inbound events. New
+  bots/listeners/webhooks are requested and built through Tool Builds. DONE for the
+  product console shell; media/file/voice transport and delivery retry analytics remain.
 - Conversations: thread summaries, linked runs, Telegram/web source messages, split/merge
-  controls, continuation composer, and destructive delete with associated runs/traces.
+  controls, continuation composer, destructive delete with associated runs/traces, and
+  channel activity for provider-originated runs. PARTIAL: channel activity is implemented;
+  split/merge remains.
 - Memory: global/group/user/run scopes with match reasons and edit controls.
 - Tools: registry, credentials, capabilities, health, examples.
 - Tool Builds: human tool requests for APIs, browser/file capabilities, bots, webhooks,
@@ -1838,11 +1845,13 @@ UI tasks:
 
 - Channels page, or a generic always-on tools page, with installed service versions,
   health, settings, whitelist mappings, inbound/outbound message history, and tool
-  telemetry. PARTIAL: Channels now lists installed `startupMode=always-on` tools with
-  start/stop/restart controls, heartbeat/status cards, and recent lifecycle logs that
-  update through SSE while the page is open. It also shows recent provider-neutral
-  runtime events from always-on tools, including a shortcut to allow an ignored inbound
-  identity as the local admin.
+  telemetry. DONE for the operator shell: Channels now lists installed
+  `startupMode=always-on` tools with start/stop/restart/heartbeat controls, heartbeat and
+  health cards, restart-policy toggles, lifecycle logs, provider-neutral runtime events,
+  channel identity mappings, manual allow/block/delete, and an `Allow as Admin` shortcut
+  that maps ignored events into normal channel identities. Remaining work is richer
+  delivery retry analytics, provider media/file/voice transport, and service-level
+  settings forms generated from each tool manifest.
 - Soft-refresh list pages without forcing the operator to reload. PARTIAL: the UI now
   polls the JSON endpoints in the background, fingerprints the data, skips unchanged
   renders, and defers changed renders while an input/select/textarea has focus. Run

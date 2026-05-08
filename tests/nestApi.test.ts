@@ -218,6 +218,71 @@ test("Nest API validates tool build inputs and stores inline credentials as secr
   }
 });
 
+test("Nest API allows channel identities from ignored tool service events", async () => {
+  const fixture = await createNestFixture();
+  try {
+    const created = await requestJson<{
+      event: { id: string; payload?: Record<string, unknown> };
+    }>(fixture.baseUrl, "/api/tool-service-events", {
+      method: "POST",
+      expectedStatus: 201,
+      body: JSON.stringify({
+        toolName: "generated.telegram.family-bot",
+        direction: "inbound",
+        status: "ignored",
+        summary: "Inbound event ignored because the provider identity is unknown",
+        sourceUserId: "123456",
+        sourceChatId: "chat-1",
+        sourceMessageId: "message-1",
+        payload: {
+          sourceUserAliases: ["dimitrii", "@dimitrii"],
+          apiKey: "CHANNEL-ALLOW-DO-NOT-LEAK",
+        },
+      }),
+    });
+    assert.equal(JSON.stringify(created).includes("CHANNEL-ALLOW-DO-NOT-LEAK"), false);
+
+    const allowed = await requestJson<{
+      identities: Array<{ provider: string; providerUserId: string; allowStatus: string }>;
+    }>(fixture.baseUrl, `/api/tool-service-events/${created.event.id}/allow-identity`, {
+      method: "POST",
+      expectedStatus: 201,
+      body: JSON.stringify({}),
+    });
+    assert.deepEqual(
+      allowed.identities.map((identity) => identity.providerUserId).sort(),
+      ["123456", "@dimitrii", "dimitrii"],
+    );
+    assert.equal(
+      allowed.identities.every(
+        (identity) =>
+          identity.provider === "generated.telegram.family-bot" &&
+          identity.allowStatus === "allowed",
+      ),
+      true,
+    );
+
+    const users = await requestJson<{
+      users: Array<{ id: string; identities: Array<{ provider: string; providerUserId: string }> }>;
+    }>(fixture.baseUrl, "/api/users");
+    const admin = users.users.find((user) => user.id === "user-admin");
+    assert.ok(admin);
+    assert.deepEqual(
+      admin.identities
+        .filter((identity) => identity.provider === "generated.telegram.family-bot")
+        .map((identity) => identity.providerUserId)
+        .sort(),
+      ["123456", "@dimitrii", "dimitrii"],
+    );
+
+    const audit = await requestJson<{ events: unknown[] }>(fixture.baseUrl, "/api/audit-events?limit=80");
+    assert.equal(JSON.stringify(audit).includes("CHANNEL-ALLOW-DO-NOT-LEAK"), false);
+    assert.equal(JSON.stringify(audit).includes("channel_identity.created"), true);
+  } finally {
+    await closeFixture(fixture);
+  }
+});
+
 test("Nest API persists work ledger, evidence ledger, and run retrospectives with redacted metadata", async () => {
   const fixture = await createNestFixture();
   try {

@@ -24,10 +24,12 @@ import type {
   ToolServiceEventStatus,
   ToolServiceEventStore,
 } from "../../../tools/toolServiceEventStore.js";
+import type { ChannelIdentityRecord, UserStore } from "../../../instance/userStore.js";
 import { AuditService } from "../../common/services/audit.service.js";
 import {
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_SUPERVISOR,
+  USER_STORE,
 } from "../../persistence/tokens.js";
 import { RunsService } from "../runs/runs.service.js";
 
@@ -36,6 +38,7 @@ export class ToolServicesService {
   constructor(
     @Inject(TOOL_SERVICE_SUPERVISOR) private readonly supervisor: ToolServiceSupervisor | undefined,
     @Inject(TOOL_SERVICE_EVENT_STORE) private readonly events: ToolServiceEventStore | undefined,
+    @Inject(USER_STORE) private readonly users: UserStore,
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(RunsService) private readonly runs: RunsService,
   ) {}
@@ -165,6 +168,91 @@ export class ToolServicesService {
       },
     });
     return event;
+  }
+
+  async allowIdentity(eventId: string): Promise<{
+    event: ToolServiceEventRecord;
+    identities: ChannelIdentityRecord[];
+  }> {
+    if (!this.events) {
+      throw new ServiceUnavailableException("Tool service event store is not configured");
+    }
+    const event = (await this.events.list({ limit: 500 })).find((candidate) => candidate.id === eventId);
+    if (!event) throw new NotFoundException(`Tool service event was not found: ${eventId}`);
+    if (!event.sourceUserId) {
+      throw new BadRequestException("tool service event has no sourceUserId to allow");
+    }
+
+    const adminUser = await this.resolveAdminUser();
+    const provider = event.toolName;
+    const now = new Date().toISOString();
+    const providerUserIds = uniqueStrings([
+      event.sourceUserId,
+      ...sourceAliasesFromPayload(event.payload),
+    ]);
+    const identities: ChannelIdentityRecord[] = [];
+    const existingUsers = await this.users.list();
+
+    for (const providerUserId of providerUserIds) {
+      const existing = existingUsers
+        .flatMap((user) => user.identities)
+        .find(
+          (identity) =>
+            identity.provider === provider &&
+            identity.providerUserId === providerUserId,
+        );
+      const metadata = {
+        ...(existing?.displayMetadata ?? {}),
+        allowedFromToolServiceEventId: event.id,
+        sourceUserId: event.sourceUserId,
+        sourceChatId: event.sourceChatId,
+        sourceMessageId: event.sourceMessageId,
+        alias: providerUserId !== event.sourceUserId,
+      };
+      if (existing) {
+        identities.push(
+          await this.users.updateIdentity(existing.id, {
+            allowStatus: "allowed",
+            displayMetadata: metadata,
+            lastSeenAt: event.createdAt ?? now,
+          }),
+        );
+      } else {
+        identities.push(
+          await this.users.createIdentity({
+            provider,
+            providerUserId,
+            userId: adminUser.id,
+            allowStatus: "allowed",
+            displayMetadata: metadata,
+            lastSeenAt: event.createdAt ?? now,
+          }),
+        );
+      }
+    }
+
+    await this.audit.record({
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "channel_identity.created",
+      targetType: "tool_service_event",
+      targetId: event.id,
+      status: "success",
+      threadId: event.threadId,
+      runId: event.runId,
+      requesterUserId: adminUser.id,
+      channel: provider,
+      summary: `Allowed ${identities.length} channel identity mapping(s) from ${provider}`,
+      metadata: {
+        eventId: event.id,
+        provider,
+        identityIds: identities.map((identity) => identity.id),
+        providerUserIds: identities.map((identity) => identity.providerUserId),
+      },
+    });
+
+    return { event, identities };
   }
 
   async listLogs(toolName: string | undefined, limit: number) {
@@ -392,6 +480,15 @@ export class ToolServicesService {
     };
   }
 
+  private async resolveAdminUser() {
+    const explicit = await this.users.get("user-admin");
+    if (explicit) return explicit;
+    const users = await this.users.list();
+    const user = users.find((candidate) => candidate.roles.includes("admin")) ?? users[0];
+    if (!user) throw new ServiceUnavailableException("No local user exists for channel identity mapping");
+    return user;
+  }
+
   private parseEventInput(value: unknown): ToolServiceEventInput {
     if (!isRecord(value)) throw new Error("tool service event must be an object");
     return {
@@ -490,4 +587,28 @@ export class ToolServicesService {
       sourceMessageId: parseOptionalText(value.sourceMessageId),
     };
   }
+}
+
+function sourceAliasesFromPayload(payload: unknown): string[] {
+  if (!isRecord(payload)) return [];
+  const aliases = parseOptionalTextArray(payload.sourceUserAliases) ?? [];
+  const username =
+    parseOptionalText(payload.username) ??
+    parseOptionalText(payload.sourceUsername) ??
+    parseOptionalText(payload.sourceUserName);
+  return uniqueStrings([
+    ...aliases,
+    username,
+    username && !username.startsWith("@") ? `@${username}` : undefined,
+  ]);
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  return [
+    ...new Set(
+      values
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
 }

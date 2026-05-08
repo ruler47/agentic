@@ -115,6 +115,7 @@ has now been removed. Update this document when a route is added or changed on
 |--------|------|------|-------|----------|--------|
 | GET | `/api/tool-service-events` | — | `toolName, direction, limit` (default 100) | `{ events }` | 200 |
 | POST | `/api/tool-service-events` | `parseToolServiceEventInput` | — | `{ event }` | 201, 400, 503 |
+| POST | `/api/tool-service-events/:eventId/allow-identity` | — | — | `{ event, identities }` | 201, 400, 404, 503 |
 | GET | `/api/tool-services/logs` | — | `toolName, limit` (default 100) | `{ logs }` | 200 |
 | GET | `/api/tool-services/logs/events` | — | `toolName` | SSE: `event: service-log\ndata: { log }`, `: heartbeat` | 200, 503 |
 

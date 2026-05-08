@@ -98,6 +98,12 @@ export class ToolServicesController {
     return { event: await this.service.createEvent(body) };
   }
 
+  @Post("tool-service-events/:eventId/allow-identity")
+  @HttpCode(201)
+  async allowIdentity(@Param("eventId") eventId: string) {
+    return this.service.allowIdentity(decodeURIComponent(eventId));
+  }
+
   @Get("tool-services/logs")
   async listLogs(@Query("toolName") toolName?: string, @Query("limit") limit?: string) {
     return {

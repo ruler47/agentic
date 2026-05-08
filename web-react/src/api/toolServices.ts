@@ -31,22 +31,49 @@ export function useToolServices() {
   });
 }
 
-export function useToolServiceEvents(limit = 80) {
+export type ToolServiceEventQuery = {
+  toolName?: string;
+  direction?: ToolServiceEventRecord["direction"] | "all";
+  limit?: number;
+};
+
+export function useToolServiceEvents(query: ToolServiceEventQuery | number = 80) {
+  const normalized =
+    typeof query === "number"
+      ? { limit: query }
+      : {
+          ...query,
+          limit: query.limit ?? 80,
+        };
+  const params = new URLSearchParams();
+  if (normalized.toolName) params.set("toolName", normalized.toolName);
+  if (normalized.direction && normalized.direction !== "all") params.set("direction", normalized.direction);
+  params.set("limit", String(normalized.limit));
   return useQuery({
-    queryKey: [...queryKeys.toolServiceEvents, limit] as const,
+    queryKey: [...queryKeys.toolServiceEvents, normalized] as const,
     queryFn: () =>
       apiFetch<{ events: ToolServiceEventRecord[] }>(
-        `/api/tool-service-events?limit=${limit}`,
+        `/api/tool-service-events?${params}`,
       ).then((data) => data.events ?? []),
     refetchInterval: 5_000,
   });
 }
 
-export function useToolServiceLogs(limit = 80) {
+export function useToolServiceLogs(query: { toolName?: string; limit?: number } | number = 80) {
+  const normalized =
+    typeof query === "number"
+      ? { limit: query }
+      : {
+          ...query,
+          limit: query.limit ?? 80,
+        };
+  const params = new URLSearchParams();
+  if (normalized.toolName) params.set("toolName", normalized.toolName);
+  params.set("limit", String(normalized.limit));
   return useQuery({
-    queryKey: [...queryKeys.toolServiceLogs, limit] as const,
+    queryKey: [...queryKeys.toolServiceLogs, normalized] as const,
     queryFn: () =>
-      apiFetch<{ logs: ServiceLogRecord[] }>(`/api/tool-services/logs?limit=${limit}`).then(
+      apiFetch<{ logs: ServiceLogRecord[] }>(`/api/tool-services/logs?${params}`).then(
         (data) => data.logs ?? [],
       ),
     refetchInterval: 5_000,
@@ -84,7 +111,7 @@ export function useAllowChannelEventIdentity() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (eventId: string) =>
-      apiFetch<{ identity: { id: string } }>(
+      apiFetch<{ identities: Array<{ id: string }> }>(
         `/api/tool-service-events/${encodeURIComponent(eventId)}/allow-identity`,
         { method: "POST" },
       ),

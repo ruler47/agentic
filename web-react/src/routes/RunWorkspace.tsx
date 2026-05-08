@@ -120,6 +120,8 @@ export function RunWorkspacePage() {
           </div>
         </header>
 
+        <ChannelSourcePanel run={data} />
+
         {activeWaits.length > 0 ? <RunWaitPanel waits={activeWaits} /> : null}
 
         <RunLedgerPanel
@@ -167,6 +169,69 @@ export function RunWorkspacePage() {
         </article>
       </aside>
     </section>
+  );
+}
+
+function ChannelSourcePanel({ run }: { run: AgentRunRecord }) {
+  const hasSource =
+    run.channel ||
+    run.sourceUserId ||
+    run.sourceChatId ||
+    run.sourceMessageId ||
+    run.sourceThreadId;
+  if (!hasSource || run.channel === "web") return null;
+  return (
+    <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-app-accent">
+            Channel source
+          </p>
+          <h3 className="text-sm font-semibold">Run was created from an external service event</h3>
+          <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+            <ChannelSourceItem label="channel" value={run.channel ?? "unknown"} />
+            <ChannelSourceItem label="requester" value={run.requesterUserId ?? "unresolved"} />
+            <ChannelSourceItem label="source user" value={run.sourceUserId ?? "—"} />
+            <ChannelSourceItem label="chat" value={run.sourceChatId ?? "—"} />
+            <ChannelSourceItem label="message" value={run.sourceMessageId ?? "—"} />
+            <ChannelSourceItem label="source thread" value={run.sourceThreadId ?? "—"} />
+          </dl>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2 text-xs">
+          {run.channel ? (
+            <Link
+              to={`/channels?service=${encodeURIComponent(run.channel)}`}
+              className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1 font-semibold hover:border-app-accent/40 hover:text-app-accent"
+            >
+              Open channel
+            </Link>
+          ) : null}
+          {run.threadId ? (
+            <Link
+              to={`/conversation/${run.threadId}`}
+              className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1 font-semibold hover:border-app-accent/40 hover:text-app-accent"
+            >
+              Open conversation
+            </Link>
+          ) : null}
+          <Link
+            to={`/trace/${run.id}`}
+            className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1 font-semibold hover:border-app-accent/40 hover:text-app-accent"
+          >
+            Open trace
+          </Link>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function ChannelSourceItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded border border-app-border bg-app-surface-2 px-2 py-1">
+      <dt className="text-[10px] uppercase tracking-wider text-app-text-muted">{label}</dt>
+      <dd className="break-all font-mono text-[11px]">{value}</dd>
+    </div>
   );
 }
 
