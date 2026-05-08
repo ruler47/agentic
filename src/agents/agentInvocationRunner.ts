@@ -52,7 +52,7 @@ export async function runAgentInvocation(input: {
     status: "started",
   };
 
-  if (startedInvocation.depth > 0 && startedInvocation.budget.remainingDepth <= 0) {
+  if (startedInvocation.depth > startedInvocation.budget.maxDepth) {
     const completedAt = now();
     throw new AgentInvocationRunnerError({
       invocation: {
@@ -60,7 +60,7 @@ export async function runAgentInvocation(input: {
         status: "failed",
       },
       error: new Error(
-        `Invocation ${startedInvocation.id} cannot run because its remaining depth budget is exhausted.`,
+        `Invocation ${startedInvocation.id} cannot run because its depth budget is exhausted.`,
       ),
       startedAt: startedAt.toISOString(),
       completedAt: completedAt.toISOString(),

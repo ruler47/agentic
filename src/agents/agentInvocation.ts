@@ -448,20 +448,22 @@ export function buildAgentInvocationReturnCheck(
     },
   ];
 
+  const limitations: string[] = [];
+  if (/cannot|can't|could not|unable|blocked|not possible|не могу|невозможно|не удалось/i.test(output)) {
+    limitations.push("Return value declares a limitation or blocker.");
+  }
+
   if (invocation.outputContract.requiredEvidence) {
-    const hasEvidence = artifactCount > 0 || evidenceCount > 0;
+    const hasEvidence = artifactCount > 0 || evidenceCount > 0 || limitations.length > 0;
     checks.push({
       name: "required_evidence_present",
       ok: hasEvidence,
       reason: hasEvidence
-        ? `${artifactCount} artifact(s) and ${evidenceCount} evidence item(s) are attached.`
-        : "Invocation contract requires evidence, but no artifacts or evidence items are attached.",
+        ? limitations.length > 0 && artifactCount === 0 && evidenceCount === 0
+          ? "Invocation could not attach evidence and declares a limitation or blocker."
+          : `${artifactCount} artifact(s) and ${evidenceCount} evidence item(s) are attached.`
+        : "Invocation contract requires evidence, but no artifacts, evidence items, or limitations are attached.",
     });
-  }
-
-  const limitations: string[] = [];
-  if (/cannot|can't|unable|blocked|not possible|не могу|невозможно|не удалось/i.test(output)) {
-    limitations.push("Return value declares a limitation or blocker.");
   }
 
   const warnings = checks.filter((check) => !check.ok).map((check) => check.reason);

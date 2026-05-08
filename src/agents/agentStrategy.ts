@@ -246,7 +246,7 @@ function capabilityMatches(text: string, capability: string): boolean {
   if (normalized.includes("chart") && /\b(chart|graph|plot)\b|график|диаграм/.test(text)) return true;
   if (normalized.includes("document") && /\b(pdf|document|report|docx)\b|документ|отчет/.test(text)) return true;
   const tokens = normalized.split(/[^a-z0-9]+/).filter((token) => token.length >= 4);
-  return tokens.length > 0 && tokens.every((token) => text.includes(token));
+  return tokens.length > 0 && tokens.every((token) => tokenMatchesText(text, token));
 }
 
 function inferMissingCapabilityHints(text: string, matchedTools: Tool[]): string[] {
@@ -287,4 +287,12 @@ function isReusableExternalWork(text: string, matchedTools: Tool[]): boolean {
 
 function normalizeText(text: string): string {
   return text.toLowerCase().replace(/ё/g, "е");
+}
+
+function tokenMatchesText(text: string, token: string): boolean {
+  return new RegExp(`(^|[^a-z0-9])${escapeRegExp(token)}([^a-z0-9]|$)`).test(text);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -721,15 +721,17 @@ participant's compact note, and those notes are fed into the planning prompt.
 `agent-invocation-return-checked` records the generic return gate for both the root
 invocation and council participants: non-empty output, required evidence/artifact counts,
 warnings, limitations, and whether the invocation is ready to hand back to its caller.
-Planner, worker, reviewer, and synthesizer cards also include `payload.invocation` in
-addition to their historical payload fields. The UI can use that invocation payload to
-display parent-child agent calls consistently while the runtime keeps the proven
-worker/reviewer tool and artifact code paths intact.
+Planner and synthesizer cards now have both the historical `planning-*`/`synthesis-*`
+events and wrapper `agent-invocation-*` lifecycle events from the generic runner. Worker
+and reviewer cards also include `payload.invocation` in addition to their historical
+payload fields, but they still execute through the proven delegated-DAG runtime. The UI
+can use the invocation payload to display parent-child agent calls consistently while the
+runtime migrates one role at a time.
 The domain runner behind future child-agent execution is
 `agentInvocationRunner.ts`: it enforces depth-budget limits and the same output-contract
-self-check before an invocation can be considered completed. Council advisory branches
-use it today; broader worker/tool child execution still uses the existing coordinator
-path.
+self-check before an invocation can be considered completed. Council advisory branches,
+planning, and synthesis use it today; broader worker/tool child execution still uses the
+existing coordinator path.
 
 When the Work / Evidence / Run-Retrospective stores are configured, the runtime adds
 five more event types that flow through the same SSE contract:

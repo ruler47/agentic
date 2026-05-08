@@ -1242,7 +1242,9 @@ Approved implementation path after the Nest API cutover:
    invocation executor with depth-budget validation, handler failure wrapping, and
    output-contract self-check enforcement. Council participants use it today and append
    compact advisory notes to the planning prompt. Independent council participants start
-   in parallel up to the invocation budget. Planner, worker, reviewer, and synthesizer spans now attach
+   in parallel up to the invocation budget. Planner and synthesizer now execute through
+   the same runner, emitting generic invocation started/completed/failed/return-check
+   events around their legacy planning/synthesis events. Worker and reviewer spans attach
    compatible `AgentInvocation` payloads next to their legacy call frames, including
    parent invocation ids and output contracts; full worker/tool child execution still
    needs the recursive runtime before those methods are replaced.
@@ -1284,9 +1286,9 @@ Remaining recursive-agent gaps:
   entries prevent duplicate external work. PARTIAL: the strategy selector now flags
   council mode and emits participant hints; the invocation layer writes council
   participant call contracts to trace, runs those advisory participants through the
-  generic invocation runner, and feeds their notes into planning. Council branches do not
-  yet claim Work Ledger entries for external work because this advisory pass is
-  tool-free.
+  generic invocation runner, and feeds their notes into planning. Planner and synthesizer
+  roles now use the same runner as well. Council branches do not yet claim Work Ledger
+  entries for external work because this advisory pass is tool-free.
 - Persist agent call frames so a child agent has a local task/caller/output contract
   without needing full global context. PARTIAL: worker and reviewer spans now carry a
   structured `callFrame` payload with local task, output contract, caller span,

@@ -262,7 +262,10 @@ test("UniversalAgent answers direct tasks without creating subtasks", async () =
     const synthesisStarted = events.find((event) => event.type === "synthesis-started");
     assert.equal((synthesisStarted?.payload as any).invocation.role, "synthesizer");
     assert.equal((synthesisStarted?.payload as any).invocation.parentInvocationId, (invocationEvent?.payload as any).id);
-    const returnCheckEvent = events.find((event) => event.type === "agent-invocation-return-checked");
+    const returnCheckEvent = events.find((event) =>
+      event.type === "agent-invocation-return-checked" &&
+      (event.payload as any).selfCheck?.invocationId === (invocationEvent?.payload as any).id
+    );
     assert.equal((returnCheckEvent?.payload as any).selfCheck.readyToReturn, true);
     assert.equal((returnCheckEvent?.payload as any).selfCheck.invocationId, (invocationEvent?.payload as any).id);
   } finally {
@@ -356,7 +359,10 @@ test("UniversalAgent plans council invocation contracts for high-risk broad task
     const planningEvent = events.find((event) => event.type === "planning-completed");
     assert.equal((planningEvent?.payload as any).invocation.role, "planner");
     assert.equal((planningEvent?.payload as any).invocation.parentInvocationId, (invocationEvent?.payload as any).id);
-    const returnCheckEvent = events.find((event) => event.type === "agent-invocation-return-checked");
+    const returnCheckEvent = events.find((event) =>
+      event.type === "agent-invocation-return-checked" &&
+      (event.payload as any).selfCheck?.invocationId === (invocationEvent?.payload as any).id
+    );
     assert.equal((returnCheckEvent?.payload as any).selfCheck.readyToReturn, true);
 
     const councilEvent = events.find((event) => event.type === "agent-council-planned");
@@ -369,13 +375,22 @@ test("UniversalAgent plans council invocation contracts for high-risk broad task
         invocation.parentInvocationId === councilPayload.rootInvocation.id && invocation.status === "planned",
       ),
     );
-    const completedCouncilEvents = events.filter((event) => event.type === "agent-invocation-completed");
+    const completedCouncilEvents = events.filter((event) =>
+      event.type === "agent-invocation-completed" &&
+      (event.payload as any).invocation?.role === "council-participant"
+    );
     assert.equal(completedCouncilEvents.length, councilPayload.councilInvocations.length);
     assert.match(completedCouncilEvents.map((event) => event.detail).join("\n"), /avoid duplicated searches/);
-    const firstCompletedIndex = events.findIndex((event) => event.type === "agent-invocation-completed");
+    const firstCompletedIndex = events.findIndex((event) =>
+      event.type === "agent-invocation-completed" &&
+      (event.payload as any).invocation?.role === "council-participant"
+    );
     const startedBeforeFirstCompletion = events
       .slice(0, firstCompletedIndex)
-      .filter((event) => event.type === "agent-invocation-started");
+      .filter((event) =>
+        event.type === "agent-invocation-started" &&
+        (event.payload as any).invocation?.role === "council-participant"
+      );
     assert.equal(
       startedBeforeFirstCompletion.length,
       councilPayload.councilInvocations.length,
@@ -2271,8 +2286,11 @@ test("UniversalAgent emits observable lifecycle events", async () => {
       "classification-completed",
       "agent-strategy-selected",
       "agent-invocation-created",
+      "agent-invocation-started",
       "synthesis-started",
       "synthesis-completed",
+      "agent-invocation-completed",
+      "agent-invocation-return-checked",
       "agent-invocation-return-checked",
       "learning-completed",
       "run-completed",

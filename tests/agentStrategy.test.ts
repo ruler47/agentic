@@ -75,6 +75,27 @@ test("agent strategy does not treat classifier negation as a tool request", () =
   assert.equal(decision.ledgerPolicy.shouldCheck, false);
 });
 
+test("agent strategy does not match capability tokens inside unrelated words", () => {
+  const decision = decideAgentStrategy({
+    task: "Group profile: Local Group Profile. Compare internal relocation options using only known preferences.",
+    complexity: {
+      mode: "direct",
+      reason: "local planning only",
+      domains: ["planning"],
+      riskLevel: "low",
+    },
+    tools: [
+      tool("file.read", ["file-read", "documents", "artifacts"]),
+      tool("file.write", ["file-write", "documents", "artifacts"]),
+    ],
+    hasWorkLedger: true,
+  });
+
+  assert.equal(decision.primary, "direct_answer");
+  assert.deepEqual(decision.toolPolicy.matchedToolNames, []);
+  assert.equal(decision.ledgerPolicy.shouldCheck, false);
+});
+
 test("agent strategy recommends council for high-risk multi-domain decisions", () => {
   const decision = decideAgentStrategy({
     task: "Compare medical, legal, and financial risks and choose a strategy.",

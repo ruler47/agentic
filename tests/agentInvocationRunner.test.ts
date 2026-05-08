@@ -99,12 +99,28 @@ test("runAgentInvocation fails when required evidence is missing", async () => {
   );
 });
 
+test("runAgentInvocation accepts an explicit limitation when required evidence is unavailable", async () => {
+  const result = await runAgentInvocation({
+    invocation: evidenceInvocation(),
+    now: deterministicClock(),
+    handler: async () => ({
+      output: "Unable to attach proof because the source is blocked.",
+    }),
+  });
+
+  assert.equal(result.invocation.status, "completed");
+  assert.equal(result.returnCheck.readyToReturn, true);
+  assert.match(result.returnCheck.limitations.join("\n"), /limitation or blocker/);
+  assert.equal(result.returnCheck.artifactCount, 0);
+  assert.equal(result.returnCheck.evidenceCount, 0);
+});
+
 test("runAgentInvocation refuses child invocations with exhausted depth budget", async () => {
   const invocation = {
     ...directInvocation(),
     id: "invocation_child",
     parentInvocationId: "invocation_parent",
-    depth: 1,
+    depth: 2,
     budget: {
       maxDepth: 1,
       maxParallelChildren: 1,
@@ -123,7 +139,7 @@ test("runAgentInvocation refuses child invocations with exhausted depth budget",
     (error) => {
       assert.ok(error instanceof AgentInvocationRunnerError);
       assert.equal(error.failure.invocation.status, "failed");
-      assert.match(error.message, /remaining depth budget is exhausted/);
+      assert.match(error.message, /depth budget is exhausted/);
       return true;
     },
   );

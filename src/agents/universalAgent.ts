@@ -91,6 +91,10 @@ import {
   AgentInvocationRunnerError,
   runAgentInvocation,
 } from "./agentInvocationRunner.js";
+import type {
+  AgentInvocationHandler,
+  AgentInvocationRunnerResult,
+} from "./agentInvocationRunner.js";
 
 type PlanResponse = {
   subtasks: Subtask[];
@@ -475,49 +479,61 @@ export class UniversalAgent {
         modelTier: synthesisTier,
         createdAt: synthesisStartedAt.toISOString(),
       });
-      await emit({
-        spanId: synthesisSpanId,
+      const synthesisResult = await this.runTraceableInvocation({
+        invocation: synthesisInvocation,
+        emit,
         parentSpanId: runSpanId,
-        type: "synthesis-started",
-        actor: "synthesizer",
-        activity: "synthesis",
-        status: "started",
-        title: "Direct answer synthesis started",
-        startedAt: synthesisStartedAt.toISOString(),
-        payload: { modelTier: synthesisTier, invocation: synthesisInvocation },
-      });
-      const rawFinalAnswer = await this.llm.complete([
-      { role: "system", content: coordinatorSystemPrompt },
-      {
-        role: "user",
-        content: synthesizePrompt(
-          limitText(taskContext, promptBudget.taskContextChars),
-          complexity,
-          [],
-          [],
-          compactMemoriesForPrompt(memories),
-          artifacts,
-        ),
-      },
-      ], { modelTier: synthesisTier });
-      const finalAnswer = appendPendingImprovements(withArtifactLinks(rawFinalAnswer, artifacts));
-      await emit({
-        spanId: synthesisSpanId,
-        parentSpanId: runSpanId,
-        type: "synthesis-completed",
-        actor: "synthesizer",
-        activity: "llm",
-        status: "completed",
-        title: "Direct answer synthesized",
-        startedAt: synthesisStartedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(synthesisStartedAt),
-        payload: {
-          finalAnswer,
-          modelTier: synthesisTier,
-          invocation: { ...synthesisInvocation, status: "completed" },
+        startedTitle: "Synthesizer started",
+        completedTitle: "Synthesizer completed",
+        failedTitle: "Synthesizer failed",
+        handler: async () => {
+          await emit({
+            spanId: synthesisSpanId,
+            parentSpanId: runSpanId,
+            type: "synthesis-started",
+            actor: "synthesizer",
+            activity: "synthesis",
+            status: "started",
+            title: "Direct answer synthesis started",
+            startedAt: synthesisStartedAt.toISOString(),
+            payload: { modelTier: synthesisTier, invocation: { ...synthesisInvocation, status: "started" } },
+          });
+          const rawFinalAnswer = await this.llm.complete([
+            { role: "system", content: coordinatorSystemPrompt },
+            {
+              role: "user",
+              content: synthesizePrompt(
+                limitText(taskContext, promptBudget.taskContextChars),
+                complexity,
+                [],
+                [],
+                compactMemoriesForPrompt(memories),
+                artifacts,
+              ),
+            },
+          ], { modelTier: synthesisTier });
+          const finalAnswer = appendPendingImprovements(withArtifactLinks(rawFinalAnswer, artifacts));
+          await emit({
+            spanId: synthesisSpanId,
+            parentSpanId: runSpanId,
+            type: "synthesis-completed",
+            actor: "synthesizer",
+            activity: "llm",
+            status: "completed",
+            title: "Direct answer synthesized",
+            startedAt: synthesisStartedAt.toISOString(),
+            completedAt: new Date().toISOString(),
+            durationMs: elapsedMs(synthesisStartedAt),
+            payload: {
+              finalAnswer,
+              modelTier: synthesisTier,
+              invocation: { ...synthesisInvocation, status: "completed" },
+            },
+          });
+          return { output: finalAnswer, artifacts };
         },
       });
+      const finalAnswer = synthesisResult.output;
       await this.emitInvocationReturnCheck(rootInvocation, finalAnswer, artifacts, 0, emit, synthesisSpanId);
 
       const learningStartedAt = new Date();
@@ -574,7 +590,24 @@ export class UniversalAgent {
       modelTier: planningTier,
       createdAt: planningStartedAt.toISOString(),
     });
-    const rawSubtasks = await this.plan(withCouncilNotes(taskContext, councilNotes), complexity, memories, planningTier);
+    const planningResult = await this.runTraceableInvocation({
+      invocation: planningInvocation,
+      emit,
+      parentSpanId: runSpanId,
+      startedTitle: "Planner started",
+      completedTitle: "Planner completed",
+      failedTitle: "Planner failed",
+      handler: async () => {
+        const subtasks = await this.plan(withCouncilNotes(taskContext, councilNotes), complexity, memories, planningTier);
+        return {
+          output: JSON.stringify({ subtasks }),
+          metadata: { subtasks },
+        };
+      },
+    });
+    const rawSubtasks = Array.isArray(planningResult.metadata?.subtasks)
+      ? planningResult.metadata.subtasks as Subtask[]
+      : [];
     const executionPlan = createExecutionPlan(rawSubtasks);
     const subtasks = executionPlan.subtasks;
     await emit({
@@ -594,7 +627,8 @@ export class UniversalAgent {
         executionLevels: executionPlan.levels.map((level) => level.map((subtask) => subtask.id)),
         dependencyWarnings: executionPlan.warnings,
         modelTier: planningTier,
-        invocation: { ...planningInvocation, status: "completed" },
+        invocation: planningResult.invocation,
+        returnCheck: planningResult.returnCheck,
       },
     });
 
@@ -639,49 +673,65 @@ export class UniversalAgent {
       modelTier: synthesisTier,
       createdAt: synthesisStartedAt.toISOString(),
     });
-    await emit({
-      spanId: synthesisSpanId,
+    const synthesisResult = await this.runTraceableInvocation({
+      invocation: synthesisInvocation,
+      emit,
       parentSpanId: runSpanId,
-      type: "synthesis-started",
-      actor: "synthesizer",
-      activity: "synthesis",
-      status: "started",
-      title: "Final synthesis started",
-      startedAt: synthesisStartedAt.toISOString(),
-      payload: { modelTier: synthesisTier, invocation: synthesisInvocation },
-    });
-    const rawFinalAnswer = await this.llm.complete([
-      { role: "system", content: coordinatorSystemPrompt },
-      {
-        role: "user",
-        content: synthesizePrompt(
-          limitText(taskContext, promptBudget.taskContextChars),
-          complexity,
-          compactWorkerResultsForPrompt(workerResults, promptBudget.synthesisWorkerOutputChars),
-          reviews,
-          compactMemoriesForPrompt(memories),
+      startedTitle: "Synthesizer started",
+      completedTitle: "Synthesizer completed",
+      failedTitle: "Synthesizer failed",
+      handler: async () => {
+        await emit({
+          spanId: synthesisSpanId,
+          parentSpanId: runSpanId,
+          type: "synthesis-started",
+          actor: "synthesizer",
+          activity: "synthesis",
+          status: "started",
+          title: "Final synthesis started",
+          startedAt: synthesisStartedAt.toISOString(),
+          payload: { modelTier: synthesisTier, invocation: { ...synthesisInvocation, status: "started" } },
+        });
+        const rawFinalAnswer = await this.llm.complete([
+          { role: "system", content: coordinatorSystemPrompt },
+          {
+            role: "user",
+            content: synthesizePrompt(
+              limitText(taskContext, promptBudget.taskContextChars),
+              complexity,
+              compactWorkerResultsForPrompt(workerResults, promptBudget.synthesisWorkerOutputChars),
+              reviews,
+              compactMemoriesForPrompt(memories),
+              artifacts,
+            ),
+          },
+        ], { modelTier: synthesisTier });
+        const finalAnswer = appendPendingImprovements(withArtifactLinks(rawFinalAnswer, artifacts));
+        await emit({
+          spanId: synthesisSpanId,
+          parentSpanId: runSpanId,
+          type: "synthesis-completed",
+          actor: "synthesizer",
+          activity: "llm",
+          status: "completed",
+          title: "Final answer synthesized",
+          startedAt: synthesisStartedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(synthesisStartedAt),
+          payload: {
+            finalAnswer,
+            modelTier: synthesisTier,
+            invocation: { ...synthesisInvocation, status: "completed" },
+          },
+        });
+        return {
+          output: finalAnswer,
           artifacts,
-        ),
-      },
-    ], { modelTier: synthesisTier });
-    const finalAnswer = appendPendingImprovements(withArtifactLinks(rawFinalAnswer, artifacts));
-    await emit({
-      spanId: synthesisSpanId,
-      parentSpanId: runSpanId,
-      type: "synthesis-completed",
-      actor: "synthesizer",
-      activity: "llm",
-      status: "completed",
-      title: "Final answer synthesized",
-      startedAt: synthesisStartedAt.toISOString(),
-      completedAt: new Date().toISOString(),
-      durationMs: elapsedMs(synthesisStartedAt),
-      payload: {
-        finalAnswer,
-        modelTier: synthesisTier,
-        invocation: { ...synthesisInvocation, status: "completed" },
+          evidenceCount: workerResults.length + workerResults.reduce((count, result) => count + (result.toolEvidence?.length ?? 0), 0),
+        };
       },
     });
+    const finalAnswer = synthesisResult.output;
     await this.emitInvocationReturnCheck(
       rootInvocation,
       finalAnswer,
@@ -771,6 +821,101 @@ export class UniversalAgent {
         selfCheck,
       },
     });
+  }
+
+  private async runTraceableInvocation(input: {
+    invocation: AgentInvocation;
+    emit: AgentEventEmitter;
+    parentSpanId: string;
+    startedTitle: string;
+    completedTitle: string;
+    failedTitle: string;
+    handler: AgentInvocationHandler;
+  }): Promise<AgentInvocationRunnerResult> {
+    await input.emit({
+      spanId: input.invocation.spanId,
+      parentSpanId: input.parentSpanId,
+      type: "agent-invocation-started",
+      actor: input.invocation.actor,
+      activity: "agent",
+      status: "started",
+      title: input.startedTitle,
+      detail: summarizeAgentInvocation(input.invocation),
+      startedAt: new Date().toISOString(),
+      payload: { invocation: { ...input.invocation, status: "started" } },
+    });
+
+    try {
+      const result = await runAgentInvocation({
+        invocation: input.invocation,
+        handler: input.handler,
+      });
+      await input.emit({
+        spanId: result.invocation.spanId,
+        parentSpanId: input.parentSpanId,
+        type: "agent-invocation-completed",
+        actor: result.invocation.actor,
+        activity: "agent",
+        status: "completed",
+        title: input.completedTitle,
+        detail: limitText(result.output, promptBudget.dependencyContextChars),
+        startedAt: result.startedAt,
+        completedAt: result.completedAt,
+        durationMs: Math.max(0, Date.parse(result.completedAt) - Date.parse(result.startedAt)),
+        payload: {
+          invocation: result.invocation,
+          output: result.output,
+          returnCheck: result.returnCheck,
+          metadata: result.metadata,
+        },
+      });
+      await input.emit({
+        spanId: createSpanId("agent-invocation-return-check"),
+        parentSpanId: result.invocation.spanId,
+        type: "agent-invocation-return-checked",
+        actor: result.invocation.actor,
+        activity: "agent",
+        status: result.returnCheck.readyToReturn ? "completed" : "failed",
+        title: `Invocation return self-check: ${result.invocation.actor}`,
+        detail: result.returnCheck.readyToReturn ? "Ready to return." : result.returnCheck.warnings.join("; "),
+        startedAt: result.completedAt,
+        completedAt: result.completedAt,
+        durationMs: 0,
+        payload: {
+          invocation: result.invocation,
+          selfCheck: result.returnCheck,
+        },
+      });
+      return result;
+    } catch (error) {
+      const failure = error instanceof AgentInvocationRunnerError
+        ? error.failure
+        : {
+            invocation: { ...input.invocation, status: "failed" as const },
+            error: error instanceof Error ? error : new Error(String(error)),
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+          };
+      await input.emit({
+        spanId: failure.invocation.spanId,
+        parentSpanId: input.parentSpanId,
+        type: "agent-invocation-failed",
+        actor: failure.invocation.actor,
+        activity: "agent",
+        status: "failed",
+        title: input.failedTitle,
+        detail: failure.error.message,
+        startedAt: failure.startedAt,
+        completedAt: failure.completedAt,
+        durationMs: Math.max(0, Date.parse(failure.completedAt) - Date.parse(failure.startedAt)),
+        payload: {
+          invocation: failure.invocation,
+          error: failure.error.message,
+          returnCheck: failure.returnCheck,
+        },
+      });
+      throw error;
+    }
   }
 
   private async executeCouncilInvocations(
