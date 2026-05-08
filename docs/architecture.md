@@ -85,7 +85,16 @@ capability: several agents, potentially on different providers or stronger tiers
 plans or critiques; a synthesis agent merges them; and the Work Ledger prevents council
 branches from doing duplicate evidence gathering.
 
-The first runtime slice of that model is event-backed call frames. Worker and reviewer
+The first strategy slice is
+[agentStrategy.ts](../src/agents/agentStrategy.ts). After classification the runtime now
+emits `agent-strategy-selected` with a deterministic strategy decision: direct answer,
+delegated DAG, council, tool use, tool build/rework, or Work Ledger reuse/wait. The
+payload also carries allowed actions, model-tier recommendation, review strictness,
+ledger policy, tool policy, and council participant hints. This decision is still
+advisory; it records the contract that future recursive executors will obey while the
+existing coordinator continues to run the current direct/delegated flows.
+
+The next runtime slice of that model is event-backed call frames. Worker and reviewer
 spans persist a structured `callFrame` payload with local task, output contract, caller
 span, dependencies, model tier, status, and output summary. Before either span completes,
 the runtime emits `agent-self-check-completed` so the trace records whether that agent

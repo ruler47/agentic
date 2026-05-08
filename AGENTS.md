@@ -84,6 +84,13 @@ policies without leaking context.
   multi-domain work: the agent may ask several child agents or model tiers to propose or
   critique a plan, then synthesize the result while using the Work Ledger to prevent
   duplicate evidence gathering.
+- The first recursive-agent strategy selector is wired into the runtime. After
+  classification, `decideAgentStrategy()` emits an `agent-strategy-selected` trace event
+  with the selected primary strategy (`direct_answer`, `delegated_dag`, `tool_use`,
+  `tool_build_or_rework`, `ledger_reuse_or_wait`, or `council`), allowed actions,
+  model-tier recommendation, review strictness, ledger policy, tool policy, and council
+  participant hints. It is currently advisory; later recursive-agent slices will execute
+  child-agent/council branches through this contract.
 - Agents will eventually send auditable outbound messages/reminders to a group or
   individual when policy allows.
 - Tools should be easy to onboard from API documentation and access credentials, but
@@ -247,6 +254,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/agents/universalAgent.ts](src/agents/universalAgent.ts) - main coordinator runtime.
 - [src/agents/callFrame.ts](src/agents/callFrame.ts) - durable agent call-frame and
   return self-check helpers for worker/reviewer spans and future recursive agents.
+- [src/agents/agentStrategy.ts](src/agents/agentStrategy.ts) - deterministic
+  recursive-agent strategy selector for direct answers, delegation, council mode,
+  tool-use/build/rework, and Work Ledger reuse/wait decisions.
 - [src/agents/modelTier.ts](src/agents/modelTier.ts) - model tier selection policy.
 - [src/settings/modelProviderStore.ts](src/settings/modelProviderStore.ts) - durable
   model provider registry contract for chat and embedding endpoints.

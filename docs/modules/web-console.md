@@ -703,6 +703,13 @@ The current runtime emits `memory`, `planning`, `worker`, `review`, `synthesis`,
 `coordination`, and `llm` activities. `web.search`, `chart.generate`, generated
 artifacts, and missing tool capabilities appear as trace cards. Future adapters for file
 reads/writes, screenshots, and database operations should use the same event contract.
+After task classification, the runtime also emits `agent-strategy-selected` with
+`activity: "agent"`. Its payload is the recursive-agent strategy decision: primary mode
+(`direct_answer`, `delegated_dag`, `tool_use`, `tool_build_or_rework`,
+`ledger_reuse_or_wait`, or `council`), allowed actions, model tier, review strictness,
+ledger policy, tool policy, risk signals, and optional council participants. The current
+console renders it as a normal trace card; future UI slices should surface this as the
+reasoning handoff before child-agent/council execution.
 
 When the Work / Evidence / Run-Retrospective stores are configured, the runtime adds
 five more event types that flow through the same SSE contract:
