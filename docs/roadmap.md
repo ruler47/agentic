@@ -1325,9 +1325,14 @@ Approved implementation path after the Nest API cutover:
    child execution is now started by
    [recursiveAgentExecutor.ts](../src/agents/recursiveAgentExecutor.ts), which can run one
    invocation decision, spawn recursive child/council invocations in bounded parallel
-   batches, synthesize compact child returns, and emit invocation started/completed/
-   failed/return-check events. Remaining work is wiring the full UniversalAgent worker,
-   reviewer, tool-builder, ledger, and retry flows through this executor.
+   batches, synthesize compact child returns, and emit invocation started/decision/
+   completed/failed/return-check events. Root direct-answer invocations now run through
+   this executor when the invocation contract does not require external evidence, and
+   executor decisions are validated against allowed actions/tools before any handler is
+   called. Direct tool-wait/rework and external-blocker paths remain on the compatibility
+   direct runner until span-level retry can resume only the blocked step. Remaining work
+   is wiring the full UniversalAgent worker, reviewer, tool-builder, ledger, and retry
+   flows through this executor.
 2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
    broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
    within depth, budget, deadline, and policy limits. A parent only receives compact child

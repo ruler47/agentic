@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createRootAgentInvocation } from "../src/agents/agentInvocation.js";
-import { decideAgentStrategy } from "../src/agents/agentStrategy.js";
+import { decideAgentStrategy, type AgentStrategyAction } from "../src/agents/agentStrategy.js";
 import {
   AgentInvocationRunnerError,
   runRecursiveAgentExecutor,
@@ -89,6 +89,7 @@ test("recursive executor answers a local invocation and emits invocation lifecyc
   assert.equal(result.returnCheck.readyToReturn, true);
   assert.deepEqual(events.map((event) => event.type), [
     "agent-invocation-started",
+    "agent-invocation-decision-selected",
     "agent-invocation-completed",
     "agent-invocation-return-checked",
   ]);
@@ -124,6 +125,7 @@ test("recursive executor delegates children recursively and synthesizes compact 
   const result = await runRecursiveAgentExecutor({
     invocation: {
       ...rootInvocation(),
+      allowedActions: ["delegate_children", "self_check_return"] satisfies AgentStrategyAction[],
       budget: { maxDepth: 3, maxParallelChildren: 2, remainingDepth: 3 },
     },
     now: deterministicClock(),
@@ -148,6 +150,7 @@ test("recursive executor delegates children recursively and synthesizes compact 
 test("recursive executor enforces depth budget for grandchildren", async () => {
   const invocation = {
     ...rootInvocation(),
+    allowedActions: ["delegate_children", "self_check_return"] satisfies AgentStrategyAction[],
     budget: { maxDepth: 1, maxParallelChildren: 2, remainingDepth: 1 },
   };
 
@@ -177,5 +180,47 @@ test("recursive executor enforces depth budget for grandchildren", async () => {
       assert.match(error.message, /remaining depth budget is exhausted/);
       return true;
     },
+  );
+});
+
+test("recursive executor rejects decisions outside the invocation action contract", async () => {
+  await assert.rejects(
+    runRecursiveAgentExecutor({
+      invocation: directInvocation(),
+      now: deterministicClock(),
+      handlers: {
+        decide: async () => ({
+          action: "call_tool",
+          reason: "Not allowed for this direct invocation.",
+          toolName: "web.search",
+        }),
+        callTool: async () => ({ output: "should not run" }),
+      },
+    }),
+    /tool calls are not allowed/,
+  );
+});
+
+test("recursive executor rejects tool calls outside the allowed tool set", async () => {
+  const invocation = {
+    ...rootInvocation("Use the browser.operate tool."),
+    allowedActions: ["call_tool", "self_check_return"] satisfies AgentStrategyAction[],
+    allowedToolNames: ["browser.operate"],
+  };
+
+  await assert.rejects(
+    runRecursiveAgentExecutor({
+      invocation,
+      now: deterministicClock(),
+      handlers: {
+        decide: async () => ({
+          action: "call_tool",
+          reason: "Try a different tool.",
+          toolName: "browser.screenshot",
+        }),
+        callTool: async () => ({ output: "should not run" }),
+      },
+    }),
+    /outside allowed tools/,
   );
 });

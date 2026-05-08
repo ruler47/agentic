@@ -169,6 +169,25 @@ Postgres, stream through SSE, and appear in Trace Lab without adding a separate 
 path. A later recursive runtime can either keep this event-backed model or project the same
 payload into a dedicated call-frame table if it needs query-heavy scheduling.
 
+## Recursive Invocation Executor
+
+`src/agents/recursiveAgentExecutor.ts` is the generic executor for the `AgentInvocation`
+contract. It can run an invocation, ask a decision handler whether the local agent should
+answer, call/request a tool, wait for a tool, delegate children, or ask a council, and
+then recursively execute child invocations in bounded batches.
+
+Pure direct-answer root runs now execute through this generic executor. That means the
+trace includes `agent-invocation-started`, `agent-invocation-decision-selected`,
+`agent-invocation-completed`, and `agent-invocation-return-checked` for the root agent,
+not only for council participants. Direct tool-wait/rework and external-blocker paths
+remain on the compatibility direct runner until span-level retry can resume only the
+blocked step.
+
+The executor enforces the invocation contract before dispatching a decision: forbidden
+actions fail before handlers run, and `call_tool` decisions with a `toolName` must target
+one of the invocation's `allowedToolNames`. This keeps future child agents from silently
+escaping their local permissions as recursive delegation becomes more autonomous.
+
 ## Tool Registry Metadata
 
 `ToolRegistry` owns executable in-process tools. `ToolMetadataStore` owns the durable

@@ -97,8 +97,11 @@ policies without leaking context.
   `buildRecursiveAgentLoopPlan()` emits `agent-decision-loop-completed`, chooses
   `answer`, `delegate`, or `wait_for_tool`, and can upgrade direct-classified tasks to
   delegated execution for external tool work, Work Ledger coordination, council planning,
-  or tool build/rework. This is still a bridge over the existing direct/DAG runtime, not
-  the final fully recursive executor.
+  or tool build/rework. Pure direct-answer root invocations now execute through
+  `recursiveAgentExecutor.ts` and emit `agent-invocation-started`,
+  `agent-invocation-decision-selected`, `agent-invocation-completed`, and
+  `agent-invocation-return-checked`; direct tool-wait/rework paths stay on the
+  compatibility runner until span-level retry lands.
 - The Work Ledger domain claim coordinator is exposed through `POST /api/work-ledger/claim`
   so future child agents and non-agent runtime call sites can ask for a
   reuse/wait/revalidate decision instead of blindly creating duplicate work. The payload
@@ -126,8 +129,10 @@ policies without leaking context.
   `recursiveAgentExecutor.ts`, emits invocation started/completed/failed/return-check
   events, returns an advisory note, and the parent appends those notes to the planning
   prompt. The executor can also recursively spawn generic child invocations in bounded
-  parallel batches. They are advisory/scaffolded only for now; full UniversalAgent
-  worker/reviewer/tool/ledger child execution remains future work.
+  parallel batches and rejects invalid decisions before dispatch, including forbidden
+  tool calls and tool names outside an invocation's `allowedToolNames`. They are
+  advisory/scaffolded only for now; full UniversalAgent worker/reviewer/tool/ledger child
+  execution remains future work.
 - Agents will eventually send auditable outbound messages/reminders to a group or
   individual when policy allows.
 - Tools should be easy to onboard from API documentation and access credentials, but
@@ -666,8 +671,8 @@ For documentation-only changes:
   execution for web search, market/API tools, declared browser operations, and artifact
   paths.
 - `tests/recursiveAgentExecutor.test.ts` covers direct recursive invocation execution,
-  child/grandchild delegation, compact child synthesis, lifecycle trace emission, and
-  depth-budget failure behavior.
+  child/grandchild delegation, compact child synthesis, lifecycle trace emission,
+  invalid action/tool rejection, and depth-budget failure behavior.
 - `tests/artifactStore.test.ts` covers local artifact persistence, durable
   metadata/object payload separation, and download metadata.
 - `tests/auditEventStore.test.ts` covers normalized in-memory audit events.

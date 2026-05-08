@@ -36,6 +36,8 @@ export type RecursiveChildAgentSpec = {
 export type RecursiveAgentExecutorDecision = {
   action: RecursiveAgentExecutorDecisionAction;
   reason: string;
+  toolName?: string;
+  capability?: string;
   output?: string;
   artifacts?: AgentArtifact[];
   evidenceCount?: number;
@@ -106,6 +108,28 @@ export async function runRecursiveAgentExecutor(input: {
           depth: invocation.depth,
           path,
         });
+        validateDecisionAllowed(invocation, decision);
+        await emitInvocationEvent(input.emit, {
+          spanId: `${invocation.spanId}-decision`,
+          parentSpanId: invocation.spanId,
+          type: "agent-invocation-decision-selected",
+          actor: invocation.actor,
+          activity: "agent",
+          status: "completed",
+          title: `Invocation decision: ${decision.action}`,
+          detail: decision.reason,
+          startedAt: now().toISOString(),
+          completedAt: now().toISOString(),
+          durationMs: 0,
+          payload: {
+            invocationId: invocation.id,
+            action: decision.action,
+            reason: decision.reason,
+            toolName: decision.toolName,
+            capability: decision.capability,
+            childCount: decision.children?.length ?? 0,
+          },
+        });
 
         const handlerResult = await executeDecision({
           invocation,
@@ -175,6 +199,42 @@ export async function runRecursiveAgentExecutor(input: {
     decision: decision ?? { action: "answer_self", reason: "No decision was recorded.", output: result.output },
     children: childResults,
   };
+}
+
+function validateDecisionAllowed(invocation: AgentInvocation, decision: RecursiveAgentExecutorDecision): void {
+  const allowed = new Set(invocation.allowedActions);
+  const fail = (message: string) => {
+    throw new Error(`Invocation ${invocation.id} selected invalid decision ${decision.action}: ${message}`);
+  };
+
+  if (decision.action === "call_tool" && !allowed.has("call_tool")) {
+    fail("tool calls are not allowed by this invocation contract.");
+  }
+  if (decision.action === "delegate_children" && !allowed.has("delegate_children")) {
+    fail("child delegation is not allowed by this invocation contract.");
+  }
+  if (decision.action === "ask_council" && !allowed.has("ask_council")) {
+    fail("council delegation is not allowed by this invocation contract.");
+  }
+  if (decision.action === "request_tool" && !allowed.has("request_tool_build")) {
+    fail("tool-build requests are not allowed by this invocation contract.");
+  }
+  if (decision.action === "request_tool_rework" && !allowed.has("request_tool_rework")) {
+    fail("tool-rework requests are not allowed by this invocation contract.");
+  }
+
+  const requestedToolName = decision.toolName ?? toolNameFromMetadata(decision.metadata);
+  if (decision.action === "call_tool" && requestedToolName) {
+    const allowedTools = new Set(invocation.allowedToolNames);
+    if (!allowedTools.has(requestedToolName)) {
+      fail(`tool "${requestedToolName}" is outside allowed tools: ${invocation.allowedToolNames.join(", ") || "none"}.`);
+    }
+  }
+}
+
+function toolNameFromMetadata(metadata: Record<string, unknown> | undefined): string | undefined {
+  const value = metadata?.toolName;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 async function executeDecision(input: {

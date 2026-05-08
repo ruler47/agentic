@@ -648,7 +648,11 @@ mode (`answer`, `delegate`, or `wait_for_tool`) plus a compact action list such 
 `request_tool`, `request_tool_rework`, and `self_check_return`.
 
 The loop emits `agent-decision-loop-completed` after `agent-invocation-created`.
-Today it still hands execution to the existing direct/DAG runtime, but it can upgrade a
+Pure direct-answer runs now execute the root invocation through the generic recursive
+executor, so the root agent emits invocation started, decision-selected, completed, and
+return-check events before the run returns. Direct-classified tasks that actually need a
+tool wait/rework or external blocker still use the compatibility direct path until
+span-level recursive retry can replace only the blocked step. The loop can also upgrade a
 direct-classified task into delegated execution when the task needs external tool work,
 ledger coordination, council planning, or a capability build/rework. Local artifact-tool
 work stays eligible for the direct path so lightweight artifact QA and bounded rework do
@@ -659,10 +663,13 @@ The first generic recursive executor lives in
 an `AgentInvocation` in the same return self-check used by the root runner, asks a small
 decision handler whether to answer, call/request a tool, wait for a tool, delegate child
 agents, or ask a council, and recursively executes child invocations in bounded batches.
-This is the runtime scaffold for "an agent can call another agent" without forcing every
-child through the top-level planner. Full UniversalAgent worker/reviewer/tool-builder
-migration, durable call-frame persistence, ledger-aware child handlers, and span-level
-recursive retry remain follow-up work.
+The executor validates each decision against the invocation contract before running it:
+for example, a child cannot call tools unless `call_tool` is allowed, and a tool call
+cannot target a tool name outside `allowedToolNames`. This is the runtime scaffold for
+"an agent can call another agent" without forcing every child through the top-level
+planner. Full UniversalAgent worker/reviewer/tool-builder migration, durable call-frame
+persistence, ledger-aware child handlers, and span-level recursive retry remain follow-up
+work.
 
 ### Model Tiers
 

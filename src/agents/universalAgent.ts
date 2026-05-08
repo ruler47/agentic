@@ -393,11 +393,12 @@ export class UniversalAgent {
     const invocationStartedAt = new Date();
     const rootInvocation = createRootAgentInvocation({
       runId: options.runId,
-      spanId: runSpanId,
+      spanId: createSpanId("root-agent"),
       task,
       strategy,
       tools: this.tools.list(),
       createdAt: invocationStartedAt.toISOString(),
+      caller: { kind: "human", runId: options.runId, spanId: runSpanId, actor: "user" },
     });
     await emit({
       spanId: createSpanId("agent-invocation"),
@@ -487,62 +488,165 @@ export class UniversalAgent {
       : [];
 
     if (complexity.mode === "direct") {
-      const generatedArtifact = await this.createRequestedArtifact(
-        agentTaskContext,
-        [],
-        emit,
-        runSpanId,
-        options.saveArtifact,
-        options.requestToolBuild,
-        improveTool,
-      );
-      if (generatedArtifact) {
-        artifacts.push(generatedArtifact);
-      }
+      let finalAnswer: string;
+      if (recursiveLoopPlan.executionMode === "answer" && !rootInvocation.outputContract.requiredEvidence) {
+        const recursiveResult = await runRecursiveAgentExecutor({
+          invocation: rootInvocation,
+          emit: async (event) => {
+            await emit({
+              spanId: event.spanId,
+              parentSpanId: event.parentSpanId ?? runSpanId,
+              type: event.type,
+              actor: event.actor,
+              activity: event.activity,
+              status: event.status,
+              title: event.title,
+              detail: event.detail,
+              startedAt: event.startedAt,
+              completedAt: event.completedAt,
+              durationMs: event.durationMs,
+              payload: event.payload,
+            });
+          },
+          handlers: {
+            decide: async () => ({
+              action: "answer_self",
+              reason: "Root recursive executor can answer locally after direct synthesis.",
+            }),
+            answerSelf: async () => {
+              const generatedArtifact = await this.createRequestedArtifact(
+                agentTaskContext,
+                [],
+                emit,
+                rootInvocation.spanId,
+                options.saveArtifact,
+                options.requestToolBuild,
+                improveTool,
+              );
+              if (generatedArtifact) {
+                artifacts.push(generatedArtifact);
+              }
 
-      const synthesisSpanId = createSpanId("synthesis");
-      const synthesisStartedAt = new Date();
-      const synthesisTier = selectModelTier("synthesis", complexity);
-      await emit({
-        spanId: synthesisSpanId,
-        parentSpanId: runSpanId,
-        type: "synthesis-started",
-        actor: "synthesizer",
-        activity: "synthesis",
-        status: "started",
-        title: "Direct answer synthesis started",
-        startedAt: synthesisStartedAt.toISOString(),
-        payload: { modelTier: synthesisTier },
-      });
-      const rawFinalAnswer = await this.llm.complete([
-      { role: "system", content: coordinatorSystemPrompt },
-      {
-        role: "user",
-        content: synthesizePrompt(
-          limitText(agentTaskContext, promptBudget.taskContextChars),
-          complexity,
+              const synthesisSpanId = createSpanId("synthesis");
+              const synthesisStartedAt = new Date();
+              const synthesisTier = selectModelTier("synthesis", complexity);
+              await emit({
+                spanId: synthesisSpanId,
+                parentSpanId: rootInvocation.spanId,
+                type: "synthesis-started",
+                actor: "synthesizer",
+                activity: "synthesis",
+                status: "started",
+                title: "Direct answer synthesis started",
+                startedAt: synthesisStartedAt.toISOString(),
+                payload: { modelTier: synthesisTier, invocationId: rootInvocation.id },
+              });
+              const rawFinalAnswer = await this.llm.complete([
+                { role: "system", content: coordinatorSystemPrompt },
+                {
+                  role: "user",
+                  content: synthesizePrompt(
+                    limitText(agentTaskContext, promptBudget.taskContextChars),
+                    complexity,
+                    [],
+                    [],
+                    compactMemoriesForPrompt(memories),
+                    artifacts,
+                  ),
+                },
+              ], { modelTier: synthesisTier });
+              const output = appendPendingImprovements(withArtifactLinks(rawFinalAnswer, artifacts));
+              await emit({
+                spanId: synthesisSpanId,
+                parentSpanId: rootInvocation.spanId,
+                type: "synthesis-completed",
+                actor: "synthesizer",
+                activity: "llm",
+                status: "completed",
+                title: "Direct answer synthesized",
+                startedAt: synthesisStartedAt.toISOString(),
+                completedAt: new Date().toISOString(),
+                durationMs: elapsedMs(synthesisStartedAt),
+                payload: { finalAnswer: output, modelTier: synthesisTier, invocationId: rootInvocation.id },
+              });
+              return {
+                output,
+                artifacts,
+                evidenceCount: artifacts.length,
+                metadata: {
+                  synthesisSpanId,
+                  councilNoteCount: councilNotes.length,
+                },
+              };
+            },
+          },
+        });
+        finalAnswer = recursiveResult.output;
+      } else {
+        const generatedArtifact = await this.createRequestedArtifact(
+          agentTaskContext,
           [],
-          [],
-          compactMemoriesForPrompt(memories),
+          emit,
+          runSpanId,
+          options.saveArtifact,
+          options.requestToolBuild,
+          improveTool,
+        );
+        if (generatedArtifact) {
+          artifacts.push(generatedArtifact);
+        }
+
+        const synthesisSpanId = createSpanId("synthesis");
+        const synthesisStartedAt = new Date();
+        const synthesisTier = selectModelTier("synthesis", complexity);
+        await emit({
+          spanId: synthesisSpanId,
+          parentSpanId: rootInvocation.spanId,
+          type: "synthesis-started",
+          actor: "synthesizer",
+          activity: "synthesis",
+          status: "started",
+          title: "Direct answer synthesis started",
+          startedAt: synthesisStartedAt.toISOString(),
+          payload: { modelTier: synthesisTier, invocationId: rootInvocation.id },
+        });
+        const rawFinalAnswer = await this.llm.complete([
+          { role: "system", content: coordinatorSystemPrompt },
+          {
+            role: "user",
+            content: synthesizePrompt(
+              limitText(agentTaskContext, promptBudget.taskContextChars),
+              complexity,
+              [],
+              [],
+              compactMemoriesForPrompt(memories),
+              artifacts,
+            ),
+          },
+        ], { modelTier: synthesisTier });
+        finalAnswer = appendPendingImprovements(withArtifactLinks(rawFinalAnswer, artifacts));
+        await emit({
+          spanId: synthesisSpanId,
+          parentSpanId: rootInvocation.spanId,
+          type: "synthesis-completed",
+          actor: "synthesizer",
+          activity: "llm",
+          status: "completed",
+          title: "Direct answer synthesized",
+          startedAt: synthesisStartedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(synthesisStartedAt),
+          payload: { finalAnswer, modelTier: synthesisTier, invocationId: rootInvocation.id },
+        });
+        await this.emitInvocationReturnCheck(
+          rootInvocation,
+          finalAnswer,
           artifacts,
-        ),
-      },
-      ], { modelTier: synthesisTier });
-      const finalAnswer = appendPendingImprovements(withArtifactLinks(rawFinalAnswer, artifacts));
-      await emit({
-        spanId: synthesisSpanId,
-        parentSpanId: runSpanId,
-        type: "synthesis-completed",
-        actor: "synthesizer",
-        activity: "llm",
-        status: "completed",
-        title: "Direct answer synthesized",
-        startedAt: synthesisStartedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(synthesisStartedAt),
-        payload: { finalAnswer, modelTier: synthesisTier },
-      });
-      await this.emitInvocationReturnCheck(rootInvocation, finalAnswer, artifacts, 0, emit, synthesisSpanId);
+          artifacts.length + pendingToolImprovements.length,
+          emit,
+          synthesisSpanId,
+        );
+      }
 
       const learningStartedAt = new Date();
       const learningTier = selectModelTier("learning", complexity);
