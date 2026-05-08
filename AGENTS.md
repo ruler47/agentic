@@ -269,6 +269,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/agents/agentInvocation.ts](src/agents/agentInvocation.ts) - root and council
   `AgentInvocation` contract builder plus generic invocation return self-check helpers
   for future recursive call execution.
+- [src/agents/agentInvocationRunner.ts](src/agents/agentInvocationRunner.ts) - generic
+  invocation execution helper that runs a handler through depth-budget checks, output
+  contract self-check, and normalized completed/failed invocation status.
 - [src/agents/modelTier.ts](src/agents/modelTier.ts) - model tier selection policy.
 - [src/settings/modelProviderStore.ts](src/settings/modelProviderStore.ts) - durable
   model provider registry contract for chat and embedding endpoints.

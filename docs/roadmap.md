@@ -1237,7 +1237,11 @@ Approved implementation path after the Nest API cutover:
    invocations through `agent-council-planned`; those participant invocations are not
    executed recursively yet. The root invocation now emits
    `agent-invocation-return-checked` before the run returns, using the same generic
-   output-contract self-check that child/council invocations will use later.
+   output-contract self-check that child/council invocations will use later. PARTIAL:
+   [agentInvocationRunner.ts](../src/agents/agentInvocationRunner.ts) adds a reusable
+   invocation executor with depth-budget validation, handler failure wrapping, and
+   output-contract self-check enforcement. It is covered by tests but not yet used to
+   execute real council/child branches.
 2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
    broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
    within depth, budget, deadline, and policy limits. A parent only receives compact child

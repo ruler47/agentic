@@ -720,6 +720,10 @@ executor is expected to run before the executor itself replaces the current cent
 `agent-invocation-return-checked` records the root invocation's generic return gate:
 non-empty output, required evidence/artifact counts, warnings, limitations, and whether
 the invocation is ready to hand back to its caller.
+The domain runner behind future child-agent execution is
+`agentInvocationRunner.ts`: it enforces depth-budget limits and the same output-contract
+self-check before an invocation can be considered completed. Today the runner is covered
+by tests but child/council branches still execute through the existing coordinator path.
 
 When the Work / Evidence / Run-Retrospective stores are configured, the runtime adds
 five more event types that flow through the same SSE contract:
