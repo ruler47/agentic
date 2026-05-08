@@ -259,6 +259,9 @@ test("UniversalAgent answers direct tasks without creating subtasks", async () =
     assert.equal((invocationEvent?.payload as any).localTask, "Define universal agent in one sentence");
     assert.equal((invocationEvent?.payload as any).outputContract.requiresSelfCheck, true);
     assert.equal((invocationEvent?.payload as any).strategy, "direct_answer");
+    const returnCheckEvent = events.find((event) => event.type === "agent-invocation-return-checked");
+    assert.equal((returnCheckEvent?.payload as any).selfCheck.readyToReturn, true);
+    assert.equal((returnCheckEvent?.payload as any).selfCheck.invocationId, (invocationEvent?.payload as any).id);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -343,6 +346,8 @@ test("UniversalAgent plans council invocation contracts for high-risk broad task
     const invocationEvent = events.find((event) => event.type === "agent-invocation-created");
     assert.equal((invocationEvent?.payload as any).outputContract.format, "plan");
     assert.equal((invocationEvent?.payload as any).reviewStrictness, "council");
+    const returnCheckEvent = events.find((event) => event.type === "agent-invocation-return-checked");
+    assert.equal((returnCheckEvent?.payload as any).selfCheck.readyToReturn, true);
 
     const councilEvent = events.find((event) => event.type === "agent-council-planned");
     const councilPayload = councilEvent?.payload as any;
@@ -2246,6 +2251,7 @@ test("UniversalAgent emits observable lifecycle events", async () => {
       "agent-invocation-created",
       "synthesis-started",
       "synthesis-completed",
+      "agent-invocation-return-checked",
       "learning-completed",
       "run-completed",
     ]);

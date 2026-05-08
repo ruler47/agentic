@@ -716,6 +716,9 @@ tool names, tier, review strictness, and depth budget. When the strategy is `cou
 `agent-council-planned` records one planned invocation per council participant. These
 events are intentionally visible as trace cards so operators can see what the recursive
 executor is expected to run before the executor itself replaces the current central DAG.
+`agent-invocation-return-checked` records the root invocation's generic return gate:
+non-empty output, required evidence/artifact counts, warnings, limitations, and whether
+the invocation is ready to hand back to its caller.
 
 When the Work / Evidence / Run-Retrospective stores are configured, the runtime adds
 five more event types that flow through the same SSE contract:

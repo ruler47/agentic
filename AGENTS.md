@@ -96,6 +96,10 @@ policies without leaking context.
   planned council participant invocation contracts. These payloads are still trace
   contracts; later recursive-agent slices will execute child-agent/council branches
   through them.
+- Root invocations also emit `agent-invocation-return-checked` before the run returns.
+  The generic return check validates non-empty output and required evidence against the
+  invocation output contract. Future child/council agents should use the same return gate
+  before handing results back to their caller.
 - Agents will eventually send auditable outbound messages/reminders to a group or
   individual when policy allows.
 - Tools should be easy to onboard from API documentation and access credentials, but
@@ -263,7 +267,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   recursive-agent strategy selector for direct answers, delegation, council mode,
   tool-use/build/rework, and Work Ledger reuse/wait decisions.
 - [src/agents/agentInvocation.ts](src/agents/agentInvocation.ts) - root and council
-  `AgentInvocation` contract builder for future recursive call execution.
+  `AgentInvocation` contract builder plus generic invocation return self-check helpers
+  for future recursive call execution.
 - [src/agents/modelTier.ts](src/agents/modelTier.ts) - model tier selection policy.
 - [src/settings/modelProviderStore.ts](src/settings/modelProviderStore.ts) - durable
   model provider registry contract for chat and embedding endpoints.
@@ -586,8 +591,8 @@ For documentation-only changes:
 - `tests/toolRegistry.test.ts` covers tool registration and lookup.
 - `tests/universalAgent.test.ts` covers direct and delegated orchestration with a fake
   LLM, including accepted scoped memory retrieval, runtime sensitive/private memory
-  policy filtering, repeated similar tasks, call-frame payloads, and return self-check
-  events.
+  policy filtering, repeated similar tasks, call-frame payloads, invocation contracts,
+  and return self-check events.
 - `tests/artifactStore.test.ts` covers local artifact persistence, durable
   metadata/object payload separation, and download metadata.
 - `tests/auditEventStore.test.ts` covers normalized in-memory audit events.

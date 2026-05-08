@@ -77,10 +77,12 @@ import {
 } from "./callFrame.js";
 import { decideAgentStrategy } from "./agentStrategy.js";
 import {
+  buildAgentInvocationReturnCheck,
   createCouncilInvocations,
   createRootAgentInvocation,
   summarizeAgentInvocation,
 } from "./agentInvocation.js";
+import type { AgentInvocation } from "./agentInvocation.js";
 
 type PlanResponse = {
   subtasks: Subtask[];
@@ -489,6 +491,7 @@ export class UniversalAgent {
         durationMs: elapsedMs(synthesisStartedAt),
         payload: { finalAnswer, modelTier: synthesisTier },
       });
+      await this.emitInvocationReturnCheck(rootInvocation, finalAnswer, artifacts, 0, emit, synthesisSpanId);
 
       const learningStartedAt = new Date();
       const learningTier = selectModelTier("learning", complexity);
@@ -628,6 +631,14 @@ export class UniversalAgent {
       durationMs: elapsedMs(synthesisStartedAt),
       payload: { finalAnswer, modelTier: synthesisTier },
     });
+    await this.emitInvocationReturnCheck(
+      rootInvocation,
+      finalAnswer,
+      artifacts,
+      workerResults.length + workerResults.reduce((count, result) => count + (result.toolEvidence?.length ?? 0), 0),
+      emit,
+      synthesisSpanId,
+    );
 
     const learningStartedAt = new Date();
     const learningTier = selectModelTier("learning", complexity);
@@ -675,6 +686,40 @@ export class UniversalAgent {
       await this.finalizeRunLedger(ledger, "failed", options.runId, runSpanId);
       throw error;
     }
+  }
+
+  private async emitInvocationReturnCheck(
+    invocation: AgentInvocation,
+    output: string,
+    artifacts: AgentArtifact[],
+    evidenceCount: number,
+    emit: AgentEventEmitter,
+    parentSpanId: string,
+  ): Promise<void> {
+    const startedAt = new Date();
+    const selfCheck = buildAgentInvocationReturnCheck(invocation, {
+      output,
+      artifacts,
+      evidenceCount,
+      checkedAt: startedAt,
+    });
+    await emit({
+      spanId: createSpanId("agent-invocation-return-check"),
+      parentSpanId,
+      type: "agent-invocation-return-checked",
+      actor: invocation.actor,
+      activity: "agent",
+      status: selfCheck.readyToReturn ? "completed" : "failed",
+      title: `Invocation return self-check: ${invocation.actor}`,
+      detail: selfCheck.readyToReturn ? "Ready to return." : selfCheck.warnings.join("; "),
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(startedAt),
+      payload: {
+        invocation,
+        selfCheck,
+      },
+    });
   }
 
   private async classify(

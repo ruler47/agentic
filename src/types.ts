@@ -170,6 +170,7 @@ export type AgentEventType =
   | "agent-strategy-selected"
   | "agent-invocation-created"
   | "agent-council-planned"
+  | "agent-invocation-return-checked"
   | "planning-completed"
   | "worker-started"
   | "worker-completed"

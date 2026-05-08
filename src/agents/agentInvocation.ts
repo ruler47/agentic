@@ -7,6 +7,7 @@ import type {
   AgentStrategyKind,
 } from "./agentStrategy.js";
 import type { Tool } from "../tools/tool.js";
+import type { AgentArtifact } from "../types.js";
 
 export type AgentInvocationCallerKind = "human" | "agent" | "tool" | "system";
 
@@ -33,6 +34,24 @@ export type AgentInvocationOutputContract = {
 };
 
 export type AgentInvocationStatus = "planned" | "started" | "completed" | "failed";
+
+export type AgentInvocationReturnCheckItem = {
+  name: string;
+  ok: boolean;
+  reason: string;
+};
+
+export type AgentInvocationReturnCheck = {
+  invocationId: string;
+  readyToReturn: boolean;
+  checkedAt: string;
+  outputSummary: string;
+  artifactCount: number;
+  evidenceCount: number;
+  checks: AgentInvocationReturnCheckItem[];
+  warnings: string[];
+  limitations: string[];
+};
 
 export type AgentInvocation = {
   id: string;
@@ -158,6 +177,63 @@ export function summarizeAgentInvocation(invocation: AgentInvocation): string {
   ].join("; ");
 }
 
+export function buildAgentInvocationReturnCheck(
+  invocation: AgentInvocation,
+  input: {
+    output: string;
+    artifacts?: AgentArtifact[];
+    evidenceCount?: number;
+    checkedAt?: Date;
+  },
+): AgentInvocationReturnCheck {
+  const output = input.output.trim();
+  const artifactCount = input.artifacts?.length ?? 0;
+  const evidenceCount = input.evidenceCount ?? 0;
+  const checks: AgentInvocationReturnCheckItem[] = [
+    {
+      name: "non_empty_output",
+      ok: output.length > 0,
+      reason: output.length > 0 ? "Agent produced a non-empty return value." : "Agent return value is empty.",
+    },
+    {
+      name: "self_check_required",
+      ok: invocation.outputContract.requiresSelfCheck,
+      reason: invocation.outputContract.requiresSelfCheck
+        ? "Invocation contract requires a return self-check."
+        : "Invocation contract does not require a return self-check.",
+    },
+  ];
+
+  if (invocation.outputContract.requiredEvidence) {
+    const hasEvidence = artifactCount > 0 || evidenceCount > 0;
+    checks.push({
+      name: "required_evidence_present",
+      ok: hasEvidence,
+      reason: hasEvidence
+        ? `${artifactCount} artifact(s) and ${evidenceCount} evidence item(s) are attached.`
+        : "Invocation contract requires evidence, but no artifacts or evidence items are attached.",
+    });
+  }
+
+  const limitations: string[] = [];
+  if (/cannot|can't|unable|blocked|not possible|не могу|невозможно|не удалось/i.test(output)) {
+    limitations.push("Return value declares a limitation or blocker.");
+  }
+
+  const warnings = checks.filter((check) => !check.ok).map((check) => check.reason);
+  return {
+    invocationId: invocation.id,
+    readyToReturn: checks.every((check) => check.ok),
+    checkedAt: (input.checkedAt ?? new Date()).toISOString(),
+    outputSummary: limitText(output, 800),
+    artifactCount,
+    evidenceCount,
+    checks,
+    warnings,
+    limitations,
+  };
+}
+
 function roleForStrategy(strategy: AgentStrategyKind): AgentInvocation["role"] {
   if (strategy === "tool_build_or_rework") return "tool-builder";
   if (strategy === "tool_use") return "tool-user";
@@ -209,4 +285,9 @@ function sanitizeId(value: string): string {
 
 function slug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "agent";
+}
+
+function limitText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 20)).trimEnd()}...`;
 }

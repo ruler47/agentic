@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildAgentInvocationReturnCheck,
   createCouncilInvocations,
   createRootAgentInvocation,
   summarizeAgentInvocation,
@@ -51,6 +52,44 @@ test("root agent invocation captures local task, budget, tools, and output contr
   assert.deepEqual(invocation.allowedToolNames.sort(), ["browser.operate", "web.search"]);
   assert.equal(invocation.budget.remainingDepth, strategy.maxChildDepth);
   assert.match(summarizeAgentInvocation(invocation), /tools=browser\.operate, web\.search|tools=web\.search, browser\.operate/);
+});
+
+test("agent invocation return self-check enforces output and required evidence contract", () => {
+  const strategy = decideAgentStrategy({
+    task: "Search the web and attach screenshot proof.",
+    complexity: {
+      mode: "delegated",
+      reason: "requires evidence",
+      domains: ["research"],
+      riskLevel: "medium",
+    },
+    tools: [tool("web.search", ["web-search"])],
+    hasWorkLedger: true,
+  });
+  const invocation = createRootAgentInvocation({
+    runId: "run_3",
+    spanId: "run-3",
+    task: "Search the web and attach screenshot proof.",
+    strategy,
+    tools: [tool("web.search", ["web-search"])],
+    createdAt: "2026-05-08T00:00:00.000Z",
+  });
+
+  const missingEvidence = buildAgentInvocationReturnCheck(invocation, {
+    output: "I found the answer.",
+    checkedAt: new Date("2026-05-08T00:00:02.000Z"),
+  });
+  assert.equal(missingEvidence.readyToReturn, false);
+  assert.match(missingEvidence.warnings.join("\n"), /requires evidence/);
+
+  const ready = buildAgentInvocationReturnCheck(invocation, {
+    output: "I found the answer with evidence.",
+    evidenceCount: 1,
+    checkedAt: new Date("2026-05-08T00:00:03.000Z"),
+  });
+  assert.equal(ready.readyToReturn, true);
+  assert.equal(ready.evidenceCount, 1);
+  assert.equal(ready.artifactCount, 0);
 });
 
 test("council invocations are local child-call contracts with participant tiers", () => {

@@ -102,6 +102,10 @@ depth/budget, and status. When the strategy is `council`, the runtime also emits
 `agent-council-planned` with planned participant invocation contracts. Those council
 participants are still planned, not executed recursively yet; the trace now preserves the
 shape the future recursive executor will consume.
+Before the root invocation returns, the runtime emits `agent-invocation-return-checked`.
+That generic check validates the invocation output contract, non-empty output, and
+required evidence/artifact counts. This gives direct, delegated, and future recursive
+child agents the same "ready to return to caller" gate instead of separate ad hoc checks.
 
 The next runtime slice of that model is event-backed call frames. Worker and reviewer
 spans persist a structured `callFrame` payload with local task, output contract, caller
