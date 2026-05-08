@@ -195,6 +195,16 @@ export function createWorkLedgerClaimCoordinator(
         });
         if (evaluated === "revalidate") {
           finalDecision = "revalidate";
+          const revalidationItem = await createRevalidationClaim(deps.workLedgerStore, claim, item);
+          return buildClaimDecision({
+            decision: finalDecision,
+            item: revalidationItem,
+            reusableEvidence: undefined,
+            reason: decisionReason(finalDecision, storeDecision.reason, item),
+            confidence: deriveConfidence(finalDecision, revalidationItem),
+            storeDecision: storeDecision.status,
+            workKey,
+          });
         } else if (deps.evidenceLedgerStore) {
           reusableEvidence = await deps.evidenceLedgerStore.listByWorkItem(item.id);
         }
@@ -290,6 +300,30 @@ export function createWorkLedgerClaimCoordinator(
       return deps.workLedgerStore.appendArtifactLink(input.workItemId, input.artifactId);
     },
   };
+}
+
+async function createRevalidationClaim(
+  store: WorkLedgerStore,
+  claim: WorkClaim,
+  priorItem: WorkLedgerItem,
+): Promise<WorkLedgerItem> {
+  return store.createItem({
+    kind: claim.kind,
+    workKey: claim.workKey,
+    title: claim.title,
+    threadId: claim.threadId,
+    runId: claim.runId,
+    instanceId: claim.instanceId,
+    ownerSpanId: claim.ownerSpanId,
+    parentWorkItemId: claim.parentWorkItemId ?? priorItem.id,
+    inputSummary: claim.inputSummary,
+    freshnessExpiresAt: claim.freshnessExpiresAt,
+    metadata: {
+      ...(claim.metadata ?? {}),
+      revalidatesWorkItemId: priorItem.id,
+    },
+    status: "claimed",
+  });
 }
 
 function buildClaim(input: ClaimWorkInput): { workKey: string; claim: WorkClaim } {

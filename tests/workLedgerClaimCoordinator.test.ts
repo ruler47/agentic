@@ -173,6 +173,10 @@ test("claim coordinator returns revalidate when prior evidence is stale or weak"
     now: future,
   });
   assert.equal(repeatB.decision, "revalidate", "completed item older than staleEvidenceWindowMs is revalidated");
+  assert.notEqual(repeatB.workItem!.id, oldComplete.workItem!.id, "age-based revalidation creates a new active claim");
+  assert.equal(repeatB.workItem!.status, "claimed");
+  assert.equal(repeatB.workItem!.parentWorkItemId, oldComplete.workItem!.id);
+  assert.equal(repeatB.workItem!.metadata?.revalidatesWorkItemId, oldComplete.workItem!.id);
 
   // Case C: completed with weak confidence → revalidate.
   const weak = await coordinator.claimWork(baseClaimInput({
@@ -189,6 +193,8 @@ test("claim coordinator returns revalidate when prior evidence is stale or weak"
     ownerSpanId: "span-Z",
   }));
   assert.equal(repeatC.decision, "revalidate", "completed item with confidence below threshold is revalidated");
+  assert.notEqual(repeatC.workItem!.id, weak.workItem!.id, "weak-confidence revalidation creates a new active claim");
+  assert.equal(repeatC.workItem!.parentWorkItemId, weak.workItem!.id);
 });
 
 test("claim coordinator records limitation evidence on failWork and on blockWork", async () => {
