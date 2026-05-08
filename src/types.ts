@@ -169,6 +169,7 @@ export type AgentEventType =
   | "classification-completed"
   | "agent-strategy-selected"
   | "agent-invocation-created"
+  | "agent-decision-loop-completed"
   | "agent-council-planned"
   | "agent-invocation-started"
   | "agent-invocation-completed"

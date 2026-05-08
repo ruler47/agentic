@@ -96,6 +96,21 @@ The helper is intentionally runtime-agnostic — it does not depend on the agent
 runtime, HTTP, or audit stores. The first runtime integration is now wired through
 `RuntimeLedgerCoordinator`, while future call sites can reuse the same helper.
 
+### Claim API and richer retrospective slice (DONE)
+
+The Nest API now exposes the same domain claim coordinator through
+`POST /api/work-ledger/claim`. Runtime and future child-agent callers can submit
+`runId`, `ownerSpanId`, `kind`, `taskSummary`, `requestedBy`, and either `workKey` or
+structured `workKeyParts`, then receive a reusable decision
+(`created_new`, `reuse_completed`, `wait_for_active`, `revalidate`, or `blocked`) plus
+any reusable evidence. Secret-shaped metadata is redacted before storage and audit.
+
+Run retrospectives are also richer: the deterministic draft records suspected root
+causes, failed work item ids, duplicated-work signals, and proposed tool-investigation /
+policy / prompt follow-ups when the runtime saw weak tools, missing capabilities,
+external blockers, repeated work, or failed ledger items. This is still a proposed
+review input, not an automatic memory write.
+
 
 
 Recursive agents need shared operational memory for a *task*, not only long-term memory
@@ -1268,7 +1283,13 @@ Approved implementation path after the Nest API cutover:
    invocation executor with depth-budget validation, handler failure wrapping, and
    output-contract self-check enforcement. Council participant invocations now execute
    through this runner as advisory child calls and feed compact notes into the planning
-   prompt. General recursive child execution still remains.
+   prompt. PARTIAL:
+   [recursiveAgentLoop.ts](../src/agents/recursiveAgentLoop.ts) adds the first
+   deterministic execution-mode bridge after the root invocation. It emits
+   `agent-decision-loop-completed`, chooses `answer`, `delegate`, or `wait_for_tool`,
+   and can upgrade a direct-classified task into delegated execution for external tool
+   work, ledger coordination, council planning, or tool build/rework. General recursive
+   child execution still remains.
 2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
    broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
    within depth, budget, deadline, and policy limits. A parent only receives compact child
@@ -1284,7 +1305,10 @@ Approved implementation path after the Nest API cutover:
    deterministic work key. Fresh completed evidence is reused, in-flight sibling work is
    waited on or observed, failed/stale work is revalidated with a reason, and every claim
    links to Evidence Ledger records and artifact ids. This is the dedupe spine for
-   parallel recursive branches.
+   parallel recursive branches. PARTIAL: the current runtime uses the shared claim
+   coordinator for web search, market time-series, inferred API JSON tools, declared
+   tool inputs, and artifact-producing tools; the same coordinator is now available via
+   `POST /api/work-ledger/claim`.
 5. **Tool improvement loop.** When a child agent finds that a required capability is
    missing or a tool output is insufficient, it creates a Tool Investigation/Rework
    request with the exact span context, waits for background build/QA/promotion when
@@ -1294,15 +1318,18 @@ Approved implementation path after the Nest API cutover:
    worked, what failed, which tools or prompts were weak, where work duplicated, which
    evidence was useful, and which memories/tool tickets/policy updates should enter
    review. These records stay proposed until accepted by policy/operator review.
+   PARTIAL: the deterministic retrospective now includes suspected root causes and
+   proposed tool/policy/prompt follow-ups; LLM-assisted retrospective review and UI
+   approval remain future slices.
 
 Remaining recursive-agent gaps:
 
 - Replace the central one-shot planner with an agent runtime that can recursively spawn
   workers, reviewers, tool builders, tool QA agents, and tool users.
-- Add Thread/Run Work Ledger and Evidence Ledger stores, including work keys, claim
-  states, owner spans, freshness, QA status, and reuse decisions.
-- Add the run retrospective pipeline and review queue that turns structured reflection
-  into memory proposals, tool investigations, prompt/policy improvement tickets, and
+- Add distributed claim locks / transactional claim ownership across replicas and a UI
+  for Work Ledger, Evidence Ledger, and retrospective review.
+- Add the LLM-assisted retrospective review queue that turns structured reflection into
+  memory proposals, tool investigations, prompt/policy improvement tickets, and
   limitation records without auto-polluting accepted memory.
 - Add council-planning as a universal-agent strategy: multiple model tiers/providers can
   propose or critique plans, then a synthesis agent merges the plan while dedupe ledger

@@ -20,6 +20,12 @@ export class WorkLedgerController {
     return { item: await this.service.create(body) };
   }
 
+  @Post("claim")
+  @HttpCode(201)
+  async claim(@Body() body: unknown) {
+    return await this.service.claim(body);
+  }
+
   @Patch(":id")
   async update(@Param("id") id: string, @Body() body: unknown) {
     return { item: await this.service.update(decodeURIComponent(id), body) };

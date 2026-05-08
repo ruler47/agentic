@@ -570,7 +570,10 @@ UniversalAgent runtime integration (Phase 1) is now wired through
   `limitation` evidence and mark the work item failed.
 - At run end the coordinator writes a deterministic, non-LLM retrospective draft
   with `status: "proposed"` and aggregates whatWorked/whatFailed/weakTools/
-  duplicatedWork signals it observed during the run.
+  duplicatedWork signals it observed during the run. The draft now also includes
+  suspected root causes plus proposed tool-investigation/policy/prompt follow-ups
+  when the run saw failed work, weak tools, missing capabilities, repeated work, or
+  external blockers.
 - New `AgentEvent` types (`work-ledger-claim-created`,
   `work-ledger-revalidation-created`, `work-ledger-blocked`, `work-ledger-reused`,
   `work-ledger-waiting-existing`, `evidence-ledger-recorded`,
@@ -595,6 +598,26 @@ the configured stale window or carries weak confidence. Failure and block paths
 optionally write paired `limitation` evidence and link it back to the work item.
 The coordinator is pure domain — it never reads HTTP, agent, or audit state — so
 runtime integrations layer audit / trace events on top of its structured output.
+The Nest API exposes this coordinator through `POST /api/work-ledger/claim` for
+future recursive child agents and non-agent runtime call sites. The endpoint is the
+preferred entry point when a caller wants a reuse/wait/revalidate decision instead of
+blindly creating a work item.
+
+### Recursive Decision Loop Foundation
+
+The runtime now includes a deterministic root decision loop in
+[src/agents/recursiveAgentLoop.ts](../src/agents/recursiveAgentLoop.ts). It turns the
+strategy selector's advisory output and the root `AgentInvocation` into an executable
+mode (`answer`, `delegate`, or `wait_for_tool`) plus a compact action list such as
+`check_work_ledger`, `call_tool`, `delegate_child_agents`, `ask_council`,
+`request_tool`, `request_tool_rework`, and `self_check_return`.
+
+The loop emits `agent-decision-loop-completed` after `agent-invocation-created`.
+Today it still hands execution to the existing direct/DAG runtime, but it can upgrade a
+direct-classified task into delegated execution when the task needs external tool work,
+ledger coordination, council planning, or a capability build/rework. Local artifact-tool
+work stays eligible for the direct path so lightweight artifact QA and bounded rework do
+not pay the full planner cost.
 
 ### Model Tiers
 

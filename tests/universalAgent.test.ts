@@ -259,9 +259,69 @@ test("UniversalAgent answers direct tasks without creating subtasks", async () =
     assert.equal((invocationEvent?.payload as any).localTask, "Define universal agent in one sentence");
     assert.equal((invocationEvent?.payload as any).outputContract.requiresSelfCheck, true);
     assert.equal((invocationEvent?.payload as any).strategy, "direct_answer");
+    const loopEvent = events.find((event) => event.type === "agent-decision-loop-completed");
+    assert.equal((loopEvent?.payload as any).executionMode, "answer");
+    assert.deepEqual((loopEvent?.payload as any).actions, ["answer_self", "self_check_return"]);
     const returnCheckEvent = events.find((event) => event.type === "agent-invocation-return-checked");
     assert.equal((returnCheckEvent?.payload as any).selfCheck.readyToReturn, true);
     assert.equal((returnCheckEvent?.payload as any).selfCheck.invocationId, (invocationEvent?.payload as any).id);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent recursive loop delegates direct-classified external tool work", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"direct","reason":"short lookup","domains":["research"],"riskLevel":"low"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "lookup",
+          title: "Lookup external evidence",
+          role: "researcher",
+          prompt: "Search and summarize the current external evidence.",
+          expectedOutput: "A short evidence-backed answer.",
+          reviewCriteria: ["Uses search evidence"],
+        },
+      ],
+    }),
+    "Worker answer using live search evidence.",
+    '{"subtaskId":"lookup","verdict":"pass","notes":"Uses search evidence."}',
+    "Final answer from delegated external evidence.",
+    '{"shouldStore":false}',
+  ]);
+  const registry = new ToolRegistry();
+  let searchCalls = 0;
+  registry.register({
+    name: "web.search",
+    description: "Fake web search",
+    capabilities: ["web-search"],
+    async run() {
+      searchCalls += 1;
+      return { ok: true, content: "1. Source\nhttps://example.org/source\nFresh external evidence." };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const events: AgentEvent[] = [];
+
+  try {
+    const result = await agent.run("Search the web and summarize current evidence.", {
+      runId: "run-recursive-loop-tool",
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    assert.equal(result.complexity.mode, "delegated");
+    assert.equal(result.subtasks.length, 1);
+    assert.equal(searchCalls, 1);
+    const loopEvent = events.find((event) => event.type === "agent-decision-loop-completed");
+    assert.equal((loopEvent?.payload as any).executionMode, "delegate");
+    assert.ok((loopEvent?.payload as any).actions.includes("call_tool"));
+    assert.ok(events.some((event) => event.type === "planning-completed"));
+    assert.ok(events.some((event) => event.type === "tool-completed" && event.actor === "web.search"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -355,6 +415,9 @@ test("UniversalAgent plans council invocation contracts for high-risk broad task
     const invocationEvent = events.find((event) => event.type === "agent-invocation-created");
     assert.equal((invocationEvent?.payload as any).outputContract.format, "plan");
     assert.equal((invocationEvent?.payload as any).reviewStrictness, "council");
+    const loopEvent = events.find((event) => event.type === "agent-decision-loop-completed");
+    assert.equal((loopEvent?.payload as any).executionMode, "delegate");
+    assert.ok((loopEvent?.payload as any).actions.includes("ask_council"));
     const returnCheckEvent = events.find((event) => event.type === "agent-invocation-return-checked");
     assert.equal((returnCheckEvent?.payload as any).selfCheck.readyToReturn, true);
 
@@ -2349,6 +2412,7 @@ test("UniversalAgent emits observable lifecycle events", async () => {
       "classification-completed",
       "agent-strategy-selected",
       "agent-invocation-created",
+      "agent-decision-loop-completed",
       "synthesis-started",
       "synthesis-completed",
       "agent-invocation-return-checked",
@@ -3009,6 +3073,14 @@ test("UniversalAgent records limitation evidence and a failed work item when web
       "retrospective whatFailed reflects the search failure",
     );
     assert.ok(retrospectives[0]?.weakTools.includes("web.search"));
+    assert.ok(
+      retrospectives[0]?.suspectedRootCauses.some((entry) => /failed|weak/i.test(entry)),
+      "retrospective proposes suspected root causes for failed work",
+    );
+    assert.ok(
+      retrospectives[0]?.proposedPolicyChanges.some((entry) => /Investigate reusable capability\/tool improvement: web\.search/.test(entry)),
+      "retrospective proposes a tool investigation note for weak tools",
+    );
 
     const evidenceEvents = events.filter((event) => event.type === "evidence-ledger-recorded");
     assert.equal(evidenceEvents.length, 1);

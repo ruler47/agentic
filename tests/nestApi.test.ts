@@ -247,6 +247,38 @@ test("Nest API persists work ledger, evidence ledger, and run retrospectives wit
     );
     assert.equal(work.item.metadata.apiKey, "[redacted]");
 
+    const claim = await requestJson<{
+      item: { id: string; status: string; metadata: Record<string, unknown>; workKey: string };
+      decision: { status: string; storeDecision: string; reason: string };
+      reusableEvidence: unknown[];
+    }>(
+      fixture.baseUrl,
+      "/api/work-ledger/claim",
+      {
+        method: "POST",
+        expectedStatus: 201,
+        body: JSON.stringify({
+          runId: runCreated.run.id,
+          threadId: runCreated.run.threadId,
+          ownerSpanId: "span-nest-claim",
+          kind: "api_call",
+          workKeyParts: {
+            apiProvider: "example",
+            endpoint: "/risk",
+            method: "POST",
+            params: { address: "0xabc", apiKey: "WL-CLAIM-NEST-CANARY" },
+          },
+          taskSummary: "Claim API risk lookup",
+          requestedBy: "nest-test",
+          metadata: { credential: "WL-CLAIM-METADATA-CANARY" },
+        }),
+      },
+    );
+    assert.equal(claim.item.status, "claimed");
+    assert.equal(claim.decision.status, "created_new");
+    assert.equal(claim.item.metadata.credential, "[redacted]");
+    assert.equal(claim.item.workKey.includes("WL-CLAIM-NEST-CANARY"), false);
+
     const evidence = await requestJson<{ record: { id: string; metadata: Record<string, unknown> } }>(
       fixture.baseUrl,
       "/api/evidence-ledger",
@@ -293,6 +325,8 @@ test("Nest API persists work ledger, evidence ledger, and run retrospectives wit
     const audit = await requestJson<{ events: unknown[] }>(fixture.baseUrl, "/api/audit-events?limit=100");
     const auditJson = JSON.stringify(audit);
     assert.equal(auditJson.includes("WL-NEST-E2E-CANARY"), false);
+    assert.equal(auditJson.includes("WL-CLAIM-NEST-CANARY"), false);
+    assert.equal(auditJson.includes("WL-CLAIM-METADATA-CANARY"), false);
     assert.equal(auditJson.includes("EV-NEST-E2E-CANARY"), false);
     assert.equal(auditJson.includes("RETRO-NEST-E2E-CANARY"), false);
   } finally {

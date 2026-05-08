@@ -93,6 +93,19 @@ policies without leaking context.
   `tool_build_or_rework`, `ledger_reuse_or_wait`, or `council`), allowed actions,
   model-tier recommendation, review strictness, ledger policy, tool policy, and council
   participant hints.
+- The first root recursive decision loop is wired after `agent-invocation-created`.
+  `buildRecursiveAgentLoopPlan()` emits `agent-decision-loop-completed`, chooses
+  `answer`, `delegate`, or `wait_for_tool`, and can upgrade direct-classified tasks to
+  delegated execution for external tool work, Work Ledger coordination, council planning,
+  or tool build/rework. This is still a bridge over the existing direct/DAG runtime, not
+  the final fully recursive executor.
+- The Work Ledger domain claim coordinator is exposed through `POST /api/work-ledger/claim`
+  so future child agents and non-agent runtime call sites can ask for a
+  reuse/wait/revalidate decision instead of blindly creating duplicate work. The payload
+  is secret-redacted before storage and audit.
+- Runtime retrospectives now include suspected root causes, failed work item ids,
+  duplicated-work signals, and proposed tool/policy/prompt follow-ups when the run saw
+  weak tools, missing capabilities, external blockers, or repeated work.
 - The first `AgentInvocation` contract is now emitted from that strategy decision.
   `agent-invocation-created` records the root caller/local task/output contract/budget/
   allowed-tool call frame for the universal agent, and `agent-council-planned` records
@@ -289,6 +302,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   embedding-provider, and future runtime resolver notes.
 - [src/agents/prompts.ts](src/agents/prompts.ts) - prompts for classification, planning,
   workers, reviewers, synthesis, and learning.
+- [src/agents/recursiveAgentLoop.ts](src/agents/recursiveAgentLoop.ts) - deterministic
+  root decision-loop bridge that turns strategy + invocation into an executable mode and
+  trace payload for the future recursive executor.
 - [src/instance/userStore.ts](src/instance/userStore.ts) - user and channel identity
   resolution contract with local in-memory defaults.
 - [src/instance/postgresUserStore.ts](src/instance/postgresUserStore.ts) - Postgres-backed
@@ -514,7 +530,7 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   work keys from agent intent, returns structured `reuse_completed` /
   `wait_for_active` / `created_new` / `revalidate` / `blocked` decisions, and writes
   paired `limitation` evidence on failure / blockers when the evidence store is
-  wired. Runtime integration into the universal agent runtime is a separate task.
+  wired. It is available to callers through `POST /api/work-ledger/claim`.
 - [src/work-ledger/workKey.ts](src/work-ledger/workKey.ts) - deterministic work-key
   builders for search queries, URL visits, tool/API calls, and artifact intents.
 - [src/work-ledger/decideWorkReuse.ts](src/work-ledger/decideWorkReuse.ts) - pure
@@ -609,6 +625,10 @@ For documentation-only changes:
 - `tests/runtimeLedgerCoordinator.test.ts` covers the runtime adapter's use of
   `WorkLedgerClaimCoordinator`, including dedicated revalidation and blocked trace
   events.
+- `tests/workLedgerClaimCoordinator.test.ts` covers the domain claim coordinator used by
+  `/api/work-ledger/claim`: deterministic intent keys, secret redaction, reuse/wait/
+  revalidate/blocked decisions, evidence/artifact attachment, and concurrent same-key
+  claims.
 - `tests/json.test.ts` covers JSON extraction from model output.
 - `tests/skillMemory.test.ts` covers file-backed skill memory.
 - `tests/memoryRetrievalEvaluation.test.ts` covers retrieval quality fixture scoring.
@@ -616,8 +636,9 @@ For documentation-only changes:
 - `tests/universalAgent.test.ts` covers direct and delegated orchestration with a fake
   LLM, including accepted scoped memory retrieval, runtime sensitive/private memory
   policy filtering, repeated similar tasks, call-frame payloads, invocation contracts,
-  return self-check events, and ledgered tool execution for web search, market/API tools,
-  declared browser operations, and artifact paths.
+  recursive root decision-loop events, return self-check events, and ledgered tool
+  execution for web search, market/API tools, declared browser operations, and artifact
+  paths.
 - `tests/artifactStore.test.ts` covers local artifact persistence, durable
   metadata/object payload separation, and download metadata.
 - `tests/auditEventStore.test.ts` covers normalized in-memory audit events.

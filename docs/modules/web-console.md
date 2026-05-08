@@ -176,6 +176,7 @@ GET /api/secret-handles/:handle
 DELETE /api/secret-handles/:handle
 GET /api/work-ledger?threadId=&runId=&workKey=
 POST /api/work-ledger
+POST /api/work-ledger/claim
 PATCH /api/work-ledger/:id
 POST /api/work-ledger/:id/evidence
 POST /api/work-ledger/:id/artifacts
@@ -713,10 +714,16 @@ console renders it as a normal trace card; future UI slices should surface this 
 reasoning handoff before child-agent/council execution.
 The follow-up event `agent-invocation-created` records the root `AgentInvocation` contract
 derived from that strategy: caller, local task, output contract, allowed actions, allowed
-tool names, tier, review strictness, and depth budget. When the strategy is `council`,
-`agent-council-planned` records one planned invocation per council participant. These
-events are intentionally visible as trace cards so operators can see what the recursive
-executor is expected to run before the executor itself replaces the current central DAG.
+tool names, tier, review strictness, and depth budget. The runtime then emits
+`agent-decision-loop-completed`, which is the first executable bridge from strategy to
+mode: `answer`, `delegate`, or `wait_for_tool`. A direct-classified task can be upgraded
+to delegated execution when the decision loop sees external tool work, Work Ledger reuse
+or wait behavior, council planning, or explicit tool build/rework needs. Local
+artifact-tool work can still stay on the direct path so existing artifact QA and bounded
+tool-rework logic remain cheap. When the strategy is `council`, `agent-council-planned`
+records one planned invocation per council participant. These events are intentionally
+visible as trace cards so operators can see what the recursive executor is expected to
+run before the executor itself replaces the current central DAG.
 `agent-invocation-return-checked` records the root invocation's generic return gate:
 non-empty output, required evidence/artifact counts, warnings, limitations, and whether
 the invocation is ready to hand back to its caller.
@@ -745,6 +752,12 @@ inline with normal spans. There is no dedicated console view for the ledgers in 
 slice — operators query the HTTP endpoints (`/api/work-ledger`,
 `/api/evidence-ledger`, `/api/run-retrospectives`) directly until a UI surface lands
 in a later phase.
+`POST /api/work-ledger/claim` exposes the same domain claim coordinator to runtime and
+future child-agent callers. The payload includes `runId`, `ownerSpanId`, `kind`,
+`taskSummary`, `requestedBy`, and either a precomputed `workKey` or structured
+`workKeyParts`. The response returns the created/reused work item plus a decision
+(`created_new`, `reuse_completed`, `wait_for_active`, `revalidate`, or `blocked`) and
+any reusable evidence. Secret-shaped metadata is redacted before storage and audit.
 
 ## Attachments And Artifacts
 

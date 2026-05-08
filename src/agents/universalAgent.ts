@@ -90,6 +90,10 @@ import {
   AgentInvocationRunnerError,
   runAgentInvocation,
 } from "./agentInvocationRunner.js";
+import {
+  buildRecursiveAgentLoopPlan,
+  RecursiveAgentLoopPlan,
+} from "./recursiveAgentLoop.js";
 
 type PlanResponse = {
   subtasks: Subtask[];
@@ -412,12 +416,43 @@ export class UniversalAgent {
       durationMs: elapsedMs(invocationStartedAt),
       payload: rootInvocation,
     });
+    const recursiveLoopPlan = buildRecursiveAgentLoopPlan({
+      invocation: rootInvocation,
+      strategy,
+      complexity,
+    });
+    await emit({
+      spanId: createSpanId("agent-decision-loop"),
+      parentSpanId: strategySpanId,
+      type: "agent-decision-loop-completed",
+      actor: rootInvocation.actor,
+      activity: "agent",
+      status: "completed",
+      title: `Agent decision loop: ${recursiveLoopPlan.executionMode}`,
+      detail: [
+        recursiveLoopPlan.reason,
+        `Actions: ${recursiveLoopPlan.actions.join(", ")}`,
+        recursiveLoopPlan.requiresPlanning ? "Planning required before return." : "No child planning required.",
+      ].join("\n"),
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: 0,
+      payload: recursiveLoopPlan,
+    });
+    if (complexity.mode === "direct" && recursiveLoopPlan.executionMode === "delegate") {
+      complexity = {
+        ...complexity,
+        mode: "delegated",
+        reason: `${complexity.reason} Recursive decision loop selected delegated execution for tool, ledger, council, or external evidence work.`,
+      };
+    }
     const agentTaskContext = appendAgentRuntimeStrategyContext(
       taskContext,
       strategy,
       rootInvocation,
       Boolean(ledger),
       pendingToolImprovements.length,
+      recursiveLoopPlan,
     );
 
     const councilStartedAt = new Date();
@@ -3643,6 +3678,7 @@ function appendAgentRuntimeStrategyContext(
   rootInvocation: AgentInvocation,
   hasLedger: boolean,
   pendingToolImprovementCount: number,
+  recursiveLoopPlan?: RecursiveAgentLoopPlan,
 ): string {
   const matchedTools = strategy.toolPolicy.matchedToolNames.length > 0
     ? strategy.toolPolicy.matchedToolNames.join(", ")
@@ -3674,6 +3710,9 @@ Agent runtime strategy:
 - Missing capability hints: ${missingCapabilities}
 - Tool policy: mayCall=${strategy.toolPolicy.mayCallTools}, mayRequestBuild=${strategy.toolPolicy.mayRequestBuild}, mayRequestRework=${strategy.toolPolicy.mayRequestRework}
 - Pending tool improvement waits: ${pendingToolImprovementCount}
+- Recursive loop execution mode: ${recursiveLoopPlan?.executionMode ?? "not-computed"}
+- Recursive loop actions: ${recursiveLoopPlan?.actions.join(", ") ?? "not-computed"}
+- Recursive loop reason: ${recursiveLoopPlan?.reason ?? "not-computed"}
 ${council.map((line) => `- ${line}`).join("\n")}
 
 Agent operating rules:

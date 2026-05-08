@@ -257,6 +257,20 @@ export class RuntimeLedgerCoordinator {
     const reuseSignals = items
       .filter((item) => item.workKey)
       .map((item) => `${item.kind}/${item.status}:${item.workKey}`);
+    const failedItems = items.filter((item) => item.status === "failed");
+    const suspectedRootCauses = inferRootCauses({
+      runOutcome,
+      failedItems,
+      weakTools: [...this.weakTools],
+      missingCapabilities: [...this.missingCapabilities],
+      duplicatedWorkSignals: [...this.duplicatedWorkSignals],
+      whatFailed: [...this.whatFailed],
+    });
+    const proposedToolInvestigationNotes = [...this.weakTools, ...this.missingCapabilities]
+      .map((item) => `Investigate reusable capability/tool improvement: ${item}`);
+    const proposedPromptChanges = this.duplicatedWorkSignals.size > 0
+      ? ["Prompt child agents to consult Work Ledger / thread evidence before repeating external work."]
+      : [];
     return {
       runId: this.deps.runId,
       threadId: this.deps.threadId,
@@ -264,14 +278,19 @@ export class RuntimeLedgerCoordinator {
       runOutcome,
       whatWorked: [...this.whatWorked],
       whatFailed: [...this.whatFailed],
+      suspectedRootCauses,
       duplicatedWork: [...this.duplicatedWorkSignals],
       weakTools: [...this.weakTools],
       missingCapabilities: [...this.missingCapabilities],
       usefulEvidenceIds: [...this.evidenceIds],
-      summary: this.draftSummary(runOutcome, items, reuseSignals),
+      proposedPolicyChanges: proposedToolInvestigationNotes,
+      proposedPromptChanges,
+      summary: this.draftSummary(runOutcome, items, reuseSignals, suspectedRootCauses),
       metadata: {
         observedWorkItems: items.length,
         evidenceCount: this.evidenceIds.size,
+        failedWorkItems: failedItems.length,
+        duplicatedWorkSignals: this.duplicatedWorkSignals.size,
         autoDrafted: true,
       },
     };
@@ -301,6 +320,7 @@ export class RuntimeLedgerCoordinator {
         evidenceCount: this.evidenceIds.size,
         weakTools: [...this.weakTools],
         duplicatedWork: [...this.duplicatedWorkSignals],
+        suspectedRootCauses: record.suspectedRootCauses,
       },
     });
     return record;
@@ -360,6 +380,7 @@ export class RuntimeLedgerCoordinator {
     runOutcome: RunRetrospectiveOutcome,
     items: WorkLedgerItem[],
     reuseSignals: string[],
+    rootCauses: string[],
   ): string {
     const lines: string[] = [
       `Run outcome: ${runOutcome}.`,
@@ -374,11 +395,34 @@ export class RuntimeLedgerCoordinator {
     if (this.missingCapabilities.size > 0) {
       lines.push(`Missing capabilities: ${[...this.missingCapabilities].join(", ")}.`);
     }
+    if (rootCauses.length > 0) {
+      lines.push(`Suspected root causes: ${rootCauses.slice(0, 4).join("; ")}.`);
+    }
     if (reuseSignals.length > 0) {
       lines.push(`Work items: ${reuseSignals.slice(0, 6).join("; ")}.`);
     }
     return lines.join(" ");
   }
+}
+
+function inferRootCauses(input: {
+  runOutcome: RunRetrospectiveOutcome;
+  failedItems: WorkLedgerItem[];
+  weakTools: string[];
+  missingCapabilities: string[];
+  duplicatedWorkSignals: string[];
+  whatFailed: string[];
+}): string[] {
+  const causes = new Set<string>();
+  if (input.runOutcome === "failed") causes.add("The run ended in a failed state before a reliable final answer.");
+  if (input.failedItems.length > 0) causes.add(`${input.failedItems.length} tracked work item(s) failed.`);
+  if (input.weakTools.length > 0) causes.add(`Weak or insufficient tool behavior: ${input.weakTools.join(", ")}.`);
+  if (input.missingCapabilities.length > 0) causes.add(`Missing reusable capability: ${input.missingCapabilities.join(", ")}.`);
+  if (input.duplicatedWorkSignals.length > 0) causes.add("Repeated external work was detected and should be reused or awaited next time.");
+  if (input.whatFailed.some((item) => /blocked|captcha|loader|anti-bot|не удалось|невозможно/i.test(item))) {
+    causes.add("External provider blocker or unusable evidence likely caused the failure.");
+  }
+  return [...causes];
 }
 
 export type RuntimeLedgerEventName =
