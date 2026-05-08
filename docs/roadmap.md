@@ -50,10 +50,14 @@ events and 503 fall-through when stores are not configured.
 `agent.run()` options or, equivalently, through the web server's executeRun. A
 per-run `RuntimeLedgerCoordinator`
 ([src/work-ledger/runtimeLedgerCoordinator.ts](../src/work-ledger/runtimeLedgerCoordinator.ts))
-claims work before web-search and screenshot/artifact tool calls through the
-shared `WorkLedgerClaimCoordinator`, short-circuits on `reuse_completed`, records
-`search_result` / `screenshot` / `artifact` / `limitation` evidence, and writes a
-deterministic, non-LLM retrospective draft at run end. Trace events
+claims work before web-search, market time-series, inferred API JSON tools,
+declared tool inputs, and screenshot/artifact tool calls through the shared
+`WorkLedgerClaimCoordinator`. Shared tool paths use a single
+`runLedgeredToolOperation` helper for claim -> execute -> evidence -> complete/fail,
+short-circuit on `reuse_completed` where a text/evidence summary is sufficient,
+record `search_result` / `api_response` / `browser_snapshot` / `screenshot` /
+`artifact` / `limitation` evidence, and write a deterministic, non-LLM retrospective
+draft at run end. Trace events
 (`work-ledger-claim-created`, `work-ledger-revalidation-created`,
 `work-ledger-blocked`, `work-ledger-reused`, `work-ledger-waiting-existing`,
 `evidence-ledger-recorded`, `run-retrospective-proposed`) flow through the
@@ -63,9 +67,9 @@ previous behaviour.
 
 Phase 1 limitations to address in later slices:
 
-- URL visit, market timeseries, declared API calls, and other tool-use call sites
-  are not yet covered — only `web.search` and the artifact-producing tools (with
-  `browser-screenshot` capability the most common).
+- Dedicated URL visit tools, file read/write tools, and some specialized future tool-use
+  call sites are not yet covered. Web search, market time-series, inferred API JSON
+  tools, declared tool inputs, and artifact-producing tools are covered.
 - There is no console UI surface for the new ledgers yet; operators query the
   HTTP endpoints directly.
 - Distributed claim ownership across replicas is not enforced at the store layer.

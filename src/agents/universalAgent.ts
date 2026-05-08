@@ -48,8 +48,10 @@ import {
 } from "../tools/toolImprovementCoordinator.js";
 import { ToolReworkWaitRecord } from "../runs/toolReworkWaitStore.js";
 import {
+  EvidenceKind,
   EvidenceLedgerStore,
   RunRetrospectiveStore,
+  WorkLedgerKind,
   WorkLedgerStore,
 } from "../work-ledger/types.js";
 import { searchQueryWorkKey, toolCallWorkKey } from "../work-ledger/workKey.js";
@@ -1340,40 +1342,20 @@ export class UniversalAgent {
     const requests = inferMarketTimeseriesRequests(text);
 
     for (const request of requests) {
-      const spanId = createSpanId(`tool-${marketTool.name}`);
-      const startedAt = new Date();
-      await emit({
-        spanId,
-        parentSpanId,
-        type: "tool-started",
-        actor: marketTool.name,
-        activity: "tool",
-        status: "started",
-        title: `Tool: ${marketTool.name}`,
-        detail: `${request.symbol}/${request.vsCurrency} for ${request.days} day(s)`,
-        startedAt: startedAt.toISOString(),
-        payload: { tool: marketTool.name, input: request },
-      });
-
-      const result = await this.executeTool(marketTool, request, toolExecutionContext, {
-        spanId,
-        parentSpanId,
+      const detail = `${request.symbol}/${request.vsCurrency} for ${request.days} day(s)`;
+      const { result, spanId } = await this.runLedgeredToolOperation({
+        tool: marketTool,
+        input: request,
         capability: "market-timeseries",
         caller: "worker",
-      });
-      await emit({
-        spanId,
+        detail,
+        emit,
         parentSpanId,
-        type: "tool-completed",
-        actor: marketTool.name,
-        activity: "tool",
-        status: result.ok ? "completed" : "failed",
-        title: `Tool: ${marketTool.name}`,
-        detail: result.content,
-        startedAt: startedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(startedAt),
-        payload: sanitizeToolPayload(result),
+        toolExecutionContext,
+        workKind: "api_call",
+        evidenceKind: "api_response",
+        metadata: { symbol: request.symbol, vsCurrency: request.vsCurrency, days: request.days },
+        reuseCompletedOutput: true,
       });
 
       const savedArtifacts: AgentArtifact[] = [];
@@ -1437,40 +1419,19 @@ export class UniversalAgent {
       const input = inferApiToolInput(tool, text);
       if (!input) continue;
 
-      const spanId = createSpanId(`tool-${tool.name}`);
-      const startedAt = new Date();
-      await emit({
-        spanId,
-        parentSpanId,
-        type: "tool-started",
-        actor: tool.name,
-        activity: "tool",
-        status: "started",
-        title: `Tool: ${tool.name}`,
-        detail: summarizeToolInput(input),
-        startedAt: startedAt.toISOString(),
-        payload: { tool: tool.name, input: sanitizeToolPayload(input) },
-      });
-
-      const result = await this.executeTool(tool, input, toolExecutionContext, {
-        spanId,
-        parentSpanId,
+      const { result } = await this.runLedgeredToolOperation({
+        tool,
+        input,
         capability: tool.capabilities[0] ?? "api-http-json",
         caller: `worker:${subtask.role}`,
-      });
-      await emit({
-        spanId,
+        detail: summarizeToolInput(input),
+        emit,
         parentSpanId,
-        type: "tool-completed",
-        actor: tool.name,
-        activity: "tool",
-        status: result.ok ? "completed" : "failed",
-        title: `Tool: ${tool.name}`,
-        detail: result.content,
-        startedAt: startedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(startedAt),
-        payload: sanitizeToolPayload(result),
+        toolExecutionContext,
+        workKind: "api_call",
+        evidenceKind: "api_response",
+        metadata: { role: subtask.role, inferred: true },
+        reuseCompletedOutput: true,
       });
 
       evidence.push(formatDeclaredToolEvidence(tool.name, result, []));
@@ -1562,46 +1523,21 @@ export class UniversalAgent {
         continue;
       }
 
-      const spanId = createSpanId(`tool-${tool.name}`);
-      const startedAt = new Date();
-      await emit({
-        spanId,
-        parentSpanId,
-        type: "tool-started",
-        actor: tool.name,
-        activity: "tool",
-        status: "started",
-        title: `Tool: ${tool.name}`,
-        detail: summarizeToolInput(runnableInput),
-        startedAt: startedAt.toISOString(),
-        payload: { tool: tool.name, input: sanitizeToolPayload(runnableInput) },
-      });
-
-      const result = await this.executeTool(
+      const runnableRecord = isRecord(runnableInput) ? runnableInput : {};
+      const operation = await this.runLedgeredToolOperation({
         tool,
-        isRecord(runnableInput) ? runnableInput : {},
-        toolExecutionContext,
-        {
-          spanId,
-          parentSpanId,
-          capability: toolName,
-          caller: `worker:${subtask.role}`,
-        },
-      );
-      await emit({
-        spanId,
+        input: runnableRecord,
+        capability: toolName,
+        caller: `worker:${subtask.role}`,
+        detail: summarizeToolInput(runnableInput),
+        emit,
         parentSpanId,
-        type: "tool-completed",
-        actor: tool.name,
-        activity: "tool",
-        status: result.ok ? "completed" : "failed",
-        title: `Tool: ${tool.name}`,
-        detail: result.content,
-        startedAt: startedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(startedAt),
-        payload: sanitizeToolPayload(result),
+        toolExecutionContext,
+        metadata: { role: subtask.role, declaredToolName: toolName },
+        reuseCompletedOutput: false,
+        recordLedgerOutcome: tool.name !== "browser.operate",
       });
+      const { result, spanId, claim } = operation;
 
       const savedArtifacts: AgentArtifact[] = [];
       if (saveArtifact && isBrowserOperateData(result.data)) {
@@ -1667,6 +1603,64 @@ export class UniversalAgent {
             durationMs: elapsedMs(artifactStartedAt),
             payload: { artifact },
           });
+        }
+      }
+
+      if (tool.name === "browser.operate" && claim) {
+        const ledger = this.resolveLedgerFromContext(toolExecutionContext);
+        if (!result.ok) {
+          await ledger?.markFailed(claim.item.id, limitText(result.content, 600));
+          ledger?.trackWhatFailed(`Declared browser.operate failed for ${subtask.title}`);
+          ledger?.trackWeakTool(tool.name);
+          await ledger?.recordEvidence(
+            {
+              kind: "limitation",
+              title: "Declared browser.operate failed",
+              summary: limitText(result.content, 600),
+              toolName: tool.name,
+              workItemId: claim.item.id,
+              qaStatus: "failed",
+              limitations: ["browser.operate returned a non-OK result."],
+              metadata: { capability: toolName, role: subtask.role },
+            },
+            parentSpanId,
+          );
+        } else if (isBrowserOperateData(result.data) && result.data.screenshots.length > 0 && savedArtifacts.length === 0) {
+          await ledger?.markFailed(claim.item.id, "All browser screenshots were rejected by semantic artifact QA.");
+          ledger?.trackWhatFailed(`Declared browser.operate screenshots were rejected for ${subtask.title}`);
+          ledger?.trackWeakTool(tool.name);
+          await ledger?.recordEvidence(
+            {
+              kind: "limitation",
+              title: "Declared browser screenshots rejected",
+              summary: "All browser screenshots were rejected by semantic artifact QA.",
+              toolName: tool.name,
+              workItemId: claim.item.id,
+              qaStatus: "failed",
+              limitations: ["Screenshot outputs did not satisfy semantic artifact QA."],
+              metadata: { capability: toolName, role: subtask.role },
+            },
+            parentSpanId,
+          );
+        } else {
+          await ledger?.markCompleted(claim.item.id, {
+            outputSummary: limitText(formatDeclaredToolEvidence(tool.name, result, savedArtifacts), 4_000),
+          });
+          ledger?.trackWhatWorked(`Declared browser.operate returned usable evidence for ${subtask.title}`);
+          await ledger?.recordEvidence(
+            {
+              kind: savedArtifacts.length > 0 ? "screenshot" : "browser_snapshot",
+              title: `browser.operate evidence: ${subtask.title}`,
+              summary: limitText(result.content, 600),
+              contentPreview: limitText(result.content, 2_000),
+              toolName: tool.name,
+              workItemId: claim.item.id,
+              artifactId: savedArtifacts[0]?.id,
+              qaStatus: savedArtifacts.length > 0 ? "passed" : "unchecked",
+              metadata: { capability: toolName, role: subtask.role, artifactCount: savedArtifacts.length },
+            },
+            parentSpanId,
+          );
         }
       }
 
@@ -2079,6 +2073,162 @@ export class UniversalAgent {
       ...spanContext,
       now: new Date(),
     });
+  }
+
+  private async runLedgeredToolOperation(
+    options: {
+      tool: Tool;
+      input: Record<string, unknown>;
+      capability: string;
+      caller: string;
+      detail: string;
+      emit: AgentEventEmitter;
+      parentSpanId: string;
+      toolExecutionContext?: BaseToolExecutionContext;
+      workKind?: WorkLedgerKind;
+      workKey?: string;
+      workTitle?: string;
+      evidenceKind?: EvidenceKind;
+      metadata?: Record<string, unknown>;
+      reuseCompletedOutput?: boolean;
+      recordLedgerOutcome?: boolean;
+    },
+  ): Promise<{
+    result: ToolResult;
+    spanId: string;
+    startedAt: Date;
+    claim?: Awaited<ReturnType<RuntimeLedgerCoordinator["claim"]>>;
+    reused: boolean;
+  }> {
+    const spanId = createSpanId(`tool-${options.tool.name}`);
+    const startedAt = new Date();
+    const ledger = this.resolveLedgerFromContext(options.toolExecutionContext);
+    const workKind = options.workKind ?? workLedgerKindForTool(options.tool, options.capability);
+    const workKey = options.workKey ?? workKeyForLedgeredTool(options.tool, options.capability, options.input);
+    const claim = await ledger?.claim(
+      {
+        kind: workKind,
+        workKey,
+        title: options.workTitle ?? `Tool call: ${options.tool.name}`,
+        ownerSpanId: spanId,
+        inputSummary: limitText(options.detail, 600),
+        metadata: {
+          capability: options.capability,
+          tool: options.tool.name,
+          caller: options.caller,
+          ...(options.metadata ?? {}),
+        },
+      },
+      options.parentSpanId,
+    );
+
+    if (options.reuseCompletedOutput && claim?.decision.status === "reuse_completed" && claim.item.outputSummary) {
+      ledger?.trackWhatWorked(`Reused ${options.tool.name} evidence for ${options.capability}`);
+      return {
+        spanId,
+        startedAt,
+        claim,
+        reused: true,
+        result: {
+          ok: true,
+          content: `Reused Work Ledger evidence from ${claim.item.id}:\n${limitText(
+            claim.item.outputSummary,
+            promptBudget.toolEvidenceChars,
+          )}`,
+        },
+      };
+    }
+
+    await options.emit({
+      spanId,
+      parentSpanId: options.parentSpanId,
+      type: "tool-started",
+      actor: options.tool.name,
+      activity: "tool",
+      status: "started",
+      title: `Tool: ${options.tool.name}`,
+      detail: options.detail,
+      startedAt: startedAt.toISOString(),
+      payload: {
+        tool: options.tool.name,
+        capability: options.capability,
+        input: sanitizeToolPayload(options.input),
+        workItemId: claim?.item.id,
+      },
+    });
+
+    const result = await this.executeTool(options.tool, options.input, options.toolExecutionContext, {
+      spanId,
+      parentSpanId: options.parentSpanId,
+      capability: options.capability,
+      caller: options.caller,
+    });
+
+    await options.emit({
+      spanId,
+      parentSpanId: options.parentSpanId,
+      type: "tool-completed",
+      actor: options.tool.name,
+      activity: "tool",
+      status: result.ok ? "completed" : "failed",
+      title: `Tool: ${options.tool.name}`,
+      detail: result.content,
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(startedAt),
+      payload: sanitizeToolPayload(result),
+    });
+
+    if (claim && options.recordLedgerOutcome !== false) {
+      if (result.ok) {
+        await ledger?.markCompleted(claim.item.id, {
+          outputSummary: limitText(result.content, 4_000),
+        });
+        ledger?.trackWhatWorked(`${options.tool.name} returned evidence for ${options.capability}`);
+        await ledger?.recordEvidence(
+          {
+            kind: options.evidenceKind ?? evidenceKindForLedgeredTool(options.tool, options.capability),
+            title: `${options.tool.name}: ${options.capability}`,
+            summary: limitText(result.content, 600),
+            contentPreview: limitText(result.content, 2_000),
+            provider: options.tool.name,
+            toolName: options.tool.name,
+            workItemId: claim.item.id,
+            qaStatus: "unchecked",
+            metadata: {
+              capability: options.capability,
+              caller: options.caller,
+              ...(options.metadata ?? {}),
+            },
+          },
+          options.parentSpanId,
+        );
+      } else {
+        await ledger?.markFailed(claim.item.id, limitText(result.content, 600));
+        ledger?.trackWhatFailed(`${options.tool.name} failed for ${options.capability}`);
+        ledger?.trackWeakTool(options.tool.name);
+        await ledger?.recordEvidence(
+          {
+            kind: "limitation",
+            title: `${options.tool.name} failed: ${options.capability}`,
+            summary: limitText(result.content, 600),
+            provider: options.tool.name,
+            toolName: options.tool.name,
+            workItemId: claim.item.id,
+            qaStatus: "failed",
+            limitations: [`${options.tool.name} returned a non-OK result for ${options.capability}.`],
+            metadata: {
+              capability: options.capability,
+              caller: options.caller,
+              ...(options.metadata ?? {}),
+            },
+          },
+          options.parentSpanId,
+        );
+      }
+    }
+
+    return { result, spanId, startedAt, claim, reused: false };
   }
 
   private async runArtifactTool<TData>(
@@ -3890,6 +4040,43 @@ function formatToolDataEvidence(data: unknown): string {
   }
   if (lines.length === 0) return "";
   return `\nStructured tool data:\n${lines.map((line) => `- ${line}`).join("\n")}`;
+}
+
+function workKeyForLedgeredTool(tool: Tool, capability: string, input: Record<string, unknown>): string {
+  if (capability === "market-timeseries") {
+    return toolCallWorkKey(tool.name, { capability, ...input });
+  }
+  if (capability === "api-http-json" || tool.capabilities.includes("api-http-json")) {
+    return toolCallWorkKey(tool.name, { capability: "api-http-json", ...input });
+  }
+  if (tool.name === "browser.operate" || capability === "browser-operate") {
+    return toolCallWorkKey(tool.name, { capability: "browser-operate", ...input });
+  }
+  return toolCallWorkKey(tool.name, { capability, ...input });
+}
+
+function workLedgerKindForTool(tool: Tool, capability: string): WorkLedgerKind {
+  if (capability === "market-timeseries" || capability === "api-http-json" || tool.capabilities.includes("api-http-json")) {
+    return "api_call";
+  }
+  if (tool.name === "browser.operate" || capability === "browser-operate") {
+    return "url_visit";
+  }
+  if (capability.includes("file-read")) return "data_fetch";
+  if (capability.includes("file-write")) return "artifact_generation";
+  return "tool_call";
+}
+
+function evidenceKindForLedgeredTool(tool: Tool, capability: string): EvidenceKind {
+  if (capability === "market-timeseries" || capability === "api-http-json" || tool.capabilities.includes("api-http-json")) {
+    return "api_response";
+  }
+  if (tool.name === "browser.operate" || capability === "browser-operate") {
+    return "browser_snapshot";
+  }
+  if (capability.includes("file-read")) return "file";
+  if (capability.includes("artifact") || capability.includes("file-write")) return "artifact";
+  return "model_observation";
 }
 
 function improveDeclaredToolInput(

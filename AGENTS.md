@@ -67,14 +67,16 @@ policies without leaking context.
   reuse those artifacts when they satisfy the follow-up instead of reacquiring identical
   data by default.
 - The Thread/Run Work Ledger and Evidence Ledger are now partially wired into the
-  UniversalAgent runtime: web-search and screenshot/artifact tool calls go through a
-  shared `WorkLedgerClaimCoordinator` before they execute, evidence and limitations are
-  recorded as the tool returns, and a proposed retrospective is written at run end.
-  Runtime trace now distinguishes claim-created, revalidation-created, blocked, reused,
-  and waiting-existing decisions. When the stores are not provided, the runtime falls
-  back to its previous behaviour. The slice does not yet cover URL visits, market
-  timeseries, or generic API/tool-use call sites, and there is no UI surface for the new
-  ledgers — those are tracked for follow-up phases of the recursive-agent program.
+  UniversalAgent runtime: web-search, market time-series, inferred API JSON tools,
+  declared tool inputs, and screenshot/artifact tool calls go through a shared
+  `WorkLedgerClaimCoordinator` before they execute. Common tool paths use
+  `runLedgeredToolOperation` for claim -> execute -> evidence -> complete/fail;
+  specialized artifact paths still layer semantic artifact QA and versioned tool rework
+  on top. Runtime trace now distinguishes claim-created, revalidation-created, blocked,
+  reused, and waiting-existing decisions. When the stores are not provided, the runtime
+  falls back to its previous behaviour. Dedicated URL visit tools, file read/write tools,
+  and the dedicated ledger UI are tracked for follow-up phases of the recursive-agent
+  program.
 - Runs produce a deterministic, non-LLM retrospective draft after completion/failure:
   what worked, what failed, observed weak tools, missing capabilities, duplicated-work
   signals, and the evidence ids it considered useful. The draft is written with status
@@ -614,7 +616,8 @@ For documentation-only changes:
 - `tests/universalAgent.test.ts` covers direct and delegated orchestration with a fake
   LLM, including accepted scoped memory retrieval, runtime sensitive/private memory
   policy filtering, repeated similar tasks, call-frame payloads, invocation contracts,
-  and return self-check events.
+  return self-check events, and ledgered tool execution for web search, market/API tools,
+  declared browser operations, and artifact paths.
 - `tests/artifactStore.test.ts` covers local artifact persistence, durable
   metadata/object payload separation, and download metadata.
 - `tests/auditEventStore.test.ts` covers normalized in-memory audit events.

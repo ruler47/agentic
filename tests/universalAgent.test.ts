@@ -926,9 +926,17 @@ test("UniversalAgent executes market time-series tools inside delegated subtasks
   const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
   const savedArtifacts: ArtifactCreateInput[] = [];
   const events: AgentEvent[] = [];
+  const workLedgerStore = new InMemoryWorkLedgerStore();
+  const evidenceLedgerStore = new InMemoryEvidenceLedgerStore();
+  const runRetrospectiveStore = new InMemoryRunRetrospectiveStore();
 
   try {
     const result = await agent.run("Собери BTC market data за 2 дня и дай краткий анализ тренда.", {
+      runId: "run-market-ledger",
+      threadId: "thread-market-ledger",
+      workLedgerStore,
+      evidenceLedgerStore,
+      runRetrospectiveStore,
       saveArtifact: async (artifact): Promise<AgentArtifact> => {
         savedArtifacts.push(artifact);
         return {
@@ -958,6 +966,15 @@ test("UniversalAgent executes market time-series tools inside delegated subtasks
     assert.equal(result.workerResults[0]?.artifacts?.[0]?.url, "/artifacts/bitcoin.csv");
     assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /market\.timeseries/);
     assert.ok(events.some((event) => event.type === "tool-completed" && event.actor === "market.timeseries"));
+    const workItems = await workLedgerStore.listByRun("run-market-ledger");
+    assert.equal(workItems.length, 1);
+    assert.equal(workItems[0]?.kind, "api_call");
+    assert.equal(workItems[0]?.status, "completed");
+    assert.match(workItems[0]?.workKey ?? "", /market\.timeseries/);
+    const ledgerEvidence = await evidenceLedgerStore.listByRun("run-market-ledger");
+    assert.equal(ledgerEvidence[0]?.kind, "api_response");
+    assert.ok(events.some((event) => event.type === "work-ledger-claim-created"));
+    assert.ok(events.some((event) => event.type === "evidence-ledger-recorded"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -986,7 +1003,7 @@ test("UniversalAgent auto-routes AML address requests to registered API JSON too
     '{"shouldStore":false}',
   ]);
   const registry = new ToolRegistry();
-  let capturedInput: Record<string, unknown> | undefined;
+  const capturedInputs: Record<string, unknown>[] = [];
   const savedArtifacts: ArtifactCreateInput[] = [];
   registry.register({
     name: "generated.api.gl.aml",
@@ -996,7 +1013,7 @@ test("UniversalAgent auto-routes AML address requests to registered API JSON too
     capabilities: ["api.gl-aml", "api-http-json", "http-api-call"],
     requiredSecretHandles: ["secret.api.gl-aml"],
     async run(input, context) {
-      capturedInput = input;
+      capturedInputs.push(input);
       await context?.artifacts?.saveGenerated({
         filename: "aml-score.json",
         mimeType: "application/json",
@@ -1018,11 +1035,19 @@ test("UniversalAgent auto-routes AML address requests to registered API JSON too
   });
   const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
   const toolEvents: AgentEvent[] = [];
+  const workLedgerStore = new InMemoryWorkLedgerStore();
+  const evidenceLedgerStore = new InMemoryEvidenceLedgerStore();
+  const runRetrospectiveStore = new InMemoryRunRetrospectiveStore();
 
   try {
     const result = await agent.run(
       "Дай амл скор адреса в эфире 0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2",
       {
+        runId: "run-api-ledger",
+        threadId: "thread-api-ledger",
+        workLedgerStore,
+        evidenceLedgerStore,
+        runRetrospectiveStore,
         onEvent: (event) => {
           if (event.activity === "tool") toolEvents.push(event);
         },
@@ -1047,9 +1072,9 @@ test("UniversalAgent auto-routes AML address requests to registered API JSON too
     );
 
     assert.equal(result.complexity.mode, "delegated");
-    assert.equal(capturedInput?.network, "ethereum");
-    assert.equal(capturedInput?.address, "0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2");
-    assert.equal(capturedInput?.secretHandle, "secret.api.gl-aml");
+    assert.equal(capturedInputs[0]?.network, "ethereum");
+    assert.equal(capturedInputs[0]?.address, "0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2");
+    assert.equal(capturedInputs[0]?.secretHandle, "secret.api.gl-aml");
     assert.equal(savedArtifacts.length, 1);
     assert.equal(savedArtifacts[0]?.filename, "aml-score.json");
     assert.equal(savedArtifacts[0]?.mimeType, "application/json");
@@ -1057,6 +1082,52 @@ test("UniversalAgent auto-routes AML address requests to registered API JSON too
     assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /Structured tool data/);
     assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /score: 42/);
     assert.match(result.finalAnswer, /42/);
+    const workItems = await workLedgerStore.listByRun("run-api-ledger");
+    assert.equal(workItems.length, 1);
+    assert.equal(workItems[0]?.kind, "api_call");
+    assert.equal(workItems[0]?.status, "completed");
+    assert.match(workItems[0]?.workKey ?? "", /generated\.api\.gl\.aml/);
+    const ledgerEvidence = await evidenceLedgerStore.listByRun("run-api-ledger");
+    assert.equal(ledgerEvidence.length, 1);
+    assert.equal(ledgerEvidence[0]?.kind, "api_response");
+
+    const secondAgent = new UniversalAgent(
+      new FakeLlm([
+        '{"mode":"direct","reason":"looks like a short lookup","domains":["crypto"],"riskLevel":"low"}',
+        JSON.stringify({
+          subtasks: [
+            {
+              id: "aml",
+              title: "Lookup wallet AML risk",
+              role: "researcher",
+              prompt: "Get the AML score for the Ethereum address.",
+              expectedOutput: "AML score evidence.",
+              reviewCriteria: ["Uses registered tool evidence"],
+            },
+          ],
+        }),
+        "AML score evidence: score 42.",
+        JSON.stringify({ subtaskId: "aml", verdict: "pass", notes: "Uses reused ledger evidence." }),
+        "Final AML answer with score 42.",
+        '{"shouldStore":false}',
+      ]) as unknown as LlmClient,
+      memory,
+      registry,
+    );
+    await secondAgent.run(
+      "Дай амл скор адреса в эфире 0x9B43b2F8aa3217F3F3947C750d58A50ac24aFfD2",
+      {
+        runId: "run-api-ledger-2",
+        threadId: "thread-api-ledger",
+        workLedgerStore,
+        evidenceLedgerStore,
+        runRetrospectiveStore,
+        toolExecutionContext: {
+          resolveSecret: async (handle) => handle === "secret.api.gl-aml" ? "test-token" : undefined,
+        },
+      },
+    );
+    assert.equal(capturedInputs.length, 1, "matching second API request reuses Work Ledger output instead of calling the tool again");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1135,12 +1206,18 @@ test("UniversalAgent executes declared browser operate tool inputs and saves scr
   });
   const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
   const savedArtifacts: AgentArtifact[] = [];
+  const workLedgerStore = new InMemoryWorkLedgerStore();
+  const evidenceLedgerStore = new InMemoryEvidenceLedgerStore();
+  const runRetrospectiveStore = new InMemoryRunRetrospectiveStore();
 
   try {
     const result = await agent.run("Use browser operation for proof.", {
       runId: "run-context-test",
       requesterUserId: "user-admin",
       threadId: "thread-context-test",
+      workLedgerStore,
+      evidenceLedgerStore,
+      runRetrospectiveStore,
       saveArtifact: async (artifact): Promise<AgentArtifact> => {
         const saved = {
           id: "artifact-browser-proof",
@@ -1168,6 +1245,14 @@ test("UniversalAgent executes declared browser operate tool inputs and saves scr
     assert.match(result.workerResults[0]?.toolEvidence?.join("\n") ?? "", /Example Domain/);
     assert.match(result.finalAnswer, /\/artifacts\/browser-proof\.png/);
     assert.doesNotMatch(result.finalAnswer, /api\.runs\.example\.com/);
+    const workItems = await workLedgerStore.listByRun("run-context-test");
+    assert.equal(workItems.length, 1);
+    assert.equal(workItems[0]?.kind, "url_visit");
+    assert.equal(workItems[0]?.status, "completed");
+    const ledgerEvidence = await evidenceLedgerStore.listByRun("run-context-test");
+    assert.equal(ledgerEvidence.length, 1);
+    assert.equal(ledgerEvidence[0]?.kind, "screenshot");
+    assert.equal(ledgerEvidence[0]?.artifactId, "artifact-browser-proof");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

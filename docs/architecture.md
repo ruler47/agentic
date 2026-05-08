@@ -557,14 +557,16 @@ UniversalAgent runtime integration (Phase 1) is now wired through
   optional dependencies. When any store is wired, the agent constructs a per-run
   `RuntimeLedgerCoordinator` keyed by `runId` so deeply nested helpers can resolve
   it from `toolExecutionContext.runId`.
-- Web search (`web.search`) and screenshot/artifact tool calls (`browser-screenshot`
-  and other artifact-producing tools) claim a Work Ledger entry before running through
-  the shared `WorkLedgerClaimCoordinator`, short-circuit on `reuse_completed` when the
-  prior item carries a usable `outputSummary`, and surface `wait_for_active`,
-  `revalidate`, and `blocked` decisions as trace events so the operator can see whether
-  the branch reused, waited, refreshed, or hit a recent limitation.
-- Successful runs record `search_result`/`screenshot`/`artifact` evidence; non-OK
-  tool results, semantic-QA failures, and CAPTCHA/loader blockers record
+- Web search (`web.search`), market time-series, inferred API JSON tools, declared tool
+  inputs, and screenshot/artifact tool calls claim a Work Ledger entry before running
+  through the shared `WorkLedgerClaimCoordinator`. The common tool paths use
+  `runLedgeredToolOperation`, which centralizes claim -> execute -> evidence ->
+  complete/fail. It short-circuits on `reuse_completed` when a prior text/evidence
+  summary is sufficient, and surfaces `wait_for_active`, `revalidate`, and `blocked`
+  decisions as trace events so the operator can see whether the branch reused, waited,
+  refreshed, or hit a recent limitation.
+- Successful runs record `search_result`/`api_response`/`browser_snapshot`/`screenshot`/
+  `artifact` evidence; non-OK tool results, semantic-QA failures, and CAPTCHA/loader blockers record
   `limitation` evidence and mark the work item failed.
 - At run end the coordinator writes a deterministic, non-LLM retrospective draft
   with `status: "proposed"` and aggregates whatWorked/whatFailed/weakTools/
@@ -575,9 +577,9 @@ UniversalAgent runtime integration (Phase 1) is now wired through
   `run-retrospective-proposed`) appear in the existing run trace stream so the
   console renders ledger activity inline with normal spans.
 
-The slice does not yet cover URL visits, market timeseries, generic API/tool-use
-call sites, distributed claim locks across replicas, an LLM-driven retrospective,
-or a console UI for the new ledgers. Those remain on the recursive-agent roadmap.
+The slice does not yet cover dedicated URL visit tools, file read/write tools,
+distributed claim locks across replicas, an LLM-driven retrospective, or a console UI
+for the new ledgers. Those remain on the recursive-agent roadmap.
 
 A higher-level domain helper for those future call sites lives in
 [src/work-ledger/workLedgerClaimCoordinator.ts](../src/work-ledger/workLedgerClaimCoordinator.ts).
