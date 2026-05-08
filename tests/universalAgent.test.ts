@@ -255,6 +255,10 @@ test("UniversalAgent answers direct tasks without creating subtasks", async () =
     const strategyEvent = events.find((event) => event.type === "agent-strategy-selected");
     assert.equal((strategyEvent?.payload as any).primary, "direct_answer");
     assert.deepEqual((strategyEvent?.payload as any).actions, ["self_check_return", "answer_directly"]);
+    const invocationEvent = events.find((event) => event.type === "agent-invocation-created");
+    assert.equal((invocationEvent?.payload as any).localTask, "Define universal agent in one sentence");
+    assert.equal((invocationEvent?.payload as any).outputContract.requiresSelfCheck, true);
+    assert.equal((invocationEvent?.payload as any).strategy, "direct_answer");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -296,6 +300,60 @@ test("UniversalAgent injects group and requester context into runtime prompts", 
     assert.match(joined, /city: Malaga/);
     assert.match(joined, /Requester: Admin/);
     assert.match(joined, /Use this context as default task context/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent plans council invocation contracts for high-risk broad tasks", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"high-stakes decision across domains","domains":["medical","legal","financial"],"riskLevel":"high"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "risk",
+          title: "Risk summary",
+          role: "analyst",
+          prompt: "Summarize risks.",
+          expectedOutput: "Risk summary.",
+          reviewCriteria: ["Risks are explicit"],
+        },
+      ],
+    }),
+    "Risk summary output.",
+    '{"subtaskId":"risk","verdict":"pass","notes":"Risks are explicit."}',
+    "Final high-level answer.",
+    '{"shouldStore":false}',
+  ]);
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+  const events: AgentEvent[] = [];
+
+  try {
+    await agent.run("Compare medical, legal, and financial risks and choose a strategy.", {
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    const strategyEvent = events.find((event) => event.type === "agent-strategy-selected");
+    assert.equal((strategyEvent?.payload as any).primary, "council");
+
+    const invocationEvent = events.find((event) => event.type === "agent-invocation-created");
+    assert.equal((invocationEvent?.payload as any).outputContract.format, "plan");
+    assert.equal((invocationEvent?.payload as any).reviewStrictness, "council");
+
+    const councilEvent = events.find((event) => event.type === "agent-council-planned");
+    const councilPayload = councilEvent?.payload as any;
+    assert.ok(councilPayload);
+    assert.ok(councilPayload.councilInvocations.length >= 3);
+    assert.ok(councilPayload.councilInvocations.some((invocation: any) => invocation.modelTier === "XL"));
+    assert.ok(
+      councilPayload.councilInvocations.every((invocation: any) =>
+        invocation.parentInvocationId === councilPayload.rootInvocation.id && invocation.status === "planned",
+      ),
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -2185,6 +2243,7 @@ test("UniversalAgent emits observable lifecycle events", async () => {
       "memory-search-completed",
       "classification-completed",
       "agent-strategy-selected",
+      "agent-invocation-created",
       "synthesis-started",
       "synthesis-completed",
       "learning-completed",
