@@ -192,6 +192,8 @@ export type AgentEventType =
   | "learning-completed"
   | "run-completed"
   | "work-ledger-claim-created"
+  | "work-ledger-revalidation-created"
+  | "work-ledger-blocked"
   | "work-ledger-reused"
   | "work-ledger-waiting-existing"
   | "evidence-ledger-recorded"

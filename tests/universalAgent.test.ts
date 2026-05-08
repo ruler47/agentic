@@ -303,6 +303,11 @@ test("UniversalAgent injects group and requester context into runtime prompts", 
     assert.match(joined, /city: Malaga/);
     assert.match(joined, /Requester: Admin/);
     assert.match(joined, /Use this context as default task context/);
+    assert.match(joined, /Agent runtime strategy:/);
+    assert.match(joined, /Primary strategy: direct_answer/);
+    assert.match(joined, /Allowed actions: self_check_return, answer_directly/);
+    assert.match(joined, /Work Ledger policy: check=/);
+    assert.match(joined, /Agent operating rules:/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -3012,6 +3017,8 @@ test("UniversalAgent skips ledger work when no stores are wired so existing flow
     const ledgerEvents = events.filter((event) =>
       [
         "work-ledger-claim-created",
+        "work-ledger-revalidation-created",
+        "work-ledger-blocked",
         "work-ledger-reused",
         "work-ledger-waiting-existing",
         "evidence-ledger-recorded",

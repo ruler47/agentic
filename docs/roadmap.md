@@ -50,14 +50,16 @@ events and 503 fall-through when stores are not configured.
 `agent.run()` options or, equivalently, through the web server's executeRun. A
 per-run `RuntimeLedgerCoordinator`
 ([src/work-ledger/runtimeLedgerCoordinator.ts](../src/work-ledger/runtimeLedgerCoordinator.ts))
-claims work before web-search and screenshot/artifact tool calls, short-circuits
-on `reuse_completed`, records `search_result` / `screenshot` / `artifact` /
-`limitation` evidence, and writes a deterministic, non-LLM retrospective draft at
-run end. New trace events (`work-ledger-claim-created`, `work-ledger-reused`,
-`work-ledger-waiting-existing`, `evidence-ledger-recorded`,
-`run-retrospective-proposed`) flow through the existing event sink so the run
-trace renders ledger activity inline. When no stores are wired the entire path
-short-circuits and the runtime keeps its previous behaviour.
+claims work before web-search and screenshot/artifact tool calls through the
+shared `WorkLedgerClaimCoordinator`, short-circuits on `reuse_completed`, records
+`search_result` / `screenshot` / `artifact` / `limitation` evidence, and writes a
+deterministic, non-LLM retrospective draft at run end. Trace events
+(`work-ledger-claim-created`, `work-ledger-revalidation-created`,
+`work-ledger-blocked`, `work-ledger-reused`, `work-ledger-waiting-existing`,
+`evidence-ledger-recorded`, `run-retrospective-proposed`) flow through the
+existing event sink so the run trace renders ledger activity inline. When no
+stores are wired the entire path short-circuits and the runtime keeps its
+previous behaviour.
 
 Phase 1 limitations to address in later slices:
 
@@ -87,7 +89,8 @@ and returns one of `reuse_completed`, `wait_for_active`, `created_new`,
 callers override `reuse_completed` to `revalidate`. Failure and block paths
 optionally write paired `limitation` evidence and link it back to the work item.
 The helper is intentionally runtime-agnostic — it does not depend on the agent
-runtime, HTTP, or audit stores; runtime integration is a separate Codex task.
+runtime, HTTP, or audit stores. The first runtime integration is now wired through
+`RuntimeLedgerCoordinator`, while future call sites can reuse the same helper.
 
 
 

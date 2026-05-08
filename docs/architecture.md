@@ -558,17 +558,19 @@ UniversalAgent runtime integration (Phase 1) is now wired through
   `RuntimeLedgerCoordinator` keyed by `runId` so deeply nested helpers can resolve
   it from `toolExecutionContext.runId`.
 - Web search (`web.search`) and screenshot/artifact tool calls (`browser-screenshot`
-  and other artifact-producing tools) claim a Work Ledger entry before running,
-  short-circuit on `reuse_completed` when the prior item carries a usable
-  `outputSummary`, and on `wait_for_inflight` simply continue while emitting a trace
-  event so the operator can see the dedupe decision.
+  and other artifact-producing tools) claim a Work Ledger entry before running through
+  the shared `WorkLedgerClaimCoordinator`, short-circuit on `reuse_completed` when the
+  prior item carries a usable `outputSummary`, and surface `wait_for_active`,
+  `revalidate`, and `blocked` decisions as trace events so the operator can see whether
+  the branch reused, waited, refreshed, or hit a recent limitation.
 - Successful runs record `search_result`/`screenshot`/`artifact` evidence; non-OK
   tool results, semantic-QA failures, and CAPTCHA/loader blockers record
   `limitation` evidence and mark the work item failed.
 - At run end the coordinator writes a deterministic, non-LLM retrospective draft
   with `status: "proposed"` and aggregates whatWorked/whatFailed/weakTools/
   duplicatedWork signals it observed during the run.
-- New `AgentEvent` types (`work-ledger-claim-created`, `work-ledger-reused`,
+- New `AgentEvent` types (`work-ledger-claim-created`,
+  `work-ledger-revalidation-created`, `work-ledger-blocked`, `work-ledger-reused`,
   `work-ledger-waiting-existing`, `evidence-ledger-recorded`,
   `run-retrospective-proposed`) appear in the existing run trace stream so the
   console renders ledger activity inline with normal spans.

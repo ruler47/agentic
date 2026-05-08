@@ -68,12 +68,13 @@ policies without leaking context.
   data by default.
 - The Thread/Run Work Ledger and Evidence Ledger are now partially wired into the
   UniversalAgent runtime: web-search and screenshot/artifact tool calls go through a
-  Work Ledger claim before they execute, evidence and limitations are recorded as the
-  tool returns, and a proposed retrospective is written at run end. When the stores
-  are not provided, the runtime falls back to its previous behaviour. The slice does
-  not yet cover URL visits, market timeseries, or generic API/tool-use call sites,
-  and there is no UI surface for the new ledgers — those are tracked for follow-up
-  phases of the recursive-agent program.
+  shared `WorkLedgerClaimCoordinator` before they execute, evidence and limitations are
+  recorded as the tool returns, and a proposed retrospective is written at run end.
+  Runtime trace now distinguishes claim-created, revalidation-created, blocked, reused,
+  and waiting-existing decisions. When the stores are not provided, the runtime falls
+  back to its previous behaviour. The slice does not yet cover URL visits, market
+  timeseries, or generic API/tool-use call sites, and there is no UI surface for the new
+  ledgers — those are tracked for follow-up phases of the recursive-agent program.
 - Runs produce a deterministic, non-LLM retrospective draft after completion/failure:
   what worked, what failed, observed weak tools, missing capabilities, duplicated-work
   signals, and the evidence ids it considered useful. The draft is written with status
@@ -603,6 +604,9 @@ For documentation-only changes:
   full `decideWorkReuse` decision matrix, in-memory store lifecycles, and link
   appending. The HTTP layer is covered alongside the rest of the API surface in
   `tests/webServer.test.ts`.
+- `tests/runtimeLedgerCoordinator.test.ts` covers the runtime adapter's use of
+  `WorkLedgerClaimCoordinator`, including dedicated revalidation and blocked trace
+  events.
 - `tests/json.test.ts` covers JSON extraction from model output.
 - `tests/skillMemory.test.ts` covers file-backed skill memory.
 - `tests/memoryRetrievalEvaluation.test.ts` covers retrieval quality fixture scoring.

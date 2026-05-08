@@ -1,5 +1,11 @@
 import { AgentEvent, AgentEventStatus } from "../types.js";
 import {
+  ClaimCoordinatorDecision,
+  ClaimCoordinatorKind,
+  createWorkLedgerClaimCoordinator,
+  WorkLedgerClaimCoordinator,
+} from "./workLedgerClaimCoordinator.js";
+import {
   EvidenceCreateInput,
   EvidenceLedgerStore,
   EvidenceRecord,
@@ -35,6 +41,8 @@ export type RuntimeClaimInput = Omit<WorkClaim, "runId" | "threadId" | "instance
 export type RuntimeClaimResult = {
   item: WorkLedgerItem;
   decision: WorkReuseDecision;
+  coordinatorDecision: ClaimCoordinatorDecision;
+  reusableEvidence?: EvidenceRecord[];
 };
 
 const SPAN_ID_PREFIX = "ledger";
@@ -65,8 +73,16 @@ export class RuntimeLedgerCoordinator {
   private readonly duplicatedWorkSignals = new Set<string>();
   private readonly whatWorked = new Set<string>();
   private readonly whatFailed = new Set<string>();
+  private readonly claimCoordinator?: WorkLedgerClaimCoordinator;
 
-  constructor(private readonly deps: RuntimeLedgerCoordinatorDeps) {}
+  constructor(private readonly deps: RuntimeLedgerCoordinatorDeps) {
+    this.claimCoordinator = deps.workLedgerStore
+      ? createWorkLedgerClaimCoordinator({
+          workLedgerStore: deps.workLedgerStore,
+          evidenceLedgerStore: deps.evidenceLedgerStore,
+        })
+      : undefined;
+  }
 
   hasWorkLedger(): boolean {
     return Boolean(this.deps.workLedgerStore);
@@ -93,16 +109,41 @@ export class RuntimeLedgerCoordinator {
     parentSpanId: string,
   ): Promise<RuntimeClaimResult | undefined> {
     if (!this.deps.workLedgerStore) return undefined;
-    const claim: WorkClaim = {
-      ...input,
-      runId: this.deps.runId,
-      threadId: this.deps.threadId,
-      instanceId: this.deps.instanceId,
-    };
-    const result = await this.deps.workLedgerStore.claimWork(claim);
+    const claim = this.buildClaim(input);
+    const coordinatorDecision = this.claimCoordinator
+      ? await this.claimCoordinator.claimWork({
+          runId: this.deps.runId ?? "unknown-run",
+          threadId: this.deps.threadId,
+          instanceId: this.deps.instanceId,
+          parentWorkItemId: claim.parentWorkItemId,
+          ownerSpanId: claim.ownerSpanId ?? "unknown-span",
+          kind: mapRuntimeKindToClaimKind(claim.kind),
+          workKey: claim.workKey,
+          taskSummary: claim.title,
+          requestedBy: requestedByFromMetadata(claim.metadata, claim.ownerSpanId),
+          metadata: claim.metadata,
+          freshnessExpiresAt: claim.freshnessExpiresAt,
+          reason: claim.reason,
+        })
+      : undefined;
+    const result = coordinatorDecision
+      ? {
+          item: coordinatorDecision.workItem!,
+          decision: mapCoordinatorDecisionToReuseDecision(coordinatorDecision),
+          coordinatorDecision: coordinatorDecision.decision,
+          reusableEvidence: coordinatorDecision.reusableEvidence,
+        }
+      : {
+          ...(await this.deps.workLedgerStore.claimWork(claim)),
+          coordinatorDecision: undefined as never,
+          reusableEvidence: undefined,
+        };
     this.observedWorkItems.set(result.item.id, result.item);
-    if (result.decision.status === "reuse_completed" || result.decision.status === "wait_for_inflight") {
-      this.duplicatedWorkSignals.add(`${result.decision.status}:${result.item.workKey}`);
+    if (
+      result.coordinatorDecision === "reuse_completed" ||
+      result.coordinatorDecision === "wait_for_active"
+    ) {
+      this.duplicatedWorkSignals.add(`${result.coordinatorDecision}:${result.item.workKey}`);
     }
     await this.emitDecisionEvent(parentSpanId, result);
     return result;
@@ -265,16 +306,29 @@ export class RuntimeLedgerCoordinator {
     return record;
   }
 
+  private buildClaim(input: RuntimeClaimInput): WorkClaim {
+    return {
+      ...input,
+      runId: this.deps.runId,
+      threadId: this.deps.threadId,
+      instanceId: this.deps.instanceId,
+    };
+  }
+
   private async emitDecisionEvent(parentSpanId: string, result: RuntimeClaimResult): Promise<void> {
-    const { item, decision } = result;
+    const { item, decision, coordinatorDecision } = result;
     const eventType =
-      decision.status === "reuse_completed"
+      coordinatorDecision === "reuse_completed"
         ? "work-ledger-reused"
-        : decision.status === "wait_for_inflight"
+        : coordinatorDecision === "wait_for_active"
           ? "work-ledger-waiting-existing"
-          : "work-ledger-claim-created";
+          : coordinatorDecision === "revalidate"
+            ? "work-ledger-revalidation-created"
+            : coordinatorDecision === "blocked"
+              ? "work-ledger-blocked"
+              : "work-ledger-claim-created";
     const status: AgentEventStatus =
-      decision.status === "blocked_by_recent_failure" ? "failed" : "completed";
+      coordinatorDecision === "blocked" ? "failed" : "completed";
     await this.emit({
       spanId: `${SPAN_ID_PREFIX}-claim-${item.id}`,
       parentSpanId,
@@ -282,15 +336,17 @@ export class RuntimeLedgerCoordinator {
       actor: "runtime-ledger",
       activity: "coordination",
       status,
-      title: `Work ${decision.status}: ${item.title}`,
+      title: `Work ${coordinatorDecision}: ${item.title}`,
       detail: decision.reason,
       payload: {
         workItemId: item.id,
         workKey: item.workKey,
         kind: item.kind,
         decision: decision.status,
+        coordinatorDecision,
         ownerSpanId: item.ownerSpanId,
         existingItemId: decision.match?.id,
+        reusableEvidenceIds: result.reusableEvidence?.map((evidence) => evidence.id),
       },
     });
   }
@@ -327,6 +383,8 @@ export class RuntimeLedgerCoordinator {
 
 export type RuntimeLedgerEventName =
   | "work-ledger-claim-created"
+  | "work-ledger-revalidation-created"
+  | "work-ledger-blocked"
   | "work-ledger-reused"
   | "work-ledger-waiting-existing"
   | "evidence-ledger-recorded"
@@ -334,6 +392,8 @@ export type RuntimeLedgerEventName =
 
 export const RUNTIME_LEDGER_EVENT_TYPES: readonly RuntimeLedgerEventName[] = [
   "work-ledger-claim-created",
+  "work-ledger-revalidation-created",
+  "work-ledger-blocked",
   "work-ledger-reused",
   "work-ledger-waiting-existing",
   "evidence-ledger-recorded",
@@ -342,6 +402,55 @@ export const RUNTIME_LEDGER_EVENT_TYPES: readonly RuntimeLedgerEventName[] = [
 
 export function workKeyForToolCall(toolName: string, kind: WorkLedgerKind, input: Record<string, unknown>): string {
   return `${kind}:${toolName.toLowerCase()}:${stableKeyValue(input)}`;
+}
+
+function mapRuntimeKindToClaimKind(kind: WorkLedgerKind): ClaimCoordinatorKind {
+  switch (kind) {
+    case "search":
+    case "url_visit":
+    case "api_call":
+    case "artifact_generation":
+    case "tool_call":
+    case "other":
+      return kind;
+    case "screenshot":
+      return "browser_screenshot";
+    case "data_fetch":
+      return "file_read";
+    case "analysis":
+    default:
+      return "other";
+  }
+}
+
+function mapCoordinatorDecisionToReuseDecision(decision: {
+  decision: ClaimCoordinatorDecision;
+  reason: string;
+  workItem?: WorkLedgerItem;
+  storeDecision: WorkReuseDecision["status"];
+}): WorkReuseDecision {
+  switch (decision.decision) {
+    case "reuse_completed":
+      return { status: "reuse_completed", reason: decision.reason, match: decision.workItem };
+    case "wait_for_active":
+      return { status: "wait_for_inflight", reason: decision.reason, match: decision.workItem };
+    case "revalidate":
+      return { status: "create_revalidation", reason: decision.reason, match: decision.workItem };
+    case "blocked":
+      return { status: "blocked_by_recent_failure", reason: decision.reason, match: decision.workItem };
+    case "created_new":
+    default:
+      return { status: "create_new_attempt", reason: decision.reason, match: decision.workItem };
+  }
+}
+
+function requestedByFromMetadata(
+  metadata: Record<string, unknown> | undefined,
+  fallback: string | undefined,
+): string {
+  const requestedBy = metadata?.requestedBy;
+  if (typeof requestedBy === "string" && requestedBy.trim()) return requestedBy.trim();
+  return fallback?.trim() || "runtime-agent";
 }
 
 function stableKeyValue(value: Record<string, unknown>): string {
