@@ -70,6 +70,25 @@ Phase 1 limitations to address in later slices:
 - The retrospective draft is rule-based; an LLM-driven retrospective with
   proposed memory/tool/policy/prompt actions is a separate later slice.
 
+### Domain claim coordinator (DONE)
+
+A pure domain helper for the recursive-agent flows that still need ledger
+integration ships in
+[src/work-ledger/workLedgerClaimCoordinator.ts](../src/work-ledger/workLedgerClaimCoordinator.ts).
+`createWorkLedgerClaimCoordinator(deps)` returns an object with
+`claimWork`, `getDecision` (dry-run), `completeWork`, `failWork`, `blockWork`,
+`attachEvidence`, and `attachArtifact`. It computes deterministic work keys from
+agent intent (`searchQuery` / `url` / `apiProvider+endpoint` / `tool+input` /
+`artifactKind+descriptor` / `freeform`), maps the persisted `WorkLedgerKind` enum
+to higher-level coordinator kinds (`browser_screenshot`, `file_read`,
+`file_write` collapse to existing persisted kinds so no migration is needed),
+and returns one of `reuse_completed`, `wait_for_active`, `created_new`,
+`revalidate`, or `blocked`. Stale-window and weak-confidence thresholds let
+callers override `reuse_completed` to `revalidate`. Failure and block paths
+optionally write paired `limitation` evidence and link it back to the work item.
+The helper is intentionally runtime-agnostic — it does not depend on the agent
+runtime, HTTP, or audit stores; runtime integration is a separate Codex task.
+
 
 
 Recursive agents need shared operational memory for a *task*, not only long-term memory
