@@ -547,6 +547,21 @@ The slice does not yet cover URL visits, market timeseries, generic API/tool-use
 call sites, distributed claim locks across replicas, an LLM-driven retrospective,
 or a console UI for the new ledgers. Those remain on the recursive-agent roadmap.
 
+A higher-level domain helper for those future call sites lives in
+[src/work-ledger/workLedgerClaimCoordinator.ts](../src/work-ledger/workLedgerClaimCoordinator.ts).
+`createWorkLedgerClaimCoordinator({ workLedgerStore, evidenceLedgerStore })`
+returns an object with `claimWork` / `getDecision` / `completeWork` / `failWork` /
+`blockWork` / `attachEvidence` / `attachArtifact`. Each `claimWork` call computes a
+deterministic `workKey` from intent (`searchQuery` / `url` / `apiProvider+endpoint`
+/ `tool+input` / `artifactKind+descriptor` / `freeform`), delegates to
+`WorkLedgerStore.claimWork`, and returns one of `reuse_completed` /
+`wait_for_active` / `created_new` / `revalidate` / `blocked`. The coordinator can
+also upgrade `reuse_completed` to `revalidate` when the matched item is older than
+the configured stale window or carries weak confidence. Failure and block paths
+optionally write paired `limitation` evidence and link it back to the work item.
+The coordinator is pure domain — it never reads HTTP, agent, or audit state — so
+runtime integrations layer audit / trace events on top of its structured output.
+
 ### Model Tiers
 
 Each LLM step receives a selected model tier based on task risk and activity type.

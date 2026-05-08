@@ -472,6 +472,13 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   per-run adapter that the agent uses to claim work, record evidence, and emit a
   proposed retrospective at run end. Resolved through a per-run map keyed by
   `runId` so deeply nested helpers do not need to thread an extra argument.
+- [src/work-ledger/workLedgerClaimCoordinator.ts](src/work-ledger/workLedgerClaimCoordinator.ts) -
+  pure domain helper that wraps the Work / Evidence stores with a higher-level
+  claim/complete/fail/block/attach API for recursive agents. Computes deterministic
+  work keys from agent intent, returns structured `reuse_completed` /
+  `wait_for_active` / `created_new` / `revalidate` / `blocked` decisions, and writes
+  paired `limitation` evidence on failure / blockers when the evidence store is
+  wired. Runtime integration into the universal agent runtime is a separate task.
 - [src/work-ledger/workKey.ts](src/work-ledger/workKey.ts) - deterministic work-key
   builders for search queries, URL visits, tool/API calls, and artifact intents.
 - [src/work-ledger/decideWorkReuse.ts](src/work-ledger/decideWorkReuse.ts) - pure
