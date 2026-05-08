@@ -110,8 +110,10 @@ child agents the same "ready to return to caller" gate instead of separate ad ho
 executor for that contract. It runs an invocation handler through depth-budget validation,
 normalizes handler failures into invocation failures, and attaches the same return
 self-check before a result can be marked completed. The current coordinator still uses
-the established direct/delegated path; future slices should route child/council execution
-through this runner.
+the established direct/delegated path for workers, but council participants now execute
+through this runner as advisory child invocations. Their notes are appended to the
+planning context so the central planner can account for independent critique, risks,
+evidence needs, and duplicated-work warnings before building the DAG.
 
 The next runtime slice of that model is event-backed call frames. Worker and reviewer
 spans persist a structured `callFrame` payload with local task, output contract, caller

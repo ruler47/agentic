@@ -1240,15 +1240,18 @@ Approved implementation path after the Nest API cutover:
    output-contract self-check that child/council invocations will use later. PARTIAL:
    [agentInvocationRunner.ts](../src/agents/agentInvocationRunner.ts) adds a reusable
    invocation executor with depth-budget validation, handler failure wrapping, and
-   output-contract self-check enforcement. It is covered by tests but not yet used to
-   execute real council/child branches.
+   output-contract self-check enforcement. Council participant invocations now execute
+   through this runner as advisory child calls and feed compact notes into the planning
+   prompt. General recursive child execution still remains.
 2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
    broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
    within depth, budget, deadline, and policy limits. A parent only receives compact child
    returns, artifacts, evidence references, and self-check results.
 3. **Council mode.** Make "ask a council" one ordinary strategy available to the
-   universal agent. The council can ask several agents, models, or tiers to propose or
-   critique a plan, then a synthesis agent chooses a final plan. Council branches must
+   universal agent. PARTIAL: council participant invocations now run through the generic
+   invocation runner and produce advisory notes before planning. The next slices should
+   let those participants call tools/ledger safely when allowed, run in parallel under
+   budget, and have a synthesis agent choose or merge a final plan. Council branches must
    still claim Work Ledger entries before external work so two advisors do not repeat the
    same search, screenshot, scrape, or API request.
 4. **Work Ledger integration.** Before costly/reusable work, every agent claims a

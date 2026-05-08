@@ -100,6 +100,11 @@ policies without leaking context.
   The generic return check validates non-empty output and required evidence against the
   invocation output contract. Future child/council agents should use the same return gate
   before handing results back to their caller.
+- Council participants are the first real child invocations. When strategy selection
+  chooses `council`, each planned participant runs through `agentInvocationRunner.ts`,
+  emits invocation started/completed/failed events, returns an advisory note, and the
+  parent appends those notes to the planning prompt. They are advisory only for now; full
+  recursive tool/ledger-enabled child execution remains future work.
 - Agents will eventually send auditable outbound messages/reminders to a group or
   individual when policy allows.
 - Tools should be easy to onboard from API documentation and access credentials, but

@@ -722,8 +722,10 @@ non-empty output, required evidence/artifact counts, warnings, limitations, and 
 the invocation is ready to hand back to its caller.
 The domain runner behind future child-agent execution is
 `agentInvocationRunner.ts`: it enforces depth-budget limits and the same output-contract
-self-check before an invocation can be considered completed. Today the runner is covered
-by tests but child/council branches still execute through the existing coordinator path.
+self-check before an invocation can be considered completed. Council participants now
+execute through this runner and emit `agent-invocation-started`,
+`agent-invocation-completed`, `agent-invocation-failed`, and nested return-check events.
+Their advisory notes are included in the later planning context.
 
 When the Work / Evidence / Run-Retrospective stores are configured, the runtime adds
 five more event types that flow through the same SSE contract:

@@ -313,6 +313,10 @@ test("UniversalAgent plans council invocation contracts for high-risk broad task
   const memory = new SkillMemory(join(dir, "skills.json"));
   const fakeLlm = new FakeLlm([
     '{"mode":"delegated","reason":"high-stakes decision across domains","domains":["medical","legal","financial"],"riskLevel":"high"}',
+    "Planner council note: split evidence collection and avoid duplicated searches.",
+    "Critic council note: verify assumptions and cite uncertainty.",
+    "Domain specialist council note: cover medical, legal, and financial constraints.",
+    "High-stakes reviewer council note: escalate uncertainty and avoid actionable advice.",
     JSON.stringify({
       subtasks: [
         {
@@ -358,6 +362,12 @@ test("UniversalAgent plans council invocation contracts for high-risk broad task
       councilPayload.councilInvocations.every((invocation: any) =>
         invocation.parentInvocationId === councilPayload.rootInvocation.id && invocation.status === "planned",
       ),
+    );
+    const completedCouncilEvents = events.filter((event) => event.type === "agent-invocation-completed");
+    assert.equal(completedCouncilEvents.length, councilPayload.councilInvocations.length);
+    assert.match(
+      completedCouncilEvents.map((event) => event.detail).join("\n"),
+      /avoid duplicated searches/,
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
