@@ -478,6 +478,20 @@ without any human intervention. The coordinator's `scheduleImmediate` fire-and-f
 handoff ignores scheduler errors so promote responses stay 201; the next interval tick
 remains a durable fallback.
 
+The same post-registration handoff now runs for all server-side registration paths:
+manual PATCH to `registered`, explicit Tool Build workflow `/run`, and the background
+worker callback. Each path calls `notifyBuildRegistered` with an `onWaitPromoted` hook,
+then the auto-retry coordinator creates a linked retry run when policy allows and starts
+that run through the normal `executeRun` path. This keeps the autonomous loop closed even
+when an operator or test promotes a build without the background worker.
+
+While the source run is parked in `waiting_tool_rework`, `RunsService` must not finalize
+the user-visible result. After `agent.run()` returns or throws, it reloads the run state;
+if a tool improvement wait paused the run, the service records a `run.updated` audit with
+`pendingToolRework=true` and skips `run.completed` / `run.failed`, conversation
+completion, and outbound delivery. The linked retry run is the attempt that owns the
+eventual final answer.
+
 Once a wait reaches `promoted`, two coordinators sit on top of it. The first is
 `ToolReworkAutoRetryCoordinator`
 ([src/tools/toolReworkAutoRetryCoordinator.ts](../src/tools/toolReworkAutoRetryCoordinator.ts)),

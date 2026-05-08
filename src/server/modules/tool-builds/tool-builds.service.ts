@@ -5,6 +5,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from "@nestjs/common";
+import { ModuleRef } from "@nestjs/core";
 import {
   isRecord,
   parseOptionalReason,
@@ -25,6 +26,7 @@ import type { ToolBuildWorkflow } from "../../../tools/toolBuildWorkflow.js";
 import { AuditService } from "../../common/services/audit.service.js";
 import { ToolBuildInputFinalizerService } from "../../common/services/tool-build-input-finalizer.service.js";
 import { ToolReworkCoordinatorService } from "../../common/services/tool-rework-coordinator.service.js";
+import { RunsService } from "../runs/runs.service.js";
 import {
   RELOAD_GENERATED_TOOLS,
   TOOL_BUILD_REQUEST_STORE,
@@ -61,6 +63,7 @@ export class ToolBuildsService {
     @Inject(ToolBuildInputFinalizerService) private readonly finalizer: ToolBuildInputFinalizerService,
     @Inject(ToolReworkCoordinatorService)
     private readonly reworkCoordinator: ToolReworkCoordinatorService,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   async list(): Promise<ToolBuildRequest[]> {
@@ -142,6 +145,7 @@ export class ToolBuildsService {
           buildRequest.registeredToolName,
           buildRequest.contract?.version,
           { actorId: "user-admin", actorType: "user" },
+          async (wait) => this.autoRetryPromotedWait(wait.id),
         );
       }
       return buildRequest;
@@ -285,9 +289,23 @@ export class ToolBuildsService {
         result.registeredToolName ?? result.request.registeredToolName,
         result.request.contract?.version,
         { actorId: "user-admin", actorType: "user" },
+        async (wait) => this.autoRetryPromotedWait(wait.id),
       );
     }
     return result;
+  }
+
+  private async autoRetryPromotedWait(waitId: string): Promise<void> {
+    const auto = this.reworkCoordinator.createAutoRetryCoordinator({
+      actorId: "auto-retry-orchestrator",
+      actorType: "agent",
+    });
+    const result = await auto?.tryAutoRetry(waitId);
+    if (result?.status !== "created" || !result.retryRun) return;
+    const runs = this.moduleRef.get(RunsService, { strict: false });
+    void runs.executeRun(result.retryRun.id, result.retryRun.task, [], {
+      threadId: result.retryRun.threadId,
+    });
   }
 
   private parseInput(value: unknown): ToolBuildRequestInput {

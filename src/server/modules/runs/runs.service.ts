@@ -665,6 +665,28 @@ export class RunsService {
       const current = await this.runs.get(id);
       if (!current || current.status === "cancelled") return;
       await this.runs.complete(id, result);
+      const completed = await this.runs.get(id);
+      if (completed?.status === "waiting_tool_rework") {
+        await this.audit.record({
+          instanceId: run?.instanceId,
+          actorId: "coordinator",
+          actorType: "agent",
+          action: "run.updated",
+          targetType: "run",
+          targetId: id,
+          status: "pending",
+          runId: id,
+          threadId: run?.threadId,
+          requesterUserId: run?.requesterUserId,
+          channel: run?.channel,
+          summary: `Run is waiting for autonomous tool improvement before final answer: ${task.slice(0, 160)}`,
+          metadata: {
+            reason: completed.error,
+            pendingToolRework: true,
+          },
+        });
+        return;
+      }
       await this.auditLearnedMemory(id, result, run);
       await this.audit.record({
         instanceId: run?.instanceId,
@@ -707,6 +729,29 @@ export class RunsService {
       if (!current || current.status === "cancelled") return;
       const message = error instanceof Error ? error.message : "Unknown run error";
       await this.runs.fail(id, message);
+      const failed = await this.runs.get(id);
+      if (failed?.status === "waiting_tool_rework") {
+        await this.audit.record({
+          instanceId: run?.instanceId,
+          actorId: "coordinator",
+          actorType: "agent",
+          action: "run.updated",
+          targetType: "run",
+          targetId: id,
+          status: "pending",
+          runId: id,
+          threadId: run?.threadId,
+          requesterUserId: run?.requesterUserId,
+          channel: run?.channel,
+          summary: `Run failure deferred while waiting for autonomous tool improvement: ${task.slice(0, 160)}`,
+          metadata: {
+            attemptedError: message,
+            reason: failed.error,
+            pendingToolRework: true,
+          },
+        });
+        return;
+      }
       await this.audit.record({
         instanceId: run?.instanceId,
         actorId: "coordinator",

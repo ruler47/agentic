@@ -4,6 +4,7 @@ export type AuditAction =
   | "run.completed"
   | "run.failed"
   | "run.cancelled"
+  | "run.updated"
   | "artifact.uploaded"
   | "artifact.generated"
   | "tool.used"

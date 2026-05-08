@@ -913,6 +913,14 @@ For documentation-only changes:
   bypass the orchestrator with bespoke retry logic; future capabilities should plug
   in through this seam (with policy filters or richer triggers, but not duplicate
   retry-run creation).
+- The autonomous full-run tool loop is now closed for the main server paths. If an agent
+  opens a tool rework wait, `RunsService` records `run.updated` with
+  `pendingToolRework=true` and does not emit `run.completed`/`run.failed`, complete the
+  conversation thread, or queue outbound delivery for the paused source run. When the
+  build later reaches `registered` through manual PATCH, Tool Build workflow `/run`, or
+  the background worker, the same auto-retry handoff creates and starts a linked retry
+  run. Keep new registration paths on this same `notifyBuildRegistered` +
+  `onWaitPromoted` route.
 - Retry-run handoff: when a `ToolReworkWait` reaches `promoted`, operators (and the
   future recursive engine) can either close the wait without spawning a retry through
   `POST /api/tool-rework-waits/:id/resume`, or create a linked retry run through

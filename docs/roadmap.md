@@ -524,7 +524,8 @@ Remaining gaps:
 
 ## Phase 1.6: Async Tool Rework And Run Resume
 
-Status: partially implemented (skeleton).
+Status: implemented for the autonomous full-run retry loop. Remaining Phase 2 work is
+span-level replanning and policy/UI hardening.
 
 A run that fails because an existing tool is too weak should not silently end as `failed`.
 The runtime should:
@@ -640,6 +641,16 @@ Implementation tasks:
   `/resume` endpoint is preserved as a separate "close wait without spawning a retry"
   handoff so operators keep that semantics. The new audit action
   `tool_rework_wait.retry_run_created` records the linkage. DONE.
+- Autonomous full-run loop: the Nest `RunsService` now treats `waiting_tool_rework` as a
+  pending state after `agent.run()` returns or throws. If the agent opened a wait, the
+  server records `run.updated` with `pendingToolRework=true` and does **not** emit
+  `run.completed`/`run.failed`, complete the conversation thread, or queue outbound
+  delivery for the source run. Once the build reaches `registered` through **any**
+  server registration path (manual PATCH, workflow `/run`, or background worker), the
+  same `onWaitPromoted -> ToolReworkAutoRetryCoordinator -> ToolReworkRetryCoordinator`
+  chain creates and starts a linked retry run. The retry run owns the final answer while
+  the source run remains failed handoff context. Covered by
+  `tests/autonomousToolLoop.test.ts`. DONE.
 
 Remaining work for Phase 2:
 

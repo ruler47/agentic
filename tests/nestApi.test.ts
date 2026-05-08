@@ -154,18 +154,25 @@ test("Nest API serves health, OpenAPI, static UI, and tool rework/retry endpoint
     );
     assert.equal(buildAfterRegistration.request.status, "registered");
 
-    const waitAfterRegistration = await requestJson<{ wait: { id: string; status: string } }>(
+    const waitAfterRegistration = await requestJson<{ wait: { id: string; status: string; retryRunId?: string } }>(
       fixture.baseUrl,
       `/api/tool-rework-waits/${promoted.wait.id}`,
     );
-    assert.equal(waitAfterRegistration.wait.status, "promoted");
+    assert.equal(waitAfterRegistration.wait.status, "resumed");
+    assert.match(waitAfterRegistration.wait.retryRunId ?? "", /^run_/);
 
-    const retry = await requestJson<{ status: string; retryRun: { id: string; parentRunId: string } }>(
+    const retry = await requestJson<{
+      status: string;
+      alreadyExists?: boolean;
+      retryRun: { id: string; parentRunId: string };
+    }>(
       fixture.baseUrl,
       `/api/tool-rework-waits/${promoted.wait.id}/retry-run`,
       { method: "POST", expectedStatus: 201, body: JSON.stringify({}) },
     );
-    assert.equal(retry.status, "created");
+    assert.equal(retry.status, "already_exists");
+    assert.equal(retry.alreadyExists, true);
+    assert.equal(retry.retryRun.id, waitAfterRegistration.wait.retryRunId);
     assert.equal(retry.retryRun.parentRunId, runCreated.run.id);
 
     const audit = await requestJson<{ events: unknown[] }>(fixture.baseUrl, "/api/audit-events?limit=100");

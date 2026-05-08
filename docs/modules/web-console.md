@@ -1111,6 +1111,18 @@ registrations. `ToolImprovementCoordinator` nudges the worker through
 typically reach `promoted` within one tick instead of waiting for the configured
 `TOOL_BUILD_WORKER_INTERVAL_MS` interval.
 
+Every registration path also runs the same auto-retry handoff. Manual PATCH,
+`POST /api/tool-build-requests/:id/run`, and the background worker all call
+`notifyBuildRegistered` with an `onWaitPromoted` hook. When policy allows, that hook
+evaluates `ToolReworkAutoRetryCoordinator`, creates a linked retry run, and starts it
+through the standard `executeRun` path. The source run stays visible as the failed
+handoff context; the retry run owns the final completed answer.
+
+Runs parked by an agent-driven tool improvement do not emit a premature
+`run.completed`/`run.failed` audit when the first agent call returns. The server emits
+`run.updated` with `metadata.pendingToolRework=true` and leaves conversation completion /
+outbound delivery to the retry run.
+
 The promote endpoint, the standalone wait creation endpoint, the build-registered
 notification, and the resume endpoint all delegate to a single in-process domain helper,
 `ToolImprovementCoordinator` (`src/tools/toolImprovementCoordinator.ts`). The same
