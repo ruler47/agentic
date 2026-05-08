@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { filterLedgerItems, summarizeLedgerHealth, workStatusTone } from "@/features/ledger/ledgerPresentation";
+import {
+  buildLedgerAttentionQueue,
+  evidenceByWorkItem,
+  filterLedgerItems,
+  isReusableWorkItem,
+  summarizeLedgerHealth,
+  workStatusTone,
+} from "@/features/ledger/ledgerPresentation";
 import type { EvidenceRecord, RunRetrospectiveRecord, WorkLedgerItem } from "@/api/types";
 
 const baseWork: WorkLedgerItem = {
@@ -78,5 +85,24 @@ describe("ledger presentation helpers", () => {
     expect(workStatusTone("stale")).toBe("warn");
     expect(workStatusTone("failed")).toBe("danger");
     expect(workStatusTone("cancelled")).toBe("muted");
+  });
+
+  it("builds an operator attention queue from failed work, weak evidence, and proposed retrospectives", () => {
+    const queue = buildLedgerAttentionQueue({
+      workItems: [{ ...baseWork, status: "failed", error: "Search provider blocked" }],
+      evidence: [{ ...baseEvidence, id: "ev_weak", qaStatus: "partial", limitations: ["Screenshot only showed a loader"] }],
+      retrospectives: [baseRetro],
+    });
+
+    expect(queue.map((item) => item.kind)).toEqual(["work", "evidence", "retrospective"]);
+    expect(queue[0]?.tone).toBe("danger");
+    expect(queue[1]?.summary).toContain("loader");
+  });
+
+  it("groups evidence by work item and treats linked passed evidence as reusable", () => {
+    const grouped = evidenceByWorkItem([{ ...baseEvidence, workItemId: "work_1" }]);
+    expect(grouped.get("work_1")).toHaveLength(1);
+    expect(isReusableWorkItem({ ...baseWork, evidenceIds: [] }, grouped.get("work_1"))).toBe(true);
+    expect(isReusableWorkItem({ ...baseWork, status: "running" }, grouped.get("work_1"))).toBe(false);
   });
 });

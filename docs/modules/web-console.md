@@ -757,10 +757,13 @@ Trace Lab can be filtered on these activity values to inspect dedupe decisions
 inline with normal spans. The React console also exposes a first-class **Ledger** page
 under Analysis. It can scope by run, thread, or work key; shows Work Ledger claims,
 Evidence Ledger records, and Run Retrospective proposals side by side; includes health
-metrics for active claims, weak evidence, reusable results, and review backlog; lets an
-operator create/test a claim through the same `/api/work-ledger/claim` endpoint agents
-use; and provides review/archive actions for retrospectives plus status updates for work
-items. Run Workspace links directly to `/ledger?runId=<id>` with a compact ledger summary.
+metrics for active claims, weak evidence, reusable results, and review backlog; and
+adds an operator attention queue for failed/stale/running claims, weak evidence, and
+proposed retrospectives. Operators can filter by attention/active/reusable/all, inspect a
+selected work claim, see linked evidence next to that claim, add a manual evidence record,
+create/test a claim through the same `/api/work-ledger/claim` endpoint agents use, review
+or archive retrospectives, and update work status. Run Workspace links directly to
+`/ledger?runId=<id>` with a compact ledger summary.
 `POST /api/work-ledger/claim` exposes the same domain claim coordinator to runtime and
 future child-agent callers. The payload includes `runId`, `ownerSpanId`, `kind`,
 `taskSummary`, `requestedBy`, and either a precomputed `workKey` or structured

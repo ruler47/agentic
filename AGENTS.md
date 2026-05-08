@@ -109,8 +109,10 @@ policies without leaking context.
 - The React console has a first-class Ledger page at `/ledger`. It scopes by run, thread,
   or work key; shows Work Ledger claims, Evidence Ledger records, and Run Retrospective
   proposals together; lets operators create/test manual claims through the same endpoint
-  agents use; allows work status updates and retrospective review/archive; and Run
-  Workspace links directly to the scoped ledger for a run.
+  agents use; shows an attention queue for failed/stale/running claims, weak evidence,
+  and proposed retrospectives; provides a selected-work inspector with linked evidence
+  and manual evidence capture; allows work status updates and retrospective
+  review/archive; and Run Workspace links directly to the scoped ledger for a run.
 - Runtime retrospectives now include suspected root causes, failed work item ids,
   duplicated-work signals, and proposed tool/policy/prompt follow-ups when the run saw
   weak tools, missing capabilities, external blockers, or repeated work.

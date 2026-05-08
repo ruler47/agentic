@@ -74,10 +74,12 @@ Phase 1 limitations to address in later slices:
   thread, and work-key scopes; shows Work Ledger claims, Evidence Ledger records, and
   Run Retrospective proposals together; summarizes active claims, reusable results, weak
   evidence, duplicate-work signals, and review backlog; lets operators create/test manual
-  claims through the same endpoint child agents use; and links Run Workspace directly
-  into the scoped ledger view. Remaining UX work: richer thread-level rollups, a dedicated
-  evidence detail drawer, proposal-to-memory/tool-ticket actions, and graph overlays for
-  ledger relationships.
+  claims through the same endpoint child agents use; provides an attention queue for
+  failed/stale/running claims, weak evidence, and proposed retrospectives; includes a
+  selected-work inspector with linked evidence and manual evidence capture; and links Run
+  Workspace directly into the scoped ledger view. Remaining UX work: richer thread-level
+  rollups, proposal-to-memory/tool-ticket actions, and graph overlays for ledger
+  relationships.
 - Distributed claim ownership across replicas is not enforced at the store layer.
 - The retrospective draft is rule-based; an LLM-driven retrospective with
   proposed memory/tool/policy/prompt actions is a separate later slice.
