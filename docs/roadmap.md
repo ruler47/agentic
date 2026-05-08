@@ -1242,8 +1242,10 @@ Approved implementation path after the Nest API cutover:
    invocation executor with depth-budget validation, handler failure wrapping, and
    output-contract self-check enforcement. Council participants use it today and append
    compact advisory notes to the planning prompt. Independent council participants start
-   in parallel up to the invocation budget; full worker/tool child execution still needs
-   the recursive runtime.
+   in parallel up to the invocation budget. Worker and reviewer spans now attach
+   compatible `AgentInvocation` payloads next to their legacy call frames, including
+   parent invocation ids and output contracts; full worker/tool child execution still
+   needs the recursive runtime before those methods are replaced.
 2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
    broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
    within depth, budget, deadline, and policy limits. A parent only receives compact child

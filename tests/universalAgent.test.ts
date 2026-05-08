@@ -2438,11 +2438,22 @@ test("UniversalAgent persists worker and reviewer call frames with return self-c
 
     const workerStarted = events.find((event) => event.type === "worker-started");
     const workerCompleted = events.find((event) => event.type === "worker-completed");
+    const reviewStarted = events.find((event) => event.type === "review-started");
     const reviewCompleted = events.find((event) => event.type === "review-completed");
+    const rootInvocation = events.find((event) => event.type === "agent-invocation-created");
     const selfChecks = events.filter((event) => event.type === "agent-self-check-completed");
+    const workerInvocation = (workerStarted?.payload as { invocation?: { id?: string; parentInvocationId?: string; role?: string; caller?: { kind?: string; frameId?: string }; outputContract?: { requiresSelfCheck?: boolean } } } | undefined)?.invocation;
+    const completedWorkerInvocation = (workerCompleted?.payload as { invocation?: { id?: string; status?: string } } | undefined)?.invocation;
+    const reviewInvocation = (reviewStarted?.payload as { invocation?: { parentInvocationId?: string; role?: string; caller?: { kind?: string; frameId?: string }; outputContract?: { format?: string } } } | undefined)?.invocation;
 
     assert.equal(selfChecks.length, 2);
     assert.equal(workerStarted?.spanId, workerCompleted?.spanId);
+    assert.equal(workerInvocation?.parentInvocationId, (rootInvocation?.payload as { id?: string } | undefined)?.id);
+    assert.equal(workerInvocation?.role, "worker");
+    assert.equal(workerInvocation?.caller?.kind, "agent");
+    assert.equal(workerInvocation?.outputContract?.requiresSelfCheck, true);
+    assert.equal(completedWorkerInvocation?.id, workerInvocation?.id);
+    assert.equal(completedWorkerInvocation?.status, "completed");
     assert.equal(
       ((workerStarted?.payload as { callFrame?: { id?: string; runId?: string; localTask?: string } } | undefined)
         ?.callFrame?.runId),
@@ -2468,6 +2479,10 @@ test("UniversalAgent persists worker and reviewer call frames with return self-c
         ?.selfCheck?.readyToReturn),
       true,
     );
+    assert.equal(reviewInvocation?.parentInvocationId, workerInvocation?.id);
+    assert.equal(reviewInvocation?.role, "reviewer");
+    assert.equal(reviewInvocation?.caller?.frameId, workerInvocation?.id);
+    assert.equal(reviewInvocation?.outputContract?.format, "critique");
     assert.equal(
       ((reviewCompleted?.payload as { callFrame?: { parentFrameId?: string } } | undefined)?.callFrame
         ?.parentFrameId),

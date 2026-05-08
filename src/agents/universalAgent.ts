@@ -79,7 +79,9 @@ import { decideAgentStrategy } from "./agentStrategy.js";
 import {
   buildAgentInvocationReturnCheck,
   createCouncilInvocations,
+  createReviewerInvocation,
   createRootAgentInvocation,
+  createWorkerInvocation,
   summarizeAgentInvocation,
 } from "./agentInvocation.js";
 import type { AgentInvocation } from "./agentInvocation.js";
@@ -582,6 +584,7 @@ export class UniversalAgent {
       options.requestToolBuild,
       improveTool,
       toolExecutionContext,
+      rootInvocation,
     );
     const workerResults = reviewedWorkerResults.map((result) => result.workerResult);
     const reviews = reviewedWorkerResults.flatMap((result) => result.reviews);
@@ -893,6 +896,7 @@ export class UniversalAgent {
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
     improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
+    rootInvocation?: AgentInvocation,
   ): Promise<ReviewedWorkerResult[]> {
     const completedResults = new Map<string, ReviewedWorkerResult>();
     const orderedResults: ReviewedWorkerResult[] = [];
@@ -924,6 +928,7 @@ export class UniversalAgent {
             requestToolBuild,
             improveTool,
             toolExecutionContext,
+            rootInvocation,
           );
         }),
       );
@@ -952,6 +957,7 @@ export class UniversalAgent {
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
     improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
+    rootInvocation?: AgentInvocation,
   ): Promise<WorkerResult> {
     const isRevision = Boolean(revisionInstructions);
     const modelTier = selectModelTier("worker", complexity, subtask);
@@ -969,6 +975,18 @@ export class UniversalAgent {
       dependencySpanIds,
       revisionOfFrameId: isRevision ? `frame_${parentSpanId}` : undefined,
     });
+    const invocation = createWorkerInvocation({
+      rootInvocation,
+      runId: toolExecutionContext?.runId,
+      spanId,
+      parentSpanId,
+      subtask,
+      actor,
+      modelTier,
+      dependencySpanIds,
+      revisionOfSpanId: isRevision ? parentSpanId : undefined,
+      createdAt: startedAt.toISOString(),
+    });
     await emit({
       spanId,
       parentSpanId,
@@ -979,7 +997,7 @@ export class UniversalAgent {
       title: isRevision ? `Worker revision: ${subtask.title}` : `Worker: ${subtask.title}`,
       detail: revisionInstructions ?? subtask.role,
       startedAt: startedAt.toISOString(),
-      payload: { subtask, modelTier, dependencySpanIds, callFrame },
+      payload: { subtask, modelTier, dependencySpanIds, callFrame, invocation },
     });
 
     let collectedEvidence: CollectedToolEvidence | undefined;
@@ -1029,6 +1047,7 @@ export class UniversalAgent {
             completedAt: new Date().toISOString(),
             outputSummary: formatErrorMessage(error),
           }),
+          invocation: { ...invocation, status: "failed" },
         },
       });
       throw error;
@@ -1086,6 +1105,7 @@ export class UniversalAgent {
           outputSummary: limitText(output, 800),
         }),
         selfCheck,
+        invocation: { ...invocation, status: selfCheck.readyToReturn ? "completed" : "failed" },
       },
     });
 
@@ -1808,6 +1828,7 @@ export class UniversalAgent {
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
     improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
+    rootInvocation?: AgentInvocation,
   ): Promise<ReviewedWorkerResult> {
     const workerResult = await this.runWorker(
       originalTask,
@@ -1824,6 +1845,7 @@ export class UniversalAgent {
       requestToolBuild,
       improveTool,
       toolExecutionContext,
+      rootInvocation,
     );
     const review = await this.review(
       complexity,
@@ -1831,6 +1853,7 @@ export class UniversalAgent {
       emit,
       workerResult.traceSpanId ?? parentSpanId,
       toolExecutionContext?.runId,
+      rootInvocation,
     );
 
     if (review.verdict === "pass") {
@@ -1852,6 +1875,7 @@ export class UniversalAgent {
       requestToolBuild,
       improveTool,
       toolExecutionContext,
+      rootInvocation,
     );
     const revisedReview = await this.review(
       complexity,
@@ -1859,6 +1883,7 @@ export class UniversalAgent {
       emit,
       revisedWorkerResult.traceSpanId ?? workerResult.traceSpanId ?? parentSpanId,
       toolExecutionContext?.runId,
+      rootInvocation,
     );
 
     return {
@@ -2825,6 +2850,7 @@ export class UniversalAgent {
     emit: AgentEventEmitter,
     parentSpanId: string,
     runId?: string,
+    rootInvocation?: AgentInvocation,
   ): Promise<ReviewResult> {
     const spanId = createSpanId(`review-${workerResult.subtask.id}`);
     const startedAt = new Date();
@@ -2837,6 +2863,15 @@ export class UniversalAgent {
       modelTier,
       startedAt: startedAt.toISOString(),
     });
+    const invocation = createReviewerInvocation({
+      rootInvocation,
+      runId,
+      spanId,
+      parentSpanId,
+      workerResult,
+      modelTier,
+      createdAt: startedAt.toISOString(),
+    });
     await emit({
       spanId,
       parentSpanId,
@@ -2846,7 +2881,7 @@ export class UniversalAgent {
       status: "started",
       title: `Review: ${workerResult.subtask.title}`,
       startedAt: startedAt.toISOString(),
-      payload: { workerResult, modelTier, callFrame },
+      payload: { workerResult, modelTier, callFrame, invocation },
     });
 
     const deterministicReview = hardGateReview(workerResult);
@@ -2890,6 +2925,7 @@ export class UniversalAgent {
             outputSummary: `${deterministicReview.verdict}: ${deterministicReview.notes}`,
           }),
           selfCheck,
+          invocation: { ...invocation, status: selfCheck.readyToReturn ? "completed" : "failed" },
         },
       });
       return deterministicReview;
@@ -2924,6 +2960,7 @@ export class UniversalAgent {
             completedAt: new Date().toISOString(),
             outputSummary: formatErrorMessage(error),
           }),
+          invocation: { ...invocation, status: "failed" },
         },
       });
       throw error;
@@ -2966,6 +3003,7 @@ export class UniversalAgent {
           outputSummary: `${review.verdict}: ${review.notes}`,
         }),
         selfCheck,
+        invocation: { ...invocation, status: selfCheck.readyToReturn ? "completed" : "failed" },
       },
     });
 

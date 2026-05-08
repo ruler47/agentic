@@ -108,6 +108,11 @@ returns a compact note, emits
 `agent-invocation-failed`, and records the same return self-check used by the root
 invocation. Successful council notes are appended to the planning prompt before the
 existing delegated DAG planner runs.
+The existing worker and reviewer spans now also carry `payload.invocation` alongside
+their older `payload.callFrame`. This is a compatibility bridge: the current worker
+runtime still owns mature tool, artifact, ledger, and review behavior, but every
+worker/reviewer trace node exposes the same caller, local-task, parent-invocation,
+output-contract, model-tier, and self-check contract that recursive child agents will use.
 Before the root invocation returns, the runtime emits `agent-invocation-return-checked`.
 That generic check validates the invocation output contract, non-empty output, and
 required evidence/artifact counts. This gives direct, delegated, and future recursive

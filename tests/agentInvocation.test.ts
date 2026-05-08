@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   buildAgentInvocationReturnCheck,
   createCouncilInvocations,
+  createReviewerInvocation,
   createRootAgentInvocation,
+  createWorkerInvocation,
   summarizeAgentInvocation,
 } from "../src/agents/agentInvocation.js";
 import { decideAgentStrategy } from "../src/agents/agentStrategy.js";
@@ -136,4 +138,77 @@ test("council invocations are local child-call contracts with participant tiers"
     assert.equal(invocation.budget.remainingDepth, Math.max(0, root.budget.remainingDepth - 1));
     assert.match(invocation.localTask, /Original task:/);
   }
+});
+
+test("worker and reviewer invocations preserve parent-child contracts", () => {
+  const strategy = decideAgentStrategy({
+    task: "Research a relocation decision and return evidence.",
+    complexity: {
+      mode: "delegated",
+      reason: "needs checked worker output",
+      domains: ["research"],
+      riskLevel: "medium",
+    },
+    tools: [tool("web.search", ["web-search"])],
+    hasWorkLedger: true,
+  });
+  const root = createRootAgentInvocation({
+    runId: "run_worker",
+    spanId: "run-span",
+    task: "Research a relocation decision and return evidence.",
+    strategy,
+    tools: [tool("web.search", ["web-search"])],
+    createdAt: "2026-05-08T00:00:00.000Z",
+  });
+  const subtask = {
+    id: "research",
+    title: "Research evidence",
+    role: "researcher",
+    prompt: "Find durable evidence.",
+    expectedOutput: "Evidence summary.",
+    reviewCriteria: ["Evidence is relevant"],
+  };
+
+  const worker = createWorkerInvocation({
+    rootInvocation: root,
+    runId: "run_worker",
+    spanId: "worker-span",
+    parentSpanId: "planning-span",
+    subtask,
+    actor: "worker:researcher",
+    modelTier: "M",
+    dependencySpanIds: ["upstream-span"],
+    createdAt: "2026-05-08T00:00:01.000Z",
+  });
+  const reviewer = createReviewerInvocation({
+    rootInvocation: root,
+    runId: "run_worker",
+    spanId: "review-span",
+    parentSpanId: "worker-span",
+    workerResult: {
+      subtask,
+      output: "Evidence summary.",
+      traceSpanId: "worker-span",
+      modelTier: "M",
+    },
+    modelTier: "L",
+    createdAt: "2026-05-08T00:00:02.000Z",
+  });
+
+  assert.equal(worker.parentInvocationId, root.id);
+  assert.equal(worker.caller.kind, "agent");
+  assert.equal(worker.caller.frameId, root.id);
+  assert.equal(worker.role, "worker");
+  assert.equal(worker.strategy, "delegated_dag");
+  assert.equal(worker.outputContract.requiresSelfCheck, true);
+  assert.deepEqual(worker.allowedActions, ["call_tool", "request_tool_build", "request_tool_rework", "self_check_return"]);
+  assert.match(worker.localTask, /Depends on spans: upstream-span/);
+
+  assert.equal(reviewer.parentInvocationId, worker.id);
+  assert.equal(reviewer.caller.kind, "agent");
+  assert.equal(reviewer.caller.frameId, worker.id);
+  assert.equal(reviewer.role, "reviewer");
+  assert.equal(reviewer.outputContract.format, "critique");
+  assert.deepEqual(reviewer.allowedActions, ["self_check_return"]);
+  assert.match(reviewer.localTask, /Review subtask: Research evidence/);
 });

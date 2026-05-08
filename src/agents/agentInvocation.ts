@@ -8,6 +8,7 @@ import type {
 } from "./agentStrategy.js";
 import type { Tool } from "../tools/tool.js";
 import type { AgentArtifact } from "../types.js";
+import type { Subtask, WorkerResult } from "../types.js";
 
 export type AgentInvocationCallerKind = "human" | "agent" | "tool" | "system";
 
@@ -166,6 +167,145 @@ export function createCouncilInvocations(input: {
   });
 }
 
+export function createWorkerInvocation(input: {
+  rootInvocation?: AgentInvocation;
+  runId?: string;
+  spanId: string;
+  parentSpanId: string;
+  subtask: Subtask;
+  actor: string;
+  modelTier: ModelTier;
+  dependencySpanIds?: string[];
+  revisionOfSpanId?: string;
+  createdAt?: string;
+}): AgentInvocation {
+  const createdAt = input.createdAt ?? new Date().toISOString();
+  const rootBudget = input.rootInvocation?.budget;
+  const depth = (input.rootInvocation?.depth ?? 0) + 1;
+  return {
+    id: invocationId(input.runId ?? input.rootInvocation?.runId, input.spanId),
+    runId: input.runId ?? input.rootInvocation?.runId,
+    spanId: input.spanId,
+    parentInvocationId: input.rootInvocation?.id,
+    caller: {
+      kind: "agent",
+      runId: input.runId ?? input.rootInvocation?.runId,
+      spanId: input.parentSpanId,
+      frameId: input.rootInvocation?.id,
+      actor: input.rootInvocation?.actor ?? "universal-agent",
+    },
+    role: "worker",
+    actor: input.actor,
+    localTask: [
+      input.revisionOfSpanId ? `Revision of span: ${input.revisionOfSpanId}` : undefined,
+      `Subtask: ${input.subtask.title}`,
+      `Role: ${input.subtask.role}`,
+      input.subtask.prompt,
+      `Expected output: ${input.subtask.expectedOutput}`,
+      input.subtask.reviewCriteria.length > 0
+        ? `Review criteria: ${input.subtask.reviewCriteria.join("; ")}`
+        : undefined,
+      (input.dependencySpanIds ?? []).length > 0
+        ? `Depends on spans: ${(input.dependencySpanIds ?? []).join(", ")}`
+        : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    outputContract: {
+      format: hasRequiredArtifacts(input.subtask) ? "artifact" : "answer",
+      description: [
+        input.subtask.expectedOutput,
+        hasRequiredArtifacts(input.subtask)
+          ? "Return the requested artifact evidence or a clear limitation."
+          : "Return a compact worker answer that can be reviewed independently.",
+      ].join(" "),
+      requiredEvidence: hasRequiredArtifacts(input.subtask),
+      requiresSelfCheck: true,
+    },
+    depth,
+    status: "started",
+    strategy: "delegated_dag",
+    allowedActions: ["call_tool", "request_tool_build", "request_tool_rework", "self_check_return"],
+    allowedToolNames: input.rootInvocation?.allowedToolNames ?? [],
+    modelTier: input.modelTier,
+    reviewStrictness: input.rootInvocation?.reviewStrictness ?? "normal",
+    budget: rootBudget
+      ? {
+          ...rootBudget,
+          remainingDepth: Math.max(0, rootBudget.remainingDepth - 1),
+        }
+      : {
+          maxDepth: 1,
+          maxParallelChildren: 1,
+          remainingDepth: 0,
+        },
+    createdAt,
+  };
+}
+
+export function createReviewerInvocation(input: {
+  rootInvocation?: AgentInvocation;
+  runId?: string;
+  spanId: string;
+  parentSpanId: string;
+  workerResult: WorkerResult;
+  modelTier: ModelTier;
+  createdAt?: string;
+}): AgentInvocation {
+  const createdAt = input.createdAt ?? new Date().toISOString();
+  const runId = input.runId ?? input.rootInvocation?.runId;
+  const workerInvocationId = input.workerResult.traceSpanId
+    ? invocationId(runId, input.workerResult.traceSpanId)
+    : undefined;
+  const rootBudget = input.rootInvocation?.budget;
+  const depth = (input.rootInvocation?.depth ?? 0) + 2;
+  return {
+    id: invocationId(runId, input.spanId),
+    runId,
+    spanId: input.spanId,
+    parentInvocationId: workerInvocationId ?? input.rootInvocation?.id,
+    caller: {
+      kind: "agent",
+      runId,
+      spanId: input.workerResult.traceSpanId ?? input.parentSpanId,
+      frameId: workerInvocationId ?? input.rootInvocation?.id,
+      actor: `worker:${input.workerResult.subtask.role}`,
+    },
+    role: "reviewer",
+    actor: "reviewer",
+    localTask: [
+      `Review subtask: ${input.workerResult.subtask.title}`,
+      `Worker role: ${input.workerResult.subtask.role}`,
+      `Review criteria: ${input.workerResult.subtask.reviewCriteria.join("; ") || "No explicit criteria."}`,
+      `Worker output: ${limitText(input.workerResult.output, 800)}`,
+    ].join("\n"),
+    outputContract: {
+      format: "critique",
+      description: "Return pass/needs_revision/fail review notes for the worker output.",
+      requiredEvidence: false,
+      requiresSelfCheck: true,
+    },
+    depth,
+    status: "started",
+    strategy: "delegated_dag",
+    allowedActions: ["self_check_return"],
+    allowedToolNames: [],
+    modelTier: input.modelTier,
+    reviewStrictness: input.rootInvocation?.reviewStrictness ?? "normal",
+    budget: rootBudget
+      ? {
+          ...rootBudget,
+          remainingDepth: Math.max(0, rootBudget.remainingDepth - 2),
+        }
+      : {
+          maxDepth: 2,
+          maxParallelChildren: 1,
+          remainingDepth: 0,
+        },
+    createdAt,
+  };
+}
+
 export function summarizeAgentInvocation(invocation: AgentInvocation): string {
   return [
     `${invocation.actor} (${invocation.role})`,
@@ -277,6 +417,10 @@ function outputContractForStrategy(strategy: AgentStrategyKind): AgentInvocation
 
 function invocationId(runId: string | undefined, spanId: string): string {
   return `invocation_${sanitizeId(runId ?? "local")}_${sanitizeId(spanId)}`;
+}
+
+function hasRequiredArtifacts(subtask: Subtask): boolean {
+  return (subtask.requiredArtifacts ?? []).some((artifact) => artifact.required !== false);
 }
 
 function sanitizeId(value: string): string {
