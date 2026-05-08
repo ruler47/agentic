@@ -738,9 +738,11 @@ export class UniversalAgent {
     emit: AgentEventEmitter,
     parentSpanId: string,
   ): Promise<string[]> {
-    const notes: string[] = [];
+    const maxParallel = Math.max(1, invocations[0]?.budget.maxParallelChildren ?? 1);
+    const orderedNotes: Array<string | undefined> = new Array(invocations.length);
+    let nextIndex = 0;
 
-    for (const invocation of invocations) {
+    const runOne = async (invocation: AgentInvocation, index: number): Promise<void> => {
       const startedAt = new Date();
       await emit({
         spanId: invocation.spanId,
@@ -770,7 +772,7 @@ export class UniversalAgent {
           }),
         });
 
-        notes.push(formatCouncilNote(result.invocation, result.output));
+        orderedNotes[index] = formatCouncilNote(result.invocation, result.output);
         await emit({
           spanId: result.invocation.spanId,
           parentSpanId,
@@ -834,9 +836,19 @@ export class UniversalAgent {
           },
         });
       }
-    }
+    };
 
-    return notes;
+    const workers = Array.from({ length: Math.min(maxParallel, invocations.length) }, async () => {
+      while (nextIndex < invocations.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await runOne(invocations[index]!, index);
+      }
+    });
+
+    await Promise.all(workers);
+
+    return orderedNotes.filter((note): note is string => typeof note === "string" && note.length > 0);
   }
 
   private async classify(

@@ -366,6 +366,15 @@ test("UniversalAgent plans council invocation contracts for high-risk broad task
     const completedCouncilEvents = events.filter((event) => event.type === "agent-invocation-completed");
     assert.equal(completedCouncilEvents.length, councilPayload.councilInvocations.length);
     assert.match(completedCouncilEvents.map((event) => event.detail).join("\n"), /avoid duplicated searches/);
+    const firstCompletedIndex = events.findIndex((event) => event.type === "agent-invocation-completed");
+    const startedBeforeFirstCompletion = events
+      .slice(0, firstCompletedIndex)
+      .filter((event) => event.type === "agent-invocation-started");
+    assert.equal(
+      startedBeforeFirstCompletion.length,
+      councilPayload.councilInvocations.length,
+      "independent council participants start in parallel before the first advisory note returns",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

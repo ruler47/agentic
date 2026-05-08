@@ -102,7 +102,8 @@ depth/budget, and status. When the strategy is `council`, the runtime also emits
 `agent-council-planned` with planned participant invocation contracts. Those council
 participants now execute as advisory child invocations through
 [agentInvocationRunner.ts](../src/agents/agentInvocationRunner.ts). Each participant
-gets only its local council role/focus, returns a compact note, emits
+gets only its local council role/focus, starts in parallel up to the invocation budget,
+returns a compact note, emits
 `agent-invocation-started` plus either `agent-invocation-completed` or
 `agent-invocation-failed`, and records the same return self-check used by the root
 invocation. Successful council notes are appended to the planning prompt before the

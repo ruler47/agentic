@@ -94,9 +94,10 @@ policies without leaking context.
   `agent-invocation-created` records the root caller/local task/output contract/budget/
   allowed-tool call frame for the universal agent, and `agent-council-planned` records
   council participant invocation contracts. Council participants now run as advisory
-  child invocations through `agentInvocationRunner.ts`, emit started/completed/failed
-  invocation events plus their own return checks, and append compact notes to the
-  planning prompt. Broader worker/tool child execution still uses the existing
+  child invocations through `agentInvocationRunner.ts`, start in parallel up to the
+  invocation budget, emit started/completed/failed invocation events plus their own
+  return checks, and append compact notes to the planning prompt. Broader worker/tool
+  child execution still uses the existing
   coordinator path until the recursive runtime replaces it.
 - Root invocations also emit `agent-invocation-return-checked` before the run returns.
   The generic return check validates non-empty output and required evidence against the

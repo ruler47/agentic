@@ -715,8 +715,9 @@ derived from that strategy: caller, local task, output contract, allowed actions
 tool names, tier, review strictness, and depth budget. When the strategy is `council`,
 `agent-council-planned` records one invocation per council participant. The runtime then
 emits `agent-invocation-started` and either `agent-invocation-completed` or
-`agent-invocation-failed` for each advisory participant. Completed council cards include
-the participant's compact note, and those notes are fed into the planning prompt.
+`agent-invocation-failed` for each advisory participant. Participants are independent and
+start in parallel up to the invocation budget. Completed council cards include the
+participant's compact note, and those notes are fed into the planning prompt.
 `agent-invocation-return-checked` records the generic return gate for both the root
 invocation and council participants: non-empty output, required evidence/artifact counts,
 warnings, limitations, and whether the invocation is ready to hand back to its caller.
