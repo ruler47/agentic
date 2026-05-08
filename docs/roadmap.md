@@ -1242,7 +1242,7 @@ Approved implementation path after the Nest API cutover:
    invocation executor with depth-budget validation, handler failure wrapping, and
    output-contract self-check enforcement. Council participants use it today and append
    compact advisory notes to the planning prompt. Independent council participants start
-   in parallel up to the invocation budget. Worker, reviewer, and synthesizer spans now attach
+   in parallel up to the invocation budget. Planner, worker, reviewer, and synthesizer spans now attach
    compatible `AgentInvocation` payloads next to their legacy call frames, including
    parent invocation ids and output contracts; full worker/tool child execution still
    needs the recursive runtime before those methods are replaced.

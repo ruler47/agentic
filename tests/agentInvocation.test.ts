@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildAgentInvocationReturnCheck,
   createCouncilInvocations,
+  createPlannerInvocation,
   createReviewerInvocation,
   createRootAgentInvocation,
   createSynthesizerInvocation,
@@ -212,6 +213,49 @@ test("worker and reviewer invocations preserve parent-child contracts", () => {
   assert.equal(reviewer.outputContract.format, "critique");
   assert.deepEqual(reviewer.allowedActions, ["self_check_return"]);
   assert.match(reviewer.localTask, /Review subtask: Research evidence/);
+});
+
+test("planner invocation describes dependency-aware DAG planning work", () => {
+  const strategy = decideAgentStrategy({
+    task: "Plan a checked relocation workflow.",
+    complexity: {
+      mode: "delegated",
+      reason: "needs subtask planning",
+      domains: ["planning", "finance"],
+      riskLevel: "medium",
+    },
+    tools: [],
+    hasWorkLedger: true,
+  });
+  const root = createRootAgentInvocation({
+    runId: "run_plan",
+    spanId: "run-span",
+    task: "Plan a checked relocation workflow.",
+    strategy,
+    createdAt: "2026-05-08T00:00:00.000Z",
+  });
+
+  const planner = createPlannerInvocation({
+    rootInvocation: root,
+    spanId: "planning-span",
+    parentSpanId: "run-span",
+    task: root.localTask,
+    complexity: {
+      mode: "delegated",
+      reason: "needs subtask planning",
+      domains: ["planning", "finance"],
+      riskLevel: "medium",
+    },
+    modelTier: "M",
+    createdAt: "2026-05-08T00:00:01.000Z",
+  });
+
+  assert.equal(planner.parentInvocationId, root.id);
+  assert.equal(planner.role, "planner");
+  assert.equal(planner.outputContract.format, "plan");
+  assert.equal(planner.caller.frameId, root.id);
+  assert.deepEqual(planner.allowedActions, ["delegate_children", "ask_council", "check_work_ledger", "self_check_return"]);
+  assert.match(planner.localTask, /domains=planning, finance/);
 });
 
 test("synthesizer invocation links final answer work back to the root", () => {

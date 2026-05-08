@@ -353,6 +353,9 @@ test("UniversalAgent plans council invocation contracts for high-risk broad task
     const invocationEvent = events.find((event) => event.type === "agent-invocation-created");
     assert.equal((invocationEvent?.payload as any).outputContract.format, "plan");
     assert.equal((invocationEvent?.payload as any).reviewStrictness, "council");
+    const planningEvent = events.find((event) => event.type === "planning-completed");
+    assert.equal((planningEvent?.payload as any).invocation.role, "planner");
+    assert.equal((planningEvent?.payload as any).invocation.parentInvocationId, (invocationEvent?.payload as any).id);
     const returnCheckEvent = events.find((event) => event.type === "agent-invocation-return-checked");
     assert.equal((returnCheckEvent?.payload as any).selfCheck.readyToReturn, true);
 

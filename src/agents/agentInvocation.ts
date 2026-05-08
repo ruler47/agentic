@@ -8,7 +8,7 @@ import type {
 } from "./agentStrategy.js";
 import type { Tool } from "../tools/tool.js";
 import type { AgentArtifact } from "../types.js";
-import type { Subtask, WorkerResult } from "../types.js";
+import type { Subtask, TaskComplexity, WorkerResult } from "../types.js";
 
 export type AgentInvocationCallerKind = "human" | "agent" | "tool" | "system";
 
@@ -239,6 +239,57 @@ export function createWorkerInvocation(input: {
           maxParallelChildren: 1,
           remainingDepth: 0,
         },
+    createdAt,
+  };
+}
+
+export function createPlannerInvocation(input: {
+  rootInvocation: AgentInvocation;
+  spanId: string;
+  parentSpanId: string;
+  task: string;
+  complexity: TaskComplexity;
+  modelTier: ModelTier;
+  createdAt?: string;
+}): AgentInvocation {
+  const createdAt = input.createdAt ?? new Date().toISOString();
+  return {
+    id: invocationId(input.rootInvocation.runId, input.spanId),
+    runId: input.rootInvocation.runId,
+    spanId: input.spanId,
+    parentInvocationId: input.rootInvocation.id,
+    caller: {
+      kind: "agent",
+      runId: input.rootInvocation.runId,
+      spanId: input.parentSpanId,
+      frameId: input.rootInvocation.id,
+      actor: input.rootInvocation.actor,
+    },
+    role: "planner",
+    actor: "planner",
+    localTask: [
+      "Create a dependency-aware subtask DAG for the caller.",
+      `Original task: ${input.task}`,
+      `Complexity: ${input.complexity.mode}; risk=${input.complexity.riskLevel}; domains=${input.complexity.domains.join(", ")}`,
+      `Reason: ${input.complexity.reason}`,
+    ].join("\n"),
+    outputContract: {
+      format: "plan",
+      description: "Return machine-readable subtasks with dependencies, expected outputs, review criteria, tools, and artifact requirements.",
+      requiredEvidence: false,
+      requiresSelfCheck: true,
+    },
+    depth: input.rootInvocation.depth + 1,
+    status: "started",
+    strategy: input.rootInvocation.strategy,
+    allowedActions: ["delegate_children", "ask_council", "check_work_ledger", "self_check_return"],
+    allowedToolNames: [],
+    modelTier: input.modelTier,
+    reviewStrictness: input.rootInvocation.reviewStrictness,
+    budget: {
+      ...input.rootInvocation.budget,
+      remainingDepth: Math.max(0, input.rootInvocation.budget.remainingDepth - 1),
+    },
     createdAt,
   };
 }

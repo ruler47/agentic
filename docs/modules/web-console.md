@@ -721,10 +721,10 @@ participant's compact note, and those notes are fed into the planning prompt.
 `agent-invocation-return-checked` records the generic return gate for both the root
 invocation and council participants: non-empty output, required evidence/artifact counts,
 warnings, limitations, and whether the invocation is ready to hand back to its caller.
-Worker, reviewer, and synthesizer cards also include `payload.invocation` in addition to
-their historical payload fields. The UI can use that invocation payload to display
-parent-child agent calls consistently while the runtime keeps the proven worker/reviewer
-tool and artifact code paths intact.
+Planner, worker, reviewer, and synthesizer cards also include `payload.invocation` in
+addition to their historical payload fields. The UI can use that invocation payload to
+display parent-child agent calls consistently while the runtime keeps the proven
+worker/reviewer tool and artifact code paths intact.
 The domain runner behind future child-agent execution is
 `agentInvocationRunner.ts`: it enforces depth-budget limits and the same output-contract
 self-check before an invocation can be considered completed. Council advisory branches

@@ -79,6 +79,7 @@ import { decideAgentStrategy } from "./agentStrategy.js";
 import {
   buildAgentInvocationReturnCheck,
   createCouncilInvocations,
+  createPlannerInvocation,
   createReviewerInvocation,
   createRootAgentInvocation,
   createSynthesizerInvocation,
@@ -564,6 +565,15 @@ export class UniversalAgent {
     const planningSpanId = createSpanId("planning");
     const planningStartedAt = new Date();
     const planningTier = selectModelTier("planning", complexity);
+    const planningInvocation = createPlannerInvocation({
+      rootInvocation,
+      spanId: planningSpanId,
+      parentSpanId: runSpanId,
+      task: taskContext,
+      complexity,
+      modelTier: planningTier,
+      createdAt: planningStartedAt.toISOString(),
+    });
     const rawSubtasks = await this.plan(withCouncilNotes(taskContext, councilNotes), complexity, memories, planningTier);
     const executionPlan = createExecutionPlan(rawSubtasks);
     const subtasks = executionPlan.subtasks;
@@ -584,6 +594,7 @@ export class UniversalAgent {
         executionLevels: executionPlan.levels.map((level) => level.map((subtask) => subtask.id)),
         dependencyWarnings: executionPlan.warnings,
         modelTier: planningTier,
+        invocation: { ...planningInvocation, status: "completed" },
       },
     });
 
