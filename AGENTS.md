@@ -93,13 +93,15 @@ policies without leaking context.
 - The first `AgentInvocation` contract is now emitted from that strategy decision.
   `agent-invocation-created` records the root caller/local task/output contract/budget/
   allowed-tool call frame for the universal agent, and `agent-council-planned` records
-  planned council participant invocation contracts. These payloads are still trace
-  contracts; later recursive-agent slices will execute child-agent/council branches
-  through them.
+  council participant invocation contracts. Council participants now run as advisory
+  child invocations through `agentInvocationRunner.ts`, emit started/completed/failed
+  invocation events plus their own return checks, and append compact notes to the
+  planning prompt. Broader worker/tool child execution still uses the existing
+  coordinator path until the recursive runtime replaces it.
 - Root invocations also emit `agent-invocation-return-checked` before the run returns.
   The generic return check validates non-empty output and required evidence against the
-  invocation output contract. Future child/council agents should use the same return gate
-  before handing results back to their caller.
+  invocation output contract. Council participants use the same return gate before
+  handing advisory notes back to their caller.
 - Agents will eventually send auditable outbound messages/reminders to a group or
   individual when policy allows.
 - Tools should be easy to onboard from API documentation and access credentials, but

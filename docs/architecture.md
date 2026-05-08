@@ -100,8 +100,13 @@ now turns each selected strategy into an explicit `AgentInvocation` and emits
 output contract, allowed actions, allowed tool names, model tier, review strictness,
 depth/budget, and status. When the strategy is `council`, the runtime also emits
 `agent-council-planned` with planned participant invocation contracts. Those council
-participants are still planned, not executed recursively yet; the trace now preserves the
-shape the future recursive executor will consume.
+participants now execute as advisory child invocations through
+[agentInvocationRunner.ts](../src/agents/agentInvocationRunner.ts). Each participant
+gets only its local council role/focus, returns a compact note, emits
+`agent-invocation-started` plus either `agent-invocation-completed` or
+`agent-invocation-failed`, and records the same return self-check used by the root
+invocation. Successful council notes are appended to the planning prompt before the
+existing delegated DAG planner runs.
 Before the root invocation returns, the runtime emits `agent-invocation-return-checked`.
 That generic check validates the invocation output contract, non-empty output, and
 required evidence/artifact counts. This gives direct, delegated, and future recursive
@@ -109,9 +114,9 @@ child agents the same "ready to return to caller" gate instead of separate ad ho
 [agentInvocationRunner.ts](../src/agents/agentInvocationRunner.ts) is the first reusable
 executor for that contract. It runs an invocation handler through depth-budget validation,
 normalizes handler failures into invocation failures, and attaches the same return
-self-check before a result can be marked completed. The current coordinator still uses
-the established direct/delegated path; future slices should route child/council execution
-through this runner.
+self-check before a result can be marked completed. Council advisory branches use this
+runner today; broader worker/tool child execution still uses the established
+direct/delegated path until the recursive executor replaces it.
 
 The next runtime slice of that model is event-backed call frames. Worker and reviewer
 spans persist a structured `callFrame` payload with local task, output contract, caller

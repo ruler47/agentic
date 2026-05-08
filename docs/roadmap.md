@@ -1233,15 +1233,16 @@ Approved implementation path after the Nest API cutover:
    runner. PARTIAL: [agentInvocation.ts](../src/agents/agentInvocation.ts) now converts
    that decision into a root `AgentInvocation` trace payload (`agent-invocation-created`)
    with caller, local task, output contract, allowed actions/tools, model tier, review
-   strictness, and depth budget. Council strategies also emit planned participant
-   invocations through `agent-council-planned`; those participant invocations are not
-   executed recursively yet. The root invocation now emits
+   strictness, and depth budget. Council strategies also emit participant invocations
+   through `agent-council-planned`, then execute those participants as advisory child
+   invocations through the generic runner. The root invocation now emits
    `agent-invocation-return-checked` before the run returns, using the same generic
-   output-contract self-check that child/council invocations will use later. PARTIAL:
+   output-contract self-check that child/council invocations use. PARTIAL:
    [agentInvocationRunner.ts](../src/agents/agentInvocationRunner.ts) adds a reusable
    invocation executor with depth-budget validation, handler failure wrapping, and
-   output-contract self-check enforcement. It is covered by tests but not yet used to
-   execute real council/child branches.
+   output-contract self-check enforcement. Council participants use it today and append
+   compact advisory notes to the planning prompt; full worker/tool child execution still
+   needs the recursive runtime.
 2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
    broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
    within depth, budget, deadline, and policy limits. A parent only receives compact child
@@ -1278,9 +1279,11 @@ Remaining recursive-agent gaps:
 - Add council-planning as a universal-agent strategy: multiple model tiers/providers can
   propose or critique plans, then a synthesis agent merges the plan while dedupe ledger
   entries prevent duplicate external work. PARTIAL: the strategy selector now flags
-  council mode and emits participant hints; the invocation layer now writes planned
-  council participant call contracts to trace, but the runtime still falls back to the
-  existing delegated DAG executor until recursive child invocation lands.
+  council mode and emits participant hints; the invocation layer writes council
+  participant call contracts to trace, runs those advisory participants through the
+  generic invocation runner, and feeds their notes into planning. Council branches do not
+  yet claim Work Ledger entries for external work because this advisory pass is
+  tool-free.
 - Persist agent call frames so a child agent has a local task/caller/output contract
   without needing full global context. PARTIAL: worker and reviewer spans now carry a
   structured `callFrame` payload with local task, output contract, caller span,

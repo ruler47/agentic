@@ -83,6 +83,10 @@ import {
   summarizeAgentInvocation,
 } from "./agentInvocation.js";
 import type { AgentInvocation } from "./agentInvocation.js";
+import {
+  AgentInvocationRunnerError,
+  runAgentInvocation,
+} from "./agentInvocationRunner.js";
 
 type PlanResponse = {
   subtasks: Subtask[];
@@ -372,7 +376,7 @@ export class UniversalAgent {
         `Model tier: ${strategy.modelTier}`,
         ...strategy.reasons,
         strategy.council
-          ? `Council planned with ${strategy.council.participants.length} participant(s); execution remains delegated-DAG until recursive runtime lands.`
+          ? `Council planned with ${strategy.council.participants.length} participant(s); participants will return advisory notes before planning.`
           : undefined,
       ]
         .filter(Boolean)
@@ -406,15 +410,18 @@ export class UniversalAgent {
       payload: rootInvocation,
     });
 
-    if (strategy.council) {
-      const councilStartedAt = new Date();
-      const councilInvocations = createCouncilInvocations({
+    const councilStartedAt = new Date();
+    const councilInvocations = strategy.council
+      ? createCouncilInvocations({
         rootInvocation,
         strategy,
         task,
         spanIdPrefix: createSpanId("council-agent"),
         createdAt: councilStartedAt.toISOString(),
-      });
+      })
+      : [];
+
+    if (strategy.council) {
       await emit({
         spanId: createSpanId("agent-council"),
         parentSpanId: strategySpanId,
@@ -434,6 +441,9 @@ export class UniversalAgent {
         },
       });
     }
+    const councilNotes = strategy.council
+      ? await this.executeCouncilInvocations(taskContext, councilInvocations, emit, strategySpanId)
+      : [];
 
     if (complexity.mode === "direct") {
       const generatedArtifact = await this.createRequestedArtifact(
@@ -538,7 +548,7 @@ export class UniversalAgent {
     const planningSpanId = createSpanId("planning");
     const planningStartedAt = new Date();
     const planningTier = selectModelTier("planning", complexity);
-    const rawSubtasks = await this.plan(taskContext, complexity, memories, planningTier);
+    const rawSubtasks = await this.plan(withCouncilNotes(taskContext, councilNotes), complexity, memories, planningTier);
     const executionPlan = createExecutionPlan(rawSubtasks);
     const subtasks = executionPlan.subtasks;
     await emit({
@@ -720,6 +730,113 @@ export class UniversalAgent {
         selfCheck,
       },
     });
+  }
+
+  private async executeCouncilInvocations(
+    taskContext: string,
+    invocations: AgentInvocation[],
+    emit: AgentEventEmitter,
+    parentSpanId: string,
+  ): Promise<string[]> {
+    const notes: string[] = [];
+
+    for (const invocation of invocations) {
+      const startedAt = new Date();
+      await emit({
+        spanId: invocation.spanId,
+        parentSpanId,
+        type: "agent-invocation-started",
+        actor: invocation.actor,
+        activity: "agent",
+        status: "started",
+        title: `Council agent started: ${invocation.actor}`,
+        detail: summarizeAgentInvocation({ ...invocation, status: "started" }),
+        startedAt: startedAt.toISOString(),
+        payload: { invocation: { ...invocation, status: "started" } },
+      });
+
+      try {
+        const result = await runAgentInvocation({
+          invocation,
+          handler: async ({ invocation: currentInvocation }) => ({
+            output: await this.llm.complete(
+              [
+                { role: "system", content: coordinatorSystemPrompt },
+                { role: "user", content: buildCouncilParticipantPrompt(taskContext, currentInvocation) },
+              ],
+              { modelTier: currentInvocation.modelTier },
+            ),
+            evidenceCount: 0,
+          }),
+        });
+
+        notes.push(formatCouncilNote(result.invocation, result.output));
+        await emit({
+          spanId: result.invocation.spanId,
+          parentSpanId,
+          type: "agent-invocation-completed",
+          actor: result.invocation.actor,
+          activity: "agent",
+          status: "completed",
+          title: `Council agent completed: ${result.invocation.actor}`,
+          detail: limitText(result.output, promptBudget.dependencyContextChars),
+          startedAt: result.startedAt,
+          completedAt: result.completedAt,
+          durationMs: Math.max(0, Date.parse(result.completedAt) - Date.parse(result.startedAt)),
+          payload: {
+            invocation: result.invocation,
+            output: result.output,
+            returnCheck: result.returnCheck,
+          },
+        });
+        await emit({
+          spanId: createSpanId("agent-invocation-return-check"),
+          parentSpanId: result.invocation.spanId,
+          type: "agent-invocation-return-checked",
+          actor: result.invocation.actor,
+          activity: "agent",
+          status: result.returnCheck.readyToReturn ? "completed" : "failed",
+          title: `Invocation return self-check: ${result.invocation.actor}`,
+          detail: result.returnCheck.readyToReturn ? "Ready to return." : result.returnCheck.warnings.join("; "),
+          startedAt: result.completedAt,
+          completedAt: result.completedAt,
+          durationMs: 0,
+          payload: {
+            invocation: result.invocation,
+            selfCheck: result.returnCheck,
+          },
+        });
+      } catch (error) {
+        const failure = error instanceof AgentInvocationRunnerError
+          ? error.failure
+          : {
+              invocation: { ...invocation, status: "failed" as const },
+              error: error instanceof Error ? error : new Error(String(error)),
+              startedAt: startedAt.toISOString(),
+              completedAt: new Date().toISOString(),
+            };
+        await emit({
+          spanId: failure.invocation.spanId,
+          parentSpanId,
+          type: "agent-invocation-failed",
+          actor: failure.invocation.actor,
+          activity: "agent",
+          status: "failed",
+          title: `Council agent failed: ${failure.invocation.actor}`,
+          detail: failure.error.message,
+          startedAt: failure.startedAt,
+          completedAt: failure.completedAt,
+          durationMs: Math.max(0, Date.parse(failure.completedAt) - Date.parse(failure.startedAt)),
+          payload: {
+            invocation: failure.invocation,
+            error: failure.error.message,
+            returnCheck: failure.returnCheck,
+          },
+        });
+      }
+    }
+
+    return notes;
   }
 
   private async classify(
@@ -3178,6 +3295,41 @@ function limitText(text: string | undefined, maxChars: number): string {
   const tail = tailChars > 0 ? value.slice(-tailChars).trimStart() : "";
   const omitted = value.length - head.length - tail.length;
   return `${head}\n\n[...truncated ${omitted} characters to fit model context...]\n\n${tail}`.trim();
+}
+
+function buildCouncilParticipantPrompt(taskContext: string, invocation: AgentInvocation): string {
+  return [
+    "You are one advisory participant in a recursive-agent council.",
+    "You only know your local task and should not execute external tools in this advisory pass.",
+    "Return a compact note with: proposal, risks, missing evidence, duplication warnings, and confidence.",
+    "",
+    "Invocation contract:",
+    summarizeAgentInvocation(invocation),
+    "",
+    "Local council task:",
+    invocation.localTask,
+    "",
+    "Task context:",
+    limitText(taskContext, promptBudget.taskContextChars),
+  ].join("\n");
+}
+
+function withCouncilNotes(taskContext: string, councilNotes: string[]): string {
+  if (councilNotes.length === 0) return taskContext;
+  return [
+    taskContext,
+    "",
+    "Council advisory notes for planning:",
+    ...councilNotes.map((note, index) => `Council note ${index + 1}:\n${limitText(note, 2_000)}`),
+  ].join("\n");
+}
+
+function formatCouncilNote(invocation: AgentInvocation, output: string): string {
+  return [
+    `${invocation.actor} (${invocation.modelTier})`,
+    `Focus: ${invocation.councilParticipant?.focus ?? invocation.localTask}`,
+    `Note: ${limitText(output, 2_000)}`,
+  ].join("\n");
 }
 
 function formatErrorMessage(error: unknown): string {

@@ -713,16 +713,18 @@ reasoning handoff before child-agent/council execution.
 The follow-up event `agent-invocation-created` records the root `AgentInvocation` contract
 derived from that strategy: caller, local task, output contract, allowed actions, allowed
 tool names, tier, review strictness, and depth budget. When the strategy is `council`,
-`agent-council-planned` records one planned invocation per council participant. These
-events are intentionally visible as trace cards so operators can see what the recursive
-executor is expected to run before the executor itself replaces the current central DAG.
-`agent-invocation-return-checked` records the root invocation's generic return gate:
-non-empty output, required evidence/artifact counts, warnings, limitations, and whether
-the invocation is ready to hand back to its caller.
+`agent-council-planned` records one invocation per council participant. The runtime then
+emits `agent-invocation-started` and either `agent-invocation-completed` or
+`agent-invocation-failed` for each advisory participant. Completed council cards include
+the participant's compact note, and those notes are fed into the planning prompt.
+`agent-invocation-return-checked` records the generic return gate for both the root
+invocation and council participants: non-empty output, required evidence/artifact counts,
+warnings, limitations, and whether the invocation is ready to hand back to its caller.
 The domain runner behind future child-agent execution is
 `agentInvocationRunner.ts`: it enforces depth-budget limits and the same output-contract
-self-check before an invocation can be considered completed. Today the runner is covered
-by tests but child/council branches still execute through the existing coordinator path.
+self-check before an invocation can be considered completed. Council advisory branches
+use it today; broader worker/tool child execution still uses the existing coordinator
+path.
 
 When the Work / Evidence / Run-Retrospective stores are configured, the runtime adds
 five more event types that flow through the same SSE contract:
