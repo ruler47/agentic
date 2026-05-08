@@ -14,7 +14,9 @@ export type TraceGraphLayoutMode = "category" | "depth";
 const COLUMN_WIDTH = 260;
 const NODE_HEIGHT = 116;
 const ROW_GAP = 28;
-const COLUMN_GAP = 140;
+const COLUMN_GAP = 190;
+const CANVAS_LEFT_PADDING = 24;
+const CANVAS_TOP_PADDING = 88;
 
 const SEMANTIC_COLUMNS = [
   "Coordinator",
@@ -95,8 +97,8 @@ export function layoutTrace(nodes: TraceNode[], mode: TraceGraphLayoutMode): Lay
       const row = counters.get(column) ?? 0;
       counters.set(column, row + 1);
       positions.set(node.spanId, {
-        x: columnInfo.x,
-        y: row * (NODE_HEIGHT + ROW_GAP),
+        x: columnInfo.x + CANVAS_LEFT_PADDING,
+        y: CANVAS_TOP_PADDING + row * (NODE_HEIGHT + ROW_GAP),
       });
     }
     return { positions, columns };
@@ -115,8 +117,8 @@ export function layoutTrace(nodes: TraceNode[], mode: TraceGraphLayoutMode): Lay
     const row = counters.get(depth) ?? 0;
     counters.set(depth, row + 1);
     positions.set(node.spanId, {
-      x: depth * (COLUMN_WIDTH + COLUMN_GAP),
-      y: row * (NODE_HEIGHT + ROW_GAP),
+      x: CANVAS_LEFT_PADDING + depth * (COLUMN_WIDTH + COLUMN_GAP),
+      y: CANVAS_TOP_PADDING + row * (NODE_HEIGHT + ROW_GAP),
     });
   }
   return { positions, columns };

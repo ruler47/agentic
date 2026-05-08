@@ -147,7 +147,7 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
 
       {toolEvidence ? (
         <Section title="Tool evidence">
-          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{toolEvidence}</pre>
+          <pre className="whitespace-pre-wrap break-all text-[11px] text-app-text-muted">{toolEvidence}</pre>
         </Section>
       ) : null}
 

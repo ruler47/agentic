@@ -258,8 +258,8 @@ function edgeState(activeSpanId: string | undefined, source: string, target: str
 
 function edgeStyle(target: TraceNode, kind: "parent" | "dependency", state: EdgeState = "neutral"): React.CSSProperties {
   const color = edgeColor(target, kind, state);
-  const baseWidth = state === "highlighted" ? 2.6 : target.status === "failed" ? 1.8 : 1.5;
-  const opacity = state === "dimmed" ? 0.22 : state === "highlighted" ? 1 : kind === "dependency" ? 0.7 : 0.8;
+  const baseWidth = state === "highlighted" ? 3.4 : target.status === "failed" ? 2.1 : 1.6;
+  const opacity = state === "dimmed" ? 0.16 : state === "highlighted" ? 1 : kind === "dependency" ? 0.64 : 0.82;
   return { stroke: color, strokeWidth: baseWidth, strokeOpacity: opacity };
 }
 
@@ -267,8 +267,8 @@ function edgeMarker(target: TraceNode, kind: "parent" | "dependency", state: Edg
   return {
     type: MarkerType.ArrowClosed,
     color: edgeColor(target, kind, state),
-    width: state === "highlighted" ? 18 : 14,
-    height: state === "highlighted" ? 18 : 14,
+    width: state === "highlighted" ? 24 : 16,
+    height: state === "highlighted" ? 24 : 16,
   };
 }
 

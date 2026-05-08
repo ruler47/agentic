@@ -173,7 +173,7 @@ function TiersPanel({
       {loading ? (
         <p className="text-xs text-app-text-muted">Loading…</p>
       ) : (
-        <form onSubmit={submit} className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-4">
+        <form onSubmit={submit} className="grid min-w-0 grid-cols-1 gap-3 xl:grid-cols-2">
           {TIERS.map((tier) => (
             <fieldset
               key={tier}
@@ -221,7 +221,7 @@ function TiersPanel({
               </div>
             </fieldset>
           ))}
-          <div className="flex items-center justify-end gap-2 lg:col-span-2 2xl:col-span-4">
+          <div className="flex items-center justify-end gap-2 xl:col-span-2">
             {save.isError ? (
               <p className="text-[11px] text-app-danger">{save.error.message}</p>
             ) : null}

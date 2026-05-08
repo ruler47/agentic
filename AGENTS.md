@@ -96,12 +96,12 @@ policies without leaking context.
   council participant invocation contracts. Council participants now run as advisory
   child invocations through `agentInvocationRunner.ts`, start in parallel up to the
   invocation budget, emit started/completed/failed invocation events plus their own
-  return checks, and append compact notes to the planning prompt. Broader worker/tool
-  child execution still uses the existing coordinator path until the recursive runtime
-  replaces it. Planner and synthesizer now run through the generic invocation runner
-  around their legacy planning/synthesis events, while worker and reviewer spans include
-  compatible `payload.invocation` contracts next to their legacy payloads so trace
-  consumers can already follow parent/child agent calls.
+  return checks, and append compact notes to the planning prompt. Planner, worker,
+  reviewer, and synthesizer roles now run through the generic invocation runner around
+  their legacy role-specific events. The legacy delegated-DAG runtime still owns mature
+  tool execution, artifact QA, ledger writes, revision, and reviewer hard gates, but
+  trace consumers can now follow all major agent calls through the normalized
+  `agent-invocation-*` lifecycle.
 - Root invocations also emit `agent-invocation-return-checked` before the run returns.
   The generic return check validates non-empty output and required evidence against the
   invocation output contract. Council participants use the same return gate before
@@ -601,7 +601,7 @@ For documentation-only changes:
 - `tests/universalAgent.test.ts` covers direct and delegated orchestration with a fake
   LLM, including accepted scoped memory retrieval, runtime sensitive/private memory
   policy filtering, repeated similar tasks, call-frame payloads, invocation contracts,
-  and return self-check events.
+  worker/reviewer invocation-runner lifecycle events, and return self-check events.
 - `tests/artifactStore.test.ts` covers local artifact persistence, durable
   metadata/object payload separation, and download metadata.
 - `tests/auditEventStore.test.ts` covers normalized in-memory audit events.

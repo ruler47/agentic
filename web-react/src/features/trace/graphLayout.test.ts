@@ -61,7 +61,8 @@ describe("layoutTrace category", () => {
     ];
     const { positions, columns } = layoutTrace(nodes, "category");
     expect(columns.map((c) => c.label)).toEqual(["Coordinator", "Memory & Classifier"]);
-    expect(positions.get("coord")!.x).toBe(0);
+    expect(positions.get("coord")!.x).toBeGreaterThan(0);
+    expect(positions.get("coord")!.y).toBeGreaterThan(0);
     expect(positions.get("classifier")!.x).toBeGreaterThan(0);
   });
 });
@@ -85,6 +86,7 @@ describe("layoutTrace depth", () => {
     ];
     const { positions, columns } = layoutTrace(nodes, "depth");
     expect(columns).toHaveLength(1);
-    expect(positions.get("orphan")!.x).toBe(0);
+    expect(positions.get("orphan")!.x).toBeGreaterThan(0);
+    expect(positions.get("orphan")!.y).toBeGreaterThan(0);
   });
 });

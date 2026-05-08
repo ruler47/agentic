@@ -1242,12 +1242,14 @@ Approved implementation path after the Nest API cutover:
    invocation executor with depth-budget validation, handler failure wrapping, and
    output-contract self-check enforcement. Council participants use it today and append
    compact advisory notes to the planning prompt. Independent council participants start
-   in parallel up to the invocation budget. Planner and synthesizer now execute through
-   the same runner, emitting generic invocation started/completed/failed/return-check
-   events around their legacy planning/synthesis events. Worker and reviewer spans attach
-   compatible `AgentInvocation` payloads next to their legacy call frames, including
-   parent invocation ids and output contracts; full worker/tool child execution still
-   needs the recursive runtime before those methods are replaced.
+   in parallel up to the invocation budget. Planner, worker, reviewer, and synthesizer
+   now execute through the same runner, emitting generic invocation
+   started/completed/failed/return-check events around their legacy role-specific events.
+   Worker and reviewer wrappers intentionally preserve the mature delegated-DAG behavior:
+   tool execution, artifact QA, ledger writes, revision loops, and reviewer hard gates
+   remain in the existing role code while the normalized invocation lifecycle becomes
+   visible in Trace Lab. Full recursive worker/tool child execution still needs the
+   recursive runtime before the central planner can be replaced.
 2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
    broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
    within depth, budget, deadline, and policy limits. A parent only receives compact child
@@ -1291,15 +1293,16 @@ Remaining recursive-agent gaps:
   entries for external work because this advisory pass is tool-free.
 - Persist agent call frames so a child agent has a local task/caller/output contract
   without needing full global context. PARTIAL: worker and reviewer spans now carry a
-  structured `callFrame` payload with local task, output contract, caller span,
-  dependency spans, model tier, status, and output summary. These frames are durable
-  because they are stored in `run_events`.
+  structured `callFrame` payload and a generic `payload.invocation` with local task,
+  output contract, caller span, dependency spans, model tier, status, and output summary.
+  These frames are durable because they are stored in `run_events`.
 - Add self-check traces for every agent return, including required artifacts, evidence
   sufficiency, tool QA status, and known limitations. PARTIAL: workers and reviewers now
-  emit `agent-self-check-completed` events before their completed span is returned
-  upward. Worker checks verify non-empty output, evidence state, required artifact
-  presence, and typed artifact QA. Reviewer checks verify verdict shape, notes, and
-  subtask binding.
+  emit both legacy `agent-self-check-completed` events and generic
+  `agent-invocation-return-checked` events before their completed span is returned
+  upward. Worker hard gates still verify required artifact presence and typed artifact QA
+  through the established reviewer path; the generic return check adds a normalized
+  cross-role "ready to return" record.
 - Add budget/deadline propagation and cancellation through recursive call trees.
 - Add policies for which agents may request new tools, promote versions, use credentials,
   send outbound actions, or contact external instances.

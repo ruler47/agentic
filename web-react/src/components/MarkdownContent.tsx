@@ -9,6 +9,7 @@ type MarkdownContentProps = {
 type InlinePart =
   | { type: "text"; text: string }
   | { type: "bold"; text: string }
+  | { type: "italic"; text: string }
   | { type: "code"; text: string }
   | { type: "link"; text: string; href: string }
   | { type: "image"; alt: string; src: string };
@@ -57,6 +58,9 @@ export function MarkdownContent({ value }: MarkdownContentProps) {
         if (block.type === "table") {
           return <MarkdownTable key={index} rows={block.rows} />;
         }
+        if (block.type === "hr") {
+          return <hr key={index} className="border-app-border" />;
+        }
         return (
           <p key={index} className="whitespace-pre-wrap">
             {renderInline(block.text, images, lightbox.openAt)}
@@ -74,7 +78,8 @@ type Block =
   | { type: "list"; items: string[] }
   | { type: "ordered-list"; items: string[] }
   | { type: "code"; text: string }
-  | { type: "table"; rows: string[][] };
+  | { type: "table"; rows: string[][] }
+  | { type: "hr" };
 
 function parseBlocks(markdown: string): Block[] {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
@@ -103,6 +108,12 @@ function parseBlocks(markdown: string): Block[] {
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
       blocks.push({ type: "heading", level: heading[1].length, text: heading[2] });
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*(?:---+|\*\*\*+|___+)\s*$/.test(line)) {
+      blocks.push({ type: "hr" });
       index += 1;
       continue;
     }
@@ -155,6 +166,7 @@ function parseBlocks(markdown: string): Block[] {
     while (index < lines.length && lines[index]?.trim()) {
       const next = lines[index] ?? "";
       if (next.startsWith("```") || next.match(/^(#{1,6})\s+(.+)$/)) break;
+      if (/^\s*(?:---+|\*\*\*+|___+)\s*$/.test(next)) break;
       if (paragraph.length > 0 && (next.match(/^\s*[-*]\s+(.+)$/) || next.match(/^\s*\d+\.\s+(.+)$/))) break;
       paragraph.push(next);
       index += 1;
@@ -190,7 +202,7 @@ function MarkdownTable({ rows }: { rows: string[][] }) {
           {body.map((row, rowIndex) => (
             <tr key={rowIndex} className="border-t border-app-border/60">
               {row.map((cell, cellIndex) => (
-                <td key={cellIndex} className="px-3 py-2 align-top text-app-text-muted">
+                <td key={cellIndex} className="break-words px-3 py-2 align-top text-app-text-muted">
                   {renderInline(cell, [], () => undefined)}
                 </td>
               ))}
@@ -209,6 +221,7 @@ function renderInline(
 ): React.ReactNode[] {
   return parseInline(text).map((part, index) => {
     if (part.type === "bold") return <strong key={index}>{part.text}</strong>;
+    if (part.type === "italic") return <em key={index}>{part.text}</em>;
     if (part.type === "code") {
       return (
         <code key={index} className="rounded bg-app-surface-2 px-1 py-0.5 font-mono text-[0.9em]">
@@ -243,11 +256,12 @@ function renderInline(
 
 function parseInline(text: string): InlinePart[] {
   const parts: InlinePart[] = [];
-  const pattern = /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|(__([^_]+)__)/g;
+  const normalized = normalizeInlineText(text);
+  const pattern = /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) parts.push(...linkifyText(text.slice(lastIndex, match.index)));
+  while ((match = pattern.exec(normalized)) !== null) {
+    if (match.index > lastIndex) parts.push(...linkifyText(normalized.slice(lastIndex, match.index)));
     if (match[1] !== undefined && match[2]) {
       parts.push({ type: "image", alt: match[1], src: match[2] });
     } else if (match[3] !== undefined && match[4]) {
@@ -256,13 +270,25 @@ function parseInline(text: string): InlinePart[] {
       parts.push({ type: "code", text: match[5] });
     } else if (match[6] !== undefined) {
       parts.push({ type: "bold", text: match[6] });
+    } else if (match[7] !== undefined) {
+      parts.push({ type: "bold", text: match[7] });
     } else if (match[8] !== undefined) {
-      parts.push({ type: "bold", text: match[8] });
+      parts.push({ type: "italic", text: match[8] });
+    } else if (match[9] !== undefined) {
+      parts.push({ type: "italic", text: match[9] });
     }
     lastIndex = pattern.lastIndex;
   }
-  if (lastIndex < text.length) parts.push(...linkifyText(text.slice(lastIndex)));
+  if (lastIndex < normalized.length) parts.push(...linkifyText(normalized.slice(lastIndex)));
   return parts;
+}
+
+function normalizeInlineText(text: string): string {
+  return text
+    .replace(/\$\\rightarrow\$/g, "→")
+    .replace(/\\rightarrow/g, "→")
+    .replace(/\$\\leftarrow\$/g, "←")
+    .replace(/\\leftarrow/g, "←");
 }
 
 function linkifyText(text: string): InlinePart[] {

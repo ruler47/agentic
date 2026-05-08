@@ -111,12 +111,13 @@ existing delegated DAG planner runs. The planner and synthesizer now also execut
 the same invocation runner, so plan creation and final-answer synthesis emit generic
 `agent-invocation-started`, `agent-invocation-completed`/`failed`, and
 `agent-invocation-return-checked` events around their legacy `planning-*` and
-`synthesis-*` spans. Worker and reviewer spans still run through the mature DAG runtime,
-but they carry `payload.invocation` alongside their older span-specific payloads. This is
-a compatibility bridge: the current worker runtime still owns mature tool, artifact,
-ledger, and review behavior, while every planning/worker/reviewer/synthesis trace node
-exposes the same caller, local-task, parent-invocation, output-contract, model-tier, and
-self-check contract that recursive child agents will use.
+`synthesis-*` spans. Worker and reviewer spans now use the same runner around their
+legacy `worker-*` and `review-*` events as an observability and return-check wrapper.
+This is still a compatibility bridge: the current worker runtime owns mature tool,
+artifact, ledger, revision, and reviewer hard-gate behavior, while every
+planning/worker/reviewer/synthesis trace node exposes the same caller, local-task,
+parent-invocation, output-contract, model-tier, and self-check contract that recursive
+child agents will use.
 Before the root invocation returns, the runtime emits `agent-invocation-return-checked`.
 That generic check validates the invocation output contract, non-empty output, and
 required evidence/artifact counts. This gives direct, delegated, and future recursive
@@ -125,8 +126,8 @@ child agents the same "ready to return to caller" gate instead of separate ad ho
 executor for that contract. It runs an invocation handler through depth-budget validation,
 normalizes handler failures into invocation failures, and attaches the same return
 self-check before a result can be marked completed. Council advisory branches, planning,
-and synthesis use this runner today; broader worker/tool child execution still uses the
-established direct/delegated path until the recursive executor replaces it.
+workers, reviewers, and synthesis use this runner today; tool child execution still uses
+the established direct/delegated path until the recursive executor replaces it.
 
 The next runtime slice of that model is event-backed call frames. Worker and reviewer
 spans persist a structured `callFrame` payload with local task, output contract, caller

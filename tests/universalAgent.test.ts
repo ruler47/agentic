@@ -2471,6 +2471,18 @@ test("UniversalAgent persists worker and reviewer call frames with return self-c
     const workerInvocation = (workerStarted?.payload as { invocation?: { id?: string; parentInvocationId?: string; role?: string; caller?: { kind?: string; frameId?: string }; outputContract?: { requiresSelfCheck?: boolean } } } | undefined)?.invocation;
     const completedWorkerInvocation = (workerCompleted?.payload as { invocation?: { id?: string; status?: string } } | undefined)?.invocation;
     const reviewInvocation = (reviewStarted?.payload as { invocation?: { parentInvocationId?: string; role?: string; caller?: { kind?: string; frameId?: string }; outputContract?: { format?: string } } } | undefined)?.invocation;
+    const workerInvocationStarted = events.find(
+      (event) => event.type === "agent-invocation-started" && event.actor === "worker:researcher",
+    );
+    const workerInvocationCompleted = events.find(
+      (event) => event.type === "agent-invocation-completed" && event.actor === "worker:researcher",
+    );
+    const reviewerInvocationStarted = events.find(
+      (event) => event.type === "agent-invocation-started" && event.actor === "reviewer" && event.title.includes("Reviewer invocation"),
+    );
+    const reviewerInvocationCompleted = events.find(
+      (event) => event.type === "agent-invocation-completed" && event.actor === "reviewer" && event.title.includes("Reviewer invocation"),
+    );
 
     assert.equal(selfChecks.length, 2);
     assert.equal(workerStarted?.spanId, workerCompleted?.spanId);
@@ -2480,6 +2492,9 @@ test("UniversalAgent persists worker and reviewer call frames with return self-c
     assert.equal(workerInvocation?.outputContract?.requiresSelfCheck, true);
     assert.equal(completedWorkerInvocation?.id, workerInvocation?.id);
     assert.equal(completedWorkerInvocation?.status, "completed");
+    assert.equal((workerInvocationStarted?.payload as any).invocation.id, workerInvocation?.id);
+    assert.equal((workerInvocationCompleted?.payload as any).invocation.id, workerInvocation?.id);
+    assert.equal((workerInvocationCompleted?.payload as any).returnCheck.readyToReturn, true);
     assert.equal(
       ((workerStarted?.payload as { callFrame?: { id?: string; runId?: string; localTask?: string } } | undefined)
         ?.callFrame?.runId),
@@ -2509,6 +2524,9 @@ test("UniversalAgent persists worker and reviewer call frames with return self-c
     assert.equal(reviewInvocation?.role, "reviewer");
     assert.equal(reviewInvocation?.caller?.frameId, workerInvocation?.id);
     assert.equal(reviewInvocation?.outputContract?.format, "critique");
+    assert.equal((reviewerInvocationStarted?.payload as any).invocation.parentInvocationId, workerInvocation?.id);
+    assert.equal((reviewerInvocationCompleted?.payload as any).invocation.role, "reviewer");
+    assert.equal((reviewerInvocationCompleted?.payload as any).returnCheck.readyToReturn, true);
     assert.equal((synthesisStarted?.payload as any).invocation.role, "synthesizer");
     assert.equal((synthesisStarted?.payload as any).invocation.parentInvocationId, (rootInvocation?.payload as any).id);
     assert.equal((synthesisCompleted?.payload as any).invocation.status, "completed");

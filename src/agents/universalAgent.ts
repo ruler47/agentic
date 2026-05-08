@@ -1170,6 +1170,16 @@ export class UniversalAgent {
       revisionOfSpanId: isRevision ? parentSpanId : undefined,
       createdAt: startedAt.toISOString(),
     });
+
+    let completedWorkerResult: WorkerResult | undefined;
+    await this.runTraceableInvocation({
+      invocation,
+      emit,
+      parentSpanId,
+      startedTitle: isRevision ? `Worker revision invocation started: ${subtask.title}` : `Worker invocation started: ${subtask.title}`,
+      completedTitle: isRevision ? `Worker revision invocation completed: ${subtask.title}` : `Worker invocation completed: ${subtask.title}`,
+      failedTitle: isRevision ? `Worker revision invocation failed: ${subtask.title}` : `Worker invocation failed: ${subtask.title}`,
+      handler: async () => {
     await emit({
       spanId,
       parentSpanId,
@@ -1292,7 +1302,25 @@ export class UniversalAgent {
       },
     });
 
-    return workerResult;
+        completedWorkerResult = workerResult;
+        return {
+          output,
+          artifacts: collectedEvidence.artifacts,
+          evidenceCount: collectedEvidence.evidence.length + collectedEvidence.artifacts.length,
+          metadata: {
+            subtaskId: subtask.id,
+            modelTier,
+            legacyEventType: "worker-completed",
+          },
+        };
+      },
+    });
+
+    if (!completedWorkerResult) {
+      throw new Error(`Worker ${subtask.id} finished without a worker result.`);
+    }
+
+    return completedWorkerResult;
   }
 
   private async collectToolEvidence(
@@ -3055,6 +3083,16 @@ export class UniversalAgent {
       modelTier,
       createdAt: startedAt.toISOString(),
     });
+
+    let completedReviewResult: ReviewResult | undefined;
+    await this.runTraceableInvocation({
+      invocation,
+      emit,
+      parentSpanId,
+      startedTitle: `Reviewer invocation started: ${workerResult.subtask.title}`,
+      completedTitle: `Reviewer invocation completed: ${workerResult.subtask.title}`,
+      failedTitle: `Reviewer invocation failed: ${workerResult.subtask.title}`,
+      handler: async () => {
     await emit({
       spanId,
       parentSpanId,
@@ -3111,7 +3149,16 @@ export class UniversalAgent {
           invocation: { ...invocation, status: selfCheck.readyToReturn ? "completed" : "failed" },
         },
       });
-      return deterministicReview;
+      completedReviewResult = deterministicReview;
+      return {
+        output: `${deterministicReview.verdict}: ${deterministicReview.notes}`,
+        evidenceCount: (workerResult.toolEvidence?.length ?? 0) + (workerResult.artifacts?.length ?? 0),
+        metadata: {
+          verdict: deterministicReview.verdict,
+          deterministic: true,
+          legacyEventType: "review-completed",
+        },
+      };
     }
 
     let review: ReviewResult;
@@ -3190,7 +3237,23 @@ export class UniversalAgent {
       },
     });
 
-    return review;
+        completedReviewResult = review;
+        return {
+          output: `${review.verdict}: ${review.notes}`,
+          evidenceCount: (workerResult.toolEvidence?.length ?? 0) + (workerResult.artifacts?.length ?? 0),
+          metadata: {
+            verdict: review.verdict,
+            legacyEventType: "review-completed",
+          },
+        };
+      },
+    });
+
+    if (!completedReviewResult) {
+      throw new Error(`Reviewer for ${workerResult.subtask.id} finished without a review result.`);
+    }
+
+    return completedReviewResult;
   }
 
   private async learn(

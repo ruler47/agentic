@@ -216,10 +216,10 @@ export function createWorkerInvocation(input: {
       description: [
         input.subtask.expectedOutput,
         hasRequiredArtifacts(input.subtask)
-          ? "Return the requested artifact evidence or a clear limitation."
+          ? "Return the requested artifact evidence or a clear limitation; the worker self-check and reviewer gate verify artifact quality before synthesis."
           : "Return a compact worker answer that can be reviewed independently.",
       ].join(" "),
-      requiredEvidence: hasRequiredArtifacts(input.subtask),
+      requiredEvidence: false,
       requiresSelfCheck: true,
     },
     depth,
@@ -346,6 +346,9 @@ export function createReviewerInvocation(input: {
     budget: rootBudget
       ? {
           ...rootBudget,
+          // Review is the return gate for a worker, not an additional delegated branch.
+          // Keep strict depth for recursive child agents while allowing the mandatory reviewer frame.
+          maxDepth: Math.max(rootBudget.maxDepth, depth),
           remainingDepth: Math.max(0, rootBudget.remainingDepth - 2),
         }
       : {
