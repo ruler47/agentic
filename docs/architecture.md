@@ -94,6 +94,15 @@ ledger policy, tool policy, and council participant hints. This decision is stil
 advisory; it records the contract that future recursive executors will obey while the
 existing coordinator continues to run the current direct/delegated flows.
 
+The second slice is [agentInvocation.ts](../src/agents/agentInvocation.ts). The runtime
+now turns each selected strategy into an explicit `AgentInvocation` and emits
+`agent-invocation-created`. That payload is the root call contract: caller, local task,
+output contract, allowed actions, allowed tool names, model tier, review strictness,
+depth/budget, and status. When the strategy is `council`, the runtime also emits
+`agent-council-planned` with planned participant invocation contracts. Those council
+participants are still planned, not executed recursively yet; the trace now preserves the
+shape the future recursive executor will consume.
+
 The next runtime slice of that model is event-backed call frames. Worker and reviewer
 spans persist a structured `callFrame` payload with local task, output contract, caller
 span, dependencies, model tier, status, and output summary. Before either span completes,

@@ -168,6 +168,8 @@ export type AgentEventType =
   | "memory-search-completed"
   | "classification-completed"
   | "agent-strategy-selected"
+  | "agent-invocation-created"
+  | "agent-council-planned"
   | "planning-completed"
   | "worker-started"
   | "worker-completed"

@@ -710,6 +710,12 @@ After task classification, the runtime also emits `agent-strategy-selected` with
 ledger policy, tool policy, risk signals, and optional council participants. The current
 console renders it as a normal trace card; future UI slices should surface this as the
 reasoning handoff before child-agent/council execution.
+The follow-up event `agent-invocation-created` records the root `AgentInvocation` contract
+derived from that strategy: caller, local task, output contract, allowed actions, allowed
+tool names, tier, review strictness, and depth budget. When the strategy is `council`,
+`agent-council-planned` records one planned invocation per council participant. These
+events are intentionally visible as trace cards so operators can see what the recursive
+executor is expected to run before the executor itself replaces the current central DAG.
 
 When the Work / Evidence / Run-Retrospective stores are configured, the runtime adds
 five more event types that flow through the same SSE contract:

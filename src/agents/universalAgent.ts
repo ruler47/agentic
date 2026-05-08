@@ -76,6 +76,11 @@ import {
   createWorkerCallFrame,
 } from "./callFrame.js";
 import { decideAgentStrategy } from "./agentStrategy.js";
+import {
+  createCouncilInvocations,
+  createRootAgentInvocation,
+  summarizeAgentInvocation,
+} from "./agentInvocation.js";
 
 type PlanResponse = {
   subtasks: Subtask[];
@@ -350,8 +355,9 @@ export class UniversalAgent {
       hasWorkLedger: Boolean(ledger),
       pendingToolImprovements: pendingToolImprovements.length,
     });
+    const strategySpanId = createSpanId("agent-strategy");
     await emit({
-      spanId: createSpanId("agent-strategy"),
+      spanId: strategySpanId,
       parentSpanId: classificationSpanId,
       type: "agent-strategy-selected",
       actor: "coordinator",
@@ -374,6 +380,58 @@ export class UniversalAgent {
       durationMs: 0,
       payload: strategy,
     });
+    const invocationStartedAt = new Date();
+    const rootInvocation = createRootAgentInvocation({
+      runId: options.runId,
+      spanId: runSpanId,
+      task,
+      strategy,
+      tools: this.tools.list(),
+      createdAt: invocationStartedAt.toISOString(),
+    });
+    await emit({
+      spanId: createSpanId("agent-invocation"),
+      parentSpanId: strategySpanId,
+      type: "agent-invocation-created",
+      actor: rootInvocation.actor,
+      activity: "agent",
+      status: "completed",
+      title: `Agent invocation created: ${rootInvocation.strategy}`,
+      detail: summarizeAgentInvocation(rootInvocation),
+      startedAt: invocationStartedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(invocationStartedAt),
+      payload: rootInvocation,
+    });
+
+    if (strategy.council) {
+      const councilStartedAt = new Date();
+      const councilInvocations = createCouncilInvocations({
+        rootInvocation,
+        strategy,
+        task,
+        spanIdPrefix: createSpanId("council-agent"),
+        createdAt: councilStartedAt.toISOString(),
+      });
+      await emit({
+        spanId: createSpanId("agent-council"),
+        parentSpanId: strategySpanId,
+        type: "agent-council-planned",
+        actor: "council-planner",
+        activity: "agent",
+        status: "completed",
+        title: `${councilInvocations.length} council participant invocation(s) planned`,
+        detail: councilInvocations.map(summarizeAgentInvocation).join("\n"),
+        startedAt: councilStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(councilStartedAt),
+        payload: {
+          rootInvocation,
+          councilInvocations,
+          reason: strategy.council.reason,
+        },
+      });
+    }
 
     if (complexity.mode === "direct") {
       const generatedArtifact = await this.createRequestedArtifact(

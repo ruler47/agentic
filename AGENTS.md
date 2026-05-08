@@ -89,8 +89,13 @@ policies without leaking context.
   with the selected primary strategy (`direct_answer`, `delegated_dag`, `tool_use`,
   `tool_build_or_rework`, `ledger_reuse_or_wait`, or `council`), allowed actions,
   model-tier recommendation, review strictness, ledger policy, tool policy, and council
-  participant hints. It is currently advisory; later recursive-agent slices will execute
-  child-agent/council branches through this contract.
+  participant hints.
+- The first `AgentInvocation` contract is now emitted from that strategy decision.
+  `agent-invocation-created` records the root caller/local task/output contract/budget/
+  allowed-tool call frame for the universal agent, and `agent-council-planned` records
+  planned council participant invocation contracts. These payloads are still trace
+  contracts; later recursive-agent slices will execute child-agent/council branches
+  through them.
 - Agents will eventually send auditable outbound messages/reminders to a group or
   individual when policy allows.
 - Tools should be easy to onboard from API documentation and access credentials, but
@@ -257,6 +262,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - [src/agents/agentStrategy.ts](src/agents/agentStrategy.ts) - deterministic
   recursive-agent strategy selector for direct answers, delegation, council mode,
   tool-use/build/rework, and Work Ledger reuse/wait decisions.
+- [src/agents/agentInvocation.ts](src/agents/agentInvocation.ts) - root and council
+  `AgentInvocation` contract builder for future recursive call execution.
 - [src/agents/modelTier.ts](src/agents/modelTier.ts) - model tier selection policy.
 - [src/settings/modelProviderStore.ts](src/settings/modelProviderStore.ts) - durable
   model provider registry contract for chat and embedding endpoints.

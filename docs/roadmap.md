@@ -1230,7 +1230,12 @@ Approved implementation path after the Nest API cutover:
    The decision records whether the agent should answer directly, delegate, ask a council,
    call tools, request tool build/rework, or check/reuse/wait on the Work Ledger. It also
    records model-tier and review-strictness recommendations for the future invocation
-   runner.
+   runner. PARTIAL: [agentInvocation.ts](../src/agents/agentInvocation.ts) now converts
+   that decision into a root `AgentInvocation` trace payload (`agent-invocation-created`)
+   with caller, local task, output contract, allowed actions/tools, model tier, review
+   strictness, and depth budget. Council strategies also emit planned participant
+   invocations through `agent-council-planned`; those participant invocations are not
+   executed recursively yet.
 2. **Recursive delegation.** Let any agent spawn child agents when its local task is too
    broad, risky, tool-heavy, or context-heavy. Child agents may recursively delegate again
    within depth, budget, deadline, and policy limits. A parent only receives compact child
@@ -1267,7 +1272,8 @@ Remaining recursive-agent gaps:
 - Add council-planning as a universal-agent strategy: multiple model tiers/providers can
   propose or critique plans, then a synthesis agent merges the plan while dedupe ledger
   entries prevent duplicate external work. PARTIAL: the strategy selector now flags
-  council mode and emits participant hints, but the runtime still falls back to the
+  council mode and emits participant hints; the invocation layer now writes planned
+  council participant call contracts to trace, but the runtime still falls back to the
   existing delegated DAG executor until recursive child invocation lands.
 - Persist agent call frames so a child agent has a local task/caller/output contract
   without needing full global context. PARTIAL: worker and reviewer spans now carry a
