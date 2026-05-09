@@ -202,7 +202,8 @@ export function createWebApp(options: WebAppOptions) {
     try {
       await routeRequest(request, response, options);
     } catch (error) {
-      sendJson(response, 500, {
+      const isInvalidJson = error instanceof InvalidJsonBodyError;
+      sendJson(response, isInvalidJson ? 400 : 500, {
         error: error instanceof Error ? error.message : "Unknown server error",
       });
     }
@@ -3360,6 +3361,8 @@ class RunContextError extends Error {
   }
 }
 
+class InvalidJsonBodyError extends Error {}
+
 function createRequesterResolutionError(input: {
   requesterUserId?: string;
   channel?: string;
@@ -5628,7 +5631,13 @@ async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
 
   if (chunks.length === 0) return {} as T;
 
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+  } catch (error) {
+    throw new InvalidJsonBodyError(
+      error instanceof Error ? `Invalid JSON request body: ${error.message}` : "Invalid JSON request body",
+    );
+  }
 }
 
 async function serveStatic(pathname: string, response: ServerResponse, publicDir: string): Promise<void> {

@@ -82,3 +82,35 @@ test("memory proposal review warns about same-scope duplicates and conflicts", (
   assert.equal(reviews[1]?.status, "needs_review");
   assert.ok(reviews[1]?.findings.some((finding) => finding.code === "possible_conflict"));
 });
+
+test("memory proposal review warns when same title falls into similarity gray zone", () => {
+  const createdAt = new Date().toISOString();
+  const accepted = {
+    id: "memory-accepted",
+    title: "Dinner planning defaults",
+    tags: ["planning"],
+    summary: "Use Malaga as the default city for family dinner plans.",
+    reusableProcedure: "When location is omitted, use the group profile city.",
+    scope: "group" as const,
+    scopeId: "group-local",
+    status: "accepted" as const,
+    sensitivity: "normal" as const,
+    confidence: 0.9,
+    sourceRunId: "run-1",
+    evidence: ["accepted by operator"],
+    createdAt,
+  };
+  const proposed = {
+    ...accepted,
+    id: "memory-proposed",
+    status: "proposed" as const,
+    summary: "Use Malaga as the default city for family restaurant and evening plans.",
+    reusableProcedure: "When the task omits location, use the group city before asking.",
+    sourceRunId: "run-2",
+  };
+
+  const review = reviewMemoryProposal(proposed, [accepted, proposed]);
+
+  assert.equal(review.status, "needs_review");
+  assert.ok(review.findings.some((finding) => finding.code === "possible_duplicate"));
+});

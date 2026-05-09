@@ -949,9 +949,16 @@ test("web server validates required task and serves static UI", async () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ task: "   " }),
     });
+    const invalidJson = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not-json",
+    });
     const staticResponse = await fetch(`${baseUrl}/`);
 
     assert.equal(badRequest.status, 400);
+    assert.equal(invalidJson.status, 400);
+    assert.match(await invalidJson.text(), /Invalid JSON request body/);
     assert.equal(staticResponse.status, 200);
     assert.match(await staticResponse.text(), /Agentic/);
   } finally {
@@ -1560,6 +1567,7 @@ test("web server memory review queue compares proposals against accepted scoped 
     const reviewQueue = await (await fetch(`${baseUrl}/api/memories/review-queue`)).json();
 
     assert.equal(reviewQueue.summary.total, 1);
+    assert.equal(reviewQueue.memories[0].id, proposed.id);
     assert.equal(reviewQueue.reviews[0].memoryId, proposed.id);
     assert.equal(reviewQueue.reviews[0].status, "needs_review");
     assert.equal(
