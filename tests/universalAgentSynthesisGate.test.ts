@@ -43,30 +43,44 @@ test("findUngroundedSpecificsInText flags ungrounded laptop-line tokens (Lenovo 
   assert.ok(ungrounded.some((t) => /Zephyrus/i.test(t)), `expected Zephyrus to be flagged, got ${ungrounded.join(", ")}`);
 });
 
-test("findUngroundedSpecificsInText word-set fallback: token grounded when significant words present even if substring differs", () => {
-  // Iter 7 regression: hardware-corner.net article said "MacBook Pro with M3 Max (96GB)"
-  // and the worker correctly extracted "MacBook Pro M3 Max". The first version of the
-  // gate falsely rejected it because the literal substring "macbook pro m3" doesn't
-  // appear in "macbook pro with m3 max" (the inserted "with" breaks the match).
-  // Word-set fallback should accept this as grounded because all significant words
-  // (macbook, m3, max — at least one with a digit) appear in the evidence.
+test("findUngroundedSpecificsInText pair-with-gap fallback: 'MacBook Pro M3 Max' grounded by 'MacBook Pro with M3 Max'", () => {
+  // Iter 7 regression: hardware-corner.net article said "MacBook Pro with M3 Max (96GB)".
+  // Worker correctly extracted "MacBook Pro M3 Max". Substring fails because of the
+  // inserted "with"; pair-with-gap fallback should accept all pairs:
+  //   (macbook, pro) → "macbook pro" in evidence
+  //   (pro, m3) → "pro with m3" in evidence (gap = "with")
+  //   (m3, max) → "m3 max" in evidence
   const output = "Top pick: MacBook Pro M3 Max with 96GB unified memory.";
   const evidence =
     "We've updated our top pick: the MacBook Pro with M3 Max (96GB) is now our recommended laptop for running large language models.";
   const ungrounded = findUngroundedSpecificsInText(output, evidence);
-  // The brand-extraction regex catches "MacBook Pro" / "M3 Max"; both should be grounded.
   for (const token of ungrounded) {
     assert.ok(
       !/MacBook|M3/i.test(token),
-      `Token "${token}" should have passed the word-set fallback (all significant words are in evidence)`,
+      `Token "${token}" should have passed pair-with-gap fallback`,
     );
   }
 });
 
-test("findUngroundedSpecificsInText word-set fallback still rejects brand-only matches", () => {
+test("findUngroundedSpecificsInText pair-with-gap fallback rejects token whose chip word is anchored elsewhere (Bug 8 regression)", () => {
+  // Iter 8 regression: a naive word-set fallback let "MacBook Pro M4" through
+  // when evidence mentions "M4" in some unrelated place but never anchors it to
+  // "MacBook Pro". Pair-with-gap requires (pro, m4) to appear together; if M4
+  // never sits next to "pro" in evidence, the token must stay ungrounded.
+  const output = "Recommendation: MacBook Pro M4 with 36GB memory.";
+  const evidence =
+    "Best pick: the MacBook Pro with M3 Max (96GB). The Apple M4 chip is also discussed in passing but no MacBook M4 model exists in our research.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  // "MacBook Pro M4" should NOT be grounded because (pro, m4) never appear together.
+  // Note: evidence contains "Apple M4" so "M4" alone might pass via Apple\s+M\d
+  // pattern, but the brand+chip combo "MacBook Pro M4" must fail.
+  const macbookM4Tokens = ungrounded.filter((t) => /macbook\s*pro\s*m4/i.test(t));
+  assert.ok(macbookM4Tokens.length > 0, `MacBook Pro M4 should remain ungrounded, got: ${ungrounded.join(", ")}`);
+});
+
+test("findUngroundedSpecificsInText pair-with-gap fallback still rejects brand-only matches", () => {
   // Defensive: "RTX 4080" must not pass just because evidence mentions "RTX 5090".
-  // Word "rtx" is in evidence but "4080" is not — at least one digit-bearing word
-  // is missing from significant set, fallback fails, token stays ungrounded.
+  // (rtx, 4080) does not appear in evidence (only "rtx 5090") → ungrounded.
   const output = "Buy the RTX 4080 for great gaming.";
   const evidence = "The RTX 5090 is now the recommended GPU.";
   const ungrounded = findUngroundedSpecificsInText(output, evidence);

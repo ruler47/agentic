@@ -5216,7 +5216,6 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
   }
 
   const ungrounded: string[] = [];
-  const evidenceWords = new Set(evidenceCorpus.split(" ").filter(Boolean));
   for (const token of candidates) {
     const normalized = token.toLowerCase().replace(/\s+/g, " ");
     if (evidenceCorpus.includes(normalized)) continue;
@@ -5231,22 +5230,53 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
       const core = parts.slice(0, 2).join(" ");
       if (/\d/.test(core) && evidenceCorpus.includes(core)) continue;
     }
-    // Phase 12 follow-up: word-set fallback. Worker writes a token like
-    // "MacBook Pro M3 Max" while evidence has "MacBook Pro with M3 Max"
-    // — substring search fails because of the inserted "with", but the
-    // token IS grounded by every significant word. Treat the token as
-    // grounded when every "significant" word (digit-bearing or 4+ chars)
-    // appears in the evidence vocabulary. Brand-only matches still fail
-    // because at least one digit-bearing word must also be present.
-    const significant = parts.filter((part) => /\d/.test(part) || part.length >= 4);
-    if (significant.length >= 2) {
-      const allPresent = significant.every((word) => evidenceWords.has(word));
-      const anyDigitWord = significant.some((word) => /\d/.test(word));
-      if (allPresent && anyDigitWord) continue;
-    }
+    // Phase 12 follow-up: pair-with-gap fallback. Worker writes a multi-
+    // word brand token like "MacBook Pro M3 Max" but evidence has the
+    // same brand expressed with a small stop-word inserted, e.g. "MacBook
+    // Pro with M3 Max". A literal substring fails on the inserted word;
+    // a naive word-set check would accept any token whose words happen to
+    // appear in evidence (false positive: "MacBook Pro M4" would pass
+    // because "m4" is mentioned somewhere unrelated). The correct check
+    // is: every adjacent pair of words in the token must appear in the
+    // evidence either back-to-back or with a single stop word between
+    // them. That preserves the "tokens travel together" property without
+    // demanding strict substring equality.
+    if (parts.length >= 2 && pairsAppearTogetherInEvidence(parts, evidenceCorpus)) continue;
     ungrounded.push(token);
   }
   return ungrounded;
+}
+
+/**
+ * Phase 12 follow-up: check that every adjacent pair of words in
+ * `parts` appears in the evidence corpus close to each other. "Close"
+ * means: directly adjacent OR separated by one of a small set of
+ * stop-words (with, and, the, of, by, ...). This is the deterministic
+ * heuristic used by the ungrounded-specifics gate to allow grounded
+ * tokens like "MacBook Pro M3 Max" (vs evidence "MacBook Pro with M3
+ * Max") through, while still rejecting brand+chip tokens like
+ * "MacBook Pro M4" when the chip itself is not anchored to the brand
+ * in evidence.
+ */
+function pairsAppearTogetherInEvidence(parts: string[], evidenceCorpus: string): boolean {
+  const stopWords = new Set([
+    "a", "an", "the", "and", "or", "with", "of", "by", "in", "on", "for", "to", "from", "is", "are",
+    "с", "и", "или", "в", "на", "по",
+  ]);
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const a = parts[i];
+    const b = parts[i + 1];
+    if (!a || !b) return false;
+    const direct = `${a} ${b}`;
+    if (evidenceCorpus.includes(direct)) continue;
+    // Try with each stop-word inserted between.
+    let bridged = false;
+    for (const sw of stopWords) {
+      if (evidenceCorpus.includes(`${a} ${sw} ${b}`)) { bridged = true; break; }
+    }
+    if (!bridged) return false;
+  }
+  return true;
 }
 
 /**
