@@ -301,6 +301,44 @@ hardcoded Bitcoin or market-analysis path:
   conservative scope and wording. They should not become accepted global advice about
   "bypassing" site protection.
 
+### Capability failure example: `run_1778320304262_oanslhzc` — flights hardcode bleeds into laptop research
+
+A run for "find me the best laptop for programming, gaming, LLMs, travel; budget 2500
+EUR" produced a `discovery-1-google-com-www-google-com-travel-flights-screenshot.png`
+artifact attached to a "Scenario Mapping & User Clarification" subtask. The user
+correctly flagged the screenshot as "absolutely irrelevant - looks like a leak from a
+previous flights run."
+
+Root cause is **not** memory leakage or model hallucination. It is a deterministic
+collision of two domain-specific hardcodes inside the supposedly universal agent:
+
+1. `buildSearchQueries` in `src/agents/universalAgent.ts` (around line 4024) runs the
+   regex `/\b[A-Z]{3}\b/g` over `subtask.prompt` and treats every three-letter uppercase
+   token as an IATA code. In a laptop subtask the prompts contain `GPU`, `RTX`, `RAM`,
+   `LLM`, `CPU`, `EUR`, `SSD`. With two or more matches the function silently appends a
+   second parallel web.search query "X Y Z flights Google Flights Skyscanner Kayak".
+   This produced real merged queries like
+   `... | GPU RTX RAM flights Google Flights Skyscanner Kayak`. Results from the
+   parasitic query (google.com/travel/flights, skyscanner.com, kayak.com) were merged
+   into the subtask's evidence text via `mergeToolResults`.
+2. `scoreArtifactUrl` (around line 4342) assigns
+   `google.com/travel/flights -> 120` as the highest score in the entire system, higher
+   than any other URL. When `selectBestUrlsForArtifact` sorts the URL pool by this
+   scorer, the parasitic flights URL beats every relevant result (`nngroup.com`,
+   `dl.acm.org`, `alibaba.com`, `amazon.es`) which all score 0. Browser discovery
+   navigates to it, captures a screenshot, attaches it to the subtask as evidence.
+   Semantic QA only catches it on the second worker, by which point the artifact is
+   already visible to the operator.
+
+The same shape applies to medical/doctor tasks via similar hardcoded hosts (doctolib,
+jameda, topdoctors) and `shouldCollectBrowserDiscovery` (line 3891) regex
+(`doctor|clinic|specialist|...`). Universal runtime currently contains at least two
+embedded domain funnels (flights, medical) and any task whose text accidentally trips
+their regex inherits irrelevant evidence.
+
+Fix is structural and tracked as Phase 12. Quick gate (Slice A) is enough to remove the
+acute regression; Slices B-D remove the underlying anti-pattern.
+
 ## Progress Snapshot
 
 This is a product/architecture estimate, not a ticket counter.
@@ -1915,3 +1953,220 @@ UI tasks:
 - Policies page for federation allowlists and scopes.
 - Trace cards for outgoing and incoming inter-agent requests.
 - Audit page filtered by external group/company/family interactions.
+
+## Phase 12: Domain-Neutral Universal Agent
+
+Status: in progress. Slice A.1 has shipped (intent-gate based on regex inference); Slices
+B–E remain. Tracking issue: see "Capability failure example: `run_1778320304262_oanslhzc`"
+in Recent Systemic Findings for the failure that motivated this phase.
+
+Goal: remove the domain-specific hardcodes (flights, medical-doctor portals, country
+hint lists) from `src/agents/universalAgent.ts` and re-express them as data living on
+tools, classification output, or scoped memory entries. After this phase no string
+inside `universalAgent.ts` should mention `flights`, `skyscanner`, `kayak`, `doctolib`,
+`jameda`, or any other concrete provider, and no regex over `subtask.prompt` should
+guess a task domain.
+
+Why: today the "universal" agent contains two embedded domain funnels (flights,
+medical) wired through text regex + URL host whitelists. They activate
+deterministically on unrelated tasks (laptop research trips `GPU/RTX/RAM` matched by
+the IATA regex, a "specialist" mention triggers medical discovery, and so on),
+producing irrelevant evidence and screenshots. Adding more domains by extending these
+hardcodes is the wrong direction; the platform principle (Capability Platform, Not
+Case Patches) forbids it.
+
+### Slice A - Hot-fix: gate the existing hardcodes behind explicit intent
+
+Acute regression mitigation. Cheap. Does not remove the anti-pattern but stops
+laptop/research/code/etc. tasks from triggering flight or medical funnels.
+
+Status: **shipped as Slice A.1** (regex-based `inferTaskIntents` instead of plumbing a new
+`intent[]` field through `ClassificationResult`). The full Slice A still includes
+classifier-driven `intent[]` plumbing once the schema work lands; the regex inference is
+a placeholder that can be replaced without touching call sites — `inferTaskIntents` is
+the single migration point.
+
+Implementation tasks:
+
+- Extend the classification step to return an `intent: string[]` array along with the
+  existing `mode/domains/riskLevel`. Allowed values seed list:
+  `flight-search`, `medical-lookup`, `product-comparison`, `market-research`,
+  `code-generation`, `geopolitical-assessment`, `travel-planning`, `text-research`,
+  `data-extraction`, `other`. Free-form values are also accepted; runtime treats
+  anything outside the seed list as `other`.
+- Plumb `intent[]` through `UniversalAgentOptions` and `Subtask` (each subtask inherits
+  the run-level intent unless the planner overrides for a child subtask).
+- Gate the IATA branch in `buildSearchQueries` (`src/agents/universalAgent.ts:4024-4027`)
+  behind `intent.includes("flight-search")`. Same for the `from X to Y` `routeMatch`
+  branch (line 4028-4031) and the `sourceHints` line that scans for
+  `google flights|skyscanner|kayak|...` keywords (line 4010).
+- Gate the medical seed query (line 4017-4023) behind `intent.includes("medical-lookup")`.
+- Gate `shouldCollectBrowserDiscovery` regex (line 3891-3905) so the
+  `doctor|clinic|specialist|...` and `flight|ticket|...` keywords only trigger discovery
+  when the matching intent is in `intent[]`. Otherwise discovery only fires when
+  `subtask.requiredTools` explicitly lists `browser-operate`.
+- Update tests:
+  - `tests/universalAgent.test.ts` add a "laptop research" fixture asserting no flight
+    query is appended for prompts containing `GPU/RTX/RAM/CPU/LLM/EUR`.
+  - Add a positive test for `intent=flight-search` keeping the existing flight branch
+    behaviour.
+- Add a memory entry under `feedback` scope `global` recording the bug pattern so future
+  agents do not regress (proposed -> accepted via review).
+
+Out of scope for Slice A:
+
+- Do not yet remove the host whitelist in `scoreArtifactUrl`; it still protects flight
+  runs while we have not built tool-owned evidence patterns.
+- Do not yet rewire URL ranking through an LLM call.
+
+Definition of done: the run that motivated this phase
+(`run_1778320304262_oanslhzc`-style task) no longer issues the parasitic
+"X Y Z flights ..." merged query, and no `discovery-1-google-com-www-google-com-travel-flights-screenshot.png`
+artifact appears for non-`flight-search` intents.
+
+### Slice B - Tool-owned evidence patterns
+
+Move the host whitelist out of the runtime into tool contracts.
+
+Implementation tasks:
+
+- Extend `ToolContract` in `src/tools/registry.ts` (or wherever the contract type lives)
+  with optional:
+
+      evidencePatterns?: Array<{
+        intent: string;
+        hosts?: string[];                  // exact host or suffix match
+        urlPatterns?: string[];            // regex strings
+        score: number;                     // 1..200, higher = stronger evidence
+        rejectIfBlocked?: boolean;         // login-wall / captcha => reject
+        notes?: string;
+      }>
+
+- Replace `scoreArtifactUrl` body (`src/agents/universalAgent.ts:4342-4361`) with a
+  registry lookup:
+
+      function scoreArtifactUrl(url, activeIntents, registry) {
+        return registry
+          .evidencePatternsFor(activeIntents)
+          .map(p => matchPattern(url, p) ? p.score : 0)
+          .reduce((a,b) => Math.max(a,b), 0);
+      }
+
+  The registry returns only patterns whose `intent` is in `activeIntents`. Patterns
+  for inactive intents do not influence ranking.
+- Move the existing flight-host scores (google.com/travel/flights, skyscanner.com,
+  kayak.com, momondo.com, kiwi.com, expedia.com, trip.com) into a new built-in tool
+  contract (e.g. seed `flight.search` capability stub even if no real flight tool is
+  registered yet). Same for medical hosts.
+- For the country-hint dictionary in `buildContextSearchHints`
+  (`src/agents/universalAgent.ts:4036-4057`), move into a memory-backed lookup or a
+  `geo.context` capability tool. Out of scope to rewrite right now; mark as TODO with a
+  reference to this phase in code comment.
+- Update `selectBestUrlsForArtifact` to accept `activeIntents` parameter and pass
+  through.
+- Tests: add a tool registry stub with patterns for two intents, verify that scoring is
+  intent-scoped.
+
+Definition of done: `grep -n "google\.\|skyscanner\|kayak\|doctolib\|jameda" src/agents/universalAgent.ts`
+returns zero matches.
+
+### Slice C - Memory-driven evidence patterns
+
+Promote tool-owned patterns to a learnable layer so operators can add/edit/disable
+patterns without a code release.
+
+Implementation tasks:
+
+- Define a new memory entry shape (additive, no schema change). Convention: `tags`
+  contains `evidence-pattern` and `intent:<name>`. `reusableProcedure` carries a YAML
+  block with `intent`, `hosts`, `url_patterns`, `score`, `reject_if_match`. Add a small
+  parser in `src/memory/evidencePatternParser.ts` that decodes this block into the same
+  `EvidencePattern` shape used by tool contracts.
+- At evidence-collection time, runtime calls
+  `skillMemory.search("evidence-pattern intent:" + intent, 8, { visibleScopes })` and
+  unions the parsed patterns with tool-contract patterns. Memory patterns can override
+  tool-contract patterns (operators can demote a built-in score by writing a memory
+  entry with `score: 0`).
+- Add UI on the Memory page: a filter "Evidence patterns" and a structured editor that
+  validates the YAML block against the schema.
+- Add a Trace Lab span `evidence-pattern-resolved` showing which patterns (memory id,
+  tool source) influenced the URL ranking for a given subtask.
+- Memory hygiene: `evidence-pattern` entries default to `scope: global`,
+  `sensitivity: normal`, `status: proposed` until reviewed.
+
+Definition of done: deleting all `accepted` `evidence-pattern` memory entries reverts
+URL scoring to tool-contract defaults. Adding a new entry like
+`{intent: product-comparison, hosts: [pccomponentes.com, amazon.es], score: 90}` makes
+those hosts rank higher than blogs in the next product-comparison run, with no code
+change.
+
+### Slice D - LLM-driven URL ranking for browser discovery
+
+Replace heuristic sort with a small LLM call. Domain knowledge becomes whatever the
+classifier model already has, no whitelist needed for the long tail.
+
+Implementation tasks:
+
+- Add `rankDiscoveryUrls(subtask, candidates, intents)` that issues an S-tier LLM call:
+  prompt contains `subtask.title`, `subtask.prompt` (truncated), and the candidate URLs
+  with their search-result snippets. Output is JSON:
+  `{ selected: [url1, url2], rejected: [{url, reason}] }`.
+- `selectBestUrlsForArtifact` becomes the fallback for when (a) the LLM is unreachable,
+  (b) the result fails JSON parse, or (c) explicitly disabled via env
+  `URL_RANKER_LLM=disabled`.
+- Add Trace Lab span `discovery-url-ranked` with selected/rejected URLs and reasons.
+- Metric: percentage of `Browser artifact rejected by semantic QA` events should drop
+  meaningfully on the next batch of runs after Slice D ships. Add a Diagnostics
+  card showing the seven-day rolling rate.
+- Tests: mock the LLM client, fixture covering "laptop research" rejecting flight URLs
+  and a "find me a flight to Lisbon" run picking the right hosts.
+
+Definition of done: ranking decisions are visible in Trace Lab; the
+`scoreArtifactUrl`-based path is the documented fallback only.
+
+### Slice E - Cleanup and verification
+
+Remove transitional shims and verify no domain strings remain in core runtime.
+
+Implementation tasks:
+
+- Delete commented or dead branches left over from Slices A-D.
+- Add a CI lint rule (or a unit test) that fails the build if `src/agents/*.ts` contains
+  any of:
+  `flight`, `flights`, `skyscanner`, `kayak`, `momondo`, `expedia`, `aviasales`,
+  `doctolib`, `jameda`, `topdoctors`, `hospital`, `clinic`, `aerzte`, `arzt`, `medecin`.
+  These tokens are allowed only inside `evidencePatterns` definitions on tool contracts
+  or inside scoped memory.
+- Update `docs/architecture.md` and `docs/modules/agent-runtime.md` so they no longer
+  reference flights or medical examples in the runtime section.
+
+Definition of done: lint rule above is green; manual reproduction of
+`run_1778320304262_oanslhzc` produces only laptop-relevant discovery artifacts; running
+"find a flight LIS->LAX" still produces flight-relevant artifacts.
+
+### Risks and rollback
+
+- Removing flight scoring before Slice B ships would degrade real flight runs. Order
+  matters: Slice A first (gate), then Slice B (move whitelist to tool contracts), then
+  Slice C/D in any order.
+- Memory-backed patterns can be poisoned by a malicious or wrong proposal. Mitigation:
+  evidence-pattern entries follow the existing memory proposal review pipeline; nothing
+  applies until `accepted`.
+- LLM ranker latency adds ~200-400ms per discovery step. Mitigation: cap concurrency,
+  fall back to heuristic when budget is tight.
+
+### Files of interest
+
+Anchor points for whoever picks this up cold:
+
+- `src/agents/universalAgent.ts:3891-3905` - `shouldCollectBrowserDiscovery` regex.
+- `src/agents/universalAgent.ts:4003-4067` - `buildSearchQueries`,
+  `buildContextSearchHints`, `cleanSearchQuery`.
+- `src/agents/universalAgent.ts:4302-4380` - URL selection + `scoreArtifactUrl` +
+  `isLowValueProofUrl` + `extractHttpUrls`.
+- `src/agents/universalAgent.ts:1541-1595` - `collectBrowserDiscoveryEvidence` (caller).
+- `src/agents/universalAgent.ts:1304-1410` - `runWebSearch` (caller of
+  `buildSearchQueries`).
+- `src/memory/skillMemory.ts` - target store for memory-backed evidence patterns.
+- `src/tools/registry.ts` - target location for the new `evidencePatterns` field on
+  `ToolContract`.
