@@ -43,6 +43,36 @@ test("findUngroundedSpecificsInText flags ungrounded laptop-line tokens (Lenovo 
   assert.ok(ungrounded.some((t) => /Zephyrus/i.test(t)), `expected Zephyrus to be flagged, got ${ungrounded.join(", ")}`);
 });
 
+test("findUngroundedSpecificsInText word-set fallback: token grounded when significant words present even if substring differs", () => {
+  // Iter 7 regression: hardware-corner.net article said "MacBook Pro with M3 Max (96GB)"
+  // and the worker correctly extracted "MacBook Pro M3 Max". The first version of the
+  // gate falsely rejected it because the literal substring "macbook pro m3" doesn't
+  // appear in "macbook pro with m3 max" (the inserted "with" breaks the match).
+  // Word-set fallback should accept this as grounded because all significant words
+  // (macbook, m3, max — at least one with a digit) appear in the evidence.
+  const output = "Top pick: MacBook Pro M3 Max with 96GB unified memory.";
+  const evidence =
+    "We've updated our top pick: the MacBook Pro with M3 Max (96GB) is now our recommended laptop for running large language models.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  // The brand-extraction regex catches "MacBook Pro" / "M3 Max"; both should be grounded.
+  for (const token of ungrounded) {
+    assert.ok(
+      !/MacBook|M3/i.test(token),
+      `Token "${token}" should have passed the word-set fallback (all significant words are in evidence)`,
+    );
+  }
+});
+
+test("findUngroundedSpecificsInText word-set fallback still rejects brand-only matches", () => {
+  // Defensive: "RTX 4080" must not pass just because evidence mentions "RTX 5090".
+  // Word "rtx" is in evidence but "4080" is not — at least one digit-bearing word
+  // is missing from significant set, fallback fails, token stays ungrounded.
+  const output = "Buy the RTX 4080 for great gaming.";
+  const evidence = "The RTX 5090 is now the recommended GPU.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  assert.ok(ungrounded.some((t) => /RTX 4080/i.test(t)), `RTX 4080 must remain ungrounded, got: ${ungrounded.join(", ")}`);
+});
+
 test("findUngroundedSpecificsInText flags ungrounded years and currency", () => {
   const output = "The 2027 model costs $2499 in Spain.";
   const evidence = "Catalog shows current 2026 inventory only.";

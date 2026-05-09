@@ -5216,6 +5216,7 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
   }
 
   const ungrounded: string[] = [];
+  const evidenceWords = new Set(evidenceCorpus.split(" ").filter(Boolean));
   for (const token of candidates) {
     const normalized = token.toLowerCase().replace(/\s+/g, " ");
     if (evidenceCorpus.includes(normalized)) continue;
@@ -5229,6 +5230,19 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
     if (parts.length >= 2) {
       const core = parts.slice(0, 2).join(" ");
       if (/\d/.test(core) && evidenceCorpus.includes(core)) continue;
+    }
+    // Phase 12 follow-up: word-set fallback. Worker writes a token like
+    // "MacBook Pro M3 Max" while evidence has "MacBook Pro with M3 Max"
+    // — substring search fails because of the inserted "with", but the
+    // token IS grounded by every significant word. Treat the token as
+    // grounded when every "significant" word (digit-bearing or 4+ chars)
+    // appears in the evidence vocabulary. Brand-only matches still fail
+    // because at least one digit-bearing word must also be present.
+    const significant = parts.filter((part) => /\d/.test(part) || part.length >= 4);
+    if (significant.length >= 2) {
+      const allPresent = significant.every((word) => evidenceWords.has(word));
+      const anyDigitWord = significant.some((word) => /\d/.test(word));
+      if (allPresent && anyDigitWord) continue;
     }
     ungrounded.push(token);
   }
