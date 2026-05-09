@@ -1647,16 +1647,27 @@ export class UniversalAgent {
     }
     const extraPatterns = await this.resolveEvidencePatterns(discoveryIntents);
     const limit = requiresMultipleSources(subtask) ? 3 : 2;
-    // Phase 12 Slice D: heuristic produces a short candidate list (top 3-6
-    // URLs by pattern + recency). The LLM ranker then picks `limit` of those
-    // by reading the subtask. Without a model the heuristic remains the
-    // final answer.
-    const candidatePool = selectBestUrlsForArtifact(
-      priorEvidence.join("\n\n"),
+    // Phase 12 follow-up: the LLM URL ranker is the primary mechanism. We
+    // prefer pattern-scored URLs when any are available (built-in seed +
+    // tool contracts + memory entries cover known intents like flight
+    // search), but for the long tail where no pattern matches we hand
+    // every non-low-value URL to the ranker so the model decides which
+    // candidate snippet actually answers the subtask. This removes the
+    // need to seed every domain in the runtime — the LLM's world
+    // knowledge fills the gap.
+    const evidenceText = priorEvidence.join("\n\n");
+    const scoredCandidates = selectBestUrlsForArtifact(
+      evidenceText,
       Math.max(limit * 2, 6),
       discoveryIntents,
       extraPatterns,
     );
+    const candidatePool =
+      scoredCandidates.length > 0
+        ? scoredCandidates
+        : extractHttpUrls(evidenceText)
+            .filter((url) => !isLowValueProofUrl(url))
+            .slice(0, 8);
     if (candidatePool.length === 0) {
       return { text: "No browser discovery URLs were available.", evidence: [], artifacts: [] };
     }
@@ -1664,16 +1675,47 @@ export class UniversalAgent {
       {
         subtask: { title: subtask.title, prompt: subtask.prompt },
         candidateUrls: candidatePool,
-        candidateContext: priorEvidence.join("\n\n").slice(0, 6_000),
+        candidateContext: evidenceText.slice(0, 6_000),
         intents: discoveryIntents,
         limit,
       },
       {
         llm: this.llm,
-        fallback: (cap) => candidatePool.slice(0, cap),
+        // When there were scored candidates, the heuristic fallback is
+        // those (intent-relevant). When candidates came from the
+        // unscored-but-non-low-value pool, the ONLY safe fallback is to
+        // skip discovery entirely — the model's veto is what kept us
+        // from attaching arxiv.org / sss.gov screenshots in the first
+        // place.
+        fallback: (cap) => (scoredCandidates.length > 0 ? scoredCandidates.slice(0, cap) : []),
       },
     );
-    const urls = ranked.selected.length > 0 ? ranked.selected : candidatePool.slice(0, limit);
+    const urls =
+      ranked.selected.length > 0
+        ? ranked.selected
+        : scoredCandidates.length > 0
+        ? scoredCandidates.slice(0, limit)
+        : [];
+    if (urls.length === 0) {
+      await emit({
+        spanId: createSpanId("discovery-url-ranked"),
+        parentSpanId,
+        type: "discovery-url-ranked",
+        actor: "discovery-url-ranker",
+        activity: "agent",
+        status: "completed",
+        title: "Discovery URL ranking",
+        detail: `${ranked.source === "llm" ? "LLM" : "Heuristic"} found no relevant URL among ${candidatePool.length} candidates${ranked.reason ? ` (${ranked.reason})` : ""}`,
+        payload: {
+          source: ranked.source,
+          intents: discoveryIntents,
+          selected: [],
+          rejected: ranked.rejected,
+          reason: ranked.reason,
+        },
+      });
+      return { text: "No browser discovery URLs were available.", evidence: [], artifacts: [] };
+    }
     await emit({
       spanId: createSpanId("discovery-url-ranked"),
       parentSpanId,

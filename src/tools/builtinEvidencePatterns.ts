@@ -83,86 +83,13 @@ export const BUILTIN_EVIDENCE_PATTERNS: EvidencePattern[] = [
     score: 45,
     notes: "Generic medical / health host fallback",
   },
-
-  // Product comparison / e-commerce ----------------------------------------
-  {
-    intent: "product-comparison",
-    hosts: [
-      "amazon.com", "amazon.es", "amazon.de", "amazon.it", "amazon.fr", "amazon.co.uk", "amazon.nl",
-      "ebay.com", "ebay.es", "ebay.de",
-      "pccomponentes.com",
-      "mediamarkt.es", "mediamarkt.de", "mediamarkt.nl",
-      "coolblue.nl", "coolblue.be",
-      "bestbuy.com", "newegg.com", "bhphotovideo.com",
-      "otto.de", "fnac.com", "fnac.es",
-      "currys.co.uk", "argos.co.uk",
-    ],
-    score: 95,
-    notes: "Major e-commerce retailers — direct product pages",
-  },
-  {
-    intent: "product-comparison",
-    hosts: [
-      "notebookcheck.net", "laptopmedia.com",
-      "pcmag.com", "techradar.com", "tomshardware.com", "tomsguide.com",
-      "rtings.com", "wirecutter.com",
-      "engadget.com", "theverge.com", "xda-developers.com",
-    ],
-    score: 100,
-    notes: "Tech review aggregators — strong product comparison signal",
-  },
-
-  // Market research --------------------------------------------------------
-  {
-    intent: "market-research",
-    hosts: [
-      "statista.com", "gartner.com", "idc.com", "forrester.com",
-      "mckinsey.com", "bain.com", "bcg.com",
-      "ec.europa.eu", "oecd.org", "worldbank.org",
-    ],
-    score: 80,
-    notes: "Industry research firms and supranational data sources",
-  },
-
-  // Restaurant / hospitality discovery ------------------------------------
-  {
-    intent: "restaurant-recommendation",
-    hosts: [
-      "tripadvisor.com", "tripadvisor.es", "tripadvisor.co.uk",
-      "thefork.com", "thefork.es",
-      "opentable.com", "opentable.es",
-      "yelp.com", "yelp.es",
-      "michelin.com", "guide.michelin.com",
-    ],
-    score: 95,
-    notes: "Restaurant booking and review platforms",
-  },
-
-  // Crypto / DeFi research -------------------------------------------------
-  {
-    intent: "investment-strategy-optimization",
-    hosts: [
-      "coinmarketcap.com", "coingecko.com",
-      "messari.io", "defillama.com",
-      "binance.com", "kraken.com", "coinbase.com",
-    ],
-    score: 90,
-    notes: "Crypto market data and exchange documentation",
-  },
-
-  // Code / technical research ---------------------------------------------
-  {
-    intent: "technical-research",
-    hosts: [
-      "stackoverflow.com", "stackexchange.com",
-      "developer.mozilla.org",
-      "docs.python.org", "doc.rust-lang.org",
-      "rfc-editor.org",
-      "research.ibm.com", "research.google",
-    ],
-    score: 85,
-    notes: "Authoritative technical documentation and Q&A",
-  },
+  // NOTE: Phase 12 keeps the built-in seed deliberately small. Flights and
+  // medical are the migration of pre-Phase 12 hardcodes; new domains
+  // (product-comparison, restaurant, crypto, ...) must NOT be added here.
+  // Instead they should arrive through (a) Tool.evidencePatterns when a
+  // domain tool is registered, (b) memory entries (Slice C), or (c) the
+  // LLM URL ranker (Slice D) which uses world knowledge over candidate
+  // URL snippets and needs no host whitelist at all.
 ];
 
 /**
