@@ -62,20 +62,36 @@ test("findUngroundedSpecificsInText pair-with-gap fallback: 'MacBook Pro M3 Max'
   }
 });
 
-test("findUngroundedSpecificsInText pair-with-gap fallback rejects token whose chip word is anchored elsewhere (Bug 8 regression)", () => {
-  // Iter 8 regression: a naive word-set fallback let "MacBook Pro M4" through
-  // when evidence mentions "M4" in some unrelated place but never anchors it to
-  // "MacBook Pro". Pair-with-gap requires (pro, m4) to appear together; if M4
-  // never sits next to "pro" in evidence, the token must stay ungrounded.
+test("findUngroundedSpecificsInText pair-with-gap fallback rejects token whose digit-bearing pair is not anchored (Bug 8 regression)", () => {
+  // Iter 8 regression: word-set let "MacBook Pro M4" through when evidence
+  // mentioned "M4" in an unrelated place. Pair-anchor (any digit-bearing pair
+  // in evidence) requires (pro, m4) or (macbook, m4) to be anchored — neither
+  // is present here.
   const output = "Recommendation: MacBook Pro M4 with 36GB memory.";
   const evidence =
-    "Best pick: the MacBook Pro with M3 Max (96GB). The Apple M4 chip is also discussed in passing but no MacBook M4 model exists in our research.";
+    "Best pick: the MacBook Pro with M3 Max (96GB). Some unrelated mention of M4 elsewhere in a different context that does not connect to MacBook Pro at all.";
   const ungrounded = findUngroundedSpecificsInText(output, evidence);
-  // "MacBook Pro M4" should NOT be grounded because (pro, m4) never appear together.
-  // Note: evidence contains "Apple M4" so "M4" alone might pass via Apple\s+M\d
-  // pattern, but the brand+chip combo "MacBook Pro M4" must fail.
   const macbookM4Tokens = ungrounded.filter((t) => /macbook\s*pro\s*m4/i.test(t));
   assert.ok(macbookM4Tokens.length > 0, `MacBook Pro M4 should remain ungrounded, got: ${ungrounded.join(", ")}`);
+});
+
+test("findUngroundedSpecificsInText pair-anchor: 'Apple M4 Pro' grounded by 'MacBook Pro M4 Pro' in evidence (Bug 9 regression)", () => {
+  // Iter 9 regression: worker wrote shorthand "Apple M4 Pro" while evidence
+  // says "Apple's MacBook Pro M4 Pro specs show ...". Strict all-pairs check
+  // failed because (apple, m4) is not adjacent in evidence. Pair-anchor
+  // accepts the token because at least ONE digit-bearing pair (m4 pro) is
+  // anchored in evidence — the digits are real, just the brand prefix
+  // differs.
+  const output = "Apple M4 Pro starts at 24GB unified memory.";
+  const evidence =
+    "Apple's 14-inch MacBook Pro M4 Pro specs show a 24GB unified-memory starting point and a 48GB configurable ceiling on M4 Pro.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  for (const token of ungrounded) {
+    assert.ok(
+      !/M4/i.test(token),
+      `Token "${token}" should have passed pair-anchor (m4 pro is in evidence)`,
+    );
+  }
 });
 
 test("findUngroundedSpecificsInText pair-with-gap fallback still rejects brand-only matches", () => {

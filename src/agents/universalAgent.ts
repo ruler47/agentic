@@ -5248,15 +5248,21 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
 }
 
 /**
- * Phase 12 follow-up: check that every adjacent pair of words in
- * `parts` appears in the evidence corpus close to each other. "Close"
- * means: directly adjacent OR separated by one of a small set of
- * stop-words (with, and, the, of, by, ...). This is the deterministic
- * heuristic used by the ungrounded-specifics gate to allow grounded
- * tokens like "MacBook Pro M3 Max" (vs evidence "MacBook Pro with M3
- * Max") through, while still rejecting brand+chip tokens like
- * "MacBook Pro M4" when the chip itself is not anchored to the brand
- * in evidence.
+ * Phase 12 follow-up: check that AT LEAST ONE adjacent pair of words
+ * in `parts` is anchored in evidence AND contains a digit-bearing
+ * word. "Anchored" means: directly adjacent OR separated by one of a
+ * small set of stop-words (with, and, the, of, ...). This is the
+ * deterministic heuristic used by the ungrounded-specifics gate to
+ * allow grounded tokens like "Apple M4 Pro" (vs evidence "MacBook Pro
+ * M4 Pro" — pair `m4 pro` is anchored) and "MacBook Pro M3 Max" (vs
+ * evidence "MacBook Pro with M3 Max" — pair `m3 max` is anchored)
+ * through, while still rejecting brand+chip tokens like "MacBook Pro
+ * M4" when the chip is not adjacent to a brand word in evidence.
+ *
+ * The digit-bearing constraint is the actual anchor: a token is
+ * "specific" because of the digits it carries; if the digit-bearing
+ * pair is in evidence, the specific is real regardless of how the
+ * worker spelled the brand prefix.
  */
 function pairsAppearTogetherInEvidence(parts: string[], evidenceCorpus: string): boolean {
   const stopWords = new Set([
@@ -5266,17 +5272,15 @@ function pairsAppearTogetherInEvidence(parts: string[], evidenceCorpus: string):
   for (let i = 0; i < parts.length - 1; i += 1) {
     const a = parts[i];
     const b = parts[i + 1];
-    if (!a || !b) return false;
-    const direct = `${a} ${b}`;
-    if (evidenceCorpus.includes(direct)) continue;
-    // Try with each stop-word inserted between.
-    let bridged = false;
+    if (!a || !b) continue;
+    const pairCarriesDigit = /\d/.test(a) || /\d/.test(b);
+    if (!pairCarriesDigit) continue;
+    if (evidenceCorpus.includes(`${a} ${b}`)) return true;
     for (const sw of stopWords) {
-      if (evidenceCorpus.includes(`${a} ${sw} ${b}`)) { bridged = true; break; }
+      if (evidenceCorpus.includes(`${a} ${sw} ${b}`)) return true;
     }
-    if (!bridged) return false;
   }
-  return true;
+  return false;
 }
 
 /**
