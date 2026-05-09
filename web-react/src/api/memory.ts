@@ -99,6 +99,34 @@ export function useUpdateMemory() {
   });
 }
 
+export type CreateMemoryInput = {
+  title: string;
+  summary: string;
+  reusableProcedure: string;
+  tags?: string[];
+  scope?: MemoryScope;
+  scopeId?: string;
+  status?: MemoryStatus;
+  confidence?: number;
+  sensitivity?: MemorySensitivity;
+  evidence?: string[];
+};
+
+export function useCreateMemory() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateMemoryInput) =>
+      apiFetch<{ memory: SkillMemoryEntry }>("/api/memories", {
+        method: "POST",
+        body: input,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.memories });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.memoryReviews });
+    },
+  });
+}
+
 export function useRebuildMemoryEmbeddings() {
   const queryClient = useQueryClient();
   return useMutation({
