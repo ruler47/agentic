@@ -1459,6 +1459,10 @@ export class UniversalAgent {
     const declaredToolEvidence = await this.collectDeclaredToolInputs(
       subtask,
       [dependencyContext, ...evidence].filter((item): item is string => Boolean(item)),
+      // unused-positional-context — keep current API by attaching original
+      // task on a new dedicated parameter just below; we use it inside
+      // collectDeclaredToolInputs to gate planner-injected text commands.
+      originalTask,
       emit,
       parentSpanId,
       saveArtifact,
@@ -1914,6 +1918,10 @@ export class UniversalAgent {
     return this.collectDeclaredToolInputs(
       syntheticSubtask,
       priorEvidence,
+      // Synthetic browser-discovery commands are built from already-ranked
+      // search-evidence URLs; the ungrounded-specifics guard would be a
+      // no-op here and we don't have the original task at this layer.
+      "",
       emit,
       parentSpanId,
       saveArtifact,
@@ -1924,6 +1932,7 @@ export class UniversalAgent {
   private async collectDeclaredToolInputs(
     subtask: Subtask,
     priorEvidence: string[],
+    originalTask: string,
     emit: AgentEventEmitter,
     parentSpanId: string,
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
@@ -1944,9 +1953,17 @@ export class UniversalAgent {
         evidence.push(`Declared tool ${toolName} is not registered.`);
         continue;
       }
+      // Phase 12 follow-up: pre-call ungrounded gate on declared tool
+      // input. The planner sometimes embeds hallucinated specifics into
+      // browser `type` commands ("RTX 4080 32GB RAM") which then drives
+      // the rest of the run toward the hallucination. Strip those tokens
+      // from any string-bearing field before the structural URL rewrite
+      // takes over. Original user task is the grounding source — anything
+      // the planner added that is not in the task is treated as injected.
+      const guardedInput = guardDeclaredToolInputAgainstUngroundedSpecifics(input, originalTask);
       const runnableInput = improveDeclaredToolInput(
         tool.name,
-        input,
+        guardedInput,
         subtask,
         priorEvidence,
         declaredExtraPatterns,
@@ -4603,12 +4620,41 @@ function improveDeclaredToolInput(
   // Phase 12 final: intents come from the caller (classifier-resolved at
   // run start). Empty intents fall back to legacy first-non-low-value
   // path inside `selectBestUrlsForArtifact`.
-  const evidenceUrls = selectBestUrlsForArtifact(
-    priorEvidence.join("\n\n"),
-    requiresMultipleSources(subtask) ? 3 : 1,
+  const evidenceText = priorEvidence.join("\n\n");
+  const wantSources = requiresMultipleSources(subtask) ? 3 : 1;
+  let evidenceUrls = selectBestUrlsForArtifact(
+    evidenceText,
+    wantSources,
     intents,
     extraPatterns,
   );
+  // Phase 12 follow-up: when classifier-derived intents do not match any
+  // built-in or memory-supplied pattern (e.g. brand-new "product-comparison"
+  // intent with no domain pack registered), `selectBestUrlsForArtifact`
+  // returns []. Previously this collapsed back to the planner's hardcoded
+  // homepage navigation, leading to amazon.com / google.com home-page
+  // scrapes that contain no product evidence. Fall back to the first few
+  // non-low-value URLs straight out of search evidence — even without a
+  // pattern hit, anything is a better target than the placeholder
+  // homepage the planner wrote.
+  if (evidenceUrls.length === 0) {
+    evidenceUrls = extractHttpUrls(evidenceText)
+      .filter((url) => !isLowValueProofUrl(url))
+      .filter((url) => {
+        // Skip the same shallow placeholder we are trying to escape from.
+        try {
+          const parsed = new URL(url);
+          if (firstNavigationUrl) {
+            const placeholder = new URL(firstNavigationUrl);
+            if (parsed.hostname === placeholder.hostname && isShallowLandingUrl(url)) return false;
+          }
+          return !isShallowLandingUrl(url);
+        } catch {
+          return false;
+        }
+      })
+      .slice(0, wantSources);
+  }
   if (evidenceUrls.length === 0) return input;
 
   return {
@@ -5079,6 +5125,38 @@ function findUngroundedSpecifics(workerResult: WorkerResult): string[] {
 }
 
 /**
+ * Phase 12 follow-up: deeply walk a declared toolInput value and strip
+ * ungrounded specific tokens from every string-bearing field. The
+ * planner often hand-writes browser `type` / search query commands
+ * with hallucinated specifics — strip them at the same gate that
+ * cleans web.search query text.
+ *
+ * The returned object is a deep clone with the same shape; only
+ * string leaves are touched. Numbers, booleans, and structural keys
+ * are preserved. Empty originalTask short-circuits to identity.
+ */
+function guardDeclaredToolInputAgainstUngroundedSpecifics(input: unknown, originalTask: string): unknown {
+  if (!originalTask) return input;
+  if (typeof input === "string") {
+    return guardSearchQueryAgainstUngroundedSpecifics(input, originalTask);
+  }
+  if (Array.isArray(input)) {
+    return input.map((item) => guardDeclaredToolInputAgainstUngroundedSpecifics(item, originalTask));
+  }
+  if (input && typeof input === "object") {
+    return Object.fromEntries(
+      Object.entries(input as Record<string, unknown>).map(([key, value]) => [
+        key,
+        // Don't touch URL fields — pre-call URL rewrite is handled
+        // structurally by improveDeclaredToolInput.
+        key === "url" ? value : guardDeclaredToolInputAgainstUngroundedSpecifics(value, originalTask),
+      ]),
+    );
+  }
+  return input;
+}
+
+/**
  * Phase 12 follow-up: pre-call gate on a search query string. Strips
  * tokens that look like specific product / version identifiers but
  * are NOT in the user's original task. The planner is allowed to
@@ -5446,8 +5524,11 @@ export const __testing__ = {
   buildSynthesisEvidenceCorpus,
   enforceUngroundedSpecificsOnSynthesis,
   guardSearchQueryAgainstUngroundedSpecifics,
+  guardDeclaredToolInputAgainstUngroundedSpecifics,
   parseForbiddenTokensFromReviewNotes,
   geoBiasScore,
   getAllWorkerArtifacts,
   getApprovedArtifacts,
+  improveDeclaredToolInput,
+  isShallowLandingUrl,
 };

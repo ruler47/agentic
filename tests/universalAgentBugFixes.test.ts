@@ -4,10 +4,13 @@ import { __testing__ } from "../src/agents/universalAgent.js";
 
 const {
   guardSearchQueryAgainstUngroundedSpecifics,
+  guardDeclaredToolInputAgainstUngroundedSpecifics,
   parseForbiddenTokensFromReviewNotes,
   geoBiasScore,
   getAllWorkerArtifacts,
   getApprovedArtifacts,
+  improveDeclaredToolInput,
+  isShallowLandingUrl,
 } = __testing__;
 
 // Bug 2: pre-call ungrounded-gate on search query.
@@ -51,6 +54,85 @@ test("geoBiasScore boosts URLs containing the anchor token", () => {
   assert.equal(geoBiasScore("https://amazon.es", []), 0);
   // Accent-insensitive match.
   assert.equal(geoBiasScore("https://espana-tech.com", ["España"]), 1);
+});
+
+// Bug 5b: deep-walk ungrounded gate on toolInputs (browser type/text commands).
+test("guardDeclaredToolInputAgainstUngroundedSpecifics strips planner-injected specifics from browser type commands", () => {
+  const planned = {
+    commands: [
+      { type: "navigate", url: "https://www.google.com" },
+      { type: "type", text: "best portable laptop for local LLM and gaming under 2500 USD RTX 4080 32GB RAM" },
+      { type: "pressEnter" },
+      { type: "extractText" },
+    ],
+  };
+  const userTask = "найди мне лучший ноутбук для программирования и LLM-разработки";
+  const cleaned = guardDeclaredToolInputAgainstUngroundedSpecifics(planned, userTask) as typeof planned;
+  // URL is preserved (structural rewrite is improveDeclaredToolInput's job).
+  assert.equal(cleaned.commands[0].url, "https://www.google.com");
+  // Hallucinated GPU spec stripped from text.
+  assert.ok(!/RTX\s*4080/i.test(cleaned.commands[1].text!), `text still has RTX 4080: ${cleaned.commands[1].text}`);
+  // Generic vocabulary preserved.
+  assert.ok(/laptop/i.test(cleaned.commands[1].text!));
+});
+
+test("guardDeclaredToolInputAgainstUngroundedSpecifics is a deep no-op when nothing is ungrounded", () => {
+  const planned = {
+    commands: [
+      { type: "navigate", url: "https://example.com/page" },
+      { type: "extractText" },
+    ],
+  };
+  const userTask = "find me a generic page";
+  const cleaned = guardDeclaredToolInputAgainstUngroundedSpecifics(planned, userTask) as typeof planned;
+  assert.deepEqual(cleaned, planned);
+});
+
+// Bug 5c: improveDeclaredToolInput fallback when no pattern matches.
+test("improveDeclaredToolInput rewrites homepage navigation to first non-low-value URL when patterns return empty", () => {
+  const subtask = {
+    id: "discovery",
+    title: "Identify candidates",
+    role: "researcher",
+    prompt: "Search for laptops",
+    expectedOutput: "list of candidates",
+    reviewCriteria: [],
+    requiredTools: [],
+    dependencies: [],
+  };
+  const input = {
+    commands: [
+      { type: "navigate", url: "https://www.amazon.com" },
+      { type: "extractText" },
+    ],
+  };
+  const priorEvidence = [
+    "Search results: https://www.tomshardware.com/laptops/best-laptops 'Best Laptops 2026'",
+    "Search results: https://www.nytimes.com/wirecutter/reviews/best-laptops 'The 14 Best Laptops of 2026'",
+  ];
+  const result = improveDeclaredToolInput(
+    "browser.operate",
+    input,
+    subtask as never,
+    priorEvidence,
+    [],
+    ["product-comparison"], // no built-in pattern for this intent → fallback
+  ) as typeof input;
+  // Should have rewritten to the first non-low-value URL.
+  const navigates = result.commands.filter((c) => (c as { type: string }).type === "navigate");
+  assert.ok(navigates.length >= 1);
+  const newUrl = (navigates[0] as { url: string }).url;
+  assert.notEqual(newUrl, "https://www.amazon.com");
+  assert.ok(/tomshardware\.com|nytimes\.com/.test(newUrl), `fallback URL should be from priorEvidence: ${newUrl}`);
+});
+
+test("isShallowLandingUrl flags root and single-segment paths", () => {
+  assert.equal(isShallowLandingUrl("https://www.amazon.com"), true);
+  assert.equal(isShallowLandingUrl("https://www.amazon.com/"), true);
+  assert.equal(isShallowLandingUrl("https://www.amazon.com/laptops"), true); // 1 segment is still shallow
+  assert.equal(isShallowLandingUrl("https://www.amazon.com/laptops/RTX-5050/dp/ABC"), false);
+  // Query strings preserve depth.
+  assert.equal(isShallowLandingUrl("https://www.amazon.com/?s=laptop"), false);
 });
 
 // Bug 3: artifact propagation to run-completed.
