@@ -1348,6 +1348,7 @@ export class UniversalAgent {
       artifacts: collectedEvidence.artifacts,
       traceSpanId: spanId,
       modelTier,
+      dependencyContextSnapshot: dependencyContext,
     };
     const selfCheckStartedAt = new Date();
     const selfCheck = buildWorkerSelfCheck(workerResult, selfCheckStartedAt);
@@ -5120,6 +5121,12 @@ function findUngroundedSpecifics(workerResult: WorkerResult): string[] {
     workerResult.subtask.expectedOutput ?? "",
     ...(workerResult.subtask.reviewCriteria ?? []),
     ...(workerResult.toolEvidence ?? []),
+    // Phase 12 follow-up: include the dependency context that was
+    // passed into the worker prompt. Upstream workers' outputs and
+    // tool evidence already passed THEIR own hard-gate review (or were
+    // rejected), so any specific surviving upstream is grounded data
+    // the downstream worker is entitled to cite.
+    workerResult.dependencyContextSnapshot ?? "",
   ].join("\n");
   return findUngroundedSpecificsInText(output, evidenceText);
 }
@@ -5318,6 +5325,13 @@ function buildSynthesisEvidenceCorpus(
     parts.push(wr.subtask?.expectedOutput ?? "");
     if (wr.subtask?.reviewCriteria) parts.push(wr.subtask.reviewCriteria.join("\n"));
     if (wr.toolEvidence) parts.push(wr.toolEvidence.join("\n"));
+    // Phase 12 follow-up: include the dependency context that fed the
+    // upstream → downstream chain. A subtask's `toolEvidence` only
+    // covers what THAT subtask's tools produced; tokens grounded in
+    // an earlier subtask's evidence (e.g. discovery → verify →
+    // synthesis) reach the synthesizer via the dependency context
+    // chain, not through tool evidence on the synthesizer subtask.
+    if (wr.dependencyContextSnapshot) parts.push(wr.dependencyContextSnapshot);
   }
   for (const artifact of artifacts ?? []) {
     parts.push(artifact.filename ?? "");

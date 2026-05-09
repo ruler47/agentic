@@ -114,6 +114,17 @@ export type WorkerResult = {
   artifacts?: AgentArtifact[];
   traceSpanId?: string;
   modelTier?: ModelTier;
+  /**
+   * Phase 12 follow-up: snapshot of the dependency-context block that
+   * was passed into the worker prompt for this subtask. Captures the
+   * upstream worker outputs and tool-evidence summaries that this
+   * worker is allowed to reuse. Hard-gate review needs it so that a
+   * downstream worker citing a token like "MacBook Pro M3 Max" — which
+   * was grounded in the upstream discovery worker's evidence — does
+   * not get falsely rejected just because the downstream worker's own
+   * tool calls did not re-fetch the same source.
+   */
+  dependencyContextSnapshot?: string;
 };
 
 export type ReviewResult = {
