@@ -5,6 +5,8 @@ export type AuditAction =
   | "run.failed"
   | "run.cancelled"
   | "run.updated"
+  | "run.restarted"
+  | "run.recovered_at_bootstrap"
   | "artifact.uploaded"
   | "artifact.generated"
   | "tool.used"

@@ -54,6 +54,13 @@ export class RunsController {
     return { run: await this.service.cancel(decodeURIComponent(id), body) };
   }
 
+  @Post("runs/:id/restart")
+  @HttpCode(202)
+  async restart(@Param("id") id: string) {
+    const result = await this.service.restart(decodeURIComponent(id));
+    return { source: result.source, restart: result.restart };
+  }
+
   @Get("runs/:id/artifacts/:artifactId")
   async downloadArtifact(
     @Param("id") id: string,

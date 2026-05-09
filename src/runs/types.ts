@@ -55,6 +55,13 @@ export type RunStore = {
   cancel(id: string, reason: string): Promise<void>;
   markWaitingForToolRework(id: string, reason: string): Promise<void>;
   resumeFromToolRework(id: string, reason: string): Promise<void>;
-  recoverInterrupted(error: string): Promise<number>;
+  /**
+   * Sweep runs left in `queued` / `running` after a process restart and mark
+   * them `failed` with the supplied reason. `staleAfterMs` (optional) filters
+   * the sweep to runs whose `updated_at` is older than the threshold so a
+   * brand-new run that the same process just started a moment ago is not
+   * killed. Default 0 = no filter (legacy behaviour).
+   */
+  recoverInterrupted(error: string, options?: { staleAfterMs?: number }): Promise<number>;
   deleteByThreadId(threadId: string): Promise<number>;
 };

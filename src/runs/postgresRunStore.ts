@@ -196,14 +196,26 @@ export class PostgresRunStore implements RunStore {
     );
   }
 
-  async recoverInterrupted(error: string): Promise<number> {
+  async recoverInterrupted(
+    error: string,
+    options: { staleAfterMs?: number } = {},
+  ): Promise<number> {
+    const now = new Date();
+    const threshold = options.staleAfterMs && options.staleAfterMs > 0 ? options.staleAfterMs : 0;
+    const params: unknown[] = [error, now];
+    let where = `where status in ('queued', 'running')`;
+    if (threshold > 0) {
+      const cutoff = new Date(now.getTime() - threshold);
+      params.push(cutoff);
+      where += ` and updated_at < $3`;
+    }
     const result = await this.pool.query(
       `
         update runs
         set status = 'failed', error = $1, updated_at = $2
-        where status in ('queued', 'running')
+        ${where}
       `,
-      [error, new Date()],
+      params,
     );
 
     return result.rowCount ?? 0;

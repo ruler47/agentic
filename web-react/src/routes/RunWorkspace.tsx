@@ -5,7 +5,7 @@ import {
   useRunRetrospectives,
   useWorkLedger,
 } from "@/api/ledger";
-import { useCancelRun, useRun, useRunWaits } from "@/api/runs";
+import { useCancelRun, useRestartRun, useRun, useRunWaits } from "@/api/runs";
 import {
   useAutoRetryReworkWait,
   useCreateRetryRunForWait,
@@ -31,6 +31,7 @@ export function RunWorkspacePage() {
   const evidenceLedger = useEvidenceLedger({ runId });
   const retrospectives = useRunRetrospectives({ runId });
   const cancelRun = useCancelRun();
+  const restartRun = useRestartRun();
   useRunStream(runId);
 
   if (!runId) return <p className="text-sm text-app-text-muted">Run id is missing.</p>;
@@ -57,6 +58,17 @@ export function RunWorkspacePage() {
     (wait) => wait.status !== "resumed" && wait.status !== "cancelled" && wait.status !== "failed",
   );
   const isLive = data.status === "queued" || data.status === "running";
+  // Phase 12 follow-up: detect runs that look "stuck" — i.e. status=running
+  // but no event arrived in the last 5 minutes. Operators commonly hit this
+  // after a Docker / process restart left the coordinator promise dead.
+  const STUCK_THRESHOLD_MS = 5 * 60 * 1000;
+  const lastUpdate = Date.parse(data.updatedAt);
+  const isStuck =
+    data.status === "running" &&
+    Number.isFinite(lastUpdate) &&
+    Date.now() - lastUpdate > STUCK_THRESHOLD_MS;
+  // Restart is offered for any non-active terminal status, plus stuck runs.
+  const canRestart = !isLive || isStuck;
   const finalAnswer = runStatusMessage(data);
 
   return (
@@ -110,6 +122,34 @@ export function RunWorkspacePage() {
               >
                 {cancelRun.isPending ? "Cancelling…" : "Cancel run"}
               </button>
+            ) : null}
+            {canRestart ? (
+              <button
+                type="button"
+                disabled={restartRun.isPending}
+                onClick={() => {
+                  restartRun.mutate(data.id, {
+                    onSuccess: (response) => {
+                      window.location.assign(`/run/${response.restart.id}`);
+                    },
+                  });
+                }}
+                className="rounded-md border border-app-accent/40 bg-app-accent-soft px-3 py-1 text-xs font-semibold text-app-accent transition-colors hover:bg-app-accent-soft/70 disabled:opacity-50"
+                title={
+                  isStuck
+                    ? "Run looks stuck (no events in 5+ min). Restart creates a fresh run from the same task with a parent link."
+                    : "Restart this run with the same task. The new run is linked back to this one as parentRunId."
+                }
+              >
+                {restartRun.isPending
+                  ? "Restarting…"
+                  : isStuck
+                  ? "Restart stuck run"
+                  : "Restart run"}
+              </button>
+            ) : null}
+            {restartRun.isError ? (
+              <span className="text-[11px] text-app-danger">{restartRun.error.message}</span>
             ) : null}
             <Link
               to={`/trace/${data.id}`}

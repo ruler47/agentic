@@ -5,7 +5,9 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
+  OnApplicationBootstrap,
   ServiceUnavailableException,
 } from "@nestjs/common";
 import type { UniversalAgent } from "../../../agents/universalAgent.js";
@@ -84,8 +86,21 @@ class RunContextError extends Error {
   }
 }
 
+/**
+ * Phase 12 follow-up: a Docker / process restart leaves any in-flight run
+ * stuck at status=running forever — the originating coordinator promise died
+ * with the old process. We sweep on application bootstrap and offer a
+ * `restart` action so operators can re-launch the same task without losing
+ * the audit trail.
+ */
+const ORPHAN_STALE_AFTER_MS = 5 * 60 * 1000; // 5 minutes
+const ORPHAN_RECOVERY_REASON =
+  "Run was interrupted by an application restart and never resumed; restart it to retry.";
+
 @Injectable()
-export class RunsService {
+export class RunsService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(RunsService.name);
+
   constructor(
     @Inject(RUN_STORE) private readonly runs: RunStore,
     @Inject(UNIVERSAL_AGENT) private readonly agent: UniversalAgent,
@@ -108,8 +123,116 @@ export class RunsService {
     @Inject(ToolReworkCoordinatorService) private readonly rework: ToolReworkCoordinatorService,
   ) {}
 
+  /**
+   * Phase 12 follow-up: sweep stuck `running` / `queued` runs at app bootstrap
+   * so a Docker restart cannot leave them looping forever in the UI. The
+   * stale threshold (5 minutes) protects newly-started runs that the *same*
+   * coordinator just kicked off in the same process. Each recovered run gets
+   * an audit event so the timeline shows why it transitioned to `failed`.
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    try {
+      const recovered = await this.runs.recoverInterrupted(ORPHAN_RECOVERY_REASON, {
+        staleAfterMs: ORPHAN_STALE_AFTER_MS,
+      });
+      if (recovered > 0) {
+        this.logger.warn(`Recovered ${recovered} interrupted run(s) at bootstrap`);
+        await this.audit.record({
+          instanceId: "instance-local",
+          actorId: "system",
+          actorType: "agent",
+          action: "run.recovered_at_bootstrap",
+          targetType: "run",
+          targetId: "all",
+          status: "success",
+          summary: `Recovered ${recovered} run(s) interrupted by app restart`,
+          metadata: { recovered, staleAfterMs: ORPHAN_STALE_AFTER_MS },
+        });
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to recover interrupted runs at bootstrap: ${error instanceof Error ? error.message : "unknown error"}`,
+      );
+    }
+  }
+
   list(): Promise<AgentRunRecord[]> {
     return this.runs.list();
+  }
+
+  /**
+   * Phase 12 follow-up: restart an interrupted / failed / cancelled run by
+   * creating a fresh run from the same task and metadata, with
+   * `parentRunId = source.id` so the chain is auditable. The new run goes
+   * through the regular execute pipeline (classification, planning, work
+   * ledger, …). Stuck `running` / `queued` runs that are older than the
+   * stale threshold are recovered first.
+   */
+  async restart(sourceId: string): Promise<{ source: AgentRunRecord; restart: AgentRunRecord }> {
+    const source = await this.runs.get(sourceId);
+    if (!source) throw new NotFoundException(`Run ${sourceId} not found`);
+
+    // If the source is "running" but stale, fail it first so the restart
+    // chain has a clean predecessor. Fresh active runs cannot be restarted —
+    // user is asked to cancel them explicitly.
+    if (source.status === "running" || source.status === "queued") {
+      const updated = Date.parse(source.updatedAt);
+      const stale = Number.isFinite(updated) && Date.now() - updated > ORPHAN_STALE_AFTER_MS;
+      if (!stale) {
+        throw new ConflictException(
+          `Run ${sourceId} is currently active (status=${source.status}, last activity ${source.updatedAt}). Cancel it before restarting.`,
+        );
+      }
+      await this.runs.fail(sourceId, ORPHAN_RECOVERY_REASON);
+    }
+
+    const reloaded = await this.runs.get(sourceId);
+    if (!reloaded) throw new NotFoundException(`Run ${sourceId} disappeared during restart`);
+
+    if (reloaded.status === "waiting_tool_rework") {
+      throw new ConflictException(
+        `Run ${sourceId} is waiting for a tool rework; use the auto-retry / promote flow instead of restart.`,
+      );
+    }
+
+    const context: RunCreateContext = {
+      instanceId: reloaded.instanceId,
+      requesterUserId: reloaded.requesterUserId,
+      channel: reloaded.channel,
+      threadId: reloaded.threadId,
+      parentRunId: reloaded.id,
+      sourceUserId: reloaded.sourceUserId,
+      sourceMessageId: reloaded.sourceMessageId,
+      sourceChatId: reloaded.sourceChatId,
+      sourceThreadId: reloaded.sourceThreadId,
+    };
+    const restart = await this.runs.create(reloaded.task, context);
+    await this.audit.record({
+      instanceId: context.instanceId,
+      actorId: context.requesterUserId ?? "user-admin",
+      actorType: "user",
+      action: "run.restarted",
+      targetType: "run",
+      targetId: restart.id,
+      status: "pending",
+      runId: restart.id,
+      threadId: context.threadId,
+      requesterUserId: context.requesterUserId,
+      channel: context.channel,
+      summary: `Run restarted from ${sourceId}`,
+      metadata: {
+        sourceRunId: sourceId,
+        sourceStatus: reloaded.status,
+        sourceError: reloaded.error,
+      },
+    });
+
+    void this.executeRun(restart.id, reloaded.task, [], {
+      threadId: context.threadId,
+    });
+
+    const updated = await this.runs.get(restart.id);
+    return { source: reloaded, restart: updated ?? restart };
   }
 
   async get(id: string): Promise<AgentRunRecord> {

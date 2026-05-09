@@ -73,6 +73,34 @@ export function useCancelRun() {
   });
 }
 
+export type RestartRunResponse = {
+  source: AgentRunRecord;
+  restart: AgentRunRecord;
+};
+
+/**
+ * Phase 12 follow-up: restart an interrupted / failed / cancelled / stuck
+ * run. The server creates a fresh run with the same task (and parentRunId
+ * pointing at the source). Stuck `running` / `queued` runs older than the
+ * stale threshold are recovered first; truly active runs are rejected with
+ * 409 so operators must cancel them explicitly.
+ */
+export function useRestartRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<RestartRunResponse>(`/api/runs/${encodeURIComponent(id)}/restart`, {
+        method: "POST",
+        body: {},
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.run(data.source.id), data.source);
+      queryClient.setQueryData(queryKeys.run(data.restart.id), data.restart);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+    },
+  });
+}
+
 // Convenience selectors used by Dashboard / Runs / Run Workspace --------
 
 export function selectActiveRuns(runs: AgentRunRecord[] | undefined): AgentRunRecord[] {

@@ -93,16 +93,24 @@ export class InMemoryRunStore implements RunStore {
     run.updatedAt = new Date().toISOString();
   }
 
-  async recoverInterrupted(error: string): Promise<number> {
+  async recoverInterrupted(
+    error: string,
+    options: { staleAfterMs?: number } = {},
+  ): Promise<number> {
     let recovered = 0;
-    const now = new Date().toISOString();
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    const threshold = options.staleAfterMs && options.staleAfterMs > 0 ? options.staleAfterMs : 0;
 
     for (const run of this.runs.values()) {
       if (run.status !== "queued" && run.status !== "running") continue;
-
+      if (threshold > 0) {
+        const updated = Date.parse(run.updatedAt);
+        if (Number.isFinite(updated) && now - updated < threshold) continue;
+      }
       run.status = "failed";
       run.error = error;
-      run.updatedAt = now;
+      run.updatedAt = nowIso;
       recovered += 1;
     }
 
