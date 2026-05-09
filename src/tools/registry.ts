@@ -1,4 +1,4 @@
-import { Tool, ToolExecutionContext, ToolInput, ToolResult } from "./tool.js";
+import { EvidencePattern, Tool, ToolExecutionContext, ToolInput, ToolResult } from "./tool.js";
 
 export type ToolUsageEvent = {
   toolName: string;
@@ -46,6 +46,24 @@ export class ToolRegistry {
 
   findByCapability(capability: string): Tool[] {
     return this.list().filter((tool) => tool.capabilities.includes(capability));
+  }
+
+  /**
+   * Phase 12 Slice B: collect evidence patterns from every registered tool
+   * whose `evidencePatterns` array contains at least one entry whose `intent`
+   * is in `intents`. Patterns from inactive intents are filtered out so
+   * callers can pass the full list directly to `scoreUrlAgainstPatterns`.
+   */
+  evidencePatternsForIntents(intents: readonly string[]): EvidencePattern[] {
+    if (intents.length === 0) return [];
+    const out: EvidencePattern[] = [];
+    for (const tool of this.tools.values()) {
+      if (!tool.evidencePatterns) continue;
+      for (const pattern of tool.evidencePatterns) {
+        if (intents.includes(pattern.intent)) out.push(pattern);
+      }
+    }
+    return out;
   }
 
   async execute(

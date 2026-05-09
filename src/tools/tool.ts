@@ -93,6 +93,32 @@ export type ToolExample = {
   output?: unknown;
 };
 
+/**
+ * Phase 12 Slice B: a tool can declare which kinds of URLs it considers
+ * high-quality evidence for a given intent. The universal runtime is intent
+ * and pattern-driven; it does not embed any specific host whitelist. When a
+ * task's inferred intents match `intent` here, the URL receives `score`. The
+ * highest scoring pattern wins. `score` should be 1..200 to leave room for
+ * future memory-driven overrides at higher / lower bands.
+ *
+ * Pattern matching:
+ * - `hosts`: exact host or hostname suffix match (e.g. `skyscanner.com` matches
+ *   both `skyscanner.com` and `www.skyscanner.com`).
+ * - `urlPatterns`: regex strings tested against the full URL string.
+ * - `pathPatterns`: regex strings tested against `URL.pathname` only. Useful
+ *   for "host = X AND path matches Y" rules.
+ * - At least one of the three must be supplied; if multiple are present, the
+ *   pattern matches when ALL provided checks pass (logical AND).
+ */
+export type EvidencePattern = {
+  intent: string;
+  hosts?: string[];
+  urlPatterns?: string[];
+  pathPatterns?: string[];
+  score: number;
+  notes?: string;
+};
+
 export type Tool = {
   name: string;
   displayName?: string;
@@ -108,6 +134,7 @@ export type Tool = {
   storage?: ToolStorageContract;
   docsMarkdown?: string;
   examples?: ToolExample[];
+  evidencePatterns?: EvidencePattern[];
   healthcheck?(): Promise<ToolHealth>;
   startService?(context: ToolServiceContext): Promise<ToolServiceHandle>;
   run(input: ToolInput, context?: ToolExecutionContext): Promise<ToolResult>;

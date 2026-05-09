@@ -12,6 +12,12 @@ import {
 import { evaluateMemoryPolicy, MemoryPolicyDecision } from "../memory/memoryPolicy.js";
 import { reviewMemoryProposal } from "../memory/memoryProposalReview.js";
 import { ToolRegistry } from "../tools/registry.js";
+import {
+  BUILTIN_EVIDENCE_PATTERNS,
+  isGenericLandingUrl,
+  scoreUrlAgainstPatterns,
+} from "../tools/builtinEvidencePatterns.js";
+import { EvidencePattern } from "../tools/tool.js";
 import { shouldUseWebSearch } from "../tools/webSearchTool.js";
 import {
   AgentArtifact,
@@ -4326,16 +4332,18 @@ function isPlaceholderNavigateCommand(command: unknown): boolean {
   }
 }
 
-function isGenericBrowserSearchUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
-    if (/google\.[a-z.]+$/.test(host) && (path === "/flights" || path === "/travel/flights")) return true;
-    return /(skyscanner|kayak|momondo|kiwi|expedia|trip\.com)/.test(host) && (path === "" || path === "/" || path === "/flights");
-  } catch {
-    return false;
-  }
+/**
+ * Phase 12 Slice B: a "generic" landing URL is the bare host (or known
+ * placeholder path) of any host that participates in built-in evidence
+ * patterns. Used to downgrade an empty navigation, exactly as before — but
+ * the host list is data, not code. Future tool packs that declare hosts
+ * automatically inherit the same generic-landing handling.
+ */
+function isGenericBrowserSearchUrl(
+  url: string,
+  patterns: readonly EvidencePattern[] = BUILTIN_EVIDENCE_PATTERNS,
+): boolean {
+  return isGenericLandingUrl(url, patterns);
 }
 
 function safeLabel(value: string): string {
@@ -4402,37 +4410,21 @@ function normalizedHost(url: string): string {
   }
 }
 
-function scoreArtifactUrl(url: string, intents: string[] = []): number {
-  // Phase 12 Slice A: domain-specific host scores only fire when the matching
-  // task intent is present. Without an intent gate, the highest-scoring URLs
-  // (e.g. google.com/travel/flights = 120) win the discovery pool even when
-  // the run is unrelated, leaking nonsense screenshots into laptop / research
-  // / code subtasks. Slices B and C move these whitelists into tool contracts
-  // and scoped memory entries entirely.
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const path = parsed.pathname.toLowerCase();
-    const flightSearch = intents.includes("flight-search");
-    const medicalLookup = intents.includes("medical-lookup");
-    if (flightSearch) {
-      if (/google\.[a-z.]+$/.test(host) && path.includes("/travel/flights")) return 120;
-      if (host.includes("skyscanner") && /routes|flights/.test(path)) return 110;
-      if (host.includes("kayak") && /flight|route/.test(path)) return 105;
-      if (/(momondo|kiwi|expedia|trip\.com|aviasales)/.test(host) && /flight|route/.test(path)) return 95;
-      if (/(pegasus|turkishairlines|ryanair|easyjet|vueling|lufthansa)/.test(host)) return 85;
-    }
-    if (medicalLookup) {
-      if (/(doctolib|doctoralia|jameda|onedoc|topdoctors|sanego|miodottore)/.test(host)) return 90;
-      if (/(find-?a-?doctor|doctor|doctors|clinician|specialist|provider|appointment|booking|aerzte|arzt|medecin|especialista|allergolog|immunolog)/.test(path)) {
-        return 70;
-      }
-      if (/(hospital|clinic|medical|health|gesundheit|hopital|spital)/.test(host)) return 45;
-    }
-    return 0;
-  } catch {
-    return 0;
-  }
+/**
+ * Phase 12 Slice B: domain-specific URL scoring is no longer hardcoded here.
+ * Patterns come from tool contracts (`Tool.evidencePatterns`) plus a built-in
+ * seed (`BUILTIN_EVIDENCE_PATTERNS`). Caller supplies the active intent set
+ * and the resolved pattern list. Without an intent or pattern, every URL
+ * scores 0 — which is the correct outcome: no domain pack registered ⇒ no
+ * domain ranking. Slice A's `inferTaskIntents` decides which intents are
+ * active; Slice C will let memory entries override / extend these patterns.
+ */
+function scoreArtifactUrl(
+  url: string,
+  intents: string[] = [],
+  patterns: readonly EvidencePattern[] = BUILTIN_EVIDENCE_PATTERNS,
+): number {
+  return scoreUrlAgainstPatterns(url, intents, patterns);
 }
 
 function isLowValueProofUrl(url: string): boolean {
