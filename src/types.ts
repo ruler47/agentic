@@ -68,6 +68,17 @@ export type TaskComplexity = {
   reason: string;
   domains: string[];
   riskLevel: "low" | "medium" | "high";
+  /**
+   * Phase 12 Slice A (full): semantic task intents inferred by the
+   * classifier model. The runtime uses these to gate domain-specific URL
+   * scoring, search query expansion, and discovery activation. Free-form
+   * strings — the canonical seed list is in `src/agents/intentInference.ts`
+   * (`KNOWN_INTENTS`) but operators / future tools can add new values.
+   * Empty array means "no domain-specific knowledge applies". Optional in
+   * the type to keep older fixtures and tests source-compatible; the
+   * runtime always normalizes it to `[]` on parse.
+   */
+  intent?: string[];
 };
 
 export type Subtask = {

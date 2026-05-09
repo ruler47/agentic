@@ -207,6 +207,16 @@ export class UniversalAgent {
    */
   private readonly runScopedLedgers = new Map<string, RuntimeLedgerCoordinator>();
 
+  /**
+   * Phase 12 Slice A (full): per-run classifier-resolved intents. Set when
+   * `classify()` returns and consumed by deep helpers (collect browser
+   * discovery, screenshot, declared inputs) without threading the full
+   * `TaskComplexity` object through every subtask. Falls back to
+   * `inferTaskIntents(text)` regex when the run has no entry (e.g. CLI
+   * smokes that bypass classification).
+   */
+  private readonly runScopedIntents = new Map<string, string[]>();
+
   constructor(
     private readonly llm: LlmClient,
     private readonly skillMemory: SkillMemoryStore,
@@ -219,6 +229,19 @@ export class UniversalAgent {
     const runId = toolExecutionContext?.runId;
     if (typeof runId !== "string" || runId === "") return undefined;
     return this.runScopedLedgers.get(runId);
+  }
+
+  /**
+   * Phase 12 Slice A (full): the canonical intent source. Prefers the
+   * classifier-resolved list stored in `runScopedIntents` when the run has
+   * one; otherwise falls back to regex `inferTaskIntents(text)` so paths
+   * that have not been threaded yet still work. Always returns a plain
+   * deduped array.
+   */
+  private resolveTaskIntents(text: string, runId?: string): string[] {
+    const fromRun = runId ? this.runScopedIntents.get(runId) : undefined;
+    if (fromRun && fromRun.length > 0) return fromRun;
+    return inferTaskIntents(text);
   }
 
   /**
@@ -255,7 +278,10 @@ export class UniversalAgent {
         await ledger.writeRetrospective(runOutcome, parentSpanId);
       }
     } finally {
-      if (runId) this.runScopedLedgers.delete(runId);
+      if (runId) {
+        this.runScopedLedgers.delete(runId);
+        this.runScopedIntents.delete(runId);
+      }
     }
   }
 
@@ -379,6 +405,12 @@ export class UniversalAgent {
         mode: "delegated",
         reason: `${complexity.reason} Registered API tool execution is required.`,
       };
+    }
+    // Phase 12 Slice A (full): cache classifier-resolved intents per run so
+    // deep helpers (browser discovery, screenshot, declared inputs) can read
+    // them without threading complexity through every layer.
+    if (options.runId) {
+      this.runScopedIntents.set(options.runId, [...(complexity.intent ?? [])]);
     }
     await emit({
       spanId: classificationSpanId,
@@ -987,7 +1019,16 @@ export class UniversalAgent {
       { role: "user", content: classifyPrompt(promptTask, promptMemories) },
     ], { modelTier });
 
-    return extractJson<TaskComplexity>(output);
+    const parsed = extractJson<TaskComplexity>(output);
+    // Phase 12 Slice A (full): normalize the new `intent` field. Older
+    // classifier responses may omit it entirely. We also treat any
+    // non-string entries as missing rather than throwing — defensive
+    // because the LLM occasionally sneaks in objects.
+    const rawIntent = (parsed as { intent?: unknown }).intent;
+    const intent = Array.isArray(rawIntent)
+      ? [...new Set(rawIntent.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim()))]
+      : [];
+    return { ...parsed, intent };
   }
 
   private async plan(
@@ -1349,7 +1390,11 @@ export class UniversalAgent {
   ): Promise<string> {
     const spanId = createSpanId(`tool-${webSearch.name}`);
     const startedAt = new Date();
-    const queries = buildSearchQueries(subtask, contextText);
+    const searchIntents = this.resolveTaskIntents(
+      `${subtask.title}\n${subtask.prompt}\n${contextText}`,
+      toolExecutionContext?.runId,
+    );
+    const queries = buildSearchQueries(subtask, contextText, searchIntents);
     const query = queries.join(" | ");
 
     // Work Ledger claim: a sibling subtask in the same run/thread that asks for the
@@ -1589,15 +1634,17 @@ export class UniversalAgent {
       const normalized = toolName.toLowerCase();
       return normalized === "browser.operate" || normalized === "browser-operate";
     });
-    if (alreadyDeclared || !shouldCollectBrowserDiscovery(subtask, text)) {
+    const discoveryIntents = this.resolveTaskIntents(
+      `${subtask.title}\n${subtask.prompt}\n${text}`,
+      toolExecutionContext?.runId,
+    );
+    if (alreadyDeclared || !shouldCollectBrowserDiscovery(subtask, text, discoveryIntents)) {
       return { text: "No browser discovery evidence was needed.", evidence: [], artifacts: [] };
     }
 
     if (!(this.tools.get("browser.operate") ?? this.tools.findByCapability("browser-operate")[0])) {
       return { text: "No browser discovery tool is registered.", evidence: [], artifacts: [] };
     }
-
-    const discoveryIntents = inferTaskIntents(`${subtask.title}\n${subtask.prompt}\n${text}`);
     const extraPatterns = await this.resolveEvidencePatterns(discoveryIntents);
     const limit = requiresMultipleSources(subtask) ? 3 : 2;
     // Phase 12 Slice D: heuristic produces a short candidate list (top 3-6
@@ -1688,7 +1735,10 @@ export class UniversalAgent {
     const entries = Object.entries(subtask.toolInputs ?? {}).filter(([toolName]) => toolName !== "web.search");
     const evidence: string[] = [];
     const artifacts: AgentArtifact[] = [];
-    const declaredIntents = inferTaskIntents(`${subtask.title}\n${subtask.prompt}`);
+    const declaredIntents = this.resolveTaskIntents(
+      `${subtask.title}\n${subtask.prompt}`,
+      toolExecutionContext?.runId,
+    );
     const declaredExtraPatterns = await this.resolveEvidencePatterns(declaredIntents);
 
     for (const [toolName, input] of entries) {
@@ -2125,7 +2175,7 @@ export class UniversalAgent {
     improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<AgentArtifact | undefined> {
-    const screenshotIntents = inferTaskIntents(context);
+    const screenshotIntents = this.resolveTaskIntents(context, toolExecutionContext?.runId);
     const screenshotPatterns = await this.resolveEvidencePatterns(screenshotIntents);
     const url = selectBestUrlForArtifact(context, screenshotIntents, screenshotPatterns);
     if (!url) {
@@ -3984,15 +4034,18 @@ function shouldCollectWebSearch(subtask: Subtask, text: string, dependencyContex
   );
 }
 
-function shouldCollectBrowserDiscovery(subtask: Subtask, text: string): boolean {
+function shouldCollectBrowserDiscovery(
+  subtask: Subtask,
+  text: string,
+  intents: string[],
+): boolean {
   const requestedTools = (subtask.requiredTools ?? []).map((tool) => tool.toLowerCase());
   if (requestedTools.some((tool) => ["browser-operate", "browser.operate", "dom-extraction"].includes(tool))) {
     return true;
   }
   // Phase 12 Slice E: domain-specific anchors moved into intentInference.ts.
   // Discovery fires on generic discovery + interactive-source signals OR when
-  // any known task intent is inferred from the text.
-  const intents = inferTaskIntents(text);
+  // the classifier (or its regex fallback) reported any known task intent.
   return (isDiscoveryText(text) && wantsInteractiveSource(text)) || intents.length > 0;
 }
 
@@ -4092,23 +4145,30 @@ function clampMarketDays(days: number): number {
   return Math.max(1, Math.min(3650, Math.round(days)));
 }
 
-function buildSearchQueries(subtask: Subtask, contextText = ""): string[] {
+function buildSearchQueries(
+  subtask: Subtask,
+  contextText = "",
+  intents: string[] = [],
+): string[] {
   const promptLines = subtask.prompt
     .split(/\n+/)
     .map((line) => line.replace(/^[-*\d.\s:]+/, "").trim())
     .filter(Boolean);
   const leadLine = promptLines.find((line) => /search|find|найди|искать|research/i.test(line)) ?? promptLines[0] ?? "";
-  // Phase 12 Slice E: domain-specific source hints, IATA detection, and
-  // medical seed query live in `intentInference.ts`. Without an inferred
-  // intent, these branches do not contribute to the merged search query.
-  const intents = inferTaskIntents(`${subtask.title}\n${subtask.prompt}\n${contextText}`);
-  const sourceHints = extractIntentSourceHints(intents, promptLines);
+  // Phase 12 Slice A (full): intents come from the classifier when
+  // available; we no longer re-derive them from text here. If the caller
+  // passes [], we fall back to regex-based inference so legacy paths still
+  // work.
+  const resolvedIntents = intents.length > 0
+    ? intents
+    : inferTaskIntents(`${subtask.title}\n${subtask.prompt}\n${contextText}`);
+  const sourceHints = extractIntentSourceHints(resolvedIntents, promptLines);
   const contextHints = buildContextSearchHints(`${contextText}\n${subtask.title}\n${subtask.prompt}`);
   const raw = `${subtask.title} ${leadLine} ${sourceHints} ${contextHints}`;
 
   const queries = [cleanSearchQuery(raw)];
   queries.push(
-    ...expandSearchQueriesByIntent(intents, subtask, contextHints, leadLine, cleanSearchQuery),
+    ...expandSearchQueriesByIntent(resolvedIntents, subtask, contextHints, leadLine, cleanSearchQuery),
   );
 
   return [...new Set(queries.filter(Boolean))].slice(0, 3);

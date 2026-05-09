@@ -32,8 +32,21 @@ Return only JSON:
   "mode": "direct" | "delegated",
   "reason": "short reason",
   "domains": ["domain"],
-  "riskLevel": "low" | "medium" | "high"
+  "riskLevel": "low" | "medium" | "high",
+  "intent": ["semantic-intent-label"]
 }
+
+Notes on "intent":
+- A short kebab-case array describing what the user actually wants. Examples:
+  "flight-search", "medical-lookup", "product-comparison", "market-research",
+  "code-generation", "geopolitical-assessment", "travel-planning",
+  "restaurant-booking", "data-analysis", "content-summarization", "translation",
+  "tutoring", "personal-advice".
+- Use empty array [] when no concrete domain applies — the runtime treats that
+  as "no domain pack activates".
+- Do NOT base intent on superficial token overlap (a laptop research task
+  contains "GPU/RAM/CPU" but the intent is "product-comparison", NOT
+  "flight-search"). Read the actual user goal.
 `.trim();
 }
 
