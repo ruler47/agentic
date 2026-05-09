@@ -93,11 +93,27 @@ export function ImageLightbox({ images, initialIndex, onClose }: ImageLightboxPr
               ‹
             </button>
           ) : null}
+          {/*
+            Phase 12 follow-up: very tall screenshots (5000+ px) used to
+            shrink to a postage stamp under `max-h-[72vh] object-contain` and
+            `transform: scale()` did not let the operator scroll within the
+            image. We now switch behaviour by zoom level: at zoom=1 the
+            image is fitted to the viewport (object-contain in a fixed-
+            height frame); at zoom > 1 we drop the height cap so the image
+            renders at scale * intrinsic size and the container's
+            `overflow-auto` scrollbars take over for panning.
+          */}
           <img
             src={current.url}
             alt={current.title ?? "Preview"}
-            className="max-h-[72vh] max-w-full rounded-md object-contain transition-transform"
-            style={{ transform: `scale(${zoom})` }}
+            className="rounded-md transition-transform"
+            style={{
+              maxHeight: zoom === 1 ? "85vh" : "none",
+              maxWidth: zoom === 1 ? "100%" : "none",
+              transform: `scale(${zoom})`,
+              transformOrigin: "top center",
+              objectFit: "contain",
+            }}
           />
           {canNavigate ? (
             <button

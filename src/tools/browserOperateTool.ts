@@ -18,7 +18,22 @@ export type BrowserOperateCommand =
   | { type: "extractLinks"; selector?: string; label?: string; limit?: number }
   | { type: "assertText"; selector?: string; text: string; timeoutMs?: number }
   | { type: "assertUrl"; includes?: string; regex?: string }
-  | { type: "screenshot"; label?: string; fullPage?: boolean; filename?: string };
+  | {
+      type: "screenshot";
+      label?: string;
+      fullPage?: boolean;
+      filename?: string;
+      /**
+       * Phase 12 follow-up: hard cap on screenshot height in pixels. The
+       * universal-agent-generated discovery commands set this to ~3200 px so
+       * artifact viewers can render a single screen-height image without
+       * scrolling for ages. When `fullPage` is true and the document is
+       * taller than `maxHeight`, the screenshot is clipped to the top
+       * `maxHeight` pixels of the page. Default 4000 (operator can pass
+       * `null`/0 to disable for a deliberate full-page capture).
+       */
+      maxHeight?: number;
+    };
 
 export type BrowserOperateInput = {
   commands: BrowserOperateCommand[];
@@ -305,7 +320,44 @@ async function executeCommand(
       return `Asserted URL ${url}.`;
     }
     case "screenshot": {
-      const buffer = await page.screenshot({ type: "png", fullPage: command.fullPage ?? true });
+      // Phase 12 follow-up: a default fullPage screenshot of a modern site
+      // can be 10000+ pixels tall, which makes the artifact viewer
+      // unusable. We keep fullPage=true as the default for backwards
+      // compatibility with existing tool calls but clip the result to
+      // `maxHeight` (default 4000 px) so the captured image fits a normal
+      // operator screen.
+      const wantFullPage = command.fullPage ?? true;
+      const rawCap = command.maxHeight === undefined ? 4000 : command.maxHeight;
+      const cap = typeof rawCap === "number" && rawCap > 0 ? Math.floor(rawCap) : 0;
+      let buffer: Buffer;
+      if (wantFullPage && cap > 0) {
+        const viewport = page.viewportSize();
+        const docWidth = await page
+          .evaluate(() =>
+            Math.max(
+              document.documentElement.scrollWidth,
+              document.documentElement.clientWidth,
+              document.body?.scrollWidth ?? 0,
+            ),
+          )
+          .catch(() => viewport?.width ?? 1280);
+        const docHeight = await page
+          .evaluate(() =>
+            Math.max(
+              document.documentElement.scrollHeight,
+              document.documentElement.clientHeight,
+              document.body?.scrollHeight ?? 0,
+            ),
+          )
+          .catch(() => viewport?.height ?? 800);
+        const clipHeight = Math.min(Math.max(docHeight, 1), cap);
+        buffer = await page.screenshot({
+          type: "png",
+          clip: { x: 0, y: 0, width: docWidth, height: clipHeight },
+        });
+      } else {
+        buffer = await page.screenshot({ type: "png", fullPage: wantFullPage });
+      }
       const filename = command.filename ? safePngFilename(command.filename) : screenshotFilename(page.url(), command.label);
       screenshots.push({
         filename,

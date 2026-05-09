@@ -1896,7 +1896,13 @@ test("UniversalAgent hard-fails irrelevant proof artifacts", async () => {
 
     assert.equal(result.reviews.length, 2);
     assert.equal(result.reviews[0]?.verdict, "needs_revision");
-    assert.match(result.reviews[0]?.notes ?? "", /not relevant/);
+    // Phase 12 follow-up: when the inferred intent (flight-search here)
+    // does not match any URL in the evidence text, the runtime now
+    // refuses to invoke the screenshot tool at all instead of capturing
+    // a stanford.edu PDF and letting semantic QA reject it. The reviewer
+    // surfaces a missing-artifact failure, which is a stricter and
+    // earlier signal than the old "not relevant" message.
+    assert.match(result.reviews[0]?.notes ?? "", /Missing required real artifact|not relevant/);
     assert.equal(result.artifacts?.length ?? 0, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });

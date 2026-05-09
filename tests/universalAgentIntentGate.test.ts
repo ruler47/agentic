@@ -135,6 +135,34 @@ test("selectBestUrlsForArtifact: strips trailing backticks and parens so LLM ran
   assert.ok(selected.includes("https://www.pccomponentes.com/laptops"), `expected trailing-punct URL to be normalized; got: ${selected.join(", ")}`);
 });
 
+test("selectBestUrlsForArtifact: with intents but no scored matches, returns empty (no junk URL fallback)", () => {
+  // Reproduces the production regression where an "Identify high-spec
+  // laptops" subtask grabbed arxiv.org / sss.gov screenshots because every
+  // candidate URL scored 0 and the legacy fallback promoted the first
+  // non-low-value URL in the evidence text.
+  const evidenceText = `
+1. Random research paper: https://arxiv.org/html/2604.19856v1
+2. Government site: https://www.sss.gov/
+3. News portal: https://www.bbc.com/news
+`;
+  const selected = selectBestUrlsForArtifact(
+    evidenceText,
+    2,
+    ["product-comparison", "market-research"],
+  );
+  assert.deepEqual(selected, [], `expected empty array when no URL matches the active intents; got: ${JSON.stringify(selected)}`);
+});
+
+test("selectBestUrlsForArtifact: without intents, legacy fallback still returns first non-low-value URLs", () => {
+  // CLI smoke and old fixtures rely on the intent-less fallback.
+  const evidenceText = `
+1. https://www.example-blog.org/post
+2. https://www.notebookcheck.net/laptops
+`;
+  const selected = selectBestUrlsForArtifact(evidenceText, 2, []);
+  assert.equal(selected.length > 0, true, "intent-less callers must still get at least one URL");
+});
+
 test("buildSearchQueries: medical subtask still emits medical seed query when context hints fire", () => {
   const subtaskInput = subtask({
     id: "doc-1",

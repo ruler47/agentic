@@ -1707,7 +1707,10 @@ export class UniversalAgent {
               { type: "dismissDialogs" },
               { type: "extractText", label, maxLength: 9000 },
               { type: "extractLinks", label: `${label}-links`, limit: 50 },
-              { type: "screenshot", label, fullPage: true },
+              // Phase 12 follow-up: cap discovery screenshots to a screen-
+              // friendly height so the artifact viewer renders a useful
+              // image instead of an endless scroll.
+              { type: "screenshot", label, fullPage: true, maxHeight: 3200 },
             ];
           }),
         },
@@ -4488,6 +4491,17 @@ function selectBestUrlsForArtifact(
     if (selected.length >= limit) return selected;
   }
 
+  // Phase 12 follow-up: when intents are inferred but no URL matches any
+  // pattern, return an empty list rather than promoting whatever URL came
+  // first in the evidence text. The previous fallback attached arxiv.org
+  // research papers and sss.gov to a "buy a laptop" run because they were
+  // the top non-low-value URLs in a noisy search result. The agent now
+  // skips browser discovery cleanly instead of capturing junk screenshots.
+  if (selected.length > 0) return selected;
+  if (intents.length > 0) return [];
+
+  // Legacy / intent-less path: keep the previous behaviour for callers that
+  // never threaded intents through (CLI smokes, fixtures).
   for (const url of sourceUrls) {
     if (selected.includes(url)) continue;
     selected.push(url);
