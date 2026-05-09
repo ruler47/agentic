@@ -2,6 +2,9 @@ import { chromium, Page, type BrowserContext, type BrowserContextOptions } from 
 import { ArtifactCreateInput } from "../types.js";
 import { Tool, ToolInput, ToolResult } from "./tool.js";
 
+const DEFAULT_SCREENSHOT_MAX_HEIGHT = 1600;
+const MAX_SCREENSHOT_MAX_HEIGHT = 3000;
+
 export type BrowserOperateCommand =
   | { type: "navigate"; url: string; waitUntil?: "load" | "domcontentloaded" | "networkidle"; timeoutMs?: number }
   | { type: "click"; selector?: string; selectors?: string[]; text?: string; timeoutMs?: number; optional?: boolean }
@@ -18,7 +21,7 @@ export type BrowserOperateCommand =
   | { type: "extractLinks"; selector?: string; label?: string; limit?: number }
   | { type: "assertText"; selector?: string; text: string; timeoutMs?: number }
   | { type: "assertUrl"; includes?: string; regex?: string }
-  | { type: "screenshot"; label?: string; fullPage?: boolean; filename?: string };
+  | { type: "screenshot"; label?: string; fullPage?: boolean; filename?: string; maxHeight?: number };
 
 export type BrowserOperateInput = {
   commands: BrowserOperateCommand[];
@@ -70,6 +73,7 @@ export class BrowserOperateTool implements Tool {
       url: { type: "string" },
       filename: { type: "string" },
       fullPage: { type: "boolean" },
+      maxHeight: { type: "number", minimum: 200, maximum: 3000 },
       label: { type: "string" },
       viewport: { type: "object" },
       userAgent: { type: "string" },
@@ -305,7 +309,10 @@ async function executeCommand(
       return `Asserted URL ${url}.`;
     }
     case "screenshot": {
-      const buffer = await page.screenshot({ type: "png", fullPage: command.fullPage ?? true });
+      const buffer = await captureBoundedScreenshot(page, {
+        fullPage: command.fullPage,
+        maxHeight: command.maxHeight,
+      });
       const filename = command.filename ? safePngFilename(command.filename) : screenshotFilename(page.url(), command.label);
       screenshots.push({
         filename,
@@ -345,7 +352,7 @@ async function captureFailureScreenshot(
   try {
     const url = page.url();
     if (!url || url === "about:blank") return undefined;
-    const buffer = await page.screenshot({ type: "png", fullPage: true });
+    const buffer = await captureBoundedScreenshot(page, { fullPage: false });
     const filename = screenshotFilename(url, `failure-command-${commandIndex}-${commandType}`);
     return {
       filename,
@@ -444,6 +451,7 @@ function parseBrowserOperateInput(input: ToolInput): { ok: true; input: BrowserO
   if (!Array.isArray(input.commands) && typeof input.url === "string") {
     const filename = typeof input.filename === "string" ? input.filename : undefined;
     const fullPage = typeof input.fullPage === "boolean" ? input.fullPage : undefined;
+    const maxHeight = typeof input.maxHeight === "number" ? input.maxHeight : undefined;
     const label = typeof input.label === "string" ? input.label : "proof";
     return parseBrowserOperateInput({
       ...input,
@@ -451,7 +459,7 @@ function parseBrowserOperateInput(input: ToolInput): { ok: true; input: BrowserO
         { type: "navigate", url: input.url },
         { type: "dismissDialogs", optional: true },
         { type: "extractText", maxLength: 6000 },
-        { type: "screenshot", label, filename, fullPage },
+        { type: "screenshot", label, filename, fullPage, maxHeight },
       ],
     });
   }
@@ -624,6 +632,7 @@ function parseCommand(value: unknown): { ok: true; command: BrowserOperateComman
           label: asString(item.label),
           fullPage: typeof item.fullPage === "boolean" ? item.fullPage : undefined,
           filename: asString(item.filename),
+          maxHeight: parseOptionalNumber(item.maxHeight),
         },
       };
     default:
@@ -682,6 +691,41 @@ function parseStringArray(value: unknown): string[] {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+async function captureBoundedScreenshot(
+  page: Page,
+  options: { fullPage?: boolean; maxHeight?: number },
+): Promise<Buffer> {
+  const fullPage = options.fullPage ?? false;
+  if (!fullPage) {
+    return page.screenshot({ type: "png", fullPage: false });
+  }
+
+  const maxHeight = clampNumber(options.maxHeight ?? DEFAULT_SCREENSHOT_MAX_HEIGHT, 200, MAX_SCREENSHOT_MAX_HEIGHT);
+  const viewport = page.viewportSize() ?? { width: 1440, height: 1000 };
+  const pageSize = await page
+    .evaluate(() => ({
+      width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth ?? 0, window.innerWidth),
+      height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0, window.innerHeight),
+    }))
+    .catch(() => viewport);
+
+  if (pageSize.height <= maxHeight) {
+    return page.screenshot({ type: "png", fullPage: true });
+  }
+
+  const boundedHeight = Math.max(1, Math.min(pageSize.height, maxHeight));
+  if (viewport.height !== boundedHeight) {
+    await page.setViewportSize({ width: viewport.width, height: boundedHeight });
+  }
+  try {
+    return await page.screenshot({ type: "png", fullPage: false });
+  } finally {
+    if (viewport.height !== boundedHeight) {
+      await page.setViewportSize(viewport).catch(() => undefined);
+    }
+  }
 }
 
 function screenshotFilename(url: string, label?: string): string {

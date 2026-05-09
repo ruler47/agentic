@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { UniversalAgent } from "../src/agents/universalAgent.js";
 import { LlmClient } from "../src/llm/client.js";
 import { SkillMemory } from "../src/memory/skillMemory.js";
-import { AgentArtifact, AgentEvent, ArtifactCreateInput, Message } from "../src/types.js";
+import type { SkillMemoryStore } from "../src/memory/skillMemory.js";
+import { AgentArtifact, AgentEvent, ArtifactCreateInput, Message, SkillMemoryEntry } from "../src/types.js";
 import { ToolBuildRequestInput } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolInvestigationStore } from "../src/tools/toolInvestigationStore.js";
@@ -36,6 +37,27 @@ class FakeLlm {
 
   get callCount(): number {
     return this.index;
+  }
+}
+
+class RecordingMemoryStore implements SkillMemoryStore {
+  queries: string[] = [];
+
+  async list(): Promise<SkillMemoryEntry[]> {
+    return [];
+  }
+
+  async search(query: string): Promise<SkillMemoryEntry[]> {
+    this.queries.push(query);
+    return [];
+  }
+
+  async add(entry: Omit<SkillMemoryEntry, "id" | "createdAt">): Promise<SkillMemoryEntry> {
+    return {
+      ...entry,
+      id: "memory-recorded",
+      createdAt: new Date().toISOString(),
+    };
   }
 }
 
@@ -290,6 +312,50 @@ test("UniversalAgent injects group and requester context into runtime prompts", 
   }
 });
 
+test("UniversalAgent fails the run when the final answer asks for missing context instead of satisfying the task", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"direct","reason":"simple reservation task","domains":["restaurants"],"riskLevel":"medium"}',
+    "Пожалуйста, укажите город или район, чтобы я мог подобрать ресторан.",
+  ]);
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+  const events: AgentEvent[] = [];
+
+  try {
+    await assert.rejects(
+      () =>
+        agent.run("Забронируй мне столик на сегодня вечером", {
+          instanceContext: {
+            groupProfile: {
+              id: "group-local",
+              instanceId: "instance-local",
+              name: "Family",
+              description: "Family lives in Malaga, Spain.",
+              preferences: { city: "Malaga", language: "ru" },
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          },
+          onEvent: (event) => {
+            events.push(event);
+          },
+        }),
+      /Final answer did not satisfy the task/,
+    );
+
+    const finalSelfCheck = events.find(
+      (event) => event.type === "agent-self-check-completed" && event.actor === "synthesizer",
+    );
+    assert.equal(finalSelfCheck?.status, "failed");
+    assert.match(finalSelfCheck?.detail ?? "", /asks for missing information/i);
+    assert.equal(events.some((event) => event.type === "run-completed"), false);
+    assert.equal(fakeLlm.callCount, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent records a tool build request when a required capability is missing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));
@@ -303,51 +369,55 @@ test("UniversalAgent records a tool build request when a required capability is 
   const events: string[] = [];
 
   try {
-    await agent.run('Построй график по данным {"history":[{"date":"2026-01-01","value":1},{"date":"2026-01-02","value":2}]}', {
-      saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
-        id: "artifact-1",
-        runId: "run-1",
-        kind: "output",
-        filename: artifact.filename,
-        mimeType: artifact.mimeType,
-        sizeBytes: 1,
-        url: "/artifact",
-        createdAt: new Date().toISOString(),
-      }),
-      requestToolBuild: async (request) => {
-        requestedBuilds.push(request);
-        return {
-          ...request,
-          id: "toolbuild-1",
-          status: "requested",
-          contract: {
-            toolName: "generated.chart.generation",
-            version: "1.0.0",
-            modulePath: "src/tools/generated/chart-generationTool.ts",
-            testPath: "tests/generated/chart-generationTool.test.ts",
-            capability: request.capability,
-            description: "Generated chart tool",
-            startupMode: "on-demand",
-            inputSchema: { type: "object", properties: {}, required: [] },
-            outputSchema: { type: "object", properties: {}, required: [] },
-            acceptanceCriteria: ["works"],
-            qaCriteria: ["tested"],
-            builderInstructions: ["build"],
+    await assert.rejects(
+      () =>
+        agent.run('Построй график по данным {"history":[{"date":"2026-01-01","value":1},{"date":"2026-01-02","value":2}]}', {
+          saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
+            id: "artifact-1",
+            runId: "run-1",
+            kind: "output",
+            filename: artifact.filename,
+            mimeType: artifact.mimeType,
+            sizeBytes: 1,
+            url: "/artifact",
+            createdAt: new Date().toISOString(),
+          }),
+          requestToolBuild: async (request) => {
+            requestedBuilds.push(request);
+            return {
+              ...request,
+              id: "toolbuild-1",
+              status: "requested",
+              contract: {
+                toolName: "generated.chart.generation",
+                version: "1.0.0",
+                modulePath: "src/tools/generated/chart-generationTool.ts",
+                testPath: "tests/generated/chart-generationTool.test.ts",
+                capability: request.capability,
+                description: "Generated chart tool",
+                startupMode: "on-demand",
+                inputSchema: { type: "object", properties: {}, required: [] },
+                outputSchema: { type: "object", properties: {}, required: [] },
+                acceptanceCriteria: ["works"],
+                qaCriteria: ["tested"],
+                builderInstructions: ["build"],
+              },
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
           },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-      },
-      onEvent: (event) => {
-        events.push(event.type);
-      },
-    });
+          onEvent: (event) => {
+            events.push(event.type);
+          },
+        }),
+      /Final answer did not satisfy the task/,
+    );
 
     assert.equal(requestedBuilds.length, 1);
     assert.equal(requestedBuilds[0]?.capability, "chart-generation");
     assert.ok(events.includes("tool-missing"));
     assert.ok(events.includes("tool-build-requested"));
-    assert.equal(fakeLlm.callCount, 3);
+    assert.equal(fakeLlm.callCount, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -376,46 +446,50 @@ test("UniversalAgent requests a versioned tool rework when an existing generated
   const events: AgentEvent[] = [];
 
   try {
-    await agent.run('Построй график по данным {"series":[{"x":"2026-01-01","y":1}]}', {
-      saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
-        id: "artifact-1",
-        runId: "run-1",
-        kind: "output",
-        filename: artifact.filename,
-        mimeType: artifact.mimeType,
-        sizeBytes: 1,
-        url: "/artifact",
-        createdAt: new Date().toISOString(),
-      }),
-      requestToolBuild: async (request) => {
-        requestedBuilds.push(request);
-        return {
-          ...request,
-          id: "toolbuild-rework-1",
-          status: "requested",
-          contract: {
-            toolName: request.desiredToolName ?? "generated.chart.generation",
-            version: "1.1.0",
-            modulePath: "src/tools/generated/chart-generation-v1-1-0Tool.ts",
-            testPath: "tests/generated/chart-generation-v1-1-0Tool.test.ts",
-            capability: request.capability,
-            description: "Generated chart tool rework",
-            startupMode: "on-demand",
-            inputSchema: { type: "object", properties: {}, required: [] },
-            outputSchema: { type: "object", properties: {}, required: [] },
-            acceptanceCriteria: ["works"],
-            qaCriteria: ["tested"],
-            builderInstructions: ["build"],
-            replacesVersion: request.replacesVersion,
+    await assert.rejects(
+      () =>
+        agent.run('Построй график по данным {"series":[{"x":"2026-01-01","y":1}]}', {
+          saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
+            id: "artifact-1",
+            runId: "run-1",
+            kind: "output",
+            filename: artifact.filename,
+            mimeType: artifact.mimeType,
+            sizeBytes: 1,
+            url: "/artifact",
+            createdAt: new Date().toISOString(),
+          }),
+          requestToolBuild: async (request) => {
+            requestedBuilds.push(request);
+            return {
+              ...request,
+              id: "toolbuild-rework-1",
+              status: "requested",
+              contract: {
+                toolName: request.desiredToolName ?? "generated.chart.generation",
+                version: "1.1.0",
+                modulePath: "src/tools/generated/chart-generation-v1-1-0Tool.ts",
+                testPath: "tests/generated/chart-generation-v1-1-0Tool.test.ts",
+                capability: request.capability,
+                description: "Generated chart tool rework",
+                startupMode: "on-demand",
+                inputSchema: { type: "object", properties: {}, required: [] },
+                outputSchema: { type: "object", properties: {}, required: [] },
+                acceptanceCriteria: ["works"],
+                qaCriteria: ["tested"],
+                builderInstructions: ["build"],
+                replacesVersion: request.replacesVersion,
+              },
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
           },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-      },
-      onEvent: (event) => {
-        events.push(event);
-      },
-    });
+          onEvent: (event) => {
+            events.push(event);
+          },
+        }),
+      /Final answer did not satisfy the task/,
+    );
 
     assert.equal(requestedBuilds.length, 1);
     assert.equal(requestedBuilds[0]?.capability, "chart-generation");
@@ -424,7 +498,7 @@ test("UniversalAgent requests a versioned tool rework when an existing generated
     assert.equal(requestedBuilds[0]?.replacesVersion, "1.0.0");
     assert.match(requestedBuilds[0]?.reason ?? "", /Could not parse arbitrary series data/);
     assert.ok(events.some((event) => event.type === "tool-build-requested" && event.title.includes("Tool rework")));
-    assert.equal(fakeLlm.callCount, 3);
+    assert.equal(fakeLlm.callCount, 2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -768,7 +842,7 @@ test("UniversalAgent executes required screenshot artifacts inside delegated sub
     });
 
     assert.equal(screenshotInputs.length, 1);
-    assert.deepEqual(screenshotInputs[0], { url: "https://example.com", fullPage: true });
+    assert.deepEqual(screenshotInputs[0], { url: "https://example.com", fullPage: true, maxHeight: 1600 });
     assert.equal(savedArtifacts.length, 1);
     assert.equal(result.workerResults[0]?.artifacts?.[0]?.url, "/artifacts/proof.png");
     assert.equal(result.artifacts?.some((artifact) => artifact.url === "/artifacts/proof.png"), true);
@@ -1367,6 +1441,109 @@ test("UniversalAgent rewrites brittle browser form automation to direct source U
   }
 });
 
+test("UniversalAgent does not inject flight search hints into non-flight from/to prose", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"needs current market data","domains":["finance"],"riskLevel":"low"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "btc-price",
+          title: "Fetch Bitcoin prices and historical context",
+          role: "researcher",
+          prompt:
+            "Find the current price of Bitcoin (BTC) in USD from at least two distinct, reputable financial sources. Additionally, find the recent historical price context to allow for trend comparison.",
+          expectedOutput:
+            "The current BTC/USD price from Source A and Source B plus historical context for comparison.",
+          reviewCriteria: ["At least two different sources are used", "Prices are clearly stated in USD"],
+          requiredTools: ["web-search"],
+        },
+      ],
+    }),
+    "CoinMarketCap says BTC is $80,950 and Coinbase says BTC is $80,940. This is sufficient source evidence.",
+    '{"subtaskId":"btc-price","verdict":"pass","notes":"Two source prices were provided."}',
+    "BTC is about $80,950 USD from CoinMarketCap and $80,940 USD from Coinbase. Compared with the recent context, this looks roughly stable rather than a strong move.",
+    '{"shouldStore":false}',
+  ]);
+  const registry = new ToolRegistry();
+  const queries: string[] = [];
+  registry.register({
+    name: "web.search",
+    description: "Fake web search",
+    capabilities: ["web-search"],
+    async run(input) {
+      queries.push(String((input as { query?: unknown }).query ?? ""));
+      return {
+        ok: true,
+        content:
+          "CoinMarketCap BTC price $80,950 USD\nhttps://coinmarketcap.example/btc\nCoinbase BTC price $80,940 USD\nhttps://coinbase.example/btc",
+      };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+
+  try {
+    await agent.run("Find the current Bitcoin price and compare it with recent historical context.");
+
+    assert.equal(queries.length, 1);
+    assert.doesNotMatch(queries.join("\n"), /Google Flights|Skyscanner|Kayak|\bflights\b/i);
+    assert.match(queries[0] ?? "", /Bitcoin|BTC/i);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("UniversalAgent respects explicit no-external-sources constraints before collecting web evidence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"delegated","reason":"needs architectural comparison","domains":["architecture"],"riskLevel":"medium"}',
+    JSON.stringify({
+      subtasks: [
+        {
+          id: "architecture-comparison",
+          title: "Compare generated tool runtime options",
+          role: "architect",
+          prompt:
+            "Compare in-process, local HTTP process, and OCI container runtimes. This must be offline-only without external sources or web search.",
+          expectedOutput: "A concise comparison table and production recommendation.",
+          reviewCriteria: ["No web search is used", "All three options are compared"],
+          requiredTools: [],
+        },
+      ],
+    }),
+    "In-process is fastest but weakest isolation. Local HTTP process improves process isolation. OCI containers provide the strongest production isolation with more operational overhead.",
+    '{"subtaskId":"architecture-comparison","verdict":"pass","notes":"No external evidence was required."}',
+    "Для production лучше OCI container: это самая сильная изоляция. Local HTTP process хорош как промежуточный вариант, in-process стоит оставить только для dev/test.",
+    '{"shouldStore":false}',
+  ]);
+  const registry = new ToolRegistry();
+  const queries: string[] = [];
+  registry.register({
+    name: "web.search",
+    description: "Fake web search",
+    capabilities: ["web-search"],
+    async run(input) {
+      queries.push(String((input as { query?: unknown }).query ?? ""));
+      return { ok: true, content: "This should not be called." };
+    },
+  });
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+
+  try {
+    const result = await agent.run(
+      "Сложный smoke-test без внешних источников: сравни 3 архитектурных подхода для изолированных generated tools.",
+    );
+
+    assert.equal(queries.length, 0);
+    assert.equal(result.workerResults.length, 1);
+    assert.match(result.finalAnswer, /OCI container/i);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent rewrites placeholder browser navigation to real evidence URLs", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));
@@ -1570,20 +1747,21 @@ test("UniversalAgent hard-fails artifact subtasks that only invent placeholder p
   const reviewStatuses: string[] = [];
 
   try {
-    const result = await agent.run("Return a proof screenshot, but no URL is available.", {
-      onEvent: (event) => {
-        if (event.type === "review-completed") {
-          reviewStatuses.push(`${event.status}:${event.detail}`);
-        }
-      },
-    });
+    await assert.rejects(
+      () =>
+        agent.run("Return a proof screenshot, but no URL is available.", {
+          onEvent: (event) => {
+            if (event.type === "review-completed") {
+              reviewStatuses.push(`${event.status}:${event.detail}`);
+            }
+          },
+        }),
+      /Final answer did not satisfy the task/,
+    );
 
-    assert.equal(result.reviews.length, 2);
-    assert.equal(result.reviews[0]?.verdict, "needs_revision");
-    assert.match(result.reviews[0]?.notes ?? "", /Missing required real artifact/);
-    assert.equal(result.reviews[1]?.verdict, "needs_revision");
+    assert.equal(reviewStatuses.length, 2);
     assert.equal(reviewStatuses.every((status) => status.startsWith("failed:")), true);
-    assert.equal(fakeLlm.callCount, 6);
+    assert.equal(fakeLlm.callCount, 5);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1641,26 +1819,34 @@ test("UniversalAgent hard-fails irrelevant proof artifacts", async () => {
     },
   });
   const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
+  const reviewStatuses: string[] = [];
 
   try {
-    const result = await agent.run("Find a flight and provide a relevant screenshot proof.", {
-      saveArtifact: async (artifact): Promise<AgentArtifact> => ({
-        id: `artifact-${artifact.filename}`,
-        runId: "run-1",
-        kind: "output",
-        filename: artifact.filename,
-        mimeType: artifact.mimeType,
-        sizeBytes: Buffer.isBuffer(artifact.content) ? artifact.content.byteLength : artifact.content.length,
-        url: `/artifacts/${artifact.filename}`,
-        description: artifact.description,
-        createdAt: new Date().toISOString(),
-      }),
-    });
+    await assert.rejects(
+      () =>
+        agent.run("Find a flight and provide a relevant screenshot proof.", {
+          saveArtifact: async (artifact): Promise<AgentArtifact> => ({
+            id: `artifact-${artifact.filename}`,
+            runId: "run-1",
+            kind: "output",
+            filename: artifact.filename,
+            mimeType: artifact.mimeType,
+            sizeBytes: Buffer.isBuffer(artifact.content) ? artifact.content.byteLength : artifact.content.length,
+            url: `/artifacts/${artifact.filename}`,
+            description: artifact.description,
+            createdAt: new Date().toISOString(),
+          }),
+          onEvent: (event) => {
+            if (event.type === "review-completed") {
+              reviewStatuses.push(`${event.status}:${event.detail}`);
+            }
+          },
+        }),
+      /Final answer did not satisfy the task/,
+    );
 
-    assert.equal(result.reviews.length, 2);
-    assert.equal(result.reviews[0]?.verdict, "needs_revision");
-    assert.match(result.reviews[0]?.notes ?? "", /not relevant/);
-    assert.equal(result.artifacts?.length ?? 0, 0);
+    assert.equal(reviewStatuses.length, 2);
+    assert.ok(reviewStatuses.some((status) => /not relevant/.test(status)));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1961,6 +2147,52 @@ test("UniversalAgent classifies learned memories into scoped reviewable facts", 
   }
 });
 
+test("UniversalAgent stores group learned memories under the group profile id", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  const fakeLlm = new FakeLlm([
+    '{"mode":"direct","reason":"group preference can be answered directly","domains":["memory"],"riskLevel":"low"}',
+    "I will remember the family city preference.",
+    JSON.stringify({
+      shouldStore: true,
+      title: "Family default restaurant city",
+      tags: ["preference", "restaurant"],
+      summary: "The group default city for restaurant bookings is Malaga.",
+      reusableProcedure: "Use Malaga as the default city when a restaurant booking request omits location.",
+      scope: "group",
+      status: "accepted",
+      confidence: 0.9,
+      sensitivity: "normal",
+      evidence: ["The group profile said Malaga is the default city."],
+    }),
+  ]);
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+
+  try {
+    const result = await agent.run("Запомни город для бронирований", {
+      runId: "run-group-memory-1",
+      requesterUserId: "user-dima",
+      instanceId: "instance-local",
+      instanceContext: {
+        groupProfile: {
+          id: "group-family",
+          instanceId: "instance-local",
+          name: "Family",
+          description: "Family profile",
+          preferences: { city: "Malaga" },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    assert.equal(result.learnedSkill?.scope, "group");
+    assert.equal(result.learnedSkill?.scopeId, "group-family");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent keeps low-confidence learned memories in review even when global", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));
@@ -2097,6 +2329,113 @@ test("UniversalAgent applies memory policy before prompt injection", async () =>
   }
 });
 
+test("UniversalAgent searches memory with focused task context instead of full runtime profile", async () => {
+  const memory = new RecordingMemoryStore();
+  const fakeLlm = new FakeLlm([
+    '{"mode":"direct","reason":"small request","domains":["shopping"],"riskLevel":"low"}',
+    "A focused laptop answer.",
+    '{"shouldStore":false}',
+  ]);
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+
+  await agent.run("Подбери лучший ноутбук до 2000 долларов", {
+    instanceId: "group-family",
+    requesterUserId: "user-dima",
+    instanceContext: {
+      groupProfile: {
+        id: "group-family",
+        instanceId: "group-family",
+        name: "Family",
+        description: "Technical API cutover and Docker migration notes that must not steer laptop memory retrieval.",
+        preferences: {
+          city: "Malaga",
+          debugTopic: "containerized API cutover verification protocol",
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    },
+    threadContext: {
+      summary: "The user is shopping for a portable computer.",
+      acceptedFacts: ["Budget is 2000 USD."],
+      rejectedAttempts: ["Do not use market research reports."],
+      openQuestions: [],
+      relevantArtifactIds: [],
+    },
+  });
+
+  assert.equal(memory.queries.length, 1);
+  assert.match(memory.queries[0] ?? "", /лучший ноутбук/i);
+  assert.match(memory.queries[0] ?? "", /Budget is 2000 USD/i);
+  assert.match(memory.queries[0] ?? "", /city: Malaga/i);
+  assert.doesNotMatch(memory.queries[0] ?? "", /API cutover|Docker|containerized/i);
+  assert.doesNotMatch(memory.queries[0] ?? "", /debugTopic/i);
+  assert.doesNotMatch(memory.queries[0] ?? "", /Runtime context|Current date|Time zone/i);
+});
+
+test("UniversalAgent uses stable group defaults to retrieve scoped context memories", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+  await memory.add({
+    title: "Default city for quiet dinner planning",
+    tags: ["malaga", "city", "dinner"],
+    summary: "When the family omits the city for dinner planning, use Malaga, Spain.",
+    reusableProcedure: "For local dinner planning, use Malaga as the default city and avoid asking for location again.",
+    scope: "group",
+    scopeId: "group-family",
+    status: "accepted",
+    confidence: 0.95,
+  });
+  await memory.add({
+    title: "Containerized API cutover protocol",
+    tags: ["api", "docker", "cutover"],
+    summary: "Technical deployment notes should not steer dinner planning.",
+    reusableProcedure: "Use only for API migration tasks.",
+    scope: "global",
+    status: "accepted",
+    confidence: 0.95,
+  });
+  const fakeLlm = new CapturingFakeLlm();
+  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
+  const events: AgentEvent[] = [];
+
+  try {
+    await agent.run("Составь спокойный план ужина без уточнения города", {
+      instanceId: "group-family",
+      requesterUserId: "user-dima",
+      memoryScopes: [{ scope: "global" }, { scope: "group", scopeId: "group-family" }],
+      instanceContext: {
+        groupProfile: {
+          id: "group-family",
+          instanceId: "group-family",
+          name: "Family",
+          description: "Technical API cutover and Docker migration notes that must not steer dinner memory retrieval.",
+          preferences: {
+            city: "Malaga",
+            country: "Spain",
+            debugTopic: "containerized API cutover verification protocol",
+          },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    const memoryEvent = events.find((event) => event.type === "memory-search-completed");
+    const retrieved = memoryEvent?.payload as Array<{ title: string }> | undefined;
+
+    assert.equal(memoryEvent?.detail, "1 relevant memories found");
+    assert.deepEqual(retrieved?.map((item) => item.title), ["Default city for quiet dinner planning"]);
+    assert.match(fakeLlm.prompts.join("\n"), /Default city for quiet dinner planning/);
+    assert.doesNotMatch(fakeLlm.prompts.join("\n"), /Containerized API cutover protocol/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("UniversalAgent can inject sensitive memory with explicit runtime grant", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));
@@ -2175,6 +2514,7 @@ test("UniversalAgent emits observable lifecycle events", async () => {
       "classification-completed",
       "synthesis-started",
       "synthesis-completed",
+      "agent-self-check-completed",
       "learning-completed",
       "run-completed",
     ]);
@@ -2346,7 +2686,9 @@ test("UniversalAgent persists worker and reviewer call frames with return self-c
     const workerStarted = events.find((event) => event.type === "worker-started");
     const workerCompleted = events.find((event) => event.type === "worker-completed");
     const reviewCompleted = events.find((event) => event.type === "review-completed");
-    const selfChecks = events.filter((event) => event.type === "agent-self-check-completed");
+    const selfChecks = events.filter(
+      (event) => event.type === "agent-self-check-completed" && event.actor !== "synthesizer",
+    );
 
     assert.equal(selfChecks.length, 2);
     assert.equal(workerStarted?.spanId, workerCompleted?.spanId);
@@ -2588,23 +2930,27 @@ test("UniversalAgent uses ToolImprovementCoordinator to open a rework wait when 
   const events: AgentEvent[] = [];
 
   try {
-    const result = await agent.run('Построй график по данным {"series":[{"x":"2026-01-01","y":1}]}', {
-      runId: sourceRun.id,
-      saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
-        id: "artifact-1",
-        runId: sourceRun.id,
-        kind: "output",
-        filename: artifact.filename,
-        mimeType: artifact.mimeType,
-        sizeBytes: 1,
-        url: "/artifact",
-        createdAt: new Date().toISOString(),
-      }),
-      toolImprovementCoordinator: coordinator,
-      onEvent: (event) => {
-        events.push(event);
-      },
-    });
+    await assert.rejects(
+      () =>
+        agent.run('Построй график по данным {"series":[{"x":"2026-01-01","y":1}]}', {
+          runId: sourceRun.id,
+          saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
+            id: "artifact-1",
+            runId: sourceRun.id,
+            kind: "output",
+            filename: artifact.filename,
+            mimeType: artifact.mimeType,
+            sizeBytes: 1,
+            url: "/artifact",
+            createdAt: new Date().toISOString(),
+          }),
+          toolImprovementCoordinator: coordinator,
+          onEvent: (event) => {
+            events.push(event);
+          },
+        }),
+      /Run is waiting for tool rework/,
+    );
 
     const investigations = await toolInvestigationStore.list();
     assert.equal(investigations.length, 1);
@@ -2633,12 +2979,9 @@ test("UniversalAgent uses ToolImprovementCoordinator to open a rework wait when 
       ((waitOpenedEvents[0]?.payload as { agentDriven?: boolean } | undefined)?.agentDriven),
       true,
     );
-
-    assert.match(result.finalAnswer, /Pending tool rework waits/);
-    assert.ok(
-      result.finalAnswer.includes(waits[0]!.id),
-      "final answer references the open wait id so the operator knows what is blocking",
-    );
+    assert.equal(events.some((event) => event.type === "synthesis-started"), false);
+    assert.equal(events.some((event) => event.type === "learning-completed"), false);
+    assert.equal(events.some((event) => event.type === "run-completed"), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

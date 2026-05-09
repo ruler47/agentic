@@ -1,3 +1,5 @@
+import { memoryEmbeddingDimensions } from "../memory/textEmbedding.js";
+
 export type ModelProviderKind = "chat" | "embedding";
 
 export type ModelProviderType =
@@ -153,7 +155,7 @@ export function defaultModelProvidersFromEnv(env: NodeJS.ProcessEnv = process.en
         : env.EMBEDDING_BASE_URL ?? env.LLM_BASE_URL ?? "http://127.0.0.1:1234/v1",
       modelIds: embeddingModel ? [embeddingModel] : [],
       defaultModel: embeddingModel,
-      dimensions: Number(env.MEMORY_EMBEDDING_DIMENSIONS ?? "128"),
+      dimensions: memoryEmbeddingDimensions,
       status: "available",
       healthStatus: embeddingProviderIsDeterministic ? "ok" : "unknown",
       healthDetail: embeddingProviderIsDeterministic

@@ -1,7 +1,13 @@
 import { Link } from "react-router-dom";
 
 import { useHealth } from "@/api/health";
-import { selectActiveRuns, selectRecentRuns, useCreateRun, useRuns } from "@/api/runs";
+import {
+  filesToRunAttachments,
+  selectActiveRuns,
+  selectRecentRuns,
+  useCreateRun,
+  useRuns,
+} from "@/api/runs";
 import {
   useAuditEvents,
   useGroupProfile,
@@ -10,7 +16,7 @@ import {
 } from "@/api/queries";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 
 export function DashboardPage() {
   const health = useHealth();
@@ -105,7 +111,11 @@ export function DashboardPage() {
           </header>
           <dl className="grid grid-cols-2 gap-3 text-xs">
             <Definition label="GET /api/health">
-              {health.isError ? health.error?.message ?? "error" : JSON.stringify(health.data ?? {})}
+              {health.isError
+                ? health.error?.message ?? "API unavailable"
+                : health.data?.ok
+                  ? "API reachable"
+                  : "Checking health..."}
             </Definition>
             <Definition label="Last success">
               {health.dataUpdatedAt ? new Date(health.dataUpdatedAt).toLocaleTimeString() : "—"}
@@ -185,6 +195,10 @@ function Definition({ label, children }: { label: string; children: React.ReactN
 
 function ComposerCard() {
   const [task, setTask] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | undefined>();
+  const fileInputId = useId();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const createRun = useCreateRun();
 
   return (
@@ -200,14 +214,30 @@ function ComposerCard() {
       </header>
       <form
         className="flex flex-col gap-3"
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault();
           if (!task.trim() || createRun.isPending) return;
+          setAttachmentError(undefined);
+
+          let attachments = undefined;
+          if (files.length > 0) {
+            try {
+              attachments = await filesToRunAttachments(files);
+            } catch (error) {
+              setAttachmentError(error instanceof Error ? error.message : "Failed to read attachments");
+              return;
+            }
+          }
+
           createRun.mutate(
-            { task: task.trim() },
+            { task: task.trim(), attachments },
             {
               onSuccess: () => {
                 setTask("");
+                setFiles([]);
+                if (fileInputRef.current) {
+                  fileInputRef.current.value = "";
+                }
               },
             },
           );
@@ -220,7 +250,72 @@ function ComposerCard() {
           onChange={(event) => setTask(event.target.value)}
           disabled={createRun.isPending}
         />
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-2 rounded-md border border-dashed border-app-border bg-app-surface-2 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <label
+                htmlFor={fileInputId}
+                className={[
+                  "inline-flex cursor-pointer rounded-md border border-app-border px-3 py-1.5 text-xs font-semibold transition-colors",
+                  createRun.isPending
+                    ? "cursor-not-allowed opacity-50"
+                    : "hover:border-app-accent/60 hover:text-app-accent",
+                ].join(" ")}
+              >
+                Attach files
+              </label>
+              <input
+                ref={fileInputRef}
+                id={fileInputId}
+                type="file"
+                multiple
+                className="sr-only"
+                disabled={createRun.isPending}
+                onChange={(event) => {
+                  setAttachmentError(undefined);
+                  setFiles(Array.from(event.currentTarget.files ?? []));
+                }}
+              />
+            </div>
+            <span className="text-xs text-app-text-muted">
+              {files.length === 0
+                ? "Optional files are attached to the run as input artifacts."
+                : `${files.length} file${files.length === 1 ? "" : "s"} selected`}
+            </span>
+          </div>
+          {files.length > 0 ? (
+            <ul className="flex flex-wrap gap-2 text-xs">
+              {files.map((file, index) => (
+                <li
+                  key={`${file.name}-${file.lastModified}-${index}`}
+                  className="max-w-full rounded-full bg-app-bg px-2.5 py-1 text-app-text-muted"
+                  title={`${file.name} · ${formatFileSize(file.size)}`}
+                >
+                  <span className="inline-block max-w-[220px] truncate align-bottom">{file.name}</span>
+                  <span className="ml-1 font-mono text-[10px]">{formatFileSize(file.size)}</span>
+                </li>
+              ))}
+              <li>
+                <button
+                  type="button"
+                  className="rounded-full border border-app-border px-2.5 py-1 text-xs text-app-text-muted hover:text-app-text"
+                  disabled={createRun.isPending}
+                  onClick={() => {
+                    setFiles([]);
+                    setAttachmentError(undefined);
+                    if (fileInputRef.current) {
+                      fileInputRef.current.value = "";
+                    }
+                  }}
+                >
+                  Clear
+                </button>
+              </li>
+            </ul>
+          ) : null}
+          {attachmentError ? <p className="text-xs text-app-danger">{attachmentError}</p> : null}
+        </div>
+        <div className="flex items-center justify-between gap-3">
           <p className="text-xs text-app-text-muted">
             Channel: <code>web</code> · Requester: <code>user-admin</code>
           </p>
@@ -229,7 +324,11 @@ function ComposerCard() {
             disabled={createRun.isPending || !task.trim()}
             className="rounded-md bg-app-accent px-4 py-1.5 text-sm font-semibold text-app-bg transition-colors disabled:cursor-not-allowed disabled:opacity-50 hover:bg-app-accent/90"
           >
-            {createRun.isPending ? "Creating…" : "Submit task"}
+            {createRun.isPending
+              ? "Creating…"
+              : files.length > 0
+                ? `Submit with ${files.length} file${files.length === 1 ? "" : "s"}`
+                : "Submit task"}
           </button>
         </div>
         {createRun.isError ? (
@@ -246,4 +345,16 @@ function ComposerCard() {
       </form>
     </section>
   );
+}
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }

@@ -1,4 +1,4 @@
-const embeddingDimensions = 128;
+export const memoryEmbeddingDimensions = 128;
 
 export type TextEmbedding = {
   dimensions: number;
@@ -29,7 +29,7 @@ type EmbeddingResponse = {
 export class DeterministicTextEmbeddingProvider implements TextEmbeddingProvider {
   readonly name = "deterministic-local";
 
-  constructor(readonly dimensions = embeddingDimensions) {}
+  constructor(readonly dimensions = memoryEmbeddingDimensions) {}
 
   async embed(text: string): Promise<TextEmbedding> {
     return createDeterministicTextEmbedding(text, this.dimensions);
@@ -43,7 +43,7 @@ export class OpenAiCompatibleTextEmbeddingProvider implements TextEmbeddingProvi
 
   constructor(private readonly config: OpenAiCompatibleEmbeddingConfig) {
     this.name = `openai-compatible:${config.model}`;
-    this.dimensions = config.targetDimensions ?? embeddingDimensions;
+    this.dimensions = config.targetDimensions ?? memoryEmbeddingDimensions;
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
 
@@ -116,7 +116,7 @@ export function createTextEmbeddingProviderFromEnv(
   );
 }
 
-export function createDeterministicTextEmbedding(text: string, dimensions = embeddingDimensions): TextEmbedding {
+export function createDeterministicTextEmbedding(text: string, dimensions = memoryEmbeddingDimensions): TextEmbedding {
   const values = new Array<number>(dimensions).fill(0);
   const normalized = normalizeEmbeddingText(text);
   const features = extractEmbeddingFeatures(normalized);
@@ -134,7 +134,7 @@ export function formatPgVector(embedding: TextEmbedding): string {
   return `[${embedding.values.join(",")}]`;
 }
 
-export function projectEmbedding(embedding: TextEmbedding, dimensions = embeddingDimensions): TextEmbedding {
+export function projectEmbedding(embedding: TextEmbedding, dimensions = memoryEmbeddingDimensions): TextEmbedding {
   if (embedding.dimensions === dimensions && embedding.values.length === dimensions) {
     return normalizeEmbedding(embedding);
   }
@@ -235,7 +235,9 @@ function extractEmbeddingError(data: EmbeddingResponse, status: number, rawBody:
 }
 
 function parseEmbeddingDimensions(value: string | undefined): number {
-  const parsed = Number(value ?? embeddingDimensions);
-  if (!Number.isInteger(parsed) || parsed < 8 || parsed > 4096) return embeddingDimensions;
+  const parsed = Number(value ?? memoryEmbeddingDimensions);
+  if (!Number.isInteger(parsed) || parsed !== memoryEmbeddingDimensions) {
+    return memoryEmbeddingDimensions;
+  }
   return parsed;
 }

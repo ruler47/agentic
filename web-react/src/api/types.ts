@@ -8,6 +8,7 @@
 export type {
   AgentArtifact,
   AgentArtifactKind,
+  ArtifactUploadInput,
   AgentEvent,
   AgentEventType,
   AgentActivity,

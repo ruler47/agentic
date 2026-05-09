@@ -186,6 +186,62 @@ test("Coordinator agent-runtime mode creates investigation, build, and wait", as
   assert.equal(agentDrivenAudits.length, 3);
 });
 
+test("Coordinator reuses an equivalent open wait instead of creating duplicate builds for one run", async () => {
+  const setup = await setupCoordinator();
+  const run = await setup.runStore.create("Take screenshot");
+
+  const first = await setup.coordinator.requestImprovement({
+    source: "agent_runtime",
+    runId: run.id,
+    spanId: "tool-browser.operate-span-1",
+    toolName: "browser.operate",
+    toolVersion: "1.0.0",
+    title: "Insufficient tool: browser.operate",
+    contextBundle: {
+      taskPrompt: "Take screenshot of public site",
+      outputSummary: "Screenshot rejected by semantic QA",
+      error: "blocker_or_loader",
+    },
+    buildRequestInput: {
+      capability: "browser-screenshot",
+      reason: "Existing browser.operate cannot satisfy public-site screenshot QA.",
+      sourceSpanId: "tool-browser.operate-span-1",
+    },
+  });
+  const second = await setup.coordinator.requestImprovement({
+    source: "agent_runtime",
+    runId: run.id,
+    spanId: "tool-browser.operate-span-2",
+    toolName: "browser.operate",
+    toolVersion: "1.0.0",
+    title: "Insufficient tool: browser.operate again",
+    contextBundle: {
+      taskPrompt: "Take screenshot of public site",
+      outputSummary: "A second span hit the same missing screenshot capability",
+      error: "same capability",
+    },
+    buildRequestInput: {
+      capability: "browser-screenshot",
+      reason: "Second request for the same screenshot rework.",
+      sourceSpanId: "tool-browser.operate-span-2",
+    },
+  });
+
+  assert.equal(first.status, "waiting");
+  assert.equal(second.status, "waiting");
+  assert.equal(second.wait?.id, first.wait?.id);
+  assert.equal(second.buildRequest?.id, first.buildRequest?.id);
+  assert.match(second.detail ?? "", /equivalent tool rework wait/i);
+
+  const builds = await setup.toolBuildRequestStore.list();
+  const waits = await setup.toolReworkWaitStore.list();
+  const investigations = await setup.toolInvestigationStore.list();
+  assert.equal(builds.length, 1);
+  assert.equal(waits.length, 1);
+  assert.equal(investigations.length, 2);
+  assert.equal(investigations.every((item) => item.linkedBuildRequestId === first.buildRequest?.id), true);
+});
+
 test("Coordinator agent-runtime mode can request a missing capability without a known toolName", async () => {
   const setup = await setupCoordinator();
   const run = await setup.runStore.create("Create a PDF report");
@@ -273,6 +329,138 @@ test("notifyBuildRegistered promotes pending waits and skips terminal ones", asy
   await setup.coordinator.notifyBuildRegistered(buildId, "browser.operate", "1.1.0");
   const stillPromoted = await setup.toolReworkWaitStore.get(waitId);
   assert.equal(stillPromoted?.status, "promoted");
+});
+
+test("notifyBuildRegistered refuses to promote waits when no registered version is available", async () => {
+  const setup = await setupCoordinator();
+  const run = await setup.runStore.create("task");
+  const wait = await setup.toolReworkWaitStore.create({
+    runId: run.id,
+    reason: "manual wait with missing build metadata",
+    buildRequestId: "build-without-version",
+    toolName: "browser.operate",
+    status: "waiting",
+  });
+
+  await setup.coordinator.notifyBuildRegistered("build-without-version", "browser.operate");
+
+  const unchanged = await setup.toolReworkWaitStore.get(wait.id);
+  assert.equal(unchanged?.status, "waiting");
+  assert.equal(unchanged?.promotedVersion, undefined);
+  const lastAudit = setup.auditEvents.at(-1);
+  assert.equal(lastAudit?.action, "tool_rework_wait.updated");
+  assert.equal(lastAudit?.status, "failure");
+  assert.match(lastAudit?.summary ?? "", /no registered version/i);
+});
+
+test("notifyBuildRegistered audits failure when a wait update does not persist promoted state", async () => {
+  const setup = await setupCoordinator();
+  const run = await setup.runStore.create("task");
+  const wait = await setup.toolReworkWaitStore.create({
+    runId: run.id,
+    reason: "manual wait",
+    buildRequestId: "build-1",
+    toolName: "browser.operate",
+    status: "waiting",
+  });
+  const brokenWaitStore = new class extends InMemoryToolReworkWaitStore {
+    constructor(seed: InMemoryToolReworkWaitStore) {
+      super();
+      this.seed = seed;
+    }
+    private readonly seed: InMemoryToolReworkWaitStore;
+    override listByBuildRequest(buildRequestId: string) {
+      return this.seed.listByBuildRequest(buildRequestId);
+    }
+    override async update(id: string, update: Parameters<InMemoryToolReworkWaitStore["update"]>[1]) {
+      const stored = await this.seed.update(id, update);
+      return { ...stored, status: "waiting" as const, promotedVersion: undefined };
+    }
+  }(setup.toolReworkWaitStore);
+  const auditEvents: ToolImprovementAuditEvent[] = [];
+  const coordinator = new ToolImprovementCoordinator({
+    toolReworkWaitStore: brokenWaitStore,
+    toolBuildRequestStore: setup.toolBuildRequestStore,
+    runStore: setup.runStore,
+    audit: async (event) => {
+      auditEvents.push(event);
+    },
+  });
+
+  await coordinator.notifyBuildRegistered("build-1", "browser.operate", "1.1.0");
+
+  assert.equal((await setup.toolReworkWaitStore.get(wait.id))?.status, "promoted");
+  const lastAudit = auditEvents.at(-1);
+  assert.equal(lastAudit?.action, "tool_rework_wait.updated");
+  assert.equal(lastAudit?.status, "failure");
+  assert.match(lastAudit?.summary ?? "", /did not persist/i);
+});
+
+test("notifyBuildRegistered audits post-promotion hook failures without undoing promotion", async () => {
+  const setup = await setupCoordinator();
+  const run = await setup.runStore.create("task");
+  const wait = await setup.toolReworkWaitStore.create({
+    runId: run.id,
+    reason: "manual wait",
+    buildRequestId: "build-1",
+    toolName: "browser.operate",
+    status: "waiting",
+  });
+  const auditEvents: ToolImprovementAuditEvent[] = [];
+  const coordinator = new ToolImprovementCoordinator({
+    toolReworkWaitStore: setup.toolReworkWaitStore,
+    toolBuildRequestStore: setup.toolBuildRequestStore,
+    runStore: setup.runStore,
+    audit: async (event) => {
+      auditEvents.push(event);
+    },
+    onWaitPromoted: async () => {
+      throw new Error("auto retry offline");
+    },
+  });
+
+  await coordinator.notifyBuildRegistered("build-1", "browser.operate", "1.1.0");
+
+  assert.equal((await setup.toolReworkWaitStore.get(wait.id))?.status, "promoted");
+  assert.equal(auditEvents.at(-2)?.status, "success");
+  assert.equal(auditEvents.at(-1)?.status, "failure");
+  assert.match(auditEvents.at(-1)?.summary ?? "", /post-promotion hook failed/i);
+});
+
+test("requestImprovement audits background scheduler failures after durable build creation", async () => {
+  const setup = await setupCoordinator();
+  const run = await setup.runStore.create("task");
+  const investigation = await setup.toolInvestigationStore.create({
+    source: "trace_span",
+    title: "needs upgrade",
+    runId: run.id,
+    toolName: "browser.operate",
+  });
+  const auditEvents: ToolImprovementAuditEvent[] = [];
+  const coordinator = new ToolImprovementCoordinator({
+    toolInvestigationStore: setup.toolInvestigationStore,
+    toolBuildRequestStore: setup.toolBuildRequestStore,
+    toolReworkWaitStore: setup.toolReworkWaitStore,
+    toolMetadataStore: setup.toolMetadataStore,
+    runStore: setup.runStore,
+    audit: async (event) => {
+      auditEvents.push(event);
+    },
+    backgroundBuildScheduler: {
+      scheduleImmediate: () => {
+        throw new Error("worker unavailable");
+      },
+    },
+  });
+
+  const result = await coordinator.requestImprovement({
+    source: "investigation_promote",
+    investigationId: investigation.id,
+  });
+
+  assert.equal(result.status, "waiting");
+  const failure = auditEvents.find((event) => event.status === "failure" && /scheduler failed/i.test(event.summary));
+  assert.equal(failure?.action, "tool_build.requested");
 });
 
 test("markReadyForRetry resumes only promoted waits and returns the run to failed", async () => {

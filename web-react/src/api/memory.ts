@@ -73,9 +73,45 @@ export function useRebuildMemoryEmbeddings() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () =>
-      apiFetch<{ rebuilt: number }>("/api/memories/reembed", { method: "POST" }),
+      apiFetch<{ updated: number }>("/api/memories/reembed", { method: "POST" }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.memories });
     },
+  });
+}
+
+export type MemoryRetrievalEvaluationCase = {
+  id: string;
+  query: string;
+  expectedMemoryIds: string[];
+  limit?: number;
+  minRecall?: number;
+};
+
+export type MemoryRetrievalEvaluationSummary = {
+  passed: boolean;
+  totalCases: number;
+  passedCases: number;
+  averageRecall: number;
+  results: Array<{
+    caseId: string;
+    query: string;
+    passed: boolean;
+    recall: number;
+    topHitMatched: boolean;
+    expectedMemoryIds: string[];
+    retrievedMemoryIds: string[];
+    missingMemoryIds: string[];
+    limit: number;
+  }>;
+};
+
+export function useEvaluateMemoryRetrieval() {
+  return useMutation({
+    mutationFn: (cases: MemoryRetrievalEvaluationCase[]) =>
+      apiFetch<MemoryRetrievalEvaluationSummary>("/api/memories/evaluate-retrieval", {
+        method: "POST",
+        body: { cases },
+      }),
   });
 }

@@ -48,7 +48,7 @@ export type ArtifactObjectStore = {
 export class LocalArtifactStore implements ArtifactStore {
   private readonly root: string;
 
-  constructor(root = process.env.ARTIFACT_ROOT ?? "/app/workspace/artifacts") {
+  constructor(root = process.env.ARTIFACT_ROOT ?? "workspace/artifacts") {
     this.root = resolve(root);
   }
 

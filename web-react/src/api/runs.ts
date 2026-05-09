@@ -3,6 +3,7 @@ import { apiFetch } from "@/lib/fetch";
 import { queryKeys } from "@/api/queryKeys";
 import type {
   AgentRunRecord,
+  ArtifactUploadInput,
   RunCreateContext,
   RunCreateResponse,
   RunDetailResponse,
@@ -44,7 +45,35 @@ export function useRunWaits(runId: string | undefined) {
 
 export type CreateRunInput = {
   task: string;
+  attachments?: ArtifactUploadInput[];
 } & Partial<RunCreateContext>;
+
+export async function fileToRunAttachment(file: File): Promise<ArtifactUploadInput> {
+  return {
+    filename: file.name || "attachment",
+    mimeType: file.type || undefined,
+    contentBase64: encodeArrayBufferBase64(await file.arrayBuffer()),
+  };
+}
+
+export async function filesToRunAttachments(files: File[] | FileList): Promise<ArtifactUploadInput[]> {
+  return Promise.all(Array.from(files).map((file) => fileToRunAttachment(file)));
+}
+
+function encodeArrayBufferBase64(buffer: ArrayBuffer): string {
+  if (typeof globalThis.btoa !== "function") {
+    throw new Error("Base64 encoding is unavailable in this browser");
+  }
+
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return globalThis.btoa(binary);
+}
 
 export function useCreateRun() {
   const queryClient = useQueryClient();

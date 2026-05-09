@@ -102,6 +102,103 @@ test("SkillMemory filters search by visible scopes and explains matches", async 
   }
 });
 
+test("SkillMemory ranks exact scoped memories above generic global lessons", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+
+  try {
+    await memory.add({
+      title: "Generic preference planning framework",
+      tags: ["preference", "planning", "scenario", "priority", "artifact"],
+      summary: "Generic scenario planning should synthesize priorities from artifacts.",
+      reusableProcedure: "Use for broad planning tasks when no scoped family fact is available.",
+      scope: "global",
+      status: "accepted",
+      confidence: 0.95,
+    });
+    const family = await memory.add({
+      title: "Family default city for dinner",
+      tags: ["malaga", "city", "dinner"],
+      summary: "Use Malaga, Spain for family dinner planning when the user omits location.",
+      reusableProcedure: "Do not ask for the city again for local dinner tasks.",
+      scope: "group",
+      scopeId: "family-a",
+      status: "accepted",
+      confidence: 0.95,
+    });
+
+    const results = await memory.search("plan dinner from priority artifact city Malaga", 5, {
+      visibleScopes: [{ scope: "global" }, { scope: "group", scopeId: "family-a" }],
+    });
+
+    assert.equal(results[0]?.id, family.id);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SkillMemory does not rank audit evidence text as reusable memory content", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+
+  try {
+    await memory.add({
+      title: "Generic decision workflow",
+      tags: ["decision"],
+      summary: "Use only for generic decision synthesis.",
+      reusableProcedure: "Compare options and cite tradeoffs.",
+      scope: "global",
+      status: "accepted",
+      confidence: 0.95,
+      evidence: [
+        "Source run task: без внешних источников составь спокойный план ужина город Malaga thread summary",
+      ],
+    });
+    const scoped = await memory.add({
+      title: "Family default city for dinner",
+      tags: ["malaga", "city", "dinner"],
+      summary: "Use Malaga, Spain for family dinner planning when the user omits location.",
+      reusableProcedure: "Do not ask for the city again for local dinner tasks.",
+      scope: "group",
+      scopeId: "family-a",
+      status: "accepted",
+      confidence: 0.95,
+    });
+
+    const results = await memory.search("без внешних источников составь спокойный план ужина город Malaga", 5, {
+      visibleScopes: [{ scope: "global" }, { scope: "group", scopeId: "family-a" }],
+    });
+
+    assert.equal(results[0]?.id, scoped.id);
+    assert.notEqual(results[0]?.title, "Generic decision workflow");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("SkillMemory ignores stopword-only overlap so unrelated memories do not enter runtime context", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
+  const memory = new SkillMemory(join(dir, "skills.json"));
+
+  try {
+    await memory.add({
+      title: "Structured Clarification via Scenario Mapping",
+      tags: ["clarification", "scenario"],
+      summary: "When a user request is underspecified, map possible interpretations before answering.",
+      reusableProcedure: "Ask for the missing domain-specific detail before guessing intent.",
+      scope: "global",
+      status: "accepted",
+      confidence: 0.95,
+    });
+
+    const results = await memory.search("Забронируй столик на ужин сегодня для меня", 5);
+
+    assert.deepEqual(results, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("SkillMemory requires exact scope ids for non-global memory visibility", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-memory-"));
   const memory = new SkillMemory(join(dir, "skills.json"));

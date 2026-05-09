@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  defaultModelTierSettings,
   InMemoryModelTierSettingsStore,
   normalizeSettings,
 } from "../src/settings/modelTierSettings.js";
@@ -46,5 +47,18 @@ test("InMemoryModelTierSettingsStore replaces tier policy", async () => {
   assert.deepEqual(updated.find((item) => item.tier === "M")?.models, [
     "balanced-1",
     "balanced-2",
+  ]);
+});
+
+test("defaultModelTierSettings reads tier models from an explicit env object", () => {
+  const settings = defaultModelTierSettings({
+    LLM_MODEL: "fallback-model",
+    LLM_MODEL_TIER_XL: "xl-a, xl-b",
+  });
+
+  assert.deepEqual(settings.find((item) => item.tier === "XL")?.models, [
+    "xl-a",
+    "xl-b",
+    "fallback-model",
   ]);
 });

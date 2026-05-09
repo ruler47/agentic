@@ -1,11 +1,12 @@
 import { PgPool } from "../db/pool.js";
 import { MemoryScope, MemorySensitivity, MemoryStatus, SkillMemoryEntry } from "../types.js";
 import {
-  applyMemoryVisibility,
+  applyMemoryVisibility as applyEntryMemoryVisibility,
   attachMemoryMatch,
   createMemoryId,
   matchMemoryEntry,
   MemoryListOptions,
+  memoryRuntimeScore,
   MemoryUpdateInput,
   normalizeEntry,
   normalizeMemoryConfidence,
@@ -38,6 +39,12 @@ type SkillMemoryRow = {
   evidence: string[] | null;
   created_at: Date;
   updated_at: Date;
+};
+
+type RankedMemoryCandidate = {
+  entry: SkillMemoryEntry;
+  lexicalRank?: number;
+  semanticRank?: number;
 };
 
 export class PostgresSkillMemory implements SkillMemoryStore {
@@ -81,8 +88,10 @@ export class PostgresSkillMemory implements SkillMemoryStore {
 
   async search(query: string, limit = 5, options: MemoryListOptions = {}): Promise<SkillMemoryEntry[]> {
     const queryTokens = tokenizeMemoryText(query);
-    const filters = ["status = 'accepted'"];
+    const status = options.status ?? "accepted";
+    const filters = ["status = $2"];
     const values: unknown[] = [query];
+    values.push(status);
     if (options.scope) {
       values.push(options.scope);
       filters.push(`scope = $${values.length}`);
@@ -110,18 +119,23 @@ export class PostgresSkillMemory implements SkillMemoryStore {
     );
 
     const semantic = await this.semanticSearch(query, Math.max(limit * 4, 12), options);
-    const candidates = mergeMemoryCandidates([
-      ...lexical.rows.map(mapRow),
-      ...semantic,
-      ...(lexical.rows.length === 0 && semantic.length === 0 ? await this.list({ ...options, status: "accepted", limit }) : []),
-    ]);
+    const candidates = mergeMemoryCandidates(
+      lexical.rows.map((row, index) => ({ entry: mapRow(row), lexicalRank: index + 1 })),
+      semantic,
+    );
 
-    return applyMemoryVisibility(candidates, options)
-      .map((entry) => ({ entry, match: matchMemoryEntry(entry, queryTokens) }))
-      .filter(({ match }, index) => match.score > 0 || lexical.rows.length > 0 || semantic.length > 0 || index < limit)
-      .sort((a, b) => b.match.score - a.match.score)
+    return applyRankedMemoryVisibility(candidates, options)
+      .map((candidate) => {
+        const match = matchMemoryEntry(candidate.entry, queryTokens);
+        const lexicalRrf = candidate.lexicalRank ? 1 / (60 + candidate.lexicalRank) : 0;
+        const semanticRrf = candidate.semanticRank ? 1 / (60 + candidate.semanticRank) : 0;
+        const score = memoryRuntimeScore(candidate.entry, match, options) + lexicalRrf + semanticRrf;
+        return { candidate, match, score };
+      })
+      .filter(({ match, candidate }) => match.score > 0 || candidate.lexicalRank !== undefined)
+      .sort((a, b) => b.score - a.score || (b.candidate.entry.confidence ?? 0) - (a.candidate.entry.confidence ?? 0))
       .slice(0, limit)
-      .map(({ entry, match }) => attachMemoryMatch(entry, match));
+      .map(({ candidate, match }) => attachMemoryMatch(candidate.entry, match));
   }
 
   async add(entry: Omit<SkillMemoryEntry, "id" | "createdAt">): Promise<SkillMemoryEntry> {
@@ -174,7 +188,6 @@ export class PostgresSkillMemory implements SkillMemoryStore {
         stored.scopeId ?? null,
         stored.status,
         stored.confidence,
-        stored.sensitivity,
         stored.sourceRunId ?? null,
         stored.sourceThreadId ?? null,
         stored.evidence ?? [],
@@ -269,9 +282,11 @@ export class PostgresSkillMemory implements SkillMemoryStore {
     return { updated: entries.length };
   }
 
-  private async semanticSearch(query: string, limit: number, options: MemoryListOptions): Promise<SkillMemoryEntry[]> {
-    const filters = ["status = 'accepted'", "memory_embedding is not null"];
+  private async semanticSearch(query: string, limit: number, options: MemoryListOptions): Promise<RankedMemoryCandidate[]> {
+    const status = options.status ?? "accepted";
+    const filters = ["status = $2", "memory_embedding is not null"];
     const values: unknown[] = [formatPgVector(await this.embeddingProvider.embed(query))];
+    values.push(status);
     if (options.scope) {
       values.push(options.scope);
       filters.push(`scope = $${values.length}`);
@@ -293,22 +308,40 @@ export class PostgresSkillMemory implements SkillMemoryStore {
         `,
         values,
       );
-      return rows.rows.map(mapRow);
+      return rows.rows.map((row, index) => ({ entry: mapRow(row), semanticRank: index + 1 }));
     } catch {
       return [];
     }
   }
 }
 
-function mergeMemoryCandidates(candidates: SkillMemoryEntry[]): SkillMemoryEntry[] {
-  const seen = new Set<string>();
-  const merged: SkillMemoryEntry[] = [];
-  for (const candidate of candidates) {
-    if (seen.has(candidate.id)) continue;
-    seen.add(candidate.id);
-    merged.push(candidate);
+function mergeMemoryCandidates(
+  lexical: RankedMemoryCandidate[],
+  semantic: RankedMemoryCandidate[],
+): RankedMemoryCandidate[] {
+  const seen = new Map<string, RankedMemoryCandidate>();
+  const merged: RankedMemoryCandidate[] = [];
+  for (const candidate of [...lexical, ...semantic]) {
+    const existing = seen.get(candidate.entry.id);
+    if (existing) {
+      if (candidate.lexicalRank !== undefined) existing.lexicalRank = candidate.lexicalRank;
+      if (candidate.semanticRank !== undefined) existing.semanticRank = candidate.semanticRank;
+      continue;
+    }
+    const next = { ...candidate };
+    seen.set(next.entry.id, next);
+    merged.push(next);
   }
   return merged;
+}
+
+function applyRankedMemoryVisibility(
+  candidates: RankedMemoryCandidate[],
+  options: MemoryListOptions,
+): RankedMemoryCandidate[] {
+  const visible = candidates.map((candidate) => candidate.entry);
+  const allowed = new Set(applyEntryMemoryVisibility(visible, options).map((entry) => entry.id));
+  return candidates.filter((candidate) => allowed.has(candidate.entry.id));
 }
 
 const memoryColumns = `

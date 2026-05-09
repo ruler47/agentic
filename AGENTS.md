@@ -115,7 +115,9 @@ Memory embedding overrides:
 - `EMBEDDING_MODEL` enables OpenAI-compatible `/embeddings` calls.
 - `EMBEDDING_BASE_URL` defaults to `LLM_BASE_URL` when omitted.
 - `EMBEDDING_API_KEY` or `OPENAI_API_KEY` provides the bearer token.
-- `MEMORY_EMBEDDING_DIMENSIONS` defaults to `128`, matching the current pgvector column.
+- `MEMORY_EMBEDDING_DIMENSIONS` is accepted for backward compatibility but the current
+  Postgres pgvector column is fixed at `128`; embeddings are projected/clamped to that
+  width so env drift cannot break inserts.
 
 Tier variables can contain one model or a comma-separated fallback list. In the web app,
 the editable tier policy is stored in Postgres and exposed through the System Inventory
@@ -268,7 +270,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   deterministic PNG screenshot QA for near-empty/loader-like visual evidence.
 - [src/artifacts/semanticArtifactQuality.ts](src/artifacts/semanticArtifactQuality.ts) -
   browser screenshot evidence QA that combines visual checks with URL/title/text/link
-  context to reject loader/blocker or task-mismatched artifacts before storage.
+  context and a generic expected-evidence-vs-observed-evidence contract to reject
+  loader/blocker or task-mismatched artifacts before storage.
 - [src/tools/chartGenerateTool.ts](src/tools/chartGenerateTool.ts) - `chart.generate`
   TypeScript tool module for data-agnostic SVG chart artifacts.
 - [src/tools/marketTimeseriesTool.ts](src/tools/marketTimeseriesTool.ts) -
@@ -698,6 +701,11 @@ For documentation-only changes:
 - Worker and reviewer spans should carry `payload.callFrame`, and agent returns should
   emit `agent-self-check-completed` before completion. This is the Phase 4 foundation for
   recursive agents.
+- Final synthesis also emits `agent-self-check-completed` before learning and
+  `run-completed`. If the final answer is a clarification instead of an actionable result,
+  claims missing artifacts, includes placeholder proof or unexecuted tool syntax, or
+  reports generic inability without a precise blocker, the agent must throw so the run is
+  stored as `failed`, not misleadingly `completed`.
 - Worker/reviewer LLM failures should emit explicit failed spans before throwing, so a
   failed run still explains which agent failed and why.
 - Keep LLM prompt inputs compact. Tool evidence, dependency context, memories, worker
@@ -705,6 +713,13 @@ For documentation-only changes:
   being sent to local OpenAI-compatible models with limited context.
 - Runtime memory retrieval should pass visible scopes for the active group, requester,
   thread, and run so unrelated scoped memory does not enter the prompt.
+- Runtime memory matching must avoid stopword-only overlap. Common generic terms such as
+  "user", "task", "request", "для", "что", and "запрос" are ignored before scoring so
+  broad process memories do not pollute unrelated restaurant, shopping, medical, or
+  travel tasks.
+- Learned group memories should use the editable `groupProfile.id` as their `scopeId`,
+  not the technical `instanceId`; otherwise group facts become invisible to the same
+  scope filters used for runtime retrieval.
 - Non-global memory visibility requires exact `scopeId` matches. Do not reintroduce
   wildcard user/group/thread/run memory access without a policy-layer check.
 - The Memory UI groups entries by status and exact scope, exposes retrieval impact, links
@@ -719,6 +734,9 @@ For documentation-only changes:
   Configure `EMBEDDING_MODEL` for OpenAI-compatible semantic embeddings; the provider
   projects remote vector widths into the current 128-dimensional pgvector column and
   falls back locally if the remote endpoint fails.
+  Search uses semantic rank as a ranking signal only after the candidate has lexical
+  overlap with the stopword-filtered query; this intentionally favors precision over
+  noisy semantic-only matches until a stronger embedding QA/evaluation loop is in place.
 - Add links here when introducing new core docs, modules, commands, or workflows.
 - Run creation must resolve a real requester before creating a thread or run. Explicit
   `requesterUserId` values must exist; channel-originated requests with `sourceUserId`
@@ -845,6 +863,10 @@ For documentation-only changes:
   not duplicate this lifecycle; if a new HTTP or agent path needs to create/promote/resume
   a wait, route it through the coordinator and keep the audit `actorId`/`actorType`
   consistent with the caller (operator vs agent).
+- Tool rework promotion must never audit success unless the wait actually persisted
+  `status=promoted` with a concrete `promotedVersion`. Scheduler or post-promotion hook
+  failures are non-blocking for the durable build request, but they must still be audited
+  as failures so operators can see why a build did not auto-run or auto-retry.
 - `RunStore.complete()` and `RunStore.fail()` must not overwrite a `waiting_tool_rework`
   run. A late agent completion or failure that arrives after the run was paused for tool
   rework is silently ignored, so the wait stays the source of truth until the operator

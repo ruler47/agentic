@@ -77,7 +77,7 @@ export class SkillMemory implements SkillMemoryStore {
         match: matchEntry(entry, normalizedQuery),
       }))
       .filter(({ match }) => match.score > 0)
-      .sort((a, b) => b.match.score - a.match.score)
+      .sort((a, b) => memoryRuntimeScore(b.entry, b.match, options) - memoryRuntimeScore(a.entry, a.match, options))
       .slice(0, limit)
       .map(({ entry, match }) => attachMemoryMatch(entry, match));
   }
@@ -137,17 +137,69 @@ function tokenize(text: string): Set<string> {
     text
       .toLowerCase()
       .split(/[^a-zа-яё0-9]+/i)
-      .filter((token) => token.length > 2),
+      .filter((token) => token.length > 2 && !memoryStopWords.has(token)),
   );
 }
 
-function scoreEntry(entry: SkillMemoryEntry, queryTokens: Set<string>): number {
-  return matchEntry(entry, queryTokens).score;
-}
+const memoryStopWords = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "that",
+  "this",
+  "when",
+  "what",
+  "where",
+  "which",
+  "while",
+  "into",
+  "before",
+  "after",
+  "about",
+  "user",
+  "task",
+  "request",
+  "answer",
+  "run",
+  "runs",
+  "memory",
+  "thread",
+  "summary",
+  "conversation",
+  "stable",
+  "instance",
+  "defaults",
+  "retrieval",
+  "current",
+  "date",
+  "time",
+  "zone",
+  "все",
+  "для",
+  "или",
+  "это",
+  "что",
+  "как",
+  "где",
+  "мне",
+  "могу",
+  "надо",
+  "нужно",
+  "если",
+  "после",
+  "перед",
+  "через",
+  "пользователь",
+  "задача",
+  "запрос",
+  "ответ",
+]);
 
 function matchEntry(entry: SkillMemoryEntry, queryTokens: Set<string>): SkillMemoryMatch {
   const haystack = tokenize(
-    `${entry.title} ${entry.tags.join(" ")} ${entry.summary} ${entry.reusableProcedure} ${(entry.evidence ?? []).join(" ")}`,
+    `${entry.title} ${entry.tags.join(" ")} ${entry.summary} ${entry.reusableProcedure}`,
   );
   const matchedTokens: string[] = [];
 
@@ -256,16 +308,31 @@ export function tokenizeMemoryText(text: string): Set<string> {
   return tokenize(text);
 }
 
-export function scoreMemoryEntry(entry: SkillMemoryEntry, queryTokens: Set<string>): number {
-  return scoreEntry(entry, queryTokens);
-}
-
 export function matchMemoryEntry(entry: SkillMemoryEntry, queryTokens: Set<string>): SkillMemoryMatch {
   return matchEntry(entry, queryTokens);
 }
 
 export function attachMemoryMatch(entry: SkillMemoryEntry, match: SkillMemoryMatch): SkillMemoryEntry {
   return { ...entry, match };
+}
+
+export function memoryRuntimeScore(
+  entry: SkillMemoryEntry,
+  match: SkillMemoryMatch,
+  options: MemoryListOptions = {},
+): number {
+  if (match.score <= 0) return 0;
+  return match.score + scopedRuntimeMemoryBoost(entry, options);
+}
+
+function scopedRuntimeMemoryBoost(entry: SkillMemoryEntry, options: MemoryListOptions): number {
+  const scope = normalizeMemoryScope(entry.scope);
+  if (scope === "global") return 0;
+  const exactVisibleScope = options.visibleScopes?.some((candidate) => {
+    if (candidate.scope !== scope) return false;
+    return Boolean(candidate.scopeId) && candidate.scopeId === entry.scopeId;
+  });
+  return exactVisibleScope ? 10 : 0;
 }
 
 export function createMemoryId(title: string): string {

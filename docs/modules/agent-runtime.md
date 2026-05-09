@@ -116,12 +116,22 @@ Runtime responsibilities with context:
 - create outbound action requests rather than directly sending provider messages;
 - keep secret handles out of prompts, memory, artifacts, and trace details.
 
+Runtime memory retrieval is deliberately precision-biased. The matcher filters common
+English/Russian stopwords before scoring, rejects stopword-only overlap, and only lets
+semantic rank boost candidates that also have lexical evidence. Learned group memories
+use the editable group profile id as their scope id rather than the technical instance id.
+That keeps broad process memories and stale unrelated facts out of prompts such as
+restaurant booking, shopping, or medical research runs.
+
 ## Extension Points
 
 - Replace `LlmClient` with another OpenAI-compatible or provider-specific client.
 - Resolve model ids through the durable provider registry described in
   `docs/modules/model-providers.md` so local and remote chat providers can coexist.
-- Replace `SkillMemory` with a database-backed implementation.
+- Continue hardening the database-backed `PostgresSkillMemory` implementation: semantic
+  vector search participates in ranking after lexical evidence is present, but production
+  quality still depends on curated retrieval-evaluation cases and the active embedding
+  provider.
 - Add tool execution to worker agents through a tool registry.
 - Add self-service tool scaffolding on top of the versioned tool contract.
 - Persist generated tool metadata in `tool_modules` and load promoted executable modules
@@ -161,6 +171,12 @@ caller. Current worker checks are deterministic:
 Current reviewer checks verify:
 
 - valid verdict;
+
+The root coordinator also emits a final `agent-self-check-completed` event after
+synthesis. That final gate runs before learning and before `run-completed`; if the answer
+is only a clarification request, claims missing artifacts, contains fake proof/tool-call
+syntax, or reports inability without an evidence-backed blocker, the agent throws and the
+web run is marked `failed` rather than `completed`.
 - explanatory notes;
 - returned `subtaskId` matches the worker being reviewed.
 

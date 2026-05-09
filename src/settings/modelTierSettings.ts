@@ -35,10 +35,12 @@ export class InMemoryModelTierSettingsStore implements ModelTierSettingsStore {
   }
 }
 
-export function defaultModelTierSettings(): ModelTierSettingsInput[] {
+export type ModelTierEnv = Partial<Record<string, string | undefined>>;
+
+export function defaultModelTierSettings(env: ModelTierEnv = process.env): ModelTierSettingsInput[] {
   return tiers.map((tier) => ({
     tier,
-    models: modelListForTier(tier),
+    models: modelListForTier(tier, env),
     maxAttempts: tier === "XL" ? 1 : 2,
     escalateOnFailure: tier !== "XL",
   }));
@@ -66,9 +68,21 @@ export function normalizeSettings(
   });
 }
 
-function modelListForTier(tier: ModelTier): string[] {
-  const specific = process.env[`LLM_MODEL_TIER_${tier}`];
-  return uniqueModels([...(specific ? specific.split(",") : []), process.env.LLM_MODEL ?? "google/gemma-4-26b-a4b"]);
+export function modelListForTier(tier: ModelTier, env: ModelTierEnv = process.env): string[] {
+  const specific = env[`LLM_MODEL_TIER_${tier}`];
+  return uniqueModels([
+    ...parseTierModelList(specific),
+    env.LLM_MODEL ?? "google/gemma-4-26b-a4b",
+  ]);
+}
+
+export function parseTierModelList(value: string | undefined): string[] {
+  return value
+    ? value
+        .split(",")
+        .map((model) => model.trim())
+        .filter(Boolean)
+    : [];
 }
 
 function uniqueModels(models: string[]): string[] {

@@ -101,6 +101,23 @@ class FakeAgent {
   }
 }
 
+class FinalGateFailingAgent {
+  async run(_task: string, options?: { onEvent?: AgentEventSink }): Promise<AgentRunResult> {
+    await options?.onEvent?.({
+      id: "event-final-self-check-failed",
+      spanId: "final-self-check",
+      type: "agent-self-check-completed",
+      actor: "synthesizer",
+      activity: "review",
+      status: "failed",
+      title: "Final answer self-check failed",
+      detail: "The user asked for an actionable result, but the final answer asks for missing information.",
+      timestamp: new Date().toISOString(),
+    });
+    throw new Error("Final answer did not satisfy the task: clarification-instead-of-result");
+  }
+}
+
 class ThreadAwareFakeAgent {
   seenThreadSummaries: string[] = [];
   seenThreadArtifacts: AgentArtifact[][] = [];
@@ -232,6 +249,40 @@ test("web server creates a run and exposes completed trace", async () => {
     assert.equal(completed.run.events.length, 2);
     assert.equal(completed.run.events[1].type, "worker-completed");
     assert.equal(listed.runs[0].id, created.run.id);
+  } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server marks a run failed when the final answer satisfaction gate rejects the result", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>test</title>");
+  const server = createWebApp({
+    agent: new FinalGateFailingAgent() as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const createResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "Забронируй столик" }),
+    });
+    const created = (await createResponse.json()) as { run: { id: string } };
+    const failed = await waitForRun(baseUrl, created.run.id);
+
+    assert.equal(failed.run.status, "failed");
+    assert.match(failed.run.error ?? "", /Final answer did not satisfy the task/);
+    assert.equal(failed.run.result, undefined);
+    assert.ok(
+      failed.run.events.some(
+        (event: { type: string; status: string }) =>
+          event.type === "agent-self-check-completed" && event.status === "failed",
+      ),
+    );
   } finally {
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
@@ -500,6 +551,48 @@ test("web server creates conversation threads and continues with compact context
     assert.match(agent.seenThreadSummaries[2], /continue with correction/);
     assert.equal(threadDetail.thread.messages.length, 6);
   } finally {
+    await close(server);
+    await rm(publicDir, { recursive: true, force: true });
+  }
+});
+
+test("web server rejects explicit thread continuation while latest run is active", async () => {
+  const publicDir = await mkdtemp(join(tmpdir(), "agentic-public-"));
+  await writeFile(join(publicDir, "index.html"), "<!doctype html><title>Agentic</title>");
+  const conversationStore = new InMemoryConversationThreadStore();
+  const agent = new DelayedFakeAgent();
+
+  const server = createWebApp({
+    agent: agent as unknown as UniversalAgent,
+    runStore: new InMemoryRunStore(),
+    publicDir,
+    conversationStore,
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const firstResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "long running task" }),
+    });
+    const first = await firstResponse.json();
+    const followUpResponse = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ task: "continue too early", threadId: first.run.threadId }),
+    });
+    const followUp = await followUpResponse.json();
+
+    assert.equal(firstResponse.status, 202);
+    assert.equal(followUpResponse.status, 409);
+    assert.match(followUp.error, /already has an active run/);
+
+    agent.release();
+    const completed = await waitForRun(baseUrl, first.run.id);
+    assert.equal(completed.run.status, "completed");
+  } finally {
+    agent.release();
     await close(server);
     await rm(publicDir, { recursive: true, force: true });
   }
@@ -4216,7 +4309,7 @@ test("web server exposes and updates model tier settings", async () => {
     assert.equal(catalog.chat.defaultModel, process.env.LLM_MODEL ?? "google/gemma-4-26b-a4b");
     assert.equal(catalog.providers[0].id, "test-chat");
     assert.equal(Array.isArray(catalog.chat.models), true);
-    assert.equal(catalog.embedding.dimensions, Number(process.env.MEMORY_EMBEDDING_DIMENSIONS ?? "128"));
+    assert.equal(catalog.embedding.dimensions, 128);
     assert.equal(updateResponse.status, 200);
     assert.deepEqual(updated.tiers[0].models, ["small-a", "small-b"]);
     assert.equal(updated.tiers[0].maxAttempts, 3);

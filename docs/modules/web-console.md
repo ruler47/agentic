@@ -506,7 +506,8 @@ non-global `scopeId`, private memory outside user scope, low confidence, missing
 evidence/source links, and sensitive/private policy risks.
 
 `POST /api/memories/reembed` rebuilds every stored memory vector for the active embedding
-provider and records a `memory.embeddings_rebuilt` audit event.
+provider and records a `memory.embeddings_rebuilt` audit event. The response is
+`{ "updated": number }`; clients should not expect the legacy `rebuilt` field name.
 
 `POST /api/memories/evaluate-retrieval` accepts retrieval quality cases:
 
@@ -526,8 +527,10 @@ provider and records a `memory.embeddings_rebuilt` audit event.
 ```
 
 The response reports `passed`, `averageRecall`, `topHitMatched`, retrieved IDs, and
-missing IDs per case. Use it to keep semantic memory retrieval measurable when changing
-embedding providers, tags, or stored memory summaries.
+missing IDs per case. The React Memory page exposes this through a "Run retrieval eval"
+action that builds a small smoke fixture from accepted memories; larger production suites
+should still be kept as explicit fixtures. Use it to keep semantic memory retrieval
+measurable when changing embedding providers, tags, or stored memory summaries.
 
 Audit events:
 

@@ -103,3 +103,14 @@ test("createTextEmbeddingProviderFromEnv defaults to deterministic unless embedd
   assert.equal(fallback.name, "deterministic-local");
   assert.match(remote.name, /openai-compatible:text-embedding-3-small/);
 });
+
+test("createTextEmbeddingProviderFromEnv clamps memory embeddings to the pgvector width", async () => {
+  const provider = createTextEmbeddingProviderFromEnv({
+    MEMORY_EMBEDDING_DIMENSIONS: "256",
+  });
+  const embedding = await provider.embed("dimension clamp");
+
+  assert.equal(provider.dimensions, 128);
+  assert.equal(embedding.dimensions, 128);
+  assert.equal(embedding.values.length, 128);
+});

@@ -210,6 +210,36 @@ export class ToolImprovementCoordinator {
         request.override ?? {},
         request.buildRequestInput,
       );
+      const reusableWait = await this.findReusableOpenWait(investigation, target, request.buildRequestInput);
+      if (reusableWait) {
+        const linkedInvestigation = await this.deps.toolInvestigationStore.update(investigation.id, {
+          status: "linked_to_build",
+          linkedBuildRequestId: reusableWait.buildRequest?.id,
+          operatorComment: request.operatorComment ?? investigation.operatorComment,
+        });
+        await this.emitAudit({
+          action: "tool_investigation.updated",
+          targetType: "tool_investigation",
+          targetId: linkedInvestigation.id,
+          status: "success",
+          runId: linkedInvestigation.runId,
+          summary: `Tool investigation linked to existing rework wait: ${linkedInvestigation.title}`,
+          metadata: {
+            previousStatus: investigation.status,
+            status: linkedInvestigation.status,
+            linkedBuildRequestId: reusableWait.buildRequest?.id,
+            existingWaitId: reusableWait.wait.id,
+            agentDriven: request.source === "agent_runtime",
+          },
+        });
+        return {
+          status: "waiting",
+          investigation: linkedInvestigation,
+          buildRequest: reusableWait.buildRequest,
+          wait: reusableWait.wait,
+          detail: "An equivalent tool rework wait is already open for this run and capability.",
+        };
+      }
       const buildInputBase = request.buildRequestInput
         ? mergeAgentBuildInput(request.buildRequestInput, investigation, target)
         : formatInvestigationBuildRequestInput(investigation, request.operatorComment, target);
@@ -275,13 +305,30 @@ export class ToolImprovementCoordinator {
       // the next worker tick will pick it up regardless. Promotes must not 500 because a
       // worker hook misbehaved.
       if (this.deps.backgroundBuildScheduler && buildRequest.status === "requested") {
+        const auditSchedulerFailure = async (error: unknown) => {
+          await this.emitAudit({
+            action: "tool_build.requested",
+            targetType: "tool_build_request",
+            targetId: buildRequest.id,
+            status: "failure",
+            runId: buildRequest.sourceRunId,
+            summary: `Tool build scheduler failed after request creation: ${buildRequest.id}`,
+            metadata: {
+              capability: buildRequest.capability,
+              desiredToolName: buildRequest.desiredToolName,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          });
+        };
         try {
           const scheduled = this.deps.backgroundBuildScheduler.scheduleImmediate(buildRequest.id);
           if (scheduled instanceof Promise) {
-            scheduled.catch(() => undefined);
+            scheduled.catch((error) => {
+              void auditSchedulerFailure(error);
+            });
           }
-        } catch {
-          // intentional: keep promote idempotent regardless of scheduler health.
+        } catch (error) {
+          await auditSchedulerFailure(error);
         }
       }
 
@@ -344,22 +391,103 @@ export class ToolImprovementCoordinator {
     return wait;
   }
 
+  private async findReusableOpenWait(
+    investigation: ToolInvestigationRecord,
+    target: InvestigationPromotionTarget,
+    buildRequestInput?: ToolBuildRequestInput,
+  ): Promise<{ wait: ToolReworkWaitRecord; buildRequest?: ToolBuildRequest } | undefined> {
+    if (!this.deps.toolReworkWaitStore || !this.deps.toolBuildRequestStore || !investigation.runId) {
+      return undefined;
+    }
+
+    const capability = buildRequestInput?.capability ?? target.capability;
+    const toolNames = new Set(
+      [
+        investigation.toolName,
+        target.replacesToolName,
+        target.desiredToolName,
+        buildRequestInput?.replacesToolName,
+        buildRequestInput?.desiredToolName,
+      ].filter((value): value is string => Boolean(value)),
+    );
+
+    const waits = await this.deps.toolReworkWaitStore.listByRun(investigation.runId);
+    for (const wait of waits) {
+      if (wait.status === "resumed" || wait.status === "cancelled" || wait.status === "failed") continue;
+      const buildRequest = wait.buildRequestId
+        ? await this.deps.toolBuildRequestStore.get(wait.buildRequestId)
+        : undefined;
+      const waitToolMatches = wait.toolName ? toolNames.has(wait.toolName) : toolNames.size === 0;
+      const buildToolMatches =
+        !buildRequest ||
+        toolNames.size === 0 ||
+        [buildRequest.replacesToolName, buildRequest.desiredToolName, buildRequest.registeredToolName]
+          .filter((value): value is string => Boolean(value))
+          .some((value) => toolNames.has(value));
+      const capabilityMatches = !buildRequest || buildRequest.capability === capability;
+      if (capabilityMatches && (waitToolMatches || buildToolMatches)) {
+        return { wait, buildRequest };
+      }
+    }
+
+    return undefined;
+  }
+
   async notifyBuildRegistered(
     buildRequestId: string,
     registeredToolName?: string,
     promotedVersion?: string,
   ): Promise<void> {
     if (!this.deps.toolReworkWaitStore) return;
+    const buildRequest = await this.deps.toolBuildRequestStore?.get(buildRequestId);
     const candidates = await this.deps.toolReworkWaitStore.listByBuildRequest(buildRequestId);
     for (const wait of candidates) {
       if (wait.status === "promoted" || wait.status === "resumed" || wait.status === "cancelled") {
         continue;
       }
+      const nextPromotedVersion = promotedVersion ?? wait.promotedVersion ?? buildRequest?.contract.version;
+      if (!nextPromotedVersion) {
+        await this.emitAudit({
+          action: "tool_rework_wait.updated",
+          targetType: "tool_rework_wait",
+          targetId: wait.id,
+          status: "failure",
+          runId: wait.runId,
+          summary: `Tool rework wait promotion skipped because no registered version was available: ${wait.id}`,
+          metadata: {
+            previousStatus: wait.status,
+            buildRequestId: wait.buildRequestId,
+            investigationId: wait.investigationId,
+            toolName: registeredToolName ?? wait.toolName,
+          },
+        });
+        continue;
+      }
       const next = await this.deps.toolReworkWaitStore.update(wait.id, {
         status: "promoted",
-        promotedVersion: promotedVersion ?? wait.promotedVersion ?? null,
+        promotedVersion: nextPromotedVersion,
         toolName: registeredToolName ?? wait.toolName ?? null,
       });
+      if (next.status !== "promoted" || !next.promotedVersion) {
+        await this.emitAudit({
+          action: "tool_rework_wait.updated",
+          targetType: "tool_rework_wait",
+          targetId: next.id,
+          status: "failure",
+          runId: next.runId,
+          summary: `Tool rework wait promotion did not persist a promoted state: ${next.id}`,
+          metadata: {
+            previousStatus: wait.status,
+            status: next.status,
+            buildRequestId: next.buildRequestId,
+            investigationId: next.investigationId,
+            requestedPromotedVersion: nextPromotedVersion,
+            promotedVersion: next.promotedVersion,
+            toolName: next.toolName,
+          },
+        });
+        continue;
+      }
       await this.emitAudit({
         action: "tool_rework_wait.updated",
         targetType: "tool_rework_wait",
@@ -379,10 +507,25 @@ export class ToolImprovementCoordinator {
       if (this.deps.onWaitPromoted) {
         try {
           await this.deps.onWaitPromoted(next);
-        } catch {
-          // The auto-retry hook is purely additive. A failure here must not break the
-          // build-registration audit chain that the operator UI depends on. The
-          // auto-retry coordinator records its own audit when it fails.
+        } catch (error) {
+          // The auto-retry hook is additive. A failure here must not break the
+          // build-registration audit chain, but it must still be visible to operators.
+          await this.emitAudit({
+            action: "tool_rework_wait.updated",
+            targetType: "tool_rework_wait",
+            targetId: next.id,
+            status: "failure",
+            runId: next.runId,
+            summary: `Tool rework wait promoted, but post-promotion hook failed: ${next.id}`,
+            metadata: {
+              status: next.status,
+              buildRequestId: next.buildRequestId,
+              investigationId: next.investigationId,
+              promotedVersion: next.promotedVersion,
+              toolName: next.toolName,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          });
         }
       }
     }

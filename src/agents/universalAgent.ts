@@ -195,6 +195,13 @@ export class UniversalAgent {
         `for retry once the new tool versions are promoted.\n\n` +
         `Pending tool rework waits:\n${lines.join("\n")}`;
     };
+    const stopIfWaitingForToolImprovement = (): void => {
+      if (pendingToolImprovements.length === 0) return;
+      const waitIds = pendingToolImprovements.map((wait) => wait.id).join(", ");
+      throw new Error(
+        `Run is waiting for tool rework (${waitIds}); synthesis is paused until the new tool version is promoted.`,
+      );
+    };
 
     await emit({
       spanId: runSpanId,
@@ -233,7 +240,8 @@ export class UniversalAgent {
       options.timeZone,
     );
     const memoryStartedAt = new Date();
-    const memoryCandidates = await this.skillMemory.search(taskContext, 12, { visibleScopes: options.memoryScopes });
+    const memorySearchQuery = buildMemorySearchQuery(task, options, artifacts);
+    const memoryCandidates = await this.skillMemory.search(memorySearchQuery, 12, { visibleScopes: options.memoryScopes });
     const { memories, blocked } = filterMemoriesForRuntime(memoryCandidates, options);
     await emit({
       spanId: memorySpanId,
@@ -293,6 +301,7 @@ export class UniversalAgent {
       if (generatedArtifact) {
         artifacts.push(generatedArtifact);
       }
+      stopIfWaitingForToolImprovement();
 
       const synthesisSpanId = createSpanId("synthesis");
       const synthesisStartedAt = new Date();
@@ -335,6 +344,16 @@ export class UniversalAgent {
         completedAt: new Date().toISOString(),
         durationMs: elapsedMs(synthesisStartedAt),
         payload: { finalAnswer, modelTier: synthesisTier },
+      });
+      await this.assertFinalAnswerSatisfiesTask({
+        task: taskContext,
+        finalAnswer,
+        artifacts,
+        workerResults: [],
+        reviews: [],
+        emit,
+        parentSpanId: synthesisSpanId,
+        modelTier: synthesisTier,
       });
 
       const learningStartedAt = new Date();
@@ -416,6 +435,7 @@ export class UniversalAgent {
       improveTool,
       toolExecutionContext,
     );
+    stopIfWaitingForToolImprovement();
     const workerResults = reviewedWorkerResults.map((result) => result.workerResult);
     const reviews = reviewedWorkerResults.flatMap((result) => result.reviews);
     pushUniqueArtifacts(artifacts, getApprovedArtifacts(reviewedWorkerResults));
@@ -432,6 +452,7 @@ export class UniversalAgent {
     if (generatedArtifact) {
       artifacts.push(generatedArtifact);
     }
+    stopIfWaitingForToolImprovement();
     const synthesisSpanId = createSpanId("synthesis");
     const synthesisStartedAt = new Date();
     const synthesisTier = selectModelTier("synthesis", complexity);
@@ -474,6 +495,16 @@ export class UniversalAgent {
       durationMs: elapsedMs(synthesisStartedAt),
       payload: { finalAnswer, modelTier: synthesisTier },
     });
+    await this.assertFinalAnswerSatisfiesTask({
+      task: taskContext,
+      finalAnswer,
+      artifacts,
+      workerResults,
+      reviews,
+      emit,
+      parentSpanId: synthesisSpanId,
+      modelTier: synthesisTier,
+    });
 
     const learningStartedAt = new Date();
     const learningTier = selectModelTier("learning", complexity);
@@ -514,6 +545,48 @@ export class UniversalAgent {
       artifacts,
       learnedSkill,
     };
+  }
+
+  private async assertFinalAnswerSatisfiesTask(input: {
+    task: string;
+    finalAnswer: string;
+    artifacts: AgentArtifact[];
+    workerResults: WorkerResult[];
+    reviews: ReviewResult[];
+    emit: AgentEventEmitter;
+    parentSpanId: string;
+    modelTier: ReturnType<typeof selectModelTier>;
+  }): Promise<void> {
+    const startedAt = new Date();
+    const report = inspectFinalAnswerSatisfaction(input);
+    await input.emit({
+      spanId: createSpanId("final-self-check"),
+      parentSpanId: input.parentSpanId,
+      type: "agent-self-check-completed",
+      actor: "synthesizer",
+      activity: "review",
+      status: report.ok ? "completed" : "failed",
+      title: report.ok ? "Final answer self-check passed" : "Final answer self-check failed",
+      detail: report.reason,
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(startedAt),
+      payload: {
+        modelTier: input.modelTier,
+        signals: report.signals,
+        artifactCount: input.artifacts.length,
+        failedReviewCount: input.reviews.filter((review) => review.verdict === "needs_revision").length,
+      },
+    });
+
+    if (!report.ok) {
+      throw new Error(
+        `Final answer did not satisfy the task: ${report.reason}\n\nFinal answer preview:\n${limitText(
+          input.finalAnswer,
+          1_200,
+        )}`,
+      );
+    }
   }
 
   private async classify(
@@ -1129,7 +1202,7 @@ export class UniversalAgent {
               { type: "dismissDialogs" },
               { type: "extractText", label, maxLength: 9000 },
               { type: "extractLinks", label: `${label}-links`, limit: 50 },
-              { type: "screenshot", label, fullPage: true },
+              { type: "screenshot", label, fullPage: true, maxHeight: 1600 },
             ];
           }),
         },
@@ -1351,6 +1424,8 @@ export class UniversalAgent {
         toolExecutionContext,
         requestToolBuild,
         improveTool,
+        undefined,
+        `${originalTask}\n\n${subtask.title}\n${subtask.prompt}\n${subtask.expectedOutput}`,
       );
     }
 
@@ -1391,6 +1466,8 @@ export class UniversalAgent {
       toolExecutionContext,
       requestToolBuild,
       improveTool,
+      undefined,
+      `${originalTask}\n\n${subtask.title}\n${subtask.prompt}\n${subtask.expectedOutput}`,
     );
   }
 
@@ -1541,6 +1618,8 @@ export class UniversalAgent {
       toolExecutionContext,
       requestToolBuild,
       improveTool,
+      undefined,
+      task,
     );
   }
 
@@ -1601,6 +1680,7 @@ export class UniversalAgent {
         {
           url,
           fullPage: true,
+          maxHeight: 1600,
           label: "proof",
         },
         "browser-screenshot",
@@ -1621,12 +1701,14 @@ export class UniversalAgent {
         toolExecutionContext,
         requestToolBuild,
         improveTool,
+        undefined,
+        context,
       );
     }
 
     return this.runArtifactTool(
       screenshotTool,
-      { url, fullPage: true },
+      { url, fullPage: true, maxHeight: 1600 },
       "browser-screenshot",
       `Capture browser screenshot for ${url}.`,
       emit,
@@ -1644,6 +1726,8 @@ export class UniversalAgent {
       toolExecutionContext,
       requestToolBuild,
       improveTool,
+      undefined,
+      context,
     );
   }
 
@@ -1707,6 +1791,7 @@ export class UniversalAgent {
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
     improveTool?: AgentImproveToolFn,
     reworkRetryKeys = new Set<string>(),
+    semanticTask = detail,
   ): Promise<AgentArtifact | undefined> {
     const spanId = createSpanId(`tool-${tool.name}`);
     const startedAt = new Date();
@@ -1804,7 +1889,7 @@ export class UniversalAgent {
     if (capability === "browser-screenshot") {
       const artifactQa = inspectBrowserScreenshotEvidence({
         artifact: artifactInput,
-        task: detail,
+        task: semanticTask,
         browser: isBrowserOperateData(toolResult.data) ? toolResult.data : undefined,
         toolContent: toolResult.content,
       });
@@ -1871,6 +1956,7 @@ export class UniversalAgent {
             requestToolBuild,
             improveTool,
             reworkRetryKeys,
+            semanticTask,
           );
         }
         return undefined;
@@ -2049,6 +2135,7 @@ export class UniversalAgent {
     requestToolBuild: ((request: ToolBuildRequestInput) => Promise<ToolBuildRequest>) | undefined,
     improveTool: AgentImproveToolFn | undefined,
     reworkRetryKeys: Set<string>,
+    semanticTask = detail,
   ): Promise<AgentArtifact | undefined> {
     const retryStartedAt = new Date();
     await emit({
@@ -2082,6 +2169,7 @@ export class UniversalAgent {
       requestToolBuild,
       improveTool,
       reworkRetryKeys,
+      semanticTask,
     );
   }
 
@@ -2543,7 +2631,7 @@ export class UniversalAgent {
 }
 
 function resolveMemoryScopeId(scope: SkillMemoryEntry["scope"], options: RunOptions): string | undefined {
-  if (scope === "group") return options.instanceId ?? "group-local";
+  if (scope === "group") return options.instanceContext?.groupProfile?.id ?? options.instanceId ?? "group-local";
   if (scope === "user") return options.requesterUserId ?? "user-admin";
   if (scope === "thread") return options.threadId;
   if (scope === "run") return options.runId;
@@ -2633,7 +2721,7 @@ function normalizeSubtask(subtask: Subtask): Subtask {
   const requiredTools = new Set((subtask.requiredTools ?? []).map((tool) => tool.trim()).filter(Boolean));
   const requiredArtifacts = [...(subtask.requiredArtifacts ?? [])];
 
-  if (shouldUseWebSearch(text)) {
+  if (!forbidsExternalLookup(text) && shouldUseWebSearch(text)) {
     requiredTools.add("web-search");
   }
 
@@ -2839,6 +2927,59 @@ function createSpanId(prefix: string): string {
 
 function elapsedMs(startedAt: Date): number {
   return Date.now() - startedAt.getTime();
+}
+
+function buildMemorySearchQuery(task: string, options: RunOptions, artifacts: AgentArtifact[]): string {
+  const thread = options.threadContext;
+  const parts = [
+    task,
+    formatInstanceDefaultsForMemorySearch(options.instanceContext),
+    thread?.summary ? `Thread summary: ${thread.summary}` : undefined,
+    thread?.acceptedFacts?.length ? listContext("Thread accepted facts", thread.acceptedFacts.slice(0, 6)) : undefined,
+    thread?.openQuestions?.length ? listContext("Thread open questions", thread.openQuestions.slice(0, 4)) : undefined,
+    artifacts.length > 0 ? formatMemorySearchArtifacts(artifacts) : undefined,
+  ].filter(Boolean);
+
+  return parts.join("\n\n").slice(0, 5000);
+}
+
+function formatInstanceDefaultsForMemorySearch(
+  instanceContext?: {
+    groupProfile?: GroupProfileRecord;
+    requesterUser?: UserRecord;
+  },
+): string | undefined {
+  const profile = instanceContext?.groupProfile;
+  if (!profile) return undefined;
+
+  const stablePreferenceKeys = new Set([
+    "city",
+    "country",
+    "locale",
+    "language",
+    "timezone",
+    "timeZone",
+    "currency",
+  ]);
+  const preferences = Object.entries(profile.preferences ?? {})
+    .filter(([key, value]) => stablePreferenceKeys.has(key) && value !== undefined && value !== null && value !== "")
+    .slice(0, 12)
+    .map(([key, value]) => `${key}: ${formatPreferenceValue(value)}`);
+
+  if (preferences.length === 0) return undefined;
+  return `Stable instance defaults for memory retrieval:\n${preferences.map((item) => `- ${item}`).join("\n")}`;
+}
+
+function formatMemorySearchArtifacts(artifacts: AgentArtifact[]): string {
+  return `Attached or reusable artifacts:
+${artifacts
+  .slice(0, 12)
+  .map((artifact) => {
+    const preview = artifact.contentPreview ? ` preview=${artifact.contentPreview.slice(0, 240)}` : "";
+    const quality = artifact.quality?.status ? ` quality=${artifact.quality.status}` : "";
+    return `- ${artifact.filename} (${artifact.mimeType})${quality}${preview}`;
+  })
+  .join("\n")}`;
 }
 
 function appendArtifactContext(task: string, artifacts: AgentArtifact[]): string {
@@ -3047,6 +3188,7 @@ function asksForScreenshot(task: string): boolean {
 }
 
 function shouldCollectWebSearch(subtask: Subtask, text: string, dependencyContext?: string): boolean {
+  if (forbidsExternalLookup(text)) return false;
   const requiredTools = subtask.requiredTools ?? [];
   const isDependentSynthesisOrReview =
     Boolean(dependencyContext) &&
@@ -3067,6 +3209,7 @@ function shouldCollectWebSearch(subtask: Subtask, text: string, dependencyContex
 }
 
 function shouldCollectBrowserDiscovery(subtask: Subtask, text: string): boolean {
+  if (forbidsExternalLookup(text)) return false;
   const requestedTools = (subtask.requiredTools ?? []).map((tool) => tool.toLowerCase());
   if (requestedTools.some((tool) => ["browser-operate", "browser.operate", "dom-extraction"].includes(tool))) {
     return true;
@@ -3083,6 +3226,7 @@ function shouldCollectBrowserDiscovery(subtask: Subtask, text: string): boolean 
 }
 
 function shouldCollectMarketTimeseries(subtask: Subtask, text: string): boolean {
+  if (forbidsExternalLookup(text)) return false;
   const requestedTools = (subtask.requiredTools ?? []).map((tool) => tool.toLowerCase());
   return (
     requestedTools.some((tool) => ["market-timeseries", "crypto-timeseries", "structured-market-data"].includes(tool)) ||
@@ -3090,6 +3234,12 @@ function shouldCollectMarketTimeseries(subtask: Subtask, text: string): boolean 
       text,
     ) &&
       inferMarketSymbols(text).length > 0)
+  );
+}
+
+function forbidsExternalLookup(text: string): boolean {
+  return /(?:without\s+(?:external|web|internet|online)\s+(?:sources?|lookup|search|network|data)|no\s+(?:external|web|internet|online)\s+(?:sources?|lookup|search|network|data)|offline[-\s]?only|do\s+not\s+(?:search|browse|use\s+(?:web|internet|external))|без\s+(?:внешн|интернет|онлайн|web|веб)[^\n.]{0,80}(?:источник|поиск|данн|сеть|доступ)|не\s+(?:ищи|используй|ходи)[^\n.]{0,80}(?:интернет|веб|web|внешн)|без\s+внешних\s+источников)/i.test(
+    text,
   );
 }
 
@@ -3199,16 +3349,23 @@ function buildSearchQueries(subtask: Subtask, contextText = ""): string[] {
       ),
     );
   }
+  const flightIntent = hasFlightSearchIntent(`${subtask.title}\n${subtask.prompt}\n${subtask.expectedOutput}`);
   const iataCodes = [...new Set(subtask.prompt.match(/\b[A-Z]{3}\b/g) ?? [])];
-  if (iataCodes.length >= 2) {
+  if (flightIntent && iataCodes.length >= 2) {
     queries.push(cleanSearchQuery(`${iataCodes.slice(0, 3).join(" ")} flights Google Flights Skyscanner Kayak`));
   }
   const routeMatch = subtask.prompt.match(/from\s+([A-Za-zА-Яа-яÁÉÍÓÚáéíóúñü\s-]+).*?\bto\s+([A-Za-zА-Яа-яÁÉÍÓÚáéíóúñü\s-]+)/i);
-  if (routeMatch) {
+  if (flightIntent && routeMatch) {
     queries.push(cleanSearchQuery(`${routeMatch[1]} to ${routeMatch[2]} flights Google Flights Skyscanner Kayak`));
   }
 
   return [...new Set(queries.filter(Boolean))].slice(0, 3);
+}
+
+function hasFlightSearchIntent(text: string): boolean {
+  return /\b(?:flight|flights|airfare|airport|iata|depart(?:ure)?|arrival|route|airline|ticket|tickets|рейс|рейсы|авиа|аэропорт|авиабилет|авиабилеты|перел[её]т|перелеты|перелёты|самол[её]т)\b/i.test(
+    text,
+  );
 }
 
 function buildContextSearchHints(text: string): string {
@@ -3353,7 +3510,7 @@ function improveDeclaredToolInput(
         { type: "dismissDialogs" },
         { type: "extractText", label, maxLength: 9000 },
         { type: "extractLinks", label: `${label}-links`, limit: 40 },
-        { type: "screenshot", label, fullPage: true },
+        { type: "screenshot", label, fullPage: true, maxHeight: 1600 },
       ];
     }),
   };
@@ -3518,6 +3675,198 @@ function extractHttpUrls(text: string): string[] {
     urls.push(url);
   }
   return urls;
+}
+
+type FinalAnswerSatisfactionReport = {
+  ok: boolean;
+  reason: string;
+  signals: string[];
+};
+
+function inspectFinalAnswerSatisfaction(input: {
+  task: string;
+  finalAnswer: string;
+  artifacts: AgentArtifact[];
+  workerResults: WorkerResult[];
+  reviews: ReviewResult[];
+}): FinalAnswerSatisfactionReport {
+  const answer = input.finalAnswer.trim();
+  const task = input.task;
+  const signals: string[] = [];
+
+  if (answer.length < 12) {
+    return {
+      ok: false,
+      reason: "Final answer is effectively empty.",
+      signals: ["empty-final-answer"],
+    };
+  }
+
+  if (containsUnexecutedToolCall(answer)) {
+    return {
+      ok: false,
+      reason: "Final answer contains unexecuted tool-call syntax instead of real runtime evidence.",
+      signals: ["unexecuted-tool-call"],
+    };
+  }
+
+  if (containsPlaceholderProof(answer)) {
+    return {
+      ok: false,
+      reason: "Final answer contains placeholder or fake proof links.",
+      signals: ["placeholder-proof"],
+    };
+  }
+
+  if (containsWeakArtifactEvidence(answer)) {
+    if (hasPendingToolImprovementNotice(answer) || reportsExternalBlocker(answer)) {
+      signals.push("weak-artifact-evidence-with-blocker-or-tool-wait");
+    } else {
+      return {
+        ok: false,
+        reason: "Final answer relies on weak browser/artifact evidence such as blank pages, loaders, blockers, or unrelated proof.",
+        signals: ["weak-artifact-evidence"],
+      };
+    }
+  }
+
+  if (hasPendingToolImprovementNotice(answer)) {
+    return {
+      ok: true,
+      reason: "Final answer opened a durable tool rework wait instead of pretending the task is complete.",
+      signals: [...signals, "pending-tool-rework-wait"],
+    };
+  }
+
+  if (mentionsAnswerFiles(answer) && input.artifacts.length === 0) {
+    return {
+      ok: false,
+      reason: "Final answer claims response files or artifacts, but no saved artifacts are attached to the run.",
+      signals: ["claimed-artifacts-missing"],
+    };
+  }
+
+  const failedReviews = input.reviews.filter((review) => review.verdict === "needs_revision");
+  if (failedReviews.length > 0 && !hasPassingReviewAfterFailure(input.reviews) && !reportsEvidenceBackedExternalBlocker(answer, input)) {
+    return {
+      ok: false,
+      reason:
+        "All review attempts for at least one subtask still require revision, and the final answer does not report a precise evidence-backed blocker.",
+      signals: ["unresolved-review-failure"],
+    };
+  }
+
+  if (expectsActionableResult(task)) {
+    signals.push("expects-actionable-result");
+    if (asksForClarificationInsteadOfResult(answer)) {
+      return {
+        ok: false,
+        reason:
+          "The user asked for an actionable result, but the final answer asks for missing information instead of using available context or reporting a concrete blocker.",
+        signals: [...signals, "clarification-instead-of-result"],
+      };
+    }
+    if (reportsGenericInability(answer) && !reportsExternalBlocker(answer) && !reportsEvidenceBackedExternalBlocker(answer, input)) {
+      return {
+        ok: false,
+        reason:
+          "The final answer reports inability or empty results without enough recovery evidence or a precise external blocker.",
+        signals: [...signals, "generic-inability"],
+      };
+    }
+  }
+
+  if (expectsConcreteCandidates(task) && lacksConcreteCandidateEvidence(answer, input.artifacts)) {
+    if (reportsExternalBlocker(answer)) {
+      signals.push("concrete-result-blocked-by-external-source");
+    } else {
+      return {
+        ok: false,
+        reason:
+          "The task expected concrete candidates, products, prices, bookings, or recommendations, but the final answer contains no concrete candidate/source/artifact evidence.",
+        signals: [...signals, "missing-concrete-candidates"],
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    reason: "Final answer has enough deterministic evidence signals to be returned.",
+    signals,
+  };
+}
+
+function hasPassingReviewAfterFailure(reviews: ReviewResult[]): boolean {
+  const latestBySubtask = new Map<string, ReviewResult>();
+  for (const review of reviews) latestBySubtask.set(review.subtaskId, review);
+  return Array.from(latestBySubtask.values()).every((review) => review.verdict !== "needs_revision");
+}
+
+function mentionsAnswerFiles(text: string): boolean {
+  return /(файлы ответа|response files|attached files|attachments|artifacts?:|артефакт[ыа]?:)/i.test(text);
+}
+
+function hasPendingToolImprovementNotice(text: string): boolean {
+  return /Pending tool rework waits:|waiting for tool improvements|ожидает(?:ся)?\s+доработк[аи]\s+тул/i.test(text);
+}
+
+function expectsActionableResult(task: string): boolean {
+  return /(найди|подбери|посоветуй|порекомендуй|сравни|купить|покупать|забронируй|закажи|достань|найти|брони|цена|стоимость|курс|скриншот|доказатель|модель|вариант|кандидат|список|find|search|choose|recommend|compare|buy|book|reserve|order|price|screenshot|proof|candidate|model|option|list)/i.test(
+    task,
+  );
+}
+
+function expectsConcreteCandidates(task: string): boolean {
+  return /(найди|подбери|посоветуй|порекомендуй|купить|покупать|забронируй|закажи|модель|вариант|кандидат|список|ресторан|столик|товар|ноутбук|find|choose|recommend|buy|book|reserve|candidate|model|option|restaurant|table|product|laptop)/i.test(
+    task,
+  );
+}
+
+function asksForClarificationInsteadOfResult(text: string): boolean {
+  return /(пожалуйста,\s*(?:укажите|уточните|предоставьте)|укажите\s+(?:город|район|объект|модель|бюджет)|уточните\s+(?:город|район|что именно|какой именно)|мне необходим[аы]\s+.*уточнен|нужн[ыо]\s+(?:уточнен|дополнительн)|please\s+(?:specify|clarify|provide)|i need\s+(?:more|additional)\s+information|need you to specify|could you clarify)/i.test(
+    text,
+  );
+}
+
+function reportsGenericInability(text: string): boolean {
+  return /(не могу|не удалось|не получилось|невозможно|нет результатов|ничего не найдено|не наш[её]л|данных недостаточно|could not|cannot|unable to|failed to|no results|nothing found|insufficient data|not available)/i.test(
+    text,
+  );
+}
+
+function reportsEvidenceBackedExternalBlocker(text: string, input: {
+  workerResults: WorkerResult[];
+  artifacts: AgentArtifact[];
+}): boolean {
+  if (!reportsExternalBlocker(text)) return false;
+  const recoveryEvidence =
+    /(retried|alternative source|direct url|second source|tool evidence|artifact URL|повтор|альтернатив|другой источник|прямая ссылка|артефакт)/i.test(
+      text,
+    ) ||
+    input.artifacts.length > 0 ||
+    input.workerResults.some(
+      (result) =>
+        (result.toolEvidence?.length ?? 0) >= 2 ||
+        /(retried|alternative source|direct url|second source|повтор|альтернатив|другой источник|прямая ссылка)/i.test(
+          result.output,
+        ),
+    );
+  return recoveryEvidence;
+}
+
+function reportsExternalBlocker(text: string): boolean {
+  return /(external blocker|blocked by|access denied|login wall|captcha|bot check|provider returned|site returned|\bblocker\b|защит[аы] от бот|капч|доступ запрещ|внешн(?:ий|яя) блокер|сайт (?:не дал|заблокировал)|провайдер вернул)/i.test(
+    text,
+  );
+}
+
+function lacksConcreteCandidateEvidence(text: string, artifacts: AgentArtifact[]): boolean {
+  if (artifacts.length > 0) return false;
+  if (extractHttpUrls(text).length > 0) return false;
+  if (/[€$£₽]\s?\d|\d+(?:[.,]\d+)?\s?(?:€|usd|eur|руб|₽|dollars?|euros?)/i.test(text)) return false;
+  if (/\b[A-Z][A-Za-z0-9-]{2,}(?:\s+[A-Z0-9][A-Za-z0-9-]{1,}){0,4}\b/.test(text)) return false;
+  if (/["«][^"»]{3,60}["»]/.test(text)) return false;
+  return reportsGenericInability(text) || asksForClarificationInsteadOfResult(text);
 }
 
 function hardGateReview(workerResult: WorkerResult): ReviewResult | undefined {

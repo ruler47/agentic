@@ -31,7 +31,7 @@ Input:
     { "type": "assertUrl", "includes": "example.com" },
     { "type": "extractText", "selector": "main", "label": "results" },
     { "type": "extractLinks", "selector": "main", "label": "result-links" },
-    { "type": "screenshot", "label": "proof", "fullPage": true }
+    { "type": "screenshot", "label": "proof", "fullPage": true, "maxHeight": 1600 }
   ],
   "storageState": {
     "cookies": [],
@@ -50,7 +50,8 @@ For screenshot-style compatibility, callers may also pass a compact input withou
   "url": "https://example.com/results",
   "label": "proof",
   "filename": "example-results.png",
-  "fullPage": true
+  "fullPage": true,
+  "maxHeight": 1600
 }
 ```
 
@@ -70,6 +71,12 @@ Output data:
 
 Screenshots are returned as artifact payloads. The agent runtime may persist them and
 attach the resulting artifact URLs to the final answer.
+
+Screenshot capture is bounded by default. `screenshot` commands capture the visible
+viewport unless `fullPage: true` is explicitly requested. Even then, the tool caps the
+image height to a monitor-sized slice (`maxHeight` defaults to 1600px and is clamped to
+3000px) so proof artifacts do not become long infinite-scroll pages when the useful
+evidence is above the fold.
 
 If a command fails after the page has opened, the tool attempts to capture a diagnostic
 screenshot before returning `ok: false`. The caller can persist that screenshot as proof
@@ -117,6 +124,8 @@ of a blocker such as CAPTCHA, login wall, unavailable content, or a broken selec
   or MFA flows still need a caller-provided command sequence or a specialized higher-level
   module.
 - Artifact QA is outside the portable browser tool. The agent runtime currently runs
-  deterministic visual and semantic checks before storing browser screenshots, using the
-  screenshot pixels plus browser URL/title/text/link context to reject loader/blocker or
-  task-mismatched evidence.
+  deterministic visual and semantic checks before storing browser screenshots. The
+  semantic gate classifies the task's expected evidence contract (for example product
+  proof, flight-search proof, translation proof, profile proof, or general web proof) and
+  compares it with observed URL/title/text/link evidence. This keeps the browser module
+  generic while still rejecting loader/blocker pages and task-mismatched proof artifacts.

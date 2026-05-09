@@ -137,6 +137,10 @@ universal agent runtime with reusable building blocks:
   another agent;
 - every agent self-checks its output against the local task contract before returning it
   upward;
+- final synthesis also performs a deterministic task-satisfaction self-check before
+  learning or `run-completed`; if the answer only asks for missing context, claims
+  nonexistent artifacts, contains placeholder proof/tool-call syntax, or reports generic
+  failure without a precise blocker, the run fails instead of being marked successful;
 - missing abilities are expressed as abstract capabilities, not as one-off fixes for the
   current user prompt;
 - capabilities are implemented as TypeScript tool modules with schemas, tests, QA
@@ -397,6 +401,10 @@ Remaining memory gaps:
 - Runtime memory retrieval enforces accepted-only, exact visible-scope filtering, and the
   deterministic sensitive/private memory policy before prompt injection. It is not yet
   connected to editable role/policy records or persistent policy decisions.
+- Runtime memory retrieval now searches with a focused task/thread/artifact query instead
+  of the full runtime prompt. Group profile, requester metadata, current-date boilerplate,
+  and channel/system instructions still enter the agent prompt, but they no longer steer
+  memory matching toward unrelated operational memories.
 - Memory proposals from completed runs are classified into group/user/thread/run scope by
   the learning model, audited as `memory.created`, and checked by deterministic
   memory-specialist guardrails before storage. Low-confidence or policy-risky learned
@@ -494,7 +502,8 @@ Implementation tasks:
 - Run Workspace shows a "Waiting for tool upgrade" panel when active waits exist for the
   selected run. DONE. Trace Lab inspector shows the linked wait/build/investigation card
   for the selected span. DONE. Tool Builds investigation cards and build cards show
-  linked waits with a `Resume run` button when the wait is `promoted`. DONE.
+  linked waits with a `Mark ready for retry` / retry-run action when the wait is
+  `promoted`. DONE.
 - "Mark ready for retry / close wait" action: marks the wait as `resumed`, optionally
   records `retryRunId`, returns the run from `waiting_tool_rework` back to `failed` so
   an operator can re-issue the task with the new tool version, and writes
@@ -1100,7 +1109,13 @@ Remaining Phase 3 gaps:
   signals. Runtime semantic artifact QA now treats `blocked_or_loader` screenshot
   failures as external blockers rather than automatic tool rework requests, records an
   explicit trace event for the limitation, and creates/updates accepted global failure
-  memory for the blocked host/tool. DONE for first UI visibility: Memory now has a
+  memory for the blocked host/tool. Screenshot semantic QA now uses a generic evidence
+  contract rather than private per-site fixes: it classifies the task's expected proof
+  type (product purchase, flight search, translation, market research, profile/identity,
+  or general web proof), classifies observed URL/title/text/link evidence, and rejects
+  mismatches such as utility pages, report pages, or search-only pages when the task
+  required concrete product/source proof.
+  DONE for first UI visibility: Memory now has a
   `Known Limitations` filter, metric, warning styling, and detail guidance for
   `external-blocker` memories. Remaining work: classify ambiguous issues with a local LLM
   before build creation and add cross-links from the rejected artifact/span directly to
@@ -1117,6 +1132,10 @@ Remaining Phase 3 gaps:
   of the artifact tool call. Remaining work is waiting asynchronously for a background
   QA-approved promoted replacement, reloading the registry, and resuming/retrying the run
   after the background worker finishes.
+- Auto-retry fanout is now bounded at the source-run level: equivalent tool improvement
+  requests reuse the same open wait/build, and a source run with an existing retry run
+  does not spawn sibling full-run retries for duplicate promoted waits. Remaining work is
+  span-level retry/replan after multiple independent tool fixes are promoted.
 - Next roadmap focus after the background worker: scoped semantic memory with group,
   user, and thread facts; review queue; confidence; accepted/rejected fact lifecycle.
 
@@ -1523,9 +1542,19 @@ Implementation tasks:
   review gates force a revision when a worker describes such weak evidence. Deterministic
   PNG visual QA now rejects near-empty/loader-like screenshots before storage. Browser
   screenshot semantic QA now also checks URL/title/extracted text/link context for
-  loader/blocker signals and task-specific signal mismatch before artifact storage.
+  loader/blocker signals and expected-evidence-vs-observed-evidence mismatch before
+  artifact storage.
   Remaining work is true OCR/vision inspection of image-only artifacts, screenshots that
   lack DOM text, and richer proof-specific scoring.
+- Harden memory retrieval precision. DONE for the current deterministic layer: runtime
+  memory matching now filters common stopwords before scoring, rejects stopword-only
+  overlaps, keeps semantic embedding rank as a recall/ranking signal only for candidates
+  that also have lexical evidence, and stores learned group memories under the editable
+  `groupProfile.id` rather than technical `instanceId`.
+- Harden tool rework promotion audits. DONE: `ToolImprovementCoordinator` refuses to
+  mark waits promoted without a concrete version, audits failure if the wait store does
+  not persist `status=promoted`, and records non-blocking background scheduler /
+  post-promotion hook failures instead of swallowing them.
 - Add full semantic artifact QA and source-strategy repair. The runtime should not merely
   check that an artifact is non-empty; it should decide whether the artifact actually
   proves the local task contract. Screenshot/file/report QA should combine OCR or vision,

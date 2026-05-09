@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { LlmClient } from "../src/llm/client.js";
+import { LlmClient, readLlmConfigFromEnv } from "../src/llm/client.js";
 import { InMemoryModelTierSettingsStore } from "../src/settings/modelTierSettings.js";
 
 test("LlmClient uses persisted model tier settings for requests", async () => {
@@ -132,4 +132,19 @@ test("LlmClient preserves string error bodies from OpenAI-compatible servers", a
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("readLlmConfigFromEnv accepts an explicit env object for typed runtime config", () => {
+  const config = readLlmConfigFromEnv({
+    LLM_BASE_URL: "http://runtime.local/v1",
+    LLM_MODEL: "fallback-model",
+    LLM_TEMPERATURE: "0.4",
+    LLM_MODEL_TIER_M: " medium-a, medium-b ",
+  });
+
+  assert.equal(config.baseUrl, "http://runtime.local/v1");
+  assert.equal(config.model, "fallback-model");
+  assert.equal(config.temperature, 0.4);
+  assert.equal(config.tierModels.M, " medium-a, medium-b ");
+  assert.deepEqual(config.tierModelCandidates.M, ["medium-a", "medium-b"]);
 });

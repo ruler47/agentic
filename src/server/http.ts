@@ -160,7 +160,7 @@ export function createWebApp(options: WebAppOptions) {
   options.toolBuildWorker?.setOnAfterCompleted(async (workflowResult) => {
     if (workflowResult.request.status !== "registered") return;
     const sourceRunId = workflowResult.request.sourceRunId;
-    const sourceRun = sourceRunId ? await options.runStore.get(sourceRunId).catch(() => undefined) : undefined;
+    const sourceRun = sourceRunId ? await options.runStore.get(sourceRunId) : undefined;
     await recordAudit(options, {
       instanceId: sourceRun?.instanceId ?? "instance-local",
       actorId: "tool-build-worker",
@@ -2690,7 +2690,7 @@ async function routeRequest(
           : "openai-compatible",
         baseUrl: process.env.EMBEDDING_BASE_URL ?? process.env.LLM_BASE_URL ?? "http://127.0.0.1:1234/v1",
         model: process.env.EMBEDDING_MODEL,
-        dimensions: Number(process.env.MEMORY_EMBEDDING_DIMENSIONS ?? "128"),
+        dimensions: 128,
         models: await listOpenAiCompatibleModels(
           process.env.EMBEDDING_BASE_URL ?? process.env.LLM_BASE_URL ?? "http://127.0.0.1:1234/v1",
         ),
@@ -3237,6 +3237,15 @@ async function resolveRunContext(
         }));
     }
     parentRunId = parentRunId ?? thread.latestRunId;
+    if (requestedThreadId && parentRunId) {
+      const parentRun = await options.runStore.get(parentRunId);
+      if (parentRun?.status === "queued" || parentRun?.status === "running") {
+        throw new RunContextError(
+          409,
+          `Conversation thread ${thread.id} already has an active run (${parentRun.id}); wait for it to finish before continuing the thread.`,
+        );
+      }
+    }
   }
 
   requesterUser =
@@ -3538,9 +3547,9 @@ async function executeRun(
 
   try {
     const [groupProfile, requesterUser] = await Promise.all([
-      options.groupProfileStore?.get().catch(() => undefined) ?? Promise.resolve(undefined),
+      options.groupProfileStore?.get() ?? Promise.resolve(undefined),
       run?.requesterUserId
-        ? getUserStore(options).get(run.requesterUserId).catch(() => undefined)
+        ? getUserStore(options).get(run.requesterUserId)
         : Promise.resolve(undefined),
     ]);
     const result = await options.agent.run(task, {
@@ -3933,20 +3942,16 @@ function createToolImprovementCoordinator(
           // Fire-and-forget: the coordinator nudges the worker so it picks up the new
           // build immediately. The worker itself joins a pending tick if one is in
           // flight, so promote-time and interval-time triggers never claim twice.
-          scheduleImmediate: () => {
-            void options.toolBuildWorker!.scheduleImmediate().catch(() => undefined);
+          scheduleImmediate: async () => {
+            await options.toolBuildWorker!.scheduleImmediate();
           },
         }
       : undefined,
     onWaitPromoted: async (wait) => {
-      // The auto-retry orchestrator handles its own audit + idempotency; we just need
-      // to hand the freshly-promoted wait id over and never let any failure bubble up
-      // into `notifyBuildRegistered`'s control flow.
-      try {
-        await autoRetryAfterPromotion(options, context, wait.id);
-      } catch {
-        // intentional: keep the build-registered audit chain stable.
-      }
+      // The auto-retry orchestrator handles its own audit + idempotency. Let failures
+      // bubble to ToolImprovementCoordinator so it records a failed post-promotion
+      // handoff instead of silently losing the retry trigger.
+      await autoRetryAfterPromotion(options, context, wait.id);
     },
   });
 }

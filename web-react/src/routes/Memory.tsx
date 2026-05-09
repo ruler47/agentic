@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   useMemories,
+  useEvaluateMemoryRetrieval,
   useMemoryReviews,
   useRebuildMemoryEmbeddings,
   useUpdateMemory,
@@ -23,6 +24,7 @@ export function MemoryPage() {
   const memories = useMemories();
   const reviews = useMemoryReviews();
   const rebuild = useRebuildMemoryEmbeddings();
+  const evaluateRetrieval = useEvaluateMemoryRetrieval();
   const [scope, setScope] = useState<(typeof SCOPES)[number]>("all");
   const [status, setStatus] = useState<(typeof STATUSES)[number]>("all");
   const [search, setSearch] = useState("");
@@ -69,14 +71,40 @@ export function MemoryPage() {
             >
               {rebuild.isPending ? "Rebuilding…" : "Rebuild embeddings"}
             </button>
+            <button
+              type="button"
+              onClick={() => evaluateRetrieval.mutate(buildRetrievalEvaluationCases(filtered))}
+              disabled={evaluateRetrieval.isPending || filtered.length === 0}
+              className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px]"
+            >
+              {evaluateRetrieval.isPending ? "Evaluating…" : "Run retrieval eval"}
+            </button>
           </div>
           {rebuild.isError ? (
             <p className="mt-1 text-[11px] text-app-danger">{rebuild.error.message}</p>
           ) : null}
           {rebuild.isSuccess ? (
             <p className="mt-1 text-[11px] text-app-accent">
-              Rebuilt {rebuild.data.rebuilt} memory vectors.
+              Rebuilt {rebuild.data.updated} memory vectors.
             </p>
+          ) : null}
+          {evaluateRetrieval.isError ? (
+            <p className="mt-1 text-[11px] text-app-danger">{evaluateRetrieval.error.message}</p>
+          ) : null}
+          {evaluateRetrieval.isSuccess ? (
+            <div className="mt-2 rounded-md border border-app-border bg-app-surface-2 p-2 text-[11px] text-app-text-muted">
+              <p className={evaluateRetrieval.data.passed ? "text-app-accent" : "text-app-danger"}>
+                Retrieval eval: {evaluateRetrieval.data.passedCases}/{evaluateRetrieval.data.totalCases} passed,
+                average recall {Math.round(evaluateRetrieval.data.averageRecall * 100)}%.
+              </p>
+              {evaluateRetrieval.data.results.slice(0, 4).map((result) => (
+                <p key={result.caseId} className="mt-1 truncate">
+                  {result.passed ? "PASS" : "FAIL"} {result.caseId}: top hit{" "}
+                  {result.topHitMatched ? "matched" : "missed"}
+                  {result.missingMemoryIds.length ? `, missing ${result.missingMemoryIds.join(", ")}` : ""}
+                </p>
+              ))}
+            </div>
           ) : null}
         </header>
 
@@ -431,4 +459,17 @@ function statusTone(status: MemoryStatus): "ok" | "warn" | "danger" | "muted" {
     case "archived":
       return "muted";
   }
+}
+
+function buildRetrievalEvaluationCases(memories: SkillMemoryEntry[]) {
+  return memories
+    .filter((memory) => (memory.status ?? "accepted") === "accepted")
+    .slice(0, 25)
+    .map((memory) => ({
+      id: memory.id,
+      query: [memory.title, ...(memory.tags ?? []), memory.summary].filter(Boolean).join(" "),
+      expectedMemoryIds: [memory.id],
+      limit: 5,
+      minRecall: 1,
+    }));
 }

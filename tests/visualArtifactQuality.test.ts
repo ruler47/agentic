@@ -62,6 +62,87 @@ test("semantic artifact QA rejects visually valid but blocked browser proof", ()
   assert.equal(report.decision, "blocked_or_loader");
 });
 
+test("semantic artifact QA rejects visually valid 404 browser proof", () => {
+  const png = contentHeavyPng();
+
+  const report = inspectBrowserScreenshotEvidence({
+    artifact: {
+      filename: "doctoralia-404.png",
+      mimeType: "image/png",
+      content: PNG.sync.write(png),
+      description: "Browser screenshot captured from https://www.doctoralia.es/%60.",
+    },
+    task: "Find allergy and immunology specialists in Spain or the Schengen area.",
+    browser: {
+      finalUrl: "https://www.doctoralia.es/%60",
+      title: "404 Esta pagina no existe",
+      extractedText: [
+        {
+          label: "page",
+          text: "Doctoralia 404 Esta pagina no existe. No pudimos encontrar esta pagina. Encuentra al especialista que necesitas.",
+        },
+      ],
+    },
+    toolContent: "Final URL: https://www.doctoralia.es/%60",
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.decision, "blocked_or_loader");
+  assert.ok(report.blockerSignals.some((signal) => signal.includes("404")));
+});
+
+test("semantic artifact QA rejects utility pages that do not match the task", () => {
+  const png = contentHeavyPng();
+
+  const report = inspectBrowserScreenshotEvidence({
+    artifact: {
+      filename: "google-translate-proof.png",
+      mimeType: "image/png",
+      content: PNG.sync.write(png),
+      description: "Browser screenshot captured from https://translate.google.com/.",
+    },
+    task: "Find the best laptop under 2000 USD that can be bought now.",
+    browser: {
+      finalUrl: "https://translate.google.com/",
+      title: "Google Translate",
+      extractedText: [{ label: "page", text: "Google Translate Detect language English Spanish" }],
+    },
+    toolContent: "Final URL: https://translate.google.com/",
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.decision, "semantic_mismatch");
+  assert.match(report.reason, /translation utility/i);
+  assert.deepEqual(report.expectedEvidenceTypes, ["product_purchase"]);
+  assert.deepEqual(report.observedEvidenceTypes, ["translation_utility"]);
+});
+
+test("semantic artifact QA rejects market research pages as laptop purchase proof", () => {
+  const png = contentHeavyPng();
+
+  const report = inspectBrowserScreenshotEvidence({
+    artifact: {
+      filename: "market-research-proof.png",
+      mimeType: "image/png",
+      content: PNG.sync.write(png),
+      description: "Browser screenshot captured from a market research report.",
+    },
+    task: "дай мне абсолютно лучший лептоп до 2000$, что я могу сейчас купить",
+    browser: {
+      finalUrl: "https://www.bonafideresearch.com/product/laptop-market",
+      title: "Laptop market research report",
+      extractedText: [{ label: "page", text: "Bonafide Research laptop market size forecast report" }],
+    },
+    toolContent: "Final URL: https://www.bonafideresearch.com/product/laptop-market",
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.decision, "semantic_mismatch");
+  assert.match(report.reason, /market-research/i);
+  assert.ok(report.expectedEvidenceTypes.includes("product_purchase"));
+  assert.ok(report.observedEvidenceTypes.includes("market_research_report"));
+});
+
 test("semantic artifact QA accepts visually valid relevant browser proof", () => {
   const png = contentHeavyPng();
 

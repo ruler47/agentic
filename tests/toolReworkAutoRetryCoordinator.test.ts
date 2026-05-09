@@ -126,6 +126,34 @@ test("auto retry is idempotent: second call returns the existing retry run", asy
   assert.equal(runs.length, 2);
 });
 
+test("auto retry suppresses sibling retry fanout for the same source run", async () => {
+  const ctx = setup();
+  const { sourceRunId, waitId } = await setupPromotedWait(ctx);
+
+  const first = await ctx.auto.tryAutoRetry(waitId);
+  assert.equal(first.status, "created");
+
+  const sibling = await ctx.toolReworkWaitStore.create({
+    runId: sourceRunId,
+    reason: "Same source run produced a second tool rework wait",
+    spanId: "tool-span-2",
+    toolName: "browser.operate",
+    toolVersion: "1.0.0",
+    investigationId: "inv-2",
+    buildRequestId: "build-2",
+    status: "promoted",
+    promotedVersion: "1.1.0",
+  });
+
+  const second = await ctx.auto.tryAutoRetry(sibling.id);
+
+  assert.equal(second.status, "already_exists");
+  assert.equal(second.retryRun?.id, first.retryRun?.id);
+  assert.equal(second.wait?.id, first.wait?.id);
+  const runs = await ctx.runStore.list();
+  assert.equal(runs.filter((run) => run.parentRunId === sourceRunId).length, 1);
+});
+
 test("auto retry skips disabled policy without creating a retry run", async () => {
   const ctx = setup({ enabled: false });
   const { waitId } = await setupPromotedWait(ctx);
@@ -171,6 +199,38 @@ test("auto retry returns source_run_not_found when run is missing", async () => 
 
   const result = await ctx.auto.tryAutoRetry(wait.id);
   assert.equal(result.status, "source_run_not_found");
+});
+
+test("auto retry reports run-store lookup failures instead of treating them as missing runs", async () => {
+  const ctx = setup();
+  const sourceRun = await ctx.runStore.create("task");
+  const wait = await ctx.toolReworkWaitStore.create({
+    runId: sourceRun.id,
+    reason: "promoted but the run store is unhealthy",
+    status: "promoted",
+    promotedVersion: "1.0.0",
+  });
+  const auditEvents: AutoRetryAuditEvent[] = [];
+  const auto = new ToolReworkAutoRetryCoordinator({
+    toolReworkWaitStore: ctx.toolReworkWaitStore,
+    runStore: {
+      get: async () => {
+        throw new Error("database temporarily unavailable");
+      },
+    },
+    retryCoordinator: ctx.retry,
+    audit: async (event) => {
+      auditEvents.push(event);
+    },
+    policy: { enabled: true, maxAutoRetriesPerRootRun: 1 },
+  });
+
+  const result = await auto.tryAutoRetry(wait.id);
+
+  assert.equal(result.status, "failed");
+  assert.match(result.reason ?? "", /database temporarily unavailable/);
+  assert.equal(auditEvents.at(-1)?.status, "failure");
+  assert.match(String(auditEvents.at(-1)?.metadata?.reason ?? ""), /database temporarily unavailable/);
 });
 
 test("auto retry stops at maxAutoRetriesPerRootRun by walking the parent chain", async () => {

@@ -135,7 +135,19 @@ export class ToolReworkAutoRetryCoordinator {
     // wait status here — once a retryRunId is recorded, the orchestrator is finished
     // with this wait, even if the operator later changed its status.
     if (wait.retryRunId) {
-      const existing = await this.deps.runStore.get(wait.retryRunId).catch(() => undefined);
+      let existing: AgentRunRecord | undefined;
+      try {
+        existing = await this.deps.runStore.get(wait.retryRunId);
+      } catch (error) {
+        const result: AutoRetryResult = {
+          status: "failed",
+          wait,
+          policy,
+          reason: `Retry run lookup failed for ${wait.retryRunId}: ${error instanceof Error ? error.message : String(error)}`,
+        };
+        await this.audit(result);
+        return result;
+      }
       if (existing) {
         return {
           status: "already_exists",
@@ -149,6 +161,29 @@ export class ToolReworkAutoRetryCoordinator {
       // retry coordinator create a fresh one. The wait will be relinked.
     }
 
+    let siblingRetry: { wait: ToolReworkWaitRecord; retryRun: AgentRunRecord } | undefined;
+    try {
+      siblingRetry = await this.findExistingRetryForSourceRun(wait);
+    } catch (error) {
+      const result: AutoRetryResult = {
+        status: "failed",
+        wait,
+        policy,
+        reason: `Sibling retry lookup failed for source run ${wait.runId}: ${error instanceof Error ? error.message : String(error)}`,
+      };
+      await this.audit(result);
+      return result;
+    }
+    if (siblingRetry) {
+      return {
+        status: "already_exists",
+        wait: siblingRetry.wait,
+        retryRun: siblingRetry.retryRun,
+        alreadyExists: true,
+        policy,
+      };
+    }
+
     if (wait.status !== "promoted") {
       return {
         status: "wait_not_promoted",
@@ -158,7 +193,19 @@ export class ToolReworkAutoRetryCoordinator {
       };
     }
 
-    const sourceRun = await this.deps.runStore.get(wait.runId).catch(() => undefined);
+    let sourceRun: AgentRunRecord | undefined;
+    try {
+      sourceRun = await this.deps.runStore.get(wait.runId);
+    } catch (error) {
+      const result: AutoRetryResult = {
+        status: "failed",
+        wait,
+        policy,
+        reason: `Source run lookup failed for ${wait.runId}: ${error instanceof Error ? error.message : String(error)}`,
+      };
+      await this.audit(result);
+      return result;
+    }
     if (!sourceRun) {
       const result: AutoRetryResult = {
         status: "source_run_not_found",
@@ -180,7 +227,19 @@ export class ToolReworkAutoRetryCoordinator {
       return result;
     }
 
-    const retryDepth = await this.computeRetryDepth(sourceRun);
+    let retryDepth: number;
+    try {
+      retryDepth = await this.computeRetryDepth(sourceRun);
+    } catch (error) {
+      const result: AutoRetryResult = {
+        status: "failed",
+        wait,
+        policy,
+        reason: `Retry parent-chain lookup failed for source run ${sourceRun.id}: ${error instanceof Error ? error.message : String(error)}`,
+      };
+      await this.audit(result);
+      return result;
+    }
     if (retryDepth >= policy.maxAutoRetriesPerRootRun) {
       const result: AutoRetryResult = {
         status: "max_depth_reached",
@@ -239,14 +298,24 @@ export class ToolReworkAutoRetryCoordinator {
     return result;
   }
 
+  private async findExistingRetryForSourceRun(
+    wait: ToolReworkWaitRecord,
+  ): Promise<{ wait: ToolReworkWaitRecord; retryRun: AgentRunRecord } | undefined> {
+    const siblings = await this.deps.toolReworkWaitStore.listByRun(wait.runId);
+    for (const sibling of siblings) {
+      if (sibling.id === wait.id || !sibling.retryRunId) continue;
+      const retryRun = await this.deps.runStore.get(sibling.retryRunId);
+      if (retryRun) return { wait: sibling, retryRun };
+    }
+    return undefined;
+  }
+
   private async computeRetryDepth(run: AgentRunRecord): Promise<number> {
     let depth = 0;
     let current: AgentRunRecord | undefined = run;
     let safety = 0;
     while (current?.parentRunId && safety < PARENT_CHAIN_HARD_LIMIT) {
-      const parent: AgentRunRecord | undefined = await this.deps.runStore
-        .get(current.parentRunId)
-        .catch(() => undefined);
+      const parent: AgentRunRecord | undefined = await this.deps.runStore.get(current.parentRunId);
       if (!parent) break;
       depth += 1;
       current = parent;

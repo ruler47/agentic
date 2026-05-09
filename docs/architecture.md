@@ -92,6 +92,14 @@ the runtime emits `agent-self-check-completed` so the trace records whether that
 believed its own return value was ready, which artifacts/evidence were checked, and which
 limitations remained.
 
+Final synthesis now uses the same contract principle at the root of the run. After the
+answer is synthesized and before learning or `run-completed`, the coordinator emits a
+final `agent-self-check-completed` event. Deterministic checks reject empty answers,
+placeholder proof, unexecuted tool-call syntax, claimed-but-missing artifacts, generic
+"cannot do it" responses without a concrete blocker, and clarification requests when the
+task expected an actionable result. A failed final self-check throws, so the run is stored
+as `failed` instead of a misleading `completed`.
+
 ## Product Domain Model
 
 See [Instance Context And Personalized Assistant Model](modules/instance-context.md) for the

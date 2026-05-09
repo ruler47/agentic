@@ -47,7 +47,7 @@ runtime code; only `export type` declarations cross the boundary.
 ## Phase status
 
 - [x] Phase 0 — scaffold, sidebar, placeholder routing
-- [x] Phase 1 — API hooks, Dashboard, Runs list, Run Workspace, SSE stream
+- [x] Phase 1 — API hooks, Dashboard with run file attachments, Runs list, Run Workspace, SSE stream
 - [x] Phase 2 — Trace Lab (timeline / graph via xyflow / logs + inspector + filters)
 - [x] Phase 3 — Tool Builds + Investigations modal + Rework Waits
 - [x] Phase 4 — Tools + Models + Group Profile + Settings + Diagnostics

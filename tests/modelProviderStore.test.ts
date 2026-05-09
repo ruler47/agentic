@@ -23,7 +23,11 @@ test("defaultModelProvidersFromEnv separates chat and embedding providers", () =
   assert.deepEqual(chat?.modelIds, ["local-chat", "medium-a", "medium-b"]);
   assert.equal(embedding?.providerType, "openai-compatible");
   assert.equal(embedding?.defaultModel, "embed-large");
-  assert.equal(embedding?.dimensions, 1536);
+  assert.equal(
+    embedding?.dimensions,
+    128,
+    "durable memory embeddings must match the current pgvector column width",
+  );
 });
 
 test("normalizeProviderInput validates provider shape and clamps embedding dimensions", () => {

@@ -93,6 +93,27 @@ test("BrowserOperateTool accepts screenshot-style URL input for compatibility", 
   }
 });
 
+test("BrowserOperateTool caps full-page screenshots to a monitor-sized height", async () => {
+  const server = await startTestServer();
+  const tool = new BrowserOperateTool();
+
+  try {
+    const result = await tool.run({
+      url: `${server.url}tall`,
+      filename: "tall-proof.png",
+      fullPage: true,
+    });
+
+    assert.equal(result.ok, true);
+    assert.ok(isBrowserOperateData(result.data));
+    const screenshot = result.data.screenshots[0]?.content;
+    assert.ok(Buffer.isBuffer(screenshot));
+    assert.deepEqual(readPngDimensions(screenshot), { width: 1440, height: 1600 });
+  } finally {
+    await server.close();
+  }
+});
+
 test("BrowserOperateTool captures a diagnostic screenshot when a command fails", async () => {
   const server = await startTestServer();
   const tool = new BrowserOperateTool();
@@ -131,6 +152,18 @@ test("BrowserOperateTool validates command contracts before launching complex fl
 async function startTestServer(): Promise<{ url: string; close(): Promise<void> }> {
   const server = createServer((request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    if (request.url === "/tall") {
+      response.end(`<!doctype html>
+        <html>
+          <head><title>Tall Browser Tool Test</title></head>
+          <body style="margin:0">
+            <main style="height: 8000px; background: linear-gradient(#fff, #ddd); font: 24px sans-serif">
+              <h1 style="margin:0; padding:24px">Useful proof is above the fold</h1>
+            </main>
+          </body>
+        </html>`);
+      return;
+    }
     response.end(`<!doctype html>
       <html>
         <head><title>Browser Tool Test</title></head>
@@ -167,6 +200,14 @@ async function startTestServer(): Promise<{ url: string; close(): Promise<void> 
   return {
     url: `http://127.0.0.1:${address.port}/`,
     close: () => closeServer(server),
+  };
+}
+
+function readPngDimensions(buffer: Buffer): { width: number; height: number } {
+  assert.equal(buffer.subarray(1, 4).toString("ascii"), "PNG");
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
   };
 }
 

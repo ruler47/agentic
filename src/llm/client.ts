@@ -2,6 +2,8 @@ import { LlmConfig, Message, ModelTier } from "../types.js";
 import {
   ModelTierSettingsInput,
   ModelTierSettingsStore,
+  ModelTierEnv,
+  parseTierModelList,
 } from "../settings/modelTierSettings.js";
 
 type ChatCompletionResponse = {
@@ -142,33 +144,24 @@ function extractResponseError(data: ChatCompletionResponse, status: number, rawB
   return fallback;
 }
 
-export function readLlmConfigFromEnv(): LlmConfig {
+export function readLlmConfigFromEnv(env: ModelTierEnv = process.env): LlmConfig {
   return {
-    baseUrl: process.env.LLM_BASE_URL ?? "http://127.0.0.1:1234/v1",
-    model: process.env.LLM_MODEL ?? "google/gemma-4-26b-a4b",
-    temperature: Number(process.env.LLM_TEMPERATURE ?? "0.2"),
+    baseUrl: env.LLM_BASE_URL ?? "http://127.0.0.1:1234/v1",
+    model: env.LLM_MODEL ?? "google/gemma-4-26b-a4b",
+    temperature: Number(env.LLM_TEMPERATURE ?? "0.2"),
     tierModels: {
-      S: process.env.LLM_MODEL_TIER_S,
-      M: process.env.LLM_MODEL_TIER_M,
-      L: process.env.LLM_MODEL_TIER_L,
-      XL: process.env.LLM_MODEL_TIER_XL,
+      S: env.LLM_MODEL_TIER_S,
+      M: env.LLM_MODEL_TIER_M,
+      L: env.LLM_MODEL_TIER_L,
+      XL: env.LLM_MODEL_TIER_XL,
     },
     tierModelCandidates: {
-      S: parseModelList(process.env.LLM_MODEL_TIER_S),
-      M: parseModelList(process.env.LLM_MODEL_TIER_M),
-      L: parseModelList(process.env.LLM_MODEL_TIER_L),
-      XL: parseModelList(process.env.LLM_MODEL_TIER_XL),
+      S: parseTierModelList(env.LLM_MODEL_TIER_S),
+      M: parseTierModelList(env.LLM_MODEL_TIER_M),
+      L: parseTierModelList(env.LLM_MODEL_TIER_L),
+      XL: parseTierModelList(env.LLM_MODEL_TIER_XL),
     },
   };
-}
-
-function parseModelList(value: string | undefined): string[] {
-  return value
-    ? value
-        .split(",")
-        .map((model) => model.trim())
-        .filter(Boolean)
-    : [];
 }
 
 function uniqueModels(models: string[]): string[] {
