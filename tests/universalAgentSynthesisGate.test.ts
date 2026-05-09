@@ -1,0 +1,126 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { __testing__ } from "../src/agents/universalAgent.js";
+import type { LlmClient } from "../src/llm/client.js";
+import type { Message } from "../src/types.js";
+
+const { findUngroundedSpecificsInText, buildSynthesisEvidenceCorpus, enforceUngroundedSpecificsOnSynthesis } = __testing__;
+
+function fakeLlm(responses: string[]): LlmClient {
+  let i = 0;
+  return {
+    complete: async (_messages: Message[]) => {
+      const response = responses[i] ?? responses[responses.length - 1];
+      i += 1;
+      return response;
+    },
+  } as unknown as LlmClient;
+}
+
+test("findUngroundedSpecificsInText flags GPU/chip tokens absent from evidence", () => {
+  const output = "I recommend a laptop with an RTX 4080 and an Apple M3 Pro chip.";
+  const evidence = "Laptop reviews: prefer NVIDIA RTX 50 series and Apple M5 chips.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  assert.ok(ungrounded.some((t) => /RTX 4080/i.test(t)), `expected RTX 4080 to be flagged, got ${ungrounded.join(", ")}`);
+  assert.ok(ungrounded.some((t) => /M3/i.test(t)), `expected M3 to be flagged, got ${ungrounded.join(", ")}`);
+});
+
+test("findUngroundedSpecificsInText accepts tokens that ARE in evidence", () => {
+  const output = "I recommend a laptop with an RTX 5080 and an Apple M5 chip.";
+  const evidence = "Live page mentions RTX 5080 and the new Apple M5 Pro.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  assert.deepEqual(ungrounded, []);
+});
+
+test("findUngroundedSpecificsInText flags ungrounded years and currency", () => {
+  const output = "The 2027 model costs $2499 in Spain.";
+  const evidence = "Catalog shows current 2026 inventory only.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  assert.ok(ungrounded.some((t) => t === "2027"));
+  assert.ok(ungrounded.some((t) => /\$2499/.test(t)));
+});
+
+test("buildSynthesisEvidenceCorpus aggregates task + worker outputs + tool evidence + artifacts", () => {
+  const corpus = buildSynthesisEvidenceCorpus(
+    "Original task asking about the best laptop",
+    [
+      {
+        subtask: {
+          id: "s1",
+          title: "Research",
+          role: "researcher",
+          prompt: "RTX 5080 evaluation",
+          expectedOutput: "",
+          reviewCriteria: [],
+          requiredTools: [],
+          dependencies: [],
+        },
+        output: "Worker output mentions RTX 5080 and M5 Pro",
+        toolEvidence: ["Tool evidence text contains 2026 release notes"],
+      } as never,
+    ],
+    [
+      {
+        id: "art-1",
+        filename: "screenshot-best-laptop.png",
+        url: "/artifacts/foo",
+        description: "Page about RTX 5080 laptops",
+      } as never,
+    ],
+  );
+  assert.ok(corpus.includes("Original task"));
+  assert.ok(corpus.includes("RTX 5080"));
+  assert.ok(corpus.includes("2026"));
+  assert.ok(corpus.includes("screenshot-best-laptop"));
+});
+
+test("enforceUngroundedSpecificsOnSynthesis returns answer unchanged when fully grounded", async () => {
+  const llm = fakeLlm(["should-not-be-called"]);
+  const result = await enforceUngroundedSpecificsOnSynthesis({
+    llm,
+    modelTier: "L",
+    systemPrompt: "system",
+    userPrompt: "user",
+    rawAnswer: "Stick with current-generation discrete GPUs.",
+    evidenceCorpus: "Evidence about discrete GPUs.",
+  });
+  assert.equal(result.answer, "Stick with current-generation discrete GPUs.");
+  assert.deepEqual(result.ungroundedFirstPass, []);
+  assert.equal(result.disclaimerApplied, false);
+});
+
+test("enforceUngroundedSpecificsOnSynthesis retries with reinforced prompt and accepts grounded retry", async () => {
+  const llm = fakeLlm([
+    // first retry produces a grounded version (this is the only call)
+    "Recommendation: a current-generation discrete-GPU laptop.",
+  ]);
+  const result = await enforceUngroundedSpecificsOnSynthesis({
+    llm,
+    modelTier: "L",
+    systemPrompt: "system",
+    userPrompt: "user",
+    rawAnswer: "Recommendation: laptop with RTX 4080 and Apple M3 Pro.",
+    evidenceCorpus: "Evidence corpus only mentions current generation laptops.",
+  });
+  assert.ok(result.ungroundedFirstPass.length > 0);
+  assert.deepEqual(result.ungroundedAfterRetry, []);
+  assert.equal(result.disclaimerApplied, false);
+  assert.match(result.answer, /current-generation/);
+});
+
+test("enforceUngroundedSpecificsOnSynthesis falls back to disclaimer when retry still ungrounded", async () => {
+  const llm = fakeLlm([
+    "Even retry mentions RTX 4080 and Apple M3 Pro.",
+  ]);
+  const result = await enforceUngroundedSpecificsOnSynthesis({
+    llm,
+    modelTier: "L",
+    systemPrompt: "system",
+    userPrompt: "user",
+    rawAnswer: "Recommendation: laptop with RTX 4080 and Apple M3 Pro.",
+    evidenceCorpus: "Evidence corpus only mentions current generation laptops.",
+  });
+  assert.equal(result.disclaimerApplied, true);
+  assert.ok(result.answer.includes("could not produce a grounded recommendation"));
+  assert.ok(result.ungroundedAfterRetry.length > 0);
+});

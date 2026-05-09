@@ -636,21 +636,28 @@ export class UniversalAgent {
                 startedAt: synthesisStartedAt.toISOString(),
                 payload: { modelTier: synthesisTier, invocationId: rootInvocation.id },
               });
+              const synthesisUserPrompt = synthesizePrompt(
+                limitText(agentTaskContext, promptBudget.taskContextChars),
+                complexity,
+                [],
+                [],
+                compactMemoriesForPrompt(memories),
+                artifacts,
+              );
               const rawFinalAnswer = await this.llm.complete([
                 { role: "system", content: coordinatorSystemPrompt },
-                {
-                  role: "user",
-                  content: synthesizePrompt(
-                    limitText(agentTaskContext, promptBudget.taskContextChars),
-                    complexity,
-                    [],
-                    [],
-                    compactMemoriesForPrompt(memories),
-                    artifacts,
-                  ),
-                },
+                { role: "user", content: synthesisUserPrompt },
               ], { modelTier: synthesisTier });
-              const output = appendPendingImprovements(withArtifactLinks(rawFinalAnswer, artifacts));
+              const synthesisCorpus = buildSynthesisEvidenceCorpus(agentTaskContext, [], artifacts);
+              const guardedSynthesis = await enforceUngroundedSpecificsOnSynthesis({
+                llm: this.llm,
+                modelTier: synthesisTier,
+                systemPrompt: coordinatorSystemPrompt,
+                userPrompt: synthesisUserPrompt,
+                rawAnswer: rawFinalAnswer,
+                evidenceCorpus: synthesisCorpus,
+              });
+              const output = appendPendingImprovements(withArtifactLinks(guardedSynthesis.answer, artifacts));
               await emit({
                 spanId: synthesisSpanId,
                 parentSpanId: rootInvocation.spanId,
@@ -662,7 +669,14 @@ export class UniversalAgent {
                 startedAt: synthesisStartedAt.toISOString(),
                 completedAt: new Date().toISOString(),
                 durationMs: elapsedMs(synthesisStartedAt),
-                payload: { finalAnswer: output, modelTier: synthesisTier, invocationId: rootInvocation.id },
+                payload: {
+                  finalAnswer: output,
+                  modelTier: synthesisTier,
+                  invocationId: rootInvocation.id,
+                  ungroundedFirstPass: guardedSynthesis.ungroundedFirstPass,
+                  ungroundedAfterRetry: guardedSynthesis.ungroundedAfterRetry,
+                  disclaimerApplied: guardedSynthesis.disclaimerApplied,
+                },
               });
               return {
                 output,
@@ -705,21 +719,28 @@ export class UniversalAgent {
           startedAt: synthesisStartedAt.toISOString(),
           payload: { modelTier: synthesisTier, invocationId: rootInvocation.id },
         });
+        const synthesisUserPrompt = synthesizePrompt(
+          limitText(agentTaskContext, promptBudget.taskContextChars),
+          complexity,
+          [],
+          [],
+          compactMemoriesForPrompt(memories),
+          artifacts,
+        );
         const rawFinalAnswer = await this.llm.complete([
           { role: "system", content: coordinatorSystemPrompt },
-          {
-            role: "user",
-            content: synthesizePrompt(
-              limitText(agentTaskContext, promptBudget.taskContextChars),
-              complexity,
-              [],
-              [],
-              compactMemoriesForPrompt(memories),
-              artifacts,
-            ),
-          },
+          { role: "user", content: synthesisUserPrompt },
         ], { modelTier: synthesisTier });
-        finalAnswer = appendPendingImprovements(withArtifactLinks(rawFinalAnswer, artifacts));
+        const synthesisCorpus = buildSynthesisEvidenceCorpus(agentTaskContext, [], artifacts);
+        const guardedSynthesis = await enforceUngroundedSpecificsOnSynthesis({
+          llm: this.llm,
+          modelTier: synthesisTier,
+          systemPrompt: coordinatorSystemPrompt,
+          userPrompt: synthesisUserPrompt,
+          rawAnswer: rawFinalAnswer,
+          evidenceCorpus: synthesisCorpus,
+        });
+        finalAnswer = appendPendingImprovements(withArtifactLinks(guardedSynthesis.answer, artifacts));
         await emit({
           spanId: synthesisSpanId,
           parentSpanId: rootInvocation.spanId,
@@ -731,7 +752,14 @@ export class UniversalAgent {
           startedAt: synthesisStartedAt.toISOString(),
           completedAt: new Date().toISOString(),
           durationMs: elapsedMs(synthesisStartedAt),
-          payload: { finalAnswer, modelTier: synthesisTier, invocationId: rootInvocation.id },
+          payload: {
+            finalAnswer,
+            modelTier: synthesisTier,
+            invocationId: rootInvocation.id,
+            ungroundedFirstPass: guardedSynthesis.ungroundedFirstPass,
+            ungroundedAfterRetry: guardedSynthesis.ungroundedAfterRetry,
+            disclaimerApplied: guardedSynthesis.disclaimerApplied,
+          },
         });
         await this.emitInvocationReturnCheck(
           rootInvocation,
@@ -859,21 +887,32 @@ export class UniversalAgent {
       startedAt: synthesisStartedAt.toISOString(),
       payload: { modelTier: synthesisTier },
     });
+    const synthesisUserPrompt = synthesizePrompt(
+      limitText(agentTaskContext, promptBudget.taskContextChars),
+      complexity,
+      compactWorkerResultsForPrompt(workerResults, promptBudget.synthesisWorkerOutputChars),
+      reviews,
+      compactMemoriesForPrompt(memories),
+      artifacts,
+    );
     const rawFinalAnswer = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
-      {
-        role: "user",
-        content: synthesizePrompt(
-          limitText(agentTaskContext, promptBudget.taskContextChars),
-          complexity,
-          compactWorkerResultsForPrompt(workerResults, promptBudget.synthesisWorkerOutputChars),
-          reviews,
-          compactMemoriesForPrompt(memories),
-          artifacts,
-        ),
-      },
+      { role: "user", content: synthesisUserPrompt },
     ], { modelTier: synthesisTier });
-    const finalAnswer = appendPendingImprovements(withArtifactLinks(rawFinalAnswer, artifacts));
+    // Phase 12 follow-up: deterministic gate against ungrounded specifics
+    // at the synthesis layer too. Workers are already gated by
+    // hardGateReview, but the synthesis LLM call can re-introduce model
+    // numbers / versions / prices from training memory.
+    const synthesisCorpus = buildSynthesisEvidenceCorpus(agentTaskContext, workerResults, artifacts);
+    const guardedSynthesis = await enforceUngroundedSpecificsOnSynthesis({
+      llm: this.llm,
+      modelTier: synthesisTier,
+      systemPrompt: coordinatorSystemPrompt,
+      userPrompt: synthesisUserPrompt,
+      rawAnswer: rawFinalAnswer,
+      evidenceCorpus: synthesisCorpus,
+    });
+    const finalAnswer = appendPendingImprovements(withArtifactLinks(guardedSynthesis.answer, artifacts));
     await emit({
       spanId: synthesisSpanId,
       parentSpanId: runSpanId,
@@ -885,7 +924,13 @@ export class UniversalAgent {
       startedAt: synthesisStartedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(synthesisStartedAt),
-      payload: { finalAnswer, modelTier: synthesisTier },
+      payload: {
+        finalAnswer,
+        modelTier: synthesisTier,
+        ungroundedFirstPass: guardedSynthesis.ungroundedFirstPass,
+        ungroundedAfterRetry: guardedSynthesis.ungroundedAfterRetry,
+        disclaimerApplied: guardedSynthesis.disclaimerApplied,
+      },
     });
     await this.emitInvocationReturnCheck(
       rootInvocation,
@@ -4920,14 +4965,25 @@ function containsUnexecutedToolCall(text: string): boolean {
  */
 function findUngroundedSpecifics(workerResult: WorkerResult): string[] {
   const output = workerResult.output ?? "";
-  const evidenceCorpus = [
+  const evidenceText = [
     workerResult.subtask.title ?? "",
     workerResult.subtask.prompt ?? "",
     workerResult.subtask.expectedOutput ?? "",
     ...(workerResult.subtask.reviewCriteria ?? []),
     ...(workerResult.toolEvidence ?? []),
-  ]
-    .join("\n")
+  ].join("\n");
+  return findUngroundedSpecificsInText(output, evidenceText);
+}
+
+/**
+ * Phase 12 follow-up: shared deterministic gate used by both worker
+ * review (`hardGateReview`) and the synthesis layer
+ * (`enforceUngroundedSpecificsOnSynthesis`). Same regexes / matching
+ * strategy as the worker version so a token blocked at worker time is
+ * also blocked at synthesis time when it leaks back through the LLM.
+ */
+function findUngroundedSpecificsInText(output: string, evidenceText: string): string[] {
+  const evidenceCorpus = (evidenceText ?? "")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s$€£¥]/gu, " ")
     .replace(/\s+/g, " ");
@@ -4938,18 +4994,18 @@ function findUngroundedSpecifics(workerResult: WorkerResult): string[] {
   // a number-letter combo. Catches "RTX 4080", "M3 Pro", "Ryzen 9
   // 7950X", "Snapdragon X Elite", "Core i9".
   const brandedTokenRe = /\b(RTX|GTX|Ryzen|Radeon|Snapdragon|Core\s+i[3579]|Apple\s+M\d|M\d(?:\s+(?:Pro|Max|Ultra))?|Intel\s+(?:Ultra\s+)?(?:Core\s+)?\d|EPYC|Threadripper|Galaxy\s+(?:S|Note|Z)\d+|Pixel\s+\d+|iPhone\s+\d+(?:\s*Pro)?|Llama\s+\d+|GPT-\d|Claude\s+\d|Gemini\s+\d|XPS\s+\d+|ROG\s+[A-Z][a-z]+|MacBook\s+(?:Air|Pro)|ZenBook|ThinkPad|Surface\s+Pro)\s*[-A-Za-z0-9]*\b/g;
-  for (const match of output.matchAll(brandedTokenRe)) {
+  for (const match of (output ?? "").matchAll(brandedTokenRe)) {
     const token = match[0].trim().replace(/\s+/g, " ");
     if (token.length >= 2) candidates.add(token);
   }
 
   // Years 2023-2030 mentioned without "20" prefix or as standalone tokens.
-  for (const match of output.matchAll(/\b(20(?:2[3-9]|30))\b/g)) {
+  for (const match of (output ?? "").matchAll(/\b(20(?:2[3-9]|30))\b/g)) {
     candidates.add(match[1]);
   }
 
   // Specific currency amounts.
-  for (const match of output.matchAll(/(?:[$€£¥])\s?\d{2,5}(?:[.,]\d{1,3})?/g)) {
+  for (const match of (output ?? "").matchAll(/(?:[$€£¥])\s?\d{2,5}(?:[.,]\d{1,3})?/g)) {
     candidates.add(match[0].replace(/\s/g, ""));
   }
 
@@ -4957,12 +5013,146 @@ function findUngroundedSpecifics(workerResult: WorkerResult): string[] {
   for (const token of candidates) {
     const normalized = token.toLowerCase().replace(/\s+/g, " ");
     if (evidenceCorpus.includes(normalized)) continue;
-    // Accept partial match: drop trailing model qualifier and check core.
-    const core = normalized.split(/\s+/)[0];
-    if (core && core.length >= 3 && evidenceCorpus.includes(core)) continue;
+    // Partial-match fallback: drop the trailing qualifier (e.g. "RTX
+    // 5080 Super" -> "RTX 5080") and check that. Important: we do NOT
+    // accept by brand alone ("RTX") — a token like "RTX 4080" must not
+    // pass simply because the evidence mentions "RTX 50 series". The
+    // matched core must contain at least one digit so brand-only
+    // matches are rejected.
+    const parts = normalized.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      const core = parts.slice(0, 2).join(" ");
+      if (/\d/.test(core) && evidenceCorpus.includes(core)) continue;
+    }
     ungrounded.push(token);
   }
   return ungrounded;
+}
+
+/**
+ * Phase 12 follow-up: build a synthesis-level evidence corpus from the
+ * full set of ground-truth inputs available at synthesis time. The
+ * worker layer already blocks ungrounded specifics in its own output;
+ * this corpus is what the synthesis output is checked against.
+ *
+ * Sources, in priority order:
+ *   1. The original task text (a token in the user's own request is
+ *      grounded by definition).
+ *   2. Every worker output (specifics that survived hard-gate review
+ *      are already grounded against their own subtask evidence).
+ *   3. Every worker's `toolEvidence[]` (raw tool results).
+ *   4. Every artifact's filename / description / URL (often contains
+ *      page titles, source domains).
+ */
+function buildSynthesisEvidenceCorpus(
+  task: string,
+  workerResults: WorkerResult[],
+  artifacts: AgentArtifact[],
+): string {
+  const parts: string[] = [task ?? ""];
+  for (const wr of workerResults ?? []) {
+    parts.push(wr.output ?? "");
+    parts.push(wr.subtask?.title ?? "");
+    parts.push(wr.subtask?.prompt ?? "");
+    parts.push(wr.subtask?.expectedOutput ?? "");
+    if (wr.subtask?.reviewCriteria) parts.push(wr.subtask.reviewCriteria.join("\n"));
+    if (wr.toolEvidence) parts.push(wr.toolEvidence.join("\n"));
+  }
+  for (const artifact of artifacts ?? []) {
+    parts.push(artifact.filename ?? "");
+    parts.push(artifact.description ?? "");
+    parts.push(artifact.url ?? "");
+  }
+  return parts.join("\n");
+}
+
+/**
+ * Phase 12 follow-up: synthesis-level enforcement of the same
+ * "specifics must be in evidence" rule. The worker hard-gate already
+ * enforces this per-subtask, but synthesis is a separate LLM call that
+ * can re-introduce specifics from training memory. This function:
+ *
+ *   1. Runs `findUngroundedSpecificsInText` against the synthesis
+ *      output and the synthesis-level evidence corpus.
+ *   2. If anything is ungrounded, retries the synthesis exactly once
+ *      with a reinforced rule listing the forbidden tokens.
+ *   3. If the retry still produces ungrounded tokens, deterministically
+ *      replaces the offending answer with a plain "could not produce a
+ *      grounded answer for these specifics" disclaimer that lists what
+ *      was missing — never silently shipping ungrounded specifics.
+ *
+ * Returns the safe final answer (possibly the original, possibly
+ * retried, possibly the disclaimer) plus a metadata object describing
+ * what happened so callers can emit it.
+ */
+async function enforceUngroundedSpecificsOnSynthesis(args: {
+  llm: LlmClient;
+  modelTier: ReturnType<typeof selectModelTier>;
+  systemPrompt: string;
+  userPrompt: string;
+  rawAnswer: string;
+  evidenceCorpus: string;
+}): Promise<{ answer: string; ungroundedFirstPass: string[]; ungroundedAfterRetry: string[]; disclaimerApplied: boolean }> {
+  const initial = findUngroundedSpecificsInText(args.rawAnswer, args.evidenceCorpus);
+  if (initial.length === 0) {
+    return { answer: args.rawAnswer, ungroundedFirstPass: [], ungroundedAfterRetry: [], disclaimerApplied: false };
+  }
+
+  const forbidden = initial.slice(0, 12);
+  const reinforced = `${args.userPrompt}
+
+CRITICAL GROUND-TRUTH GATE (deterministic, non-negotiable):
+The previous draft mentioned specifics that are NOT present in any worker tool evidence or in the user's task: ${forbidden.join(", ")}.
+You MUST NOT mention any model number, version string, year, place name, person, organization, or currency amount that is not present verbatim in the worker outputs or the user's task above.
+If a specific is not in the evidence, either omit it entirely or replace it with a generic description (e.g. "a current-generation discrete GPU" instead of an exact model number).
+If the evidence is insufficient to give the user a concrete recommendation, say so plainly and explain what evidence would be needed — do NOT fall back to training-memory specifics.`;
+
+  let retryAnswer = args.rawAnswer;
+  try {
+    retryAnswer = await args.llm.complete(
+      [
+        { role: "system", content: args.systemPrompt },
+        { role: "user", content: reinforced },
+      ],
+      { modelTier: args.modelTier },
+    );
+  } catch {
+    retryAnswer = args.rawAnswer;
+  }
+
+  const remaining = findUngroundedSpecificsInText(retryAnswer, args.evidenceCorpus);
+  if (remaining.length === 0) {
+    return {
+      answer: retryAnswer,
+      ungroundedFirstPass: initial,
+      ungroundedAfterRetry: [],
+      disclaimerApplied: false,
+    };
+  }
+
+  // Last resort: never ship ungrounded specifics. Replace the answer
+  // with a deterministic disclaimer that lists exactly what was missing
+  // so the user can decide whether to broaden the search.
+  const disclaimer = [
+    "I could not produce a grounded recommendation for this task.",
+    "",
+    "The drafts the model produced kept naming the following specifics that are NOT supported by any tool evidence collected during this run, so I am not shipping them as advice:",
+    `  ${remaining.slice(0, 12).join(", ")}`,
+    "",
+    "What this means: the live evidence I was able to collect (search results, opened pages, screenshots) did not include these exact model names, version numbers, prices, or dates. Using them would be guessing from training data rather than from the run, which is exactly what I was told not to do.",
+    "",
+    "Suggested next steps:",
+    "- Re-run with more specific source URLs (e.g. paste a manufacturer or retailer page directly).",
+    "- Loosen the requirement to specific model numbers and ask for categories or ranges instead.",
+    "- Provide an alternative source if a particular site keeps returning loaders or login walls.",
+  ].join("\n");
+
+  return {
+    answer: disclaimer,
+    ungroundedFirstPass: initial,
+    ungroundedAfterRetry: remaining,
+    disclaimerApplied: true,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -5117,4 +5307,7 @@ export const __testing__ = {
   scoreArtifactUrl,
   selectBestUrlsForArtifact,
   buildSearchQueries,
+  findUngroundedSpecificsInText,
+  buildSynthesisEvidenceCorpus,
+  enforceUngroundedSpecificsOnSynthesis,
 };
