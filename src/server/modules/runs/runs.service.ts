@@ -235,6 +235,135 @@ export class RunsService implements OnApplicationBootstrap {
     return { source: reloaded, restart: updated ?? restart };
   }
 
+  /**
+   * Phase 12 follow-up: continue an interrupted run from where it left
+   * off instead of redoing every phase. The runtime replays the source
+   * run's events to recover its `TaskComplexity`, planned subtasks,
+   * completed worker results, and review verdicts. The new run skips
+   * classify and plan, treats `verdict=pass` subtasks as already done
+   * (it re-emits their events for trace continuity), and only executes
+   * subtasks that were missing or marked `needs_revision`. The Work
+   * Ledger handles external evidence reuse (web.search,
+   * browser.operate) so even subtasks that DO re-run pull cached
+   * evidence rather than calling the tools fresh.
+   *
+   * If the source run had no usable progress (classifier never ran,
+   * etc.), we fall back to a plain `restart` — there's nothing
+   * meaningful to resume from.
+   */
+  async resume(sourceId: string): Promise<{
+    source: AgentRunRecord;
+    resume: AgentRunRecord;
+    fallback: "resume" | "restart";
+    progress: {
+      hasComplexity: boolean;
+      subtaskCount: number;
+      passedSubtaskCount: number;
+      lastEventType?: string;
+    };
+  }> {
+    const { reconstructProgress, toResumptionState, hasResumableProgress } = await import(
+      "../../../agents/runResumption.js"
+    );
+    const source = await this.runs.get(sourceId);
+    if (!source) throw new NotFoundException(`Run ${sourceId} not found`);
+
+    if (source.status === "running" || source.status === "queued") {
+      const updated = Date.parse(source.updatedAt);
+      const stale = Number.isFinite(updated) && Date.now() - updated > ORPHAN_STALE_AFTER_MS;
+      if (!stale) {
+        throw new ConflictException(
+          `Run ${sourceId} is currently active (status=${source.status}, last activity ${source.updatedAt}). Cancel it before resuming.`,
+        );
+      }
+      await this.runs.fail(sourceId, ORPHAN_RECOVERY_REASON);
+    }
+
+    const reloaded = await this.runs.get(sourceId);
+    if (!reloaded) throw new NotFoundException(`Run ${sourceId} disappeared during resume`);
+    if (reloaded.status === "waiting_tool_rework") {
+      throw new ConflictException(
+        `Run ${sourceId} is waiting for a tool rework; use the auto-retry / promote flow instead of resume.`,
+      );
+    }
+
+    const progress = reconstructProgress(reloaded.events ?? []);
+    const passedSubtaskCount = [...progress.completedReviews.values()].filter((review) => review.verdict === "pass").length;
+    const fallback: "resume" | "restart" = hasResumableProgress(progress) ? "resume" : "restart";
+
+    if (fallback === "restart") {
+      // Nothing to resume from; defer to the regular restart flow so the
+      // operator's intent ("continue this run") still produces a fresh
+      // run linked to the source — just without any state injection.
+      const result = await this.restart(sourceId);
+      return {
+        source: result.source,
+        resume: result.restart,
+        fallback: "restart",
+        progress: {
+          hasComplexity: false,
+          subtaskCount: 0,
+          passedSubtaskCount: 0,
+          lastEventType: progress.lastEventType,
+        },
+      };
+    }
+
+    const context: RunCreateContext = {
+      instanceId: reloaded.instanceId,
+      requesterUserId: reloaded.requesterUserId,
+      channel: reloaded.channel,
+      threadId: reloaded.threadId,
+      parentRunId: reloaded.id,
+      sourceUserId: reloaded.sourceUserId,
+      sourceMessageId: reloaded.sourceMessageId,
+      sourceChatId: reloaded.sourceChatId,
+      sourceThreadId: reloaded.sourceThreadId,
+    };
+    const resume = await this.runs.create(reloaded.task, context);
+    await this.audit.record({
+      instanceId: context.instanceId,
+      actorId: context.requesterUserId ?? "user-admin",
+      actorType: "user",
+      action: "run.restarted",
+      targetType: "run",
+      targetId: resume.id,
+      status: "pending",
+      runId: resume.id,
+      threadId: context.threadId,
+      requesterUserId: context.requesterUserId,
+      channel: context.channel,
+      summary: `Run resumed from ${sourceId} (${passedSubtaskCount}/${progress.subtasks?.length ?? 0} subtasks reused)`,
+      metadata: {
+        sourceRunId: sourceId,
+        sourceStatus: reloaded.status,
+        sourceError: reloaded.error,
+        kind: "resume",
+        passedSubtaskCount,
+        plannedSubtaskCount: progress.subtasks?.length ?? 0,
+      },
+    });
+
+    const resumeFrom = toResumptionState(progress, sourceId);
+    void this.executeRun(resume.id, reloaded.task, [], {
+      threadId: context.threadId,
+      resumeFrom,
+    });
+
+    const updated = await this.runs.get(resume.id);
+    return {
+      source: reloaded,
+      resume: updated ?? resume,
+      fallback: "resume",
+      progress: {
+        hasComplexity: Boolean(progress.complexity),
+        subtaskCount: progress.subtasks?.length ?? 0,
+        passedSubtaskCount,
+        lastEventType: progress.lastEventType,
+      },
+    };
+  }
+
   async get(id: string): Promise<AgentRunRecord> {
     const run = await this.runs.get(id);
     if (!run) throw new NotFoundException("Run not found");
@@ -598,7 +727,18 @@ export class RunsService implements OnApplicationBootstrap {
     id: string,
     task: string,
     inputArtifacts: AgentArtifact[],
-    context: { threadId?: string; threadContext?: ConversationThreadContext } = {},
+    context: {
+      threadId?: string;
+      threadContext?: ConversationThreadContext;
+      /**
+       * Phase 12 follow-up: when set, the agent skips classify and plan
+       * phases that produced the supplied state and treats subtasks
+       * with `verdict=pass` as already-done. The Work Ledger covers
+       * external evidence reuse for any subtasks that still need to
+       * re-run.
+       */
+      resumeFrom?: import("../../../agents/runResumption.js").RunResumptionState;
+    } = {},
   ): Promise<void> {
     await this.runs.markRunning(id);
     const run = await this.runs.get(id);
@@ -626,6 +766,7 @@ export class RunsService implements OnApplicationBootstrap {
         inputArtifacts,
         threadContext: context.threadContext,
         instanceContext: { groupProfile, requesterUser },
+        resumeFrom: context.resumeFrom,
         workLedgerStore: this.workLedger,
         evidenceLedgerStore: this.evidenceLedger,
         runRetrospectiveStore: this.retrospectives,

@@ -101,6 +101,41 @@ export function useRestartRun() {
   });
 }
 
+export type ResumeRunResponse = {
+  source: AgentRunRecord;
+  resume: AgentRunRecord;
+  fallback: "resume" | "restart";
+  progress: {
+    hasComplexity: boolean;
+    subtaskCount: number;
+    passedSubtaskCount: number;
+    lastEventType?: string;
+  };
+};
+
+/**
+ * Phase 12 follow-up: resume an interrupted run from the point of failure
+ * instead of redoing every phase. The server replays events to recover
+ * classification / plan / completed subtasks, then runs only what's
+ * missing. Falls back to a regular restart when the source has no
+ * meaningful progress (e.g., the classifier never finished).
+ */
+export function useResumeRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<ResumeRunResponse>(`/api/runs/${encodeURIComponent(id)}/resume`, {
+        method: "POST",
+        body: {},
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.run(data.source.id), data.source);
+      queryClient.setQueryData(queryKeys.run(data.resume.id), data.resume);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+    },
+  });
+}
+
 // Convenience selectors used by Dashboard / Runs / Run Workspace --------
 
 export function selectActiveRuns(runs: AgentRunRecord[] | undefined): AgentRunRecord[] {

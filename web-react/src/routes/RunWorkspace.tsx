@@ -5,7 +5,7 @@ import {
   useRunRetrospectives,
   useWorkLedger,
 } from "@/api/ledger";
-import { useCancelRun, useRestartRun, useRun, useRunWaits } from "@/api/runs";
+import { useCancelRun, useRestartRun, useResumeRun, useRun, useRunWaits } from "@/api/runs";
 import {
   useAutoRetryReworkWait,
   useCreateRetryRunForWait,
@@ -32,6 +32,7 @@ export function RunWorkspacePage() {
   const retrospectives = useRunRetrospectives({ runId });
   const cancelRun = useCancelRun();
   const restartRun = useRestartRun();
+  const resumeRun = useResumeRun();
   useRunStream(runId);
 
   if (!runId) return <p className="text-sm text-app-text-muted">Run id is missing.</p>;
@@ -124,29 +125,58 @@ export function RunWorkspacePage() {
               </button>
             ) : null}
             {canRestart ? (
-              <button
-                type="button"
-                disabled={restartRun.isPending}
-                onClick={() => {
-                  restartRun.mutate(data.id, {
-                    onSuccess: (response) => {
-                      window.location.assign(`/run/${response.restart.id}`);
-                    },
-                  });
-                }}
-                className="rounded-md border border-app-accent/40 bg-app-accent-soft px-3 py-1 text-xs font-semibold text-app-accent transition-colors hover:bg-app-accent-soft/70 disabled:opacity-50"
-                title={
-                  isStuck
-                    ? "Run looks stuck (no events in 5+ min). Restart creates a fresh run from the same task with a parent link."
-                    : "Restart this run with the same task. The new run is linked back to this one as parentRunId."
-                }
-              >
-                {restartRun.isPending
-                  ? "Restarting…"
-                  : isStuck
-                  ? "Restart stuck run"
-                  : "Restart run"}
-              </button>
+              <>
+                <button
+                  type="button"
+                  disabled={resumeRun.isPending}
+                  onClick={() => {
+                    resumeRun.mutate(data.id, {
+                      onSuccess: (response) => {
+                        window.location.assign(`/run/${response.resume.id}`);
+                      },
+                    });
+                  }}
+                  className="rounded-md border border-app-accent bg-app-accent px-3 py-1 text-xs font-semibold text-app-bg transition-colors hover:opacity-90 disabled:opacity-50"
+                  title={
+                    "Resume this run from where it left off. Classification, planning, and any subtask whose review verdict was 'pass' are skipped; only the missing/incomplete subtasks run again. The Work Ledger reuses cached external evidence (web.search, browser.operate)."
+                  }
+                >
+                  {resumeRun.isPending ? "Resuming…" : "Resume run"}
+                </button>
+                <button
+                  type="button"
+                  disabled={restartRun.isPending}
+                  onClick={() => {
+                    if (
+                      !window.confirm(
+                        "Restart redoes every phase from scratch (classification, planning, every subtask). Use 'Resume run' instead to continue from the last completed step. Restart anyway?",
+                      )
+                    ) {
+                      return;
+                    }
+                    restartRun.mutate(data.id, {
+                      onSuccess: (response) => {
+                        window.location.assign(`/run/${response.restart.id}`);
+                      },
+                    });
+                  }}
+                  className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1 text-xs font-semibold text-app-text transition-colors hover:border-app-accent/40 hover:text-app-accent disabled:opacity-50"
+                  title={
+                    isStuck
+                      ? "Run looks stuck (no events in 5+ min). Restart redoes every step from scratch."
+                      : "Restart this run with the same task — every step will be redone."
+                  }
+                >
+                  {restartRun.isPending
+                    ? "Restarting…"
+                    : isStuck
+                    ? "Restart from scratch"
+                    : "Restart from scratch"}
+                </button>
+              </>
+            ) : null}
+            {resumeRun.isError ? (
+              <span className="text-[11px] text-app-danger">{resumeRun.error.message}</span>
             ) : null}
             {restartRun.isError ? (
               <span className="text-[11px] text-app-danger">{restartRun.error.message}</span>

@@ -155,6 +155,18 @@ type RunOptions = {
   runRetrospectiveStore?: RunRetrospectiveStore;
   now?: Date;
   timeZone?: string;
+  /**
+   * Phase 12 follow-up: resume an interrupted run instead of restarting
+   * from scratch. The runtime skips the classify and plan phases when
+   * `complexity` and `subtasks` are provided, and treats any subtask in
+   * `completedReviews` with `verdict=pass` as already done — emitting
+   * the cached worker output and review verbatim. Subtasks with
+   * `needs_revision` are re-run so the agent can produce the missing
+   * revision. The Work Ledger preserves heavy external work (web.search,
+   * browser.operate) by default, so re-running a subtask reuses cached
+   * evidence rather than calling the tools again.
+   */
+  resumeFrom?: import("./runResumption.js").RunResumptionState;
 };
 
 type BaseToolExecutionContext = Partial<Omit<ToolExecutionContext, "toolName" | "now">>;
@@ -405,7 +417,12 @@ export class UniversalAgent {
 
     const classificationStartedAt = new Date();
     const classificationTier = selectModelTier("classification");
-    let complexity = await this.classify(taskContext, memories, classificationTier);
+    // Phase 12 follow-up: when resuming from a prior run, skip the
+    // classifier call entirely if the prior run already produced a
+    // `TaskComplexity`. We still emit the `classification-completed`
+    // event so the new run's trace shows what it inherited.
+    let complexity: TaskComplexity = options.resumeFrom?.complexity
+      ?? (await this.classify(taskContext, memories, classificationTier));
     if (complexity.mode === "direct" && hasActionableApiToolRequest(taskContext, this.tools.list())) {
       complexity = {
         ...complexity,
@@ -771,7 +788,12 @@ export class UniversalAgent {
     const planningSpanId = createSpanId("planning");
     const planningStartedAt = new Date();
     const planningTier = selectModelTier("planning", complexity);
-    const rawSubtasks = await this.plan(withCouncilNotes(agentTaskContext, councilNotes), complexity, memories, planningTier);
+    // Phase 12 follow-up: skip the planner LLM call too when the resumed
+    // run already has a subtasks array. The planner is the second-most
+    // expensive coordinator phase after worker execution; a resume must
+    // not pay for it twice.
+    const rawSubtasks = options.resumeFrom?.subtasks
+      ?? (await this.plan(withCouncilNotes(agentTaskContext, councilNotes), complexity, memories, planningTier));
     const executionPlan = createExecutionPlan(rawSubtasks);
     const subtasks = executionPlan.subtasks;
     await emit({
@@ -805,6 +827,7 @@ export class UniversalAgent {
       options.requestToolBuild,
       improveTool,
       toolExecutionContext,
+      options.resumeFrom,
     );
     const workerResults = reviewedWorkerResults.map((result) => result.workerResult);
     const reviews = reviewedWorkerResults.flatMap((result) => result.reviews);
@@ -1066,13 +1089,67 @@ export class UniversalAgent {
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
     improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
+    resumeFrom?: import("./runResumption.js").RunResumptionState,
   ): Promise<ReviewedWorkerResult[]> {
     const completedResults = new Map<string, ReviewedWorkerResult>();
     const orderedResults: ReviewedWorkerResult[] = [];
 
+    // Phase 12 follow-up: when a resumed run carries cached worker results
+    // and reviews from the source run, materialize them as already-done
+    // before iterating the DAG. Subtasks where the prior review verdict
+    // is `pass` are skipped entirely; ones with `needs_revision` are
+    // re-run normally so the agent produces the missing follow-up.
+    const cachedWorkers = new Map<string, WorkerResult>(
+      (resumeFrom?.completedWorkers ?? []).map((worker) => [worker.subtask.id, worker]),
+    );
+    const cachedReviews = new Map<string, ReviewResult>(
+      (resumeFrom?.completedReviews ?? []).map((review) => [review.subtaskId, review]),
+    );
+
     for (const level of executionPlan.levels) {
       const levelResults = await Promise.all(
-        level.map((subtask) => {
+        level.map(async (subtask) => {
+          const cachedWorker = cachedWorkers.get(subtask.id);
+          const cachedReview = cachedReviews.get(subtask.id);
+          if (cachedWorker && cachedReview && cachedReview.verdict === "pass") {
+            // Re-emit completion events so the resumed run's trace shows
+            // what was inherited; downstream consumers (UI, audit,
+            // synthesis) treat the resumed subtask exactly like a
+            // freshly-executed one.
+            await emit({
+              spanId: createSpanId(`worker-${subtask.id}-resumed`),
+              parentSpanId: planningSpanId,
+              type: "worker-completed",
+              actor: subtask.role || "worker",
+              activity: "worker",
+              status: "completed",
+              title: `Worker (resumed): ${subtask.title}`,
+              detail: limitText(cachedWorker.output, 600),
+              payload: {
+                ...cachedWorker,
+                resumedFromSourceRunId: resumeFrom?.sourceRunId,
+              },
+            });
+            await emit({
+              spanId: createSpanId(`review-${subtask.id}-resumed`),
+              parentSpanId: planningSpanId,
+              type: "review-completed",
+              actor: "reviewer",
+              activity: "review",
+              status: "completed",
+              title: `Review (resumed): ${subtask.title}`,
+              detail: cachedReview.notes,
+              payload: { ...cachedReview, resumedFromSourceRunId: resumeFrom?.sourceRunId },
+            });
+            const reviewed: ReviewedWorkerResult = {
+              workerResult: cachedWorker,
+              review: cachedReview,
+              attempts: [cachedWorker],
+              reviews: [cachedReview],
+            };
+            return reviewed;
+          }
+
           const dependencyResults = (subtask.dependsOn ?? [])
             .map((id) => completedResults.get(id))
             .filter((result): result is ReviewedWorkerResult => Boolean(result));

@@ -61,6 +61,18 @@ export class RunsController {
     return { source: result.source, restart: result.restart };
   }
 
+  @Post("runs/:id/resume")
+  @HttpCode(202)
+  async resume(@Param("id") id: string) {
+    const result = await this.service.resume(decodeURIComponent(id));
+    return {
+      source: result.source,
+      resume: result.resume,
+      fallback: result.fallback,
+      progress: result.progress,
+    };
+  }
+
   @Get("runs/:id/artifacts/:artifactId")
   async downloadArtifact(
     @Param("id") id: string,
