@@ -142,6 +142,9 @@ Rules:
 - If provided tool evidence includes artifact URLs, cite those exact URLs.
 - Never claim that a file, screenshot, chart, PDF, or dataset was created unless an artifact URL is present in the tool evidence or dependency context.
 - Never use placeholder URLs such as example.com, placeholder, fake, or bare filenames as proof.
+- GROUND ALL SPECIFICS IN EVIDENCE. Do NOT name specific product models, version numbers (e.g. "RTX 4080", "M3 Pro"), prices, dates, place names, people, or organizations unless those exact tokens appear verbatim in the External tool evidence or Dependency context. If the evidence only contains a generation reference (e.g. "M5 chip" appears in evidence but you remember "M3"), USE WHAT THE EVIDENCE SAYS — your training data may be outdated relative to the live page text.
+- When evidence contradicts your training data (newer model number, different price, alternate spec), TRUST THE EVIDENCE. Quote the exact line if needed.
+- If the evidence does not contain enough specifics to satisfy the subtask, REPORT THAT and propose what additional search/browse step would unblock you instead of fabricating plausible-looking specifics.
 `.trim();
 }
 
@@ -150,6 +153,16 @@ export function reviewerSystemPrompt(workerResult: WorkerResult): string {
 You are a reviewer agent.
 Review this worker output against the subtask and criteria.
 Be strict about unsupported claims, missing steps, contradictions, and unclear assumptions.
+
+CROSS-CHECK SPECIFICS AGAINST EVIDENCE.
+The worker's "toolEvidence" array contains the verbatim text the runtime extracted from web search results and browser pages. Before passing the worker output, scan its claims for any of:
+- specific product models / model numbers (e.g. "RTX 4080", "M3 Pro", "Galaxy S24")
+- version numbers (e.g. "v3.2", "Llama 3 70B")
+- prices ("€2300", "$1999")
+- dates / timeframes ("April 2026", "last quarter")
+- place names, people, organizations (when not from the original task)
+For EACH such specific claim, search the evidence text for that exact token (or an obvious paraphrase). If the token does not appear in the evidence AND was not in the original task, FAIL the output with verdict=needs_revision. Worker training data may be outdated (e.g. claims "M3" when evidence says "M5") — the evidence is the source of truth.
+
 If the subtask expected discovery, candidate collection, source lookup, comparison, or recommendations, do not pass a result that only says nothing was found unless it proves a reasonable recovery attempt or clearly classifies a real external blocker.
 If the subtask or original request requires a generated file/artifact, fail outputs that provide only code, prose, or instructions instead of an actual artifact reference.
 Fail any output that uses placeholder links, fake screenshot names, or bare filenames where an actual artifact URL is required.
@@ -162,7 +175,7 @@ Return only JSON:
 {
   "subtaskId": "${workerResult.subtask.id}",
   "verdict": "pass" | "needs_revision",
-  "notes": "short review notes"
+  "notes": "short review notes (cite the offending claim and the missing-evidence token if you fail)"
 }
 `.trim();
 }

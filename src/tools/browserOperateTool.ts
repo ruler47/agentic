@@ -282,13 +282,24 @@ async function executeCommand(
       return `Scrolled page by ${x},${y}.`;
     }
     case "extractText": {
-      const text = command.selector
-        ? await page.locator(command.selector).first().innerText({ timeout: 5000 })
-        : await page.locator("body").innerText({ timeout: 5000 });
+      // Phase 12 follow-up: prefer semantic content roots (article, main,
+      // [role=main]) so the extracted text is the actual content, not the
+      // page-wide nav + cookie banner + footer that dominate the first
+      // few KB of `body.innerText` and squeeze real content out of the
+      // worker's `toolEvidenceChars` budget. Falls back to `body` when
+      // no semantic root exists. Stripping is universal — no per-site
+      // selectors.
+      let text: string;
+      if (command.selector) {
+        text = await page.locator(command.selector).first().innerText({ timeout: 5000 });
+      } else {
+        text = await pickContentText(page);
+      }
+      const cleaned = stripWebPageBoilerplate(text);
       const maxLength = clampNumber(command.maxLength ?? 4000, 1, 20000);
       const label = command.label?.trim() || command.selector || "page";
-      extractedText.push({ label, text: text.slice(0, maxLength) });
-      return `Extracted ${Math.min(text.length, maxLength)} characters from ${label}.`;
+      extractedText.push({ label, text: cleaned.slice(0, maxLength) });
+      return `Extracted ${Math.min(cleaned.length, maxLength)} characters from ${label} (raw ${text.length}, cleaned ${cleaned.length}).`;
     }
     case "extractLinks": {
       const label = command.label?.trim() || command.selector || "links";
@@ -343,6 +354,92 @@ async function executeCommand(
       return `Captured screenshot ${filename}.`;
     }
   }
+}
+
+/**
+ * Phase 12 follow-up: prefer the page's main content region over the full
+ * `body` so cookie banners, nav, and footer don't dominate the first KB
+ * of extracted text. Tries common semantic selectors in order; falls
+ * back to `body` if none exist or are empty.
+ */
+async function pickContentText(page: Page): Promise<string> {
+  const candidates = ["article", "main", "[role='main']", "#main", "#content", ".article-content"];
+  for (const selector of candidates) {
+    try {
+      const locator = page.locator(selector).first();
+      if ((await locator.count()) === 0) continue;
+      const text = await locator.innerText({ timeout: 2000 });
+      if (text && text.trim().length >= 200) {
+        return text;
+      }
+    } catch {
+      // selector might not be valid in this DOM; keep trying
+    }
+  }
+  try {
+    return await page.locator("body").innerText({ timeout: 5000 });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Phase 12 follow-up: trim cookie / consent / nav / subscribe / cookie-policy
+ * boilerplate from extracted text. Heuristics are universal — no site-
+ * specific rules. Patterns are matched on whole lines so we never break a
+ * sentence that happens to mention "cookies" inline (e.g. a recipe).
+ */
+function stripWebPageBoilerplate(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const drop: RegExp[] = [
+    // consent
+    /^\s*(?:we|this site|esta web|este sitio|wir|notre site)\s+(?:and\s+third|use(?:s|n)?|usa(?:n)?|nutzt|utilis)/i,
+    /^\s*manage\s+preferences\s*$/i,
+    /^\s*reject\s+all(?:\s+non[-\s]required)?\s*$/i,
+    /^\s*accept\s+all(?:\s+cookies)?\s*$/i,
+    /^\s*your\s+privacy\s*$/i,
+    /^\s*cookie(?:s)?\s+(?:policy|preferences|notice|settings)\s*$/i,
+    /^\s*privacy\s+(?:statement|policy|notice|preferences|settings)\s*$/i,
+    /^\s*see\s+our\s+privacy/i,
+    /^\s*(?:google\s+adsense|google\s+analytics|doubleclick)\b/i,
+    // nav lists with bullet/star items
+    /^[\s•·\-—]+(?:home|menu|navigation|main\s+menu)\s*$/i,
+    // subscribe / paywall prompts
+    /^\s*subscribe(?:\s+to\s+our\s+newsletter)?\s*$/i,
+    /^\s*sign\s+up\s+for\s+(?:our\s+)?newsletter\s*$/i,
+    // footer copyright
+    /^\s*©\s*\d{4}/,
+    /^\s*copyright\s*©/i,
+    // share buttons
+    /^\s*(?:share|tweet|pin\s*it|email|copy\s+link)\s*$/i,
+  ];
+  const cleaned: string[] = [];
+  let consecutiveShortNavLines = 0;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) {
+      // collapse runs of empty lines into single \n
+      if (cleaned.length > 0 && cleaned[cleaned.length - 1] !== "") cleaned.push("");
+      consecutiveShortNavLines = 0;
+      continue;
+    }
+    if (drop.some((re) => re.test(line))) {
+      consecutiveShortNavLines = 0;
+      continue;
+    }
+    // Heuristic: a sequence of short single-word lines is almost always
+    // navigation / category list. Collapse 5+ in a row by skipping them
+    // (preserves the run's first 4 so a real short menu still reads OK).
+    const isShortMenuLine = line.length <= 22 && !line.includes(" ") && !/[.!?:]/.test(line);
+    if (isShortMenuLine) {
+      consecutiveShortNavLines += 1;
+      if (consecutiveShortNavLines > 4) continue;
+    } else {
+      consecutiveShortNavLines = 0;
+    }
+    cleaned.push(line);
+  }
+  return cleaned.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 async function captureScreenshotWithCap(
@@ -455,32 +552,90 @@ async function dismissDialogs(
   page: Page,
   selectors: string[] = [],
   texts: string[] = [],
-  timeoutMs = 1000,
+  timeoutMs = 1500,
 ): Promise<string[]> {
   const clicked: string[] = [];
+
+  // Phase 12 follow-up: aggressively accept cookie / GDPR / regional
+  // consent banners across the most common consent platforms (OneTrust,
+  // Cookiebot, TrustArc, Quantcast, Didomi, Sourcepoint, Cookieyes,
+  // …) and locales. Without acceptance, modern news / retail sites
+  // either show the banner OVER the content (blurring screenshots) or
+  // block scripts that load product data, leaving evidence stuck in
+  // the cookie wall. The list is host-neutral — every selector is
+  // generic to a consent SDK or a multilingual button label.
   const defaultSelectors = [
+    // OneTrust (Forbes, BBC, NYT, …)
     "#onetrust-accept-btn-handler",
+    "#onetrust-pc-btn-handler",
+    ".onetrust-close-btn-handler",
+    "button.onetrust-close-btn-handler",
+    // Cookiebot
+    "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+    "#CybotCookiebotDialogBodyLevelButtonAccept",
+    // Sourcepoint / quantcast
+    "[aria-label='Accept all']",
+    "[aria-label='Accept All']",
+    "[aria-label='Allow all']",
+    "[aria-label='Принять']",
+    "[aria-label='Aceptar']",
+    "[aria-label='Aceptar todo']",
+    // Didomi / Cookieyes / generic
+    "#didomi-notice-agree-button",
+    ".cky-btn-accept",
+    "#cookieyes-accept-all",
     "[data-testid='cookie-accept']",
     "[data-testid='accept-cookies']",
+    "[data-testid='consent-accept']",
+    "[data-cookieconsent='accept']",
+    // Generic role-based
+    "button:has-text('Accept all cookies')",
+    "button:has-text('Accept All Cookies')",
+    "button:has-text('Accept all')",
     "button:has-text('Accept')",
     "button:has-text('Agree')",
+    "button:has-text('I agree')",
     "button:has-text('Allow all')",
+    "button:has-text('Got it')",
+    "button:has-text('OK')",
     "button:has-text('Принять')",
     "button:has-text('Согласен')",
+    "button:has-text('Принять все')",
     "button:has-text('Aceptar')",
     "button:has-text('Aceptar todo')",
+    "button:has-text('Aceptar todas')",
+    "button:has-text('Akzeptieren')",
+    "button:has-text('Alle akzeptieren')",
+    "button:has-text('Accepter')",
+    "button:has-text('Tout accepter')",
+    "button:has-text('Accetta')",
+    "button:has-text('Accetta tutto')",
+    "button:has-text('Concordo')",
+    "button:has-text('Aceitar')",
+    "button:has-text('Aceitar tudo')",
   ];
   const defaultTexts = [
+    "Accept all cookies",
     "Accept all",
     "Accept",
+    "Allow all",
     "I agree",
     "Agree",
-    "Allow all",
+    "Got it",
     "Принять все",
     "Принять",
     "Согласен",
     "Aceptar todo",
+    "Aceptar todas",
     "Aceptar",
+    "Akzeptieren",
+    "Alle akzeptieren",
+    "Tout accepter",
+    "Accepter",
+    "Accetta tutto",
+    "Accetta",
+    "Aceitar tudo",
+    "Aceitar",
   ];
 
   const selectorHit = await clickFirstAvailable(page, [...selectors, ...defaultSelectors], timeoutMs);
@@ -495,6 +650,38 @@ async function dismissDialogs(
       break;
     } catch {
       // Dialog may not exist or may already be gone.
+    }
+  }
+
+  // Cookie banners are sometimes hosted in iframes (Sourcepoint, OneTrust
+  // strict mode, Quantcast). Try to descend into each frame and click the
+  // common accept buttons there too.
+  for (const frame of page.frames().slice(1)) {
+    try {
+      const iframeAccept = await frame.locator(
+        "button:has-text('Accept all'), button:has-text('Accept All'), button:has-text('Aceptar todo'), button:has-text('Принять все'), [aria-label='Accept all'], [aria-label='Accept All']",
+      );
+      if ((await iframeAccept.count()) > 0) {
+        await iframeAccept.first().click({ timeout: timeoutMs });
+        clicked.push(`iframe:${frame.url().slice(0, 80)}`);
+      }
+    } catch {
+      // Frame may detach mid-click; safe to ignore.
+    }
+  }
+
+  // Give the page a moment to settle after the consent action so the
+  // subsequent `extractText` / `screenshot` sees the unblocked content.
+  if (clicked.length > 0) {
+    try {
+      await page.waitForLoadState("networkidle", { timeout: 1500 });
+    } catch {
+      // Some sites never reach networkidle (analytics polling); ignore.
+    }
+    try {
+      await page.waitForTimeout(250);
+    } catch {
+      // ignore
     }
   }
 
