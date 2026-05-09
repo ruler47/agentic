@@ -4746,6 +4746,28 @@ function hardGateReview(workerResult: WorkerResult): ReviewResult | undefined {
     };
   }
 
+  // Phase 12 follow-up: deterministic ungrounded-specifics gate. The
+  // soft prompt rules (workerSystemPrompt + reviewerSystemPrompt) tell
+  // the LLM not to invent specific model numbers / version strings /
+  // prices unless they appear in evidence — but the model still slips
+  // them in (often prefaced with "e.g."). Deterministically extract
+  // tokens that *look* like specific product / version identifiers
+  // from the worker output and fail the review when they are absent
+  // from the evidence and the original task. The reviewer's LLM
+  // cross-check is the second line of defence; this check is the
+  // first and is not bypassable by clever phrasing.
+  const ungrounded = findUngroundedSpecifics(workerResult);
+  if (ungrounded.length > 0) {
+    return {
+      subtaskId: workerResult.subtask.id,
+      verdict: "needs_revision",
+      notes:
+        `Output names specifics that are NOT in tool evidence or the task: ${ungrounded
+          .slice(0, 6)
+          .join(", ")}. The worker must ground every model number, version, price, or year in the evidence text or report that the data is unavailable rather than naming items from training memory.`,
+    };
+  }
+
   const missingArtifacts = (workerResult.subtask.requiredArtifacts ?? []).filter(
     (requirement) =>
       requirement.required !== false &&
@@ -4876,6 +4898,71 @@ function containsWeakArtifactEvidence(text: string): boolean {
 
 function containsUnexecutedToolCall(text: string): boolean {
   return /<\|?tool_call|tool_code|browser:navigate|browser\.navigate|call:browser|```tool/i.test(text);
+}
+
+/**
+ * Phase 12 follow-up: extract tokens from the worker output that look
+ * like specific product / version identifiers and check whether they
+ * appear in the evidence corpus or the original task. Tokens that fail
+ * BOTH lookups are returned and the review is failed.
+ *
+ * The patterns are intentionally narrow — only catch high-confidence
+ * "this is a specific brand/version" shapes:
+ *   - GPU / chip names like "RTX 4080", "M3 Pro", "Ryzen 9 7950X"
+ *   - Model numbers with letters+digits like "G16", "M4 Max"
+ *   - Years (2023, 2024, 2025, 2026, 2027) standing on their own
+ *   - Currency amounts ($1999, €2300)
+ *
+ * Generic words ("laptop", "GPU", "VRAM") and category labels ("Pro",
+ * "Max" alone) are never caught. The grounding lookup uses simple
+ * case-insensitive substring with whitespace normalisation, which is
+ * good enough for "RTX 4080" vs "RTX 4080" / "rtx-4080" cases.
+ */
+function findUngroundedSpecifics(workerResult: WorkerResult): string[] {
+  const output = workerResult.output ?? "";
+  const evidenceCorpus = [
+    workerResult.subtask.title ?? "",
+    workerResult.subtask.prompt ?? "",
+    workerResult.subtask.expectedOutput ?? "",
+    ...(workerResult.subtask.reviewCriteria ?? []),
+    ...(workerResult.toolEvidence ?? []),
+  ]
+    .join("\n")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s$€£¥]/gu, " ")
+    .replace(/\s+/g, " ");
+
+  const candidates = new Set<string>();
+
+  // Branded chip / GPU / CPU / model names: 2+ uppercase letters then
+  // a number-letter combo. Catches "RTX 4080", "M3 Pro", "Ryzen 9
+  // 7950X", "Snapdragon X Elite", "Core i9".
+  const brandedTokenRe = /\b(RTX|GTX|Ryzen|Radeon|Snapdragon|Core\s+i[3579]|Apple\s+M\d|M\d(?:\s+(?:Pro|Max|Ultra))?|Intel\s+(?:Ultra\s+)?(?:Core\s+)?\d|EPYC|Threadripper|Galaxy\s+(?:S|Note|Z)\d+|Pixel\s+\d+|iPhone\s+\d+(?:\s*Pro)?|Llama\s+\d+|GPT-\d|Claude\s+\d|Gemini\s+\d|XPS\s+\d+|ROG\s+[A-Z][a-z]+|MacBook\s+(?:Air|Pro)|ZenBook|ThinkPad|Surface\s+Pro)\s*[-A-Za-z0-9]*\b/g;
+  for (const match of output.matchAll(brandedTokenRe)) {
+    const token = match[0].trim().replace(/\s+/g, " ");
+    if (token.length >= 2) candidates.add(token);
+  }
+
+  // Years 2023-2030 mentioned without "20" prefix or as standalone tokens.
+  for (const match of output.matchAll(/\b(20(?:2[3-9]|30))\b/g)) {
+    candidates.add(match[1]);
+  }
+
+  // Specific currency amounts.
+  for (const match of output.matchAll(/(?:[$€£¥])\s?\d{2,5}(?:[.,]\d{1,3})?/g)) {
+    candidates.add(match[0].replace(/\s/g, ""));
+  }
+
+  const ungrounded: string[] = [];
+  for (const token of candidates) {
+    const normalized = token.toLowerCase().replace(/\s+/g, " ");
+    if (evidenceCorpus.includes(normalized)) continue;
+    // Accept partial match: drop trailing model qualifier and check core.
+    const core = normalized.split(/\s+/)[0];
+    if (core && core.length >= 3 && evidenceCorpus.includes(core)) continue;
+    ungrounded.push(token);
+  }
+  return ungrounded;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
