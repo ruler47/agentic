@@ -4993,7 +4993,7 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
   // Branded chip / GPU / CPU / model names: 2+ uppercase letters then
   // a number-letter combo. Catches "RTX 4080", "M3 Pro", "Ryzen 9
   // 7950X", "Snapdragon X Elite", "Core i9".
-  const brandedTokenRe = /\b(RTX|GTX|Ryzen|Radeon|Snapdragon|Core\s+i[3579]|Apple\s+M\d|M\d(?:\s+(?:Pro|Max|Ultra))?|Intel\s+(?:Ultra\s+)?(?:Core\s+)?\d|EPYC|Threadripper|Galaxy\s+(?:S|Note|Z)\d+|Pixel\s+\d+|iPhone\s+\d+(?:\s*Pro)?|Llama\s+\d+|GPT-\d|Claude\s+\d|Gemini\s+\d|XPS\s+\d+|ROG\s+[A-Z][a-z]+|MacBook\s+(?:Air|Pro)|ZenBook|ThinkPad|Surface\s+Pro)\s*[-A-Za-z0-9]*\b/g;
+  const brandedTokenRe = /\b(RTX|GTX|Ryzen|Radeon|Snapdragon|Core\s+i[3579]|Apple\s+M\d|M\d(?:\s+(?:Pro|Max|Ultra))?|Intel\s+(?:Ultra\s+)?(?:Core\s+)?\d|EPYC|Threadripper|Galaxy\s+(?:S|Note|Z)\d+|Pixel\s+\d+|iPhone\s+\d+(?:\s*Pro)?|Llama\s+\d+|GPT-\d|Claude\s+\d|Gemini\s+\d|XPS\s+\d+|ROG\s+[A-Z][a-z]+|MacBook\s+(?:Air|Pro)|ZenBook|ThinkPad|Surface\s+Pro|Lenovo\s+(?:Legion|IdeaPad|Yoga|Slim)|HP\s+(?:Omen|Pavilion|Spectre|Envy|Victus|EliteBook|ProBook|ZBook)|MSI\s+(?:Raider|Stealth|Vector|Cyborg|Katana|Sword|Titan|Crosshair|Pulse|Creator)|Razer\s+Blade|Acer\s+(?:Predator|Nitro|Swift|Aspire)|Alienware|Dell\s+(?:Inspiron|Latitude|Precision|Vostro)|LG\s+Gram|Samsung\s+Galaxy\s+Book|Framework\s+(?:13|16))\s*[-A-Za-z0-9]*\b/g;
   for (const match of (output ?? "").matchAll(brandedTokenRe)) {
     const token = match[0].trim().replace(/\s+/g, " ");
     if (token.length >= 2) candidates.add(token);
@@ -5030,19 +5030,27 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
 }
 
 /**
- * Phase 12 follow-up: build a synthesis-level evidence corpus from the
- * full set of ground-truth inputs available at synthesis time. The
- * worker layer already blocks ungrounded specifics in its own output;
- * this corpus is what the synthesis output is checked against.
+ * Phase 12 follow-up: build a synthesis-level evidence corpus from
+ * GROUND-TRUTH sources only. The earlier version of this function
+ * included worker `output` text in the corpus, which silently
+ * "grounded" any specific that the worker had hallucinated (and was
+ * already rejected for by hardGateReview). The synthesis LLM call could
+ * then re-emit those tokens and pass the synthesis-level gate because
+ * the rejected worker output was being treated as evidence.
  *
  * Sources, in priority order:
  *   1. The original task text (a token in the user's own request is
  *      grounded by definition).
- *   2. Every worker output (specifics that survived hard-gate review
- *      are already grounded against their own subtask evidence).
- *   3. Every worker's `toolEvidence[]` (raw tool results).
- *   4. Every artifact's filename / description / URL (often contains
- *      page titles, source domains).
+ *   2. Every worker's `toolEvidence[]` (raw tool result text — the
+ *      closest thing to ground truth available at synthesis time).
+ *   3. Subtask metadata (title/prompt/expectedOutput/reviewCriteria) —
+ *      the planner sometimes mentions specific anchor terms that the
+ *      tools then verify, and those should count as grounded.
+ *   4. Every artifact's filename / description / URL — these often
+ *      carry page titles or source domains that the worker visited.
+ *
+ * Worker `output` is intentionally NOT in the corpus — that's the
+ * exact channel the gate is supposed to check.
  */
 function buildSynthesisEvidenceCorpus(
   task: string,
@@ -5051,7 +5059,6 @@ function buildSynthesisEvidenceCorpus(
 ): string {
   const parts: string[] = [task ?? ""];
   for (const wr of workerResults ?? []) {
-    parts.push(wr.output ?? "");
     parts.push(wr.subtask?.title ?? "");
     parts.push(wr.subtask?.prompt ?? "");
     parts.push(wr.subtask?.expectedOutput ?? "");

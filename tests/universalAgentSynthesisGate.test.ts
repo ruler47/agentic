@@ -32,6 +32,17 @@ test("findUngroundedSpecificsInText accepts tokens that ARE in evidence", () => 
   assert.deepEqual(ungrounded, []);
 });
 
+test("findUngroundedSpecificsInText flags ungrounded laptop-line tokens (Lenovo Legion, HP Omen, MSI Raider, Razer Blade, ROG Zephyrus)", () => {
+  const output = "Top picks: Lenovo Legion Slim 5, HP Omen Transcend, MSI Raider GE78, Razer Blade 16, ROG Zephyrus G14.";
+  const evidence = "Tool returned a generic page about gaming laptops with no model lines mentioned.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  assert.ok(ungrounded.some((t) => /Lenovo Legion/i.test(t)), `expected Lenovo Legion to be flagged, got ${ungrounded.join(", ")}`);
+  assert.ok(ungrounded.some((t) => /HP Omen/i.test(t)), `expected HP Omen to be flagged, got ${ungrounded.join(", ")}`);
+  assert.ok(ungrounded.some((t) => /MSI Raider/i.test(t)), `expected MSI Raider to be flagged, got ${ungrounded.join(", ")}`);
+  assert.ok(ungrounded.some((t) => /Razer Blade/i.test(t)), `expected Razer Blade to be flagged, got ${ungrounded.join(", ")}`);
+  assert.ok(ungrounded.some((t) => /Zephyrus/i.test(t)), `expected Zephyrus to be flagged, got ${ungrounded.join(", ")}`);
+});
+
 test("findUngroundedSpecificsInText flags ungrounded years and currency", () => {
   const output = "The 2027 model costs $2499 in Spain.";
   const evidence = "Catalog shows current 2026 inventory only.";
@@ -40,7 +51,7 @@ test("findUngroundedSpecificsInText flags ungrounded years and currency", () => 
   assert.ok(ungrounded.some((t) => /\$2499/.test(t)));
 });
 
-test("buildSynthesisEvidenceCorpus aggregates task + worker outputs + tool evidence + artifacts", () => {
+test("buildSynthesisEvidenceCorpus uses ground-truth sources, NOT worker output prose", () => {
   const corpus = buildSynthesisEvidenceCorpus(
     "Original task asking about the best laptop",
     [
@@ -55,8 +66,12 @@ test("buildSynthesisEvidenceCorpus aggregates task + worker outputs + tool evide
           requiredTools: [],
           dependencies: [],
         },
-        output: "Worker output mentions RTX 5080 and M5 Pro",
-        toolEvidence: ["Tool evidence text contains 2026 release notes"],
+        // Worker output is NOT supposed to count as evidence — it's the
+        // channel the synthesis gate is meant to police. A worker that
+        // hallucinates "RTX 4080" in its prose must NOT thereby ground
+        // the same token for the synthesis layer.
+        output: "Worker output prose mentions HALLUCINATED_TOKEN_4080",
+        toolEvidence: ["Tool evidence text contains 2026 release notes about RTX 5080"],
       } as never,
     ],
     [
@@ -68,10 +83,16 @@ test("buildSynthesisEvidenceCorpus aggregates task + worker outputs + tool evide
       } as never,
     ],
   );
+  // Task text is in.
   assert.ok(corpus.includes("Original task"));
-  assert.ok(corpus.includes("RTX 5080"));
+  // Tool-evidence is in.
   assert.ok(corpus.includes("2026"));
+  // Subtask metadata is in.
+  assert.ok(corpus.includes("RTX 5080"));
+  // Artifact metadata is in.
   assert.ok(corpus.includes("screenshot-best-laptop"));
+  // Worker output prose is NOT in — that's the whole point.
+  assert.ok(!corpus.includes("HALLUCINATED_TOKEN_4080"));
 });
 
 test("enforceUngroundedSpecificsOnSynthesis returns answer unchanged when fully grounded", async () => {
