@@ -115,6 +115,26 @@ Compare Skyscanner, Google Flights, Kayak.`,
   );
 });
 
+test("selectBestUrlsForArtifact: strips trailing backticks and parens so LLM ranker can match candidates", () => {
+  // Reproduces the production fallback ("LLM selected no valid candidate URLs")
+  // that came from Markdown-quoted evidence text such as
+  //   `https://...`  or  [link](https://...)
+  const evidenceText = `
+1. Backtick-wrapped: \`https://www.notebookcheck.net/laptops\`
+2. Markdown: [Click here](https://www.amazon.es/laptops)
+3. Trailing punctuation: see https://www.pccomponentes.com/laptops.
+`;
+  const selected = selectBestUrlsForArtifact(evidenceText, 3, []);
+  for (const url of selected) {
+    assert.ok(!url.endsWith("`"), `URL kept a trailing backtick: ${url}`);
+    assert.ok(!url.endsWith(")"), `URL kept a trailing paren: ${url}`);
+    assert.ok(!url.endsWith("."), `URL kept a trailing period: ${url}`);
+  }
+  assert.ok(selected.includes("https://www.notebookcheck.net/laptops"), `expected backtick-wrapped URL to be normalized; got: ${selected.join(", ")}`);
+  assert.ok(selected.includes("https://www.amazon.es/laptops"), `expected Markdown-link URL to be normalized; got: ${selected.join(", ")}`);
+  assert.ok(selected.includes("https://www.pccomponentes.com/laptops"), `expected trailing-punct URL to be normalized; got: ${selected.join(", ")}`);
+});
+
 test("buildSearchQueries: medical subtask still emits medical seed query when context hints fire", () => {
   const subtaskInput = subtask({
     id: "doc-1",

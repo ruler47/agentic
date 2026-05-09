@@ -4529,11 +4529,21 @@ function isLowValueProofUrl(url: string): boolean {
 }
 
 function extractHttpUrls(text: string): string[] {
-  const matches = text.matchAll(/https?:\/\/[^\s"'<>),\]]+/gi);
+  // Phase 12 Slice D follow-up: also exclude backtick (`` ` ``) and the
+  // closing characters from common Markdown punctuation. Without this, an
+  // evidence string like `[link](https://example.com/foo)` or
+  // ``\`https://example.com/foo\``` produced a candidate URL with a trailing
+  // backtick or paren, which the LLM ranker correctly returned without that
+  // suffix — but our `candidateSet.has(url)` check then failed and the
+  // ranker fell back to heuristic with reason "LLM selected no valid
+  // candidate URLs". Stripping noise here closes both the LLM and heuristic
+  // paths in one go.
+  const matches = text.matchAll(/https?:\/\/[^\s"'<>(),\]\[`]+/gi);
   const seen = new Set<string>();
   const urls: string[] = [];
   for (const match of matches) {
-    const url = match[0].replace(/[.;:!?]+$/, "");
+    const url = match[0].replace(/[.;:!?`)\]]+$/, "");
+    if (!url) continue;
     if (seen.has(url)) continue;
     seen.add(url);
     urls.push(url);
