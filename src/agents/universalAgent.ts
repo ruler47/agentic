@@ -17,6 +17,7 @@ import {
   isGenericLandingUrl,
   scoreUrlAgainstPatterns,
 } from "../tools/builtinEvidencePatterns.js";
+import { loadEvidencePatternsFromMemory } from "../memory/evidencePatternMemory.js";
 import { EvidencePattern } from "../tools/tool.js";
 import { shouldUseWebSearch } from "../tools/webSearchTool.js";
 import {
@@ -210,6 +211,29 @@ export class UniversalAgent {
     const runId = toolExecutionContext?.runId;
     if (typeof runId !== "string" || runId === "") return undefined;
     return this.runScopedLedgers.get(runId);
+  }
+
+  /**
+   * Phase 12 Slice C: collect evidence patterns relevant to the active
+   * intents from registered tools and accepted memory entries. Returned list
+   * is empty when no intents are inferred — the runtime falls back to
+   * `BUILTIN_EVIDENCE_PATTERNS` only. Failures from memory parsing are
+   * swallowed (they would just mean a missing pattern, never a runtime
+   * crash) but emitted via the registered emitter when available.
+   */
+  private async resolveEvidencePatterns(intents: string[]): Promise<EvidencePattern[]> {
+    if (intents.length === 0) return [];
+    const fromTools = this.tools.evidencePatternsForIntents(intents);
+    let fromMemory: EvidencePattern[] = [];
+    try {
+      const result = await loadEvidencePatternsFromMemory(this.skillMemory, intents);
+      fromMemory = result.patterns;
+    } catch {
+      // Defensive: a broken memory store should never block discovery; the
+      // built-in seed remains. Surfacing the error stays a Slice C+/D task.
+      fromMemory = [];
+    }
+    return [...fromTools, ...fromMemory];
   }
 
   private async finalizeRunLedger(
@@ -1566,10 +1590,12 @@ export class UniversalAgent {
     }
 
     const discoveryIntents = inferTaskIntents(`${subtask.title}\n${subtask.prompt}\n${text}`);
+    const extraPatterns = await this.resolveEvidencePatterns(discoveryIntents);
     const urls = selectBestUrlsForArtifact(
       priorEvidence.join("\n\n"),
       requiresMultipleSources(subtask) ? 3 : 2,
       discoveryIntents,
+      extraPatterns,
     );
     if (urls.length === 0) return { text: "No browser discovery URLs were available.", evidence: [], artifacts: [] };
 
@@ -1613,6 +1639,8 @@ export class UniversalAgent {
     const entries = Object.entries(subtask.toolInputs ?? {}).filter(([toolName]) => toolName !== "web.search");
     const evidence: string[] = [];
     const artifacts: AgentArtifact[] = [];
+    const declaredIntents = inferTaskIntents(`${subtask.title}\n${subtask.prompt}`);
+    const declaredExtraPatterns = await this.resolveEvidencePatterns(declaredIntents);
 
     for (const [toolName, input] of entries) {
       const tool = this.tools.get(toolName) ?? this.tools.findByCapability(toolName)[0];
@@ -1620,7 +1648,13 @@ export class UniversalAgent {
         evidence.push(`Declared tool ${toolName} is not registered.`);
         continue;
       }
-      const runnableInput = improveDeclaredToolInput(tool.name, input, subtask, priorEvidence);
+      const runnableInput = improveDeclaredToolInput(
+        tool.name,
+        input,
+        subtask,
+        priorEvidence,
+        declaredExtraPatterns,
+      );
       if (tool.name === "browser.operate" && hasInvalidBrowserNavigation(runnableInput)) {
         evidence.push(
           `Declared browser.operate input was skipped because it contains a placeholder or invalid navigation URL. Use real http(s) source URLs from previous evidence before running browser automation.`,
@@ -2042,7 +2076,9 @@ export class UniversalAgent {
     improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<AgentArtifact | undefined> {
-    const url = selectBestUrlForArtifact(context, inferTaskIntents(context));
+    const screenshotIntents = inferTaskIntents(context);
+    const screenshotPatterns = await this.resolveEvidencePatterns(screenshotIntents);
+    const url = selectBestUrlForArtifact(context, screenshotIntents, screenshotPatterns);
     if (!url) {
       await this.handleMissingToolCapability(
         {
@@ -4250,6 +4286,7 @@ function improveDeclaredToolInput(
   input: unknown,
   subtask: Subtask,
   priorEvidence: string[],
+  extraPatterns: readonly EvidencePattern[] = [],
 ): unknown {
   if (toolName !== "browser.operate" || !isRecord(input)) return input;
   const commands = Array.isArray(input.commands) ? input.commands : [];
@@ -4261,13 +4298,17 @@ function improveDeclaredToolInput(
     priorEvidence.join("\n\n"),
     requiresMultipleSources(subtask) ? 3 : 1,
     inferTaskIntents(`${subtask.title}\n${subtask.prompt}`),
+    extraPatterns,
   );
   if (evidenceUrls.length === 0) return input;
   const firstNavigationUrl = commands.find(isNavigateCommand)?.url;
+  const allPatterns = extraPatterns.length > 0
+    ? [...BUILTIN_EVIDENCE_PATTERNS, ...extraPatterns]
+    : BUILTIN_EVIDENCE_PATTERNS;
   if (
     firstNavigationUrl &&
     !isPlaceholderNavigateCommand({ type: "navigate", url: firstNavigationUrl }) &&
-    !isGenericBrowserSearchUrl(firstNavigationUrl)
+    !isGenericBrowserSearchUrl(firstNavigationUrl, allPatterns)
   ) {
     return input;
   }
@@ -4370,16 +4411,33 @@ function summarizeToolInput(input: unknown): string {
   return JSON.stringify(sanitizeToolPayload(input)).slice(0, 1000);
 }
 
-function selectBestUrlForArtifact(text: string, intents: string[] = []): string | undefined {
-  return selectBestUrlsForArtifact(text, 1, intents)[0];
+function selectBestUrlForArtifact(
+  text: string,
+  intents: string[] = [],
+  extraPatterns: readonly EvidencePattern[] = [],
+): string | undefined {
+  return selectBestUrlsForArtifact(text, 1, intents, extraPatterns)[0];
 }
 
-function selectBestUrlsForArtifact(text: string, limit: number, intents: string[] = []): string[] {
+function selectBestUrlsForArtifact(
+  text: string,
+  limit: number,
+  intents: string[] = [],
+  extraPatterns: readonly EvidencePattern[] = [],
+): string[] {
+  // Phase 12 Slice C: combine built-in seed with operator-supplied patterns
+  // (tool contracts and memory entries). Memory + tool patterns can override
+  // built-ins because they appear later in the array yet
+  // `scoreUrlAgainstPatterns` returns the highest score, so a higher-scored
+  // override wins.
+  const patterns = extraPatterns.length > 0
+    ? [...BUILTIN_EVIDENCE_PATTERNS, ...extraPatterns]
+    : BUILTIN_EVIDENCE_PATTERNS;
   const urls = extractHttpUrls(text);
   if (urls.length === 0) return [];
   const sourceUrls = urls.filter((url) => !isLowValueProofUrl(url));
   const ranked = sourceUrls
-    .map((url) => ({ url, score: scoreArtifactUrl(url, intents) }))
+    .map((url) => ({ url, score: scoreArtifactUrl(url, intents, patterns) }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score);
   const selected: string[] = [];
