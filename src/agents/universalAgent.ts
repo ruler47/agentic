@@ -20,6 +20,13 @@ import {
 import { loadEvidencePatternsFromMemory } from "../memory/evidencePatternMemory.js";
 import { EvidencePattern } from "../tools/tool.js";
 import { rankDiscoveryUrls } from "./discoveryUrlRanker.js";
+import {
+  expandSearchQueriesByIntent,
+  extractIntentSourceHints,
+  inferTaskIntents,
+  isDiscoveryText,
+  wantsInteractiveSource,
+} from "./intentInference.js";
 import { shouldUseWebSearch } from "../tools/webSearchTool.js";
 import {
   AgentArtifact,
@@ -3982,15 +3989,11 @@ function shouldCollectBrowserDiscovery(subtask: Subtask, text: string): boolean 
   if (requestedTools.some((tool) => ["browser-operate", "browser.operate", "dom-extraction"].includes(tool))) {
     return true;
   }
-  const isDiscovery =
-    /(find|search|identify|discover|collect|candidate|profile|directory|listing|catalog|doctor|clinic|specialist|ticket|flight|найди|поиск|подбери|кандидат|профил|каталог|справочник|листинг|врач|клиник|специалист|билет|рейс)/i.test(
-      text,
-    );
-  const needsInteractiveSources =
-    /(directory|profile|listing|catalog|portal|booking|provider|hospital|staff|doctolib|jameda|onedoc|google flights|skyscanner|kayak|каталог|профил|портал|бронир|клиник|госпитал|персонал|расписан)/i.test(
-      text,
-    );
-  return isDiscovery && needsInteractiveSources;
+  // Phase 12 Slice E: domain-specific anchors moved into intentInference.ts.
+  // Discovery fires on generic discovery + interactive-source signals OR when
+  // any known task intent is inferred from the text.
+  const intents = inferTaskIntents(text);
+  return (isDiscoveryText(text) && wantsInteractiveSource(text)) || intents.length > 0;
 }
 
 function shouldCollectMarketTimeseries(subtask: Subtask, text: string): boolean {
@@ -4095,88 +4098,20 @@ function buildSearchQueries(subtask: Subtask, contextText = ""): string[] {
     .map((line) => line.replace(/^[-*\d.\s:]+/, "").trim())
     .filter(Boolean);
   const leadLine = promptLines.find((line) => /search|find|найди|искать|research/i.test(line)) ?? promptLines[0] ?? "";
-  // Phase 12 Slice A: gate domain-specific source hints behind the inferred task
-  // intents so a laptop research subtask does not import flight aggregator
-  // hints from prompt vocabulary and a research run does not import medical
-  // portal hints. Without intents, only generic prompt sources reach the merged
-  // search query.
+  // Phase 12 Slice E: domain-specific source hints, IATA detection, and
+  // medical seed query live in `intentInference.ts`. Without an inferred
+  // intent, these branches do not contribute to the merged search query.
   const intents = inferTaskIntents(`${subtask.title}\n${subtask.prompt}\n${contextText}`);
-  const sourceHints = intents.includes("flight-search")
-    ? promptLines
-        .filter((line) =>
-          /google flights|skyscanner|kayak|momondo|booking|source|источник|ссылка/i.test(line),
-        )
-        .join(" ")
-    : "";
+  const sourceHints = extractIntentSourceHints(intents, promptLines);
   const contextHints = buildContextSearchHints(`${contextText}\n${subtask.title}\n${subtask.prompt}`);
   const raw = `${subtask.title} ${leadLine} ${sourceHints} ${contextHints}`;
 
-  const primary = cleanSearchQuery(raw);
-  const queries = [primary];
-  if (
-    intents.includes("medical-lookup") &&
-    contextHints &&
-    /doctor|clinic|allerg|immunolog|врач|клиник|аллерг|иммунолог/i.test(raw)
-  ) {
-    queries.push(
-      cleanSearchQuery(
-        `${subtask.title} ${leadLine} ${contextHints} doctor directory hospital staff Doctolib Jameda OneDoc`,
-      ),
-    );
-  }
-  // Three-letter uppercase tokens (GPU, RAM, LLM, EUR, ...) are only treated as
-  // IATA airport codes when the task itself is about flights. Without this
-  // gate, technical subtasks accidentally generate parasitic flight queries
-  // that pollute browser discovery URLs.
-  if (intents.includes("flight-search")) {
-    const iataCodes = [...new Set(subtask.prompt.match(/\b[A-Z]{3}\b/g) ?? [])];
-    if (iataCodes.length >= 2) {
-      queries.push(cleanSearchQuery(`${iataCodes.slice(0, 3).join(" ")} flights Google Flights Skyscanner Kayak`));
-    }
-    const routeMatch = subtask.prompt.match(
-      /from\s+([A-Za-zА-Яа-яÁÉÍÓÚáéíóúñü\s-]+).*?\bto\s+([A-Za-zА-Яа-яÁÉÍÓÚáéíóúñü\s-]+)/i,
-    );
-    if (routeMatch) {
-      queries.push(cleanSearchQuery(`${routeMatch[1]} to ${routeMatch[2]} flights Google Flights Skyscanner Kayak`));
-    }
-  }
+  const queries = [cleanSearchQuery(raw)];
+  queries.push(
+    ...expandSearchQueriesByIntent(intents, subtask, contextHints, leadLine, cleanSearchQuery),
+  );
 
   return [...new Set(queries.filter(Boolean))].slice(0, 3);
-}
-
-/**
- * Phase 12 Slice A: infer high-level task intents from raw text. Used to gate
- * domain-specific URL scoring and search query expansions so the universal
- * runtime does not mix flight or medical hardcodes into unrelated tasks.
- *
- * Intentionally narrow: each domain requires an explicit anchor word. Three
- * letter uppercase tokens (GPU/RAM/LLM/EUR) and generic words like
- * "specialist" do not trigger a domain by themselves; this is what the
- * `run_1778320304262_oanslhzc` regression depended on.
- *
- * Future slices replace this regex with the classifier-provided
- * ClassificationResult.intent[] field. Keep this function as the single point
- * to migrate.
- */
-function inferTaskIntents(text: string): string[] {
-  const intents: string[] = [];
-  // ASCII anchors: `\b` works for English/Latin words. Cyrillic anchors use
-  // `(?<![\p{L}])` (Unicode-aware "not preceded by a letter") because JS `\b`
-  // is ASCII-only and treats Cyrillic chars as non-word.
-  // Stem patterns (no trailing boundary) match prefixes so `allergologist`,
-  // `аллерголога`, `авиабилеты` are caught.
-  const flightWord = /\b(?:flight|flights|airline|airlines|airport|airports|aviasales|skyscanner|kayak|momondo|expedia|ryanair|easyjet|vueling|lufthansa|turkishairlines|pegasus|kiwi\.com|trip\.com)\b/i;
-  const flightCyr = /(?<![\p{L}])(?:рейс|авиа|перел[её]т|билет на самол[её]т)/iu;
-  if (flightWord.test(text) || flightCyr.test(text)) {
-    intents.push("flight-search");
-  }
-  const medicalWord = /\b(?:doctor|doctors|clinician|physician|clinic|hospital|doctolib|jameda|onedoc|topdoctors|aerzte|arzt|medecin|especialista)\b/i;
-  const medicalStem = /\b(?:allerg|immunolog|allergolog)/i;
-  const medicalCyr = /(?<![\p{L}])(?:врач|клиник|госпитал|аллерг|иммунолог|поликлиник)/iu;
-  if (medicalWord.test(text) || medicalStem.test(text) || medicalCyr.test(text)) {
-    intents.push("medical-lookup");
-  }
-  return intents;
 }
 
 function buildContextSearchHints(text: string): string {
@@ -4653,10 +4588,13 @@ function containsUnsatisfiedDiscoveryFailure(workerResult: WorkerResult): boolea
     workerResult.subtask.expectedOutput,
     ...(workerResult.subtask.reviewCriteria ?? []),
   ].join("\n");
+  // Phase 12 Slice E: domain-specific discovery anchors moved into
+  // intentInference.ts. The combined check fires either on a generic
+  // discovery keyword or on any inferred task intent.
   const expectsDiscovery =
-    /(find|search|identify|discover|collect|candidate|source|lookup|recommend|rank|compare|list|doctor|clinic|specialist|profile|price|ticket|flight|найди|поиск|подбери|кандидат|источник|список|рекоменд|сравн|врач|клиник|специалист|билет|рейс|цена)/i.test(
+    /(find|search|identify|discover|collect|candidate|source|lookup|recommend|rank|compare|list|profile|price|найди|поиск|подбери|кандидат|источник|список|рекоменд|сравн|цена)/i.test(
       subtaskText,
-    );
+    ) || inferTaskIntents(subtaskText).length > 0;
   if (!expectsDiscovery) return false;
   const output = workerResult.output;
   const emptyDiscovery =
@@ -4826,9 +4764,11 @@ function uniqueStrings(values: string[]): string[] {
   return result;
 }
 
-// Phase 12 Slice A: expose intent inference and URL scoring for unit tests so
-// the laptop-research / flight-search regression has explicit coverage. These
-// remain internal helpers; consumers should not rely on them.
+// Phase 12 Slice A/E: expose intent inference and URL scoring for unit tests
+// so the laptop-research / flight-search regression has explicit coverage.
+// These remain internal helpers; consumers should not rely on them.
+// `inferTaskIntents` lives in `intentInference.ts` but is re-exposed here for
+// the existing test suite.
 export const __testing__ = {
   inferTaskIntents,
   scoreArtifactUrl,

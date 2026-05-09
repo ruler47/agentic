@@ -62,7 +62,7 @@ Rules:
 - For every subtask, declare the machine-readable tools and artifacts it requires.
 - Use "requiredTools" for capabilities like "web-search", "browser-screenshot", "chart-generation", "file-read", "file-write", or "pdf-generation".
 - Use "browser-operate" when a task needs interactive browser actions such as navigation, cookie handling, clicks, typing, form filling, waiting, DOM text extraction, or screenshots after interaction.
-- If a discovery subtask must identify candidates, profiles, doctors, clinics, companies, tickets, or listings from directories/search-result pages, include "browser-operate" in that same discovery subtask instead of deferring browser extraction to a downstream verification subtask.
+- If a discovery subtask must identify candidates, profiles, providers, companies, or listings from directories/search-result pages, include "browser-operate" in that same discovery subtask instead of deferring browser extraction to a downstream verification subtask.
 - Use "requiredArtifacts" when the worker must produce a real file. Do not hide artifact requirements in prose only.
 - A screenshot proof must declare requiredArtifacts with kind "screenshot" and capability "browser-screenshot".
 - When a deterministic tool can be called before the worker thinks, include "toolInputs" keyed by the exact tool name. For "browser.operate", provide a generic command list, never site-specific code.
