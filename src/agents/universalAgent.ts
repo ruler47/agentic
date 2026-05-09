@@ -4469,7 +4469,22 @@ function improveDeclaredToolInput(
   const commands = Array.isArray(input.commands) ? input.commands : [];
   const hasPlaceholderNavigation = commands.some(isPlaceholderNavigateCommand);
   const hasBrittleInteraction = commands.some(isBrittleBrowserInteractionCommand);
-  if (!hasPlaceholderNavigation && !hasBrittleInteraction) return input;
+  // Phase 12 follow-up: the planner often hardcodes navigation URLs to a
+  // retailer homepage (`https://www.amazon.es`, `https://www.apple.com/es/`)
+  // and expects the worker to "click around" to find products. The
+  // browser tool can extract from a homepage but the agent has no
+  // multi-step interaction loop, so the worker is stuck with whatever the
+  // homepage shows. This is universal across any retailer / aggregator —
+  // detect navigation to a SHALLOW path (root or single segment) and treat
+  // it the same as placeholder navigation: rewrite from web.search
+  // evidence which already has specific result URLs.
+  const firstNavigationUrl = commands.find(isNavigateCommand)?.url;
+  const hasShallowLandingNavigation = firstNavigationUrl
+    ? isShallowLandingUrl(firstNavigationUrl)
+    : false;
+  if (!hasPlaceholderNavigation && !hasBrittleInteraction && !hasShallowLandingNavigation) {
+    return input;
+  }
 
   // Phase 12 final: intents come from the caller (classifier-resolved at
   // run start). Empty intents fall back to legacy first-non-low-value
@@ -4481,23 +4496,6 @@ function improveDeclaredToolInput(
     extraPatterns,
   );
   if (evidenceUrls.length === 0) return input;
-  // Phase 12 final: the previous guard required `firstNav` to be a known
-  // generic landing (matched by host whitelist) before rewriting. With
-  // the runtime carrying no domain seed, we now treat brittle
-  // interaction commands themselves as proof that the navigation URL is
-  // a search homepage that needs replacing — site-specific selectors
-  // (`[aria-label='Where from?']` and friends) are the planner's signal
-  // that it expected a form-fill flow. If we have real evidence URLs
-  // and either placeholder navigation OR brittle interaction, rewrite.
-  // No host whitelist required.
-  const firstNavigationUrl = commands.find(isNavigateCommand)?.url;
-  if (
-    firstNavigationUrl &&
-    !hasPlaceholderNavigation &&
-    !hasBrittleInteraction
-  ) {
-    return input;
-  }
 
   return {
     ...input,
@@ -4508,10 +4506,30 @@ function improveDeclaredToolInput(
         { type: "dismissDialogs" },
         { type: "extractText", label, maxLength: 9000 },
         { type: "extractLinks", label: `${label}-links`, limit: 40 },
-        { type: "screenshot", label, fullPage: true },
+        { type: "screenshot", label, fullPage: true, maxHeight: 3200 },
       ];
     }),
   };
+}
+
+/**
+ * Phase 12 follow-up: universal "homepage / top-level" detector. A URL
+ * with empty / `/` / one-segment path is treated as a landing page that
+ * a multi-step browser interaction loop would normally drill into. The
+ * runtime does not have such a loop, so we replace these with specific
+ * URLs from web.search evidence whenever they appear in declared
+ * navigation commands. No domain knowledge — the rule is purely
+ * structural: depth of path < 2 segments.
+ */
+function isShallowLandingUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.search || parsed.hash) return false;
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    return segments.length <= 1;
+  } catch {
+    return false;
+  }
 }
 
 function hasInvalidBrowserNavigation(input: unknown): boolean {
