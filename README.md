@@ -57,9 +57,12 @@ runs as failed instead of resuming them.
 Run the browser console directly on the host:
 
 ```bash
-npm run build
-npm run web
+npm run web:dev
 ```
+
+This starts the Nest API on `http://127.0.0.1:3000` and the React console on
+`http://127.0.0.1:3001`. The legacy console is still available with
+`npm run web:legacy:dev`.
 
 Override model settings:
 

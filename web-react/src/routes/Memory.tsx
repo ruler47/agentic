@@ -75,7 +75,7 @@ export function MemoryPage() {
           ) : null}
           {rebuild.isSuccess ? (
             <p className="mt-1 text-[11px] text-app-accent">
-              Rebuilt {rebuild.data.rebuilt} memory vectors.
+              Rebuilt {rebuild.data.updated} memory vectors.
             </p>
           ) : null}
         </header>
@@ -315,7 +315,9 @@ function MemoryEditor({ memory }: { memory: SkillMemoryEntry }) {
 
 function ReviewQueuePanel({ reviews }: { reviews: MemoryReviewEntry[] }) {
   const update = useUpdateMemory();
-  const validReviews = reviews.filter((entry) => entry.memory);
+  const validReviews = reviews.filter(
+    (entry): entry is MemoryReviewEntry & { memory: NonNullable<MemoryReviewEntry["memory"]> } => Boolean(entry.memory),
+  );
   const invalidCount = reviews.length - validReviews.length;
   return (
     <article className="rounded-[var(--radius-card)] border border-app-warning/40 bg-app-warning-soft p-4 text-xs">

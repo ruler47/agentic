@@ -3,6 +3,7 @@ import "reflect-metadata";
 import { BadRequestException, Logger, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
+import { json, type NextFunction, type Request, type Response } from "express";
 import { AppModule } from "./app.module.js";
 import { ApiExceptionFilter } from "./common/filters/api-exception.filter.js";
 import { readEnv } from "./config/env.js";
@@ -13,6 +14,22 @@ async function bootstrap() {
     bufferLogs: false,
   });
 
+  app.use(json());
+  app.use((error: unknown, _request: Request, response: Response, next: NextFunction) => {
+    const candidate = error as { status?: unknown; statusCode?: unknown; type?: unknown; message?: unknown };
+    if (
+      candidate?.type === "entity.parse.failed" ||
+      candidate?.status === 400 ||
+      candidate?.statusCode === 400
+    ) {
+      response
+        .status(400)
+        .type("application/json")
+        .send({ error: `Invalid JSON request body: ${String(candidate.message ?? "parse failed")}` });
+      return;
+    }
+    next(error);
+  });
   app.useGlobalFilters(new ApiExceptionFilter());
   app.useGlobalPipes(
     new ValidationPipe({

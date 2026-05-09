@@ -1,28 +1,27 @@
 # Agentic React UI (v2)
 
-Parallel React rebuild of `public/app.js`. Runs on port `3001`, proxies `/api/*`
-to the legacy backend so both UIs read the same data.
+Primary React console for Agentic. It runs on port `3001` and proxies `/api/*`
+to the Nest backend, while the legacy `public/` console remains available for
+rollback and comparison.
 
 ## Run
 
 ```bash
-# Terminal A — backend (legacy + React both read this)
-PORT=3000 npm run web:dev
-
-# Terminal B — React UI
-cd web-react && npm run dev
+npm run web:dev
 # → http://127.0.0.1:3001
 ```
 
-If port `3000` is already taken (e.g. by Docker), point Vite at a different
-backend port:
+If port `3000` is already taken (e.g. by Docker), point the backend side at a
+different port:
 
 ```bash
-# Terminal A
-PORT=3010 npm run web:dev
+AGENTIC_BACKEND_PORT=3010 WEB_REACT_PORT=3001 npm run web:dev
+```
 
-# Terminal B
-cd web-react && AGENTIC_BACKEND_URL=http://127.0.0.1:3010 npm run dev
+Legacy UI:
+
+```bash
+npm run web:legacy:dev
 ```
 
 The legacy UI (`public/app.js`) still serves from whichever port the backend

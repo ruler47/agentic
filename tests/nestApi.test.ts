@@ -6,6 +6,7 @@ import test from "node:test";
 import { BadRequestException, type INestApplication, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
+import { json, type NextFunction, type Request, type Response } from "express";
 import { AppModule } from "../src/server/app.module.js";
 import { ApiExceptionFilter } from "../src/server/common/filters/api-exception.filter.js";
 
@@ -23,6 +24,22 @@ async function createNestFixture(): Promise<NestFixture> {
   process.env.TOOL_BUILD_MIGRATION_QA_DATABASE_URL = "";
 
   const app = await NestFactory.create(AppModule, { abortOnError: false, logger: false });
+  app.use(json());
+  app.use((error: unknown, _request: Request, response: Response, next: NextFunction) => {
+    const candidate = error as { status?: unknown; statusCode?: unknown; type?: unknown; message?: unknown };
+    if (
+      candidate?.type === "entity.parse.failed" ||
+      candidate?.status === 400 ||
+      candidate?.statusCode === 400
+    ) {
+      response
+        .status(400)
+        .type("application/json")
+        .send({ error: `Invalid JSON request body: ${String(candidate.message ?? "parse failed")}` });
+      return;
+    }
+    next(error);
+  });
   app.useGlobalFilters(new ApiExceptionFilter());
   app.useGlobalPipes(
     new ValidationPipe({
@@ -177,6 +194,71 @@ test("Nest API serves health, OpenAPI, static UI, and tool rework/retry endpoint
 
     const audit = await requestJson<{ events: unknown[] }>(fixture.baseUrl, "/api/audit-events?limit=100");
     assert.equal(JSON.stringify(audit).includes("DO-NOT-LEAK-NEST-E2E"), false);
+  } finally {
+    await closeFixture(fixture);
+  }
+});
+
+test("Nest API validates memory requests and exposes joined review queue data", async () => {
+  const fixture = await createNestFixture();
+  try {
+    const invalidJson = await fetch(`${fixture.baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not-json",
+    });
+    assert.equal(invalidJson.status, 400);
+    assert.match(await invalidJson.text(), /JSON|Unexpected|property/i);
+
+    const emptyTitle = await fetch(`${fixture.baseUrl}/api/memories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "",
+        summary: "summary",
+        reusableProcedure: "procedure",
+      }),
+    });
+    assert.equal(emptyTitle.status, 400);
+
+    const invalidStatus = await fetch(`${fixture.baseUrl}/api/memories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: "Invalid status memory",
+        summary: "summary",
+        reusableProcedure: "procedure",
+        status: "banana",
+      }),
+    });
+    assert.equal(invalidStatus.status, 400);
+
+    const created = await requestJson<{ memory: { id: string; title: string } }>(
+      fixture.baseUrl,
+      "/api/memories",
+      {
+        method: "POST",
+        expectedStatus: 201,
+        body: JSON.stringify({
+          title: "Review queue memory",
+          summary: "Proposed memory should be visible in review queue.",
+          reusableProcedure: "Join review records back to memory records by memoryId.",
+          status: "proposed",
+          confidence: 0.7,
+          evidence: ["nest api test"],
+        }),
+      },
+    );
+    const queue = await requestJson<{
+      memories: Array<{ id: string }>;
+      reviews: Array<{ memoryId: string; status: string; findings: Array<{ code: string }> }>;
+    }>(fixture.baseUrl, "/api/memories/review-queue");
+
+    assert.equal(queue.memories.some((memory) => memory.id === created.memory.id), true);
+    const review = queue.reviews.find((item) => item.memoryId === created.memory.id);
+    assert.ok(review);
+    assert.equal(review.status, "needs_review");
+    assert.equal(review.findings.some((finding) => finding.code === "missing_source"), true);
   } finally {
     await closeFixture(fixture);
   }

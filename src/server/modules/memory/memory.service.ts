@@ -19,6 +19,10 @@ import type { CreateMemoryDto } from "./dto/create-memory.dto.js";
 import type { EvaluateRetrievalDto } from "./dto/evaluate-retrieval.dto.js";
 import type { UpdateMemoryDto } from "./dto/update-memory.dto.js";
 
+const MEMORY_SCOPES = ["global", "group", "user", "thread", "run"] as const;
+const MEMORY_STATUSES = ["proposed", "accepted", "rejected", "archived"] as const;
+const MEMORY_SENSITIVITIES = ["normal", "sensitive", "private"] as const;
+
 @Injectable()
 export class MemoryService {
   constructor(
@@ -35,21 +39,22 @@ export class MemoryService {
     if (!this.memory) {
       throw new ServiceUnavailableException("Memory store is not configured");
     }
+    const input = this.validateCreateInput(dto);
     let memory: SkillMemoryEntry;
     try {
       memory = await this.memory.add({
-        title: dto.title,
-        summary: dto.summary,
-        reusableProcedure: dto.reusableProcedure,
-        tags: dto.tags ?? [],
-        scope: dto.scope ?? "global",
-        scopeId: dto.scopeId,
-        status: dto.status ?? "proposed",
-        confidence: dto.confidence ?? 0.75,
-        sensitivity: dto.sensitivity ?? "normal",
-        sourceRunId: dto.sourceRunId,
-        sourceThreadId: dto.sourceThreadId,
-        evidence: dto.evidence ?? [],
+        title: input.title,
+        summary: input.summary,
+        reusableProcedure: input.reusableProcedure,
+        tags: input.tags ?? [],
+        scope: input.scope ?? "global",
+        scopeId: input.scopeId,
+        status: input.status ?? "proposed",
+        confidence: input.confidence ?? 0.75,
+        sensitivity: input.sensitivity ?? "normal",
+        sourceRunId: input.sourceRunId,
+        sourceThreadId: input.sourceThreadId,
+        evidence: input.evidence ?? [],
       });
     } catch (error) {
       throw new BadRequestException(
@@ -81,9 +86,10 @@ export class MemoryService {
     if (!this.memory?.update) {
       throw new ServiceUnavailableException("Memory update is not configured");
     }
+    const input = this.validateUpdateInput(dto);
     let memory: SkillMemoryEntry;
     try {
-      memory = await this.memory.update(id, dto);
+      memory = await this.memory.update(id, input);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid memory update request";
       throw message.includes("was not found")
@@ -191,5 +197,86 @@ export class MemoryService {
       }
     }
     return options;
+  }
+
+  private validateCreateInput(dto: CreateMemoryDto): CreateMemoryDto {
+    return {
+      ...dto,
+      title: this.requireNonEmptyString(dto.title, "title"),
+      summary: this.requireNonEmptyString(dto.summary, "summary"),
+      reusableProcedure: this.requireNonEmptyString(dto.reusableProcedure, "reusableProcedure"),
+      tags: this.optionalStringArray(dto.tags, "tags"),
+      scope: this.optionalEnum(dto.scope, MEMORY_SCOPES, "scope"),
+      scopeId: this.optionalTrimmedString(dto.scopeId, "scopeId"),
+      status: this.optionalEnum(dto.status, MEMORY_STATUSES, "status"),
+      confidence: this.optionalConfidence(dto.confidence),
+      sensitivity: this.optionalEnum(dto.sensitivity, MEMORY_SENSITIVITIES, "sensitivity"),
+      sourceRunId: this.optionalTrimmedString(dto.sourceRunId, "sourceRunId"),
+      sourceThreadId: this.optionalTrimmedString(dto.sourceThreadId, "sourceThreadId"),
+      evidence: this.optionalStringArray(dto.evidence, "evidence"),
+    };
+  }
+
+  private validateUpdateInput(dto: UpdateMemoryDto): UpdateMemoryDto {
+    return {
+      ...dto,
+      title: dto.title === undefined ? undefined : this.requireNonEmptyString(dto.title, "title"),
+      summary: dto.summary === undefined ? undefined : this.requireNonEmptyString(dto.summary, "summary"),
+      reusableProcedure:
+        dto.reusableProcedure === undefined
+          ? undefined
+          : this.requireNonEmptyString(dto.reusableProcedure, "reusableProcedure"),
+      tags: this.optionalStringArray(dto.tags, "tags"),
+      scope: this.optionalEnum(dto.scope, MEMORY_SCOPES, "scope"),
+      scopeId: this.optionalTrimmedString(dto.scopeId, "scopeId"),
+      status: this.optionalEnum(dto.status, MEMORY_STATUSES, "status"),
+      confidence: this.optionalConfidence(dto.confidence),
+      sensitivity: this.optionalEnum(dto.sensitivity, MEMORY_SENSITIVITIES, "sensitivity"),
+      sourceRunId: this.optionalTrimmedString(dto.sourceRunId, "sourceRunId"),
+      sourceThreadId: this.optionalTrimmedString(dto.sourceThreadId, "sourceThreadId"),
+      evidence: this.optionalStringArray(dto.evidence, "evidence"),
+    };
+  }
+
+  private requireNonEmptyString(value: unknown, field: string): string {
+    if (typeof value !== "string" || !value.trim()) {
+      throw new BadRequestException(`${field} must be a non-empty string`);
+    }
+    return value.trim();
+  }
+
+  private optionalTrimmedString(value: unknown, field: string): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "string") throw new BadRequestException(`${field} must be a string`);
+    const trimmed = value.trim();
+    return trimmed ? trimmed : undefined;
+  }
+
+  private optionalStringArray(value: unknown, field: string): string[] | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+      throw new BadRequestException(`${field} must be an array of strings`);
+    }
+    return value.map((item) => item.trim()).filter(Boolean);
+  }
+
+  private optionalConfidence(value: unknown): number | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+      throw new BadRequestException("confidence must be a number between 0 and 1");
+    }
+    return value;
+  }
+
+  private optionalEnum<T extends string>(
+    value: unknown,
+    allowed: readonly T[],
+    field: string,
+  ): T | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "string" || !allowed.includes(value as T)) {
+      throw new BadRequestException(`${field} must be one of ${allowed.join(", ")}`);
+    }
+    return value as T;
   }
 }

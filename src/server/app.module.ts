@@ -49,7 +49,7 @@ import { RuntimeWorkersModule } from "./workers/runtime-workers.module.js";
     ServeStaticModule.forRoot({
       rootPath: resolve(process.env.PUBLIC_DIR ?? "public"),
       serveRoot: "/",
-      exclude: ["/api/(.*)"],
+      exclude: ["/api/{*any}"],
       serveStaticOptions: { cacheControl: false },
     }),
   ],

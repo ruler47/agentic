@@ -87,8 +87,12 @@ export function reviewMemoryProposal(memory: SkillMemoryEntry, context: SkillMem
 
   const related = context.filter((candidate) => candidate.id !== memory.id && sameScope(memory, candidate));
   const strongestDuplicate = related
-    .map((candidate) => ({ candidate, score: memorySimilarity(memory, candidate) }))
-    .filter((item) => item.score >= 0.82)
+    .map((candidate) => ({
+      candidate,
+      sameTitle: normalizeText(candidate.title) === normalizeText(memory.title),
+      score: memorySimilarity(memory, candidate),
+    }))
+    .filter((item) => item.score >= 0.82 || (item.sameTitle && item.score >= 0.45))
     .sort((a, b) => b.score - a.score)[0];
   if (strongestDuplicate) {
     findings.push({

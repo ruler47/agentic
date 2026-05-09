@@ -144,8 +144,9 @@ Phase boundaries were commit boundaries during the migration.
 - Create the new tree under `src/server/` per section 3. The entry point is
   `src/server/main.nest.ts`.
 - Add scripts:
-  - `web` → `node dist/server/main.nest.js`
-  - `web:dev` → `tsx src/server/main.nest.ts`
+  - `web:api` → `node dist/server/main.nest.js`
+  - `web:api:dev` / `web:legacy:dev` → `tsx src/server/main.nest.ts`
+  - `web` / `web:dev` → React console launcher (`scripts/web-react-dev.mjs`)
 - AppModule imports `ConfigModule`, `PersistenceModule`, `HealthModule`.
 - HealthModule ships first: `/api/health`, `/api/instance`, GET/PATCH
   `/api/group-profile`. Smallest possible vertical slice to validate the
@@ -217,7 +218,9 @@ Per-module rules:
 
 ### Phase 5 — Cutover
 
-- `npm run web` points at the NestJS bootstrap.
+- `npm run web:api` points at the NestJS bootstrap. `npm run web` and
+  `npm run web:dev` now launch the React console plus Nest API for local
+  operator work.
 - The legacy router, legacy bootstrap, and legacy `webServer.test.ts` are
   removed. Surviving request parsing lives in `src/server/common/parsers.ts`
   and module-local parser files.

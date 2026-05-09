@@ -33,10 +33,32 @@ export class ApiExceptionFilter implements ExceptionFilter {
       const message = this.extractMessage(body) ?? exception.message;
       return { status, message };
     }
+    if (this.isJsonParseError(exception)) {
+      return {
+        status: HttpStatus.BAD_REQUEST,
+        message: `Invalid JSON request body: ${exception instanceof Error ? exception.message : "parse failed"}`,
+      };
+    }
     if (exception instanceof Error) {
       return { status: HttpStatus.INTERNAL_SERVER_ERROR, message: exception.message };
     }
     return { status: HttpStatus.INTERNAL_SERVER_ERROR, message: "Unknown server error" };
+  }
+
+  private isJsonParseError(exception: unknown): boolean {
+    if (!(exception instanceof SyntaxError)) return false;
+    const candidate = exception as SyntaxError & {
+      body?: unknown;
+      status?: unknown;
+      statusCode?: unknown;
+      type?: unknown;
+    };
+    return (
+      candidate.type === "entity.parse.failed" ||
+      candidate.status === HttpStatus.BAD_REQUEST ||
+      candidate.statusCode === HttpStatus.BAD_REQUEST ||
+      candidate.body !== undefined
+    );
   }
 
   private extractMessage(body: unknown): string | undefined {
