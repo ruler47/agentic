@@ -860,6 +860,12 @@ export class UniversalAgent {
     const workerResults = reviewedWorkerResults.map((result) => result.workerResult);
     const reviews = reviewedWorkerResults.flatMap((result) => result.reviews);
     pushUniqueArtifacts(artifacts, getApprovedArtifacts(reviewedWorkerResults));
+    // Phase 12 follow-up: keep a wider set for UI / `run-completed` event
+    // emission. Synthesis itself only sees `artifacts` (approved + generated)
+    // so the LLM cannot cite weak proof, but the user still gets to see
+    // every screenshot the run produced — even when every review failed.
+    const collectedArtifacts: AgentArtifact[] = [...artifacts];
+    pushUniqueArtifacts(collectedArtifacts, getAllWorkerArtifacts(reviewedWorkerResults));
     const generatedArtifact = await this.createRequestedArtifact(
       agentTaskContext,
       workerResults,
@@ -968,7 +974,7 @@ export class UniversalAgent {
       startedAt: runStartedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(runStartedAt),
-      payload: { finalAnswer, artifacts },
+      payload: { finalAnswer, artifacts: collectedArtifacts },
     });
 
     await this.finalizeRunLedger(ledger, "completed", effectiveRunId, runSpanId);
@@ -978,7 +984,7 @@ export class UniversalAgent {
       subtasks,
       workerResults,
       reviews,
-      artifacts,
+      artifacts: collectedArtifacts,
       learnedSkill,
     };
     } catch (error) {
@@ -1104,7 +1110,13 @@ export class UniversalAgent {
     const intent = Array.isArray(rawIntent)
       ? [...new Set(rawIntent.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim()))]
       : [];
-    return { ...parsed, intent };
+    // Phase 12 follow-up: same defensive normalization for the new
+    // `geoAnchors` field. Older classifier responses won't include it.
+    const rawGeo = (parsed as { geoAnchors?: unknown }).geoAnchors;
+    const geoAnchors = Array.isArray(rawGeo)
+      ? [...new Set(rawGeo.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim()))]
+      : [];
+    return { ...parsed, intent, geoAnchors };
   }
 
   private async plan(
@@ -1405,7 +1417,7 @@ export class UniversalAgent {
     const toolNeedText = `${originalTask}\n${subtask.title}\n${subtask.role}\n${subtask.prompt}\n${subtask.expectedOutput}\n${subtask.reviewCriteria.join("\n")}`;
 
     if (webSearch && shouldCollectWebSearch(subtask, toolNeedText, dependencyContext)) {
-      evidence.push(await this.runWebSearch(webSearch, subtask, toolNeedText, emit, parentSpanId, toolExecutionContext));
+      evidence.push(await this.runWebSearch(webSearch, subtask, toolNeedText, emit, parentSpanId, toolExecutionContext, originalTask));
     }
 
     const browserDiscoveryEvidence = await this.collectBrowserDiscoveryEvidence(
@@ -1517,6 +1529,7 @@ export class UniversalAgent {
     emit: AgentEventEmitter,
     parentSpanId: string,
     toolExecutionContext?: BaseToolExecutionContext,
+    originalTask: string = "",
   ): Promise<string> {
     const spanId = createSpanId(`tool-${webSearch.name}`);
     const startedAt = new Date();
@@ -1525,7 +1538,16 @@ export class UniversalAgent {
       toolExecutionContext?.runId,
     );
     const queries = buildSearchQueries(subtask, contextText, searchIntents);
-    const query = queries.join(" | ");
+    // Phase 12 follow-up: pre-call ungrounded-specifics gate. The
+    // planner sometimes writes hallucinated brand/model tokens
+    // ("RTX 4080 with 12GB VRAM") into `subtask.prompt`, and they
+    // propagate into the search query. That biases the entire run
+    // toward the hallucination — every tool call is now anchored to a
+    // token the user never asked for. Strip those tokens BEFORE the
+    // call so the search reflects the user's task, not the planner's
+    // guess. Grounding source is the original user task only — the
+    // planner's prompt is exactly what we are policing.
+    const query = guardSearchQueryAgainstUngroundedSpecifics(queries.join(" | "), originalTask);
 
     // Work Ledger claim: a sibling subtask in the same run/thread that asks for the
     // same merged query string can reuse our completed evidence instead of issuing
@@ -3800,6 +3822,23 @@ function buildWorkerUserPrompt(
   dependencyContext?: string,
   revisionInstructions?: string,
 ): string {
+  // Phase 12 follow-up: when re-running a worker after a hard-gate
+  // rejection, parse the deterministic ungrounded-specifics list out of
+  // the review notes and surface it as its own emphatic "forbidden
+  // tokens" section. Earlier iterations buried this inside a generic
+  // "Revise your previous work using these notes" paragraph and the
+  // model just reused the same hallucinated specifics on retry.
+  const forbiddenTokens = revisionInstructions
+    ? parseForbiddenTokensFromReviewNotes(revisionInstructions)
+    : [];
+  const forbiddenSection: [string, string] | undefined = forbiddenTokens.length
+    ? [
+        "FORBIDDEN TOKENS (must NOT appear in your output)",
+        `${forbiddenTokens.join(", ")}\n` +
+          "These are the exact specifics the previous attempt invented from training memory. They are NOT in any tool evidence and NOT in the user's task. Do not use them, do not paraphrase them, and do not introduce other specifics with the same shape (model numbers, version strings, prices, years) unless they appear verbatim in the tool evidence above. If the evidence does not support a concrete specific, use a generic description instead or report that the data is unavailable.",
+      ]
+    : undefined;
+
   return joinPromptSections(
     [
       ["Original user task for context", limitText(originalTask, promptBudget.taskContextChars)],
@@ -3809,15 +3848,33 @@ function buildWorkerUserPrompt(
         "Available tools have already been executed and their evidence is above. Do not emit tool-call syntax, hidden browser commands, or pretend to navigate/click. Use only the evidence and artifact URLs you were given.",
       ],
       dependencyContext ? ["Dependency context", limitText(dependencyContext, promptBudget.dependencyContextChars)] : undefined,
+      forbiddenSection,
       [
         "Instruction",
         revisionInstructions
-          ? `Revise your previous work using these review notes:\n${limitText(revisionInstructions, 3_000)}`
+          ? `Revise your previous work using these review notes. Switch source / strategy if the evidence is insufficient — do not retry the same query that already failed.\n${limitText(revisionInstructions, 3_000)}`
           : "Execute only your assigned subtask.",
       ],
     ],
     promptBudget.workerUserPromptChars,
   );
+}
+
+/**
+ * Phase 12 follow-up: pull the comma-separated list of ungrounded
+ * tokens out of a `hardGateReview` notes string of the form:
+ *   "Output names specifics that are NOT in tool evidence or the task: T1, T2, T3. ..."
+ * Returns an empty array if the notes do not match (other failure
+ * reasons like missing artifacts, weak browser evidence, etc.).
+ */
+function parseForbiddenTokensFromReviewNotes(notes: string): string[] {
+  const match = notes.match(/specifics that are NOT in tool evidence or the task:\s*([^\n.]+)\./i);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0)
+    .slice(0, 12);
 }
 
 function joinPromptSections(
@@ -4223,6 +4280,18 @@ function getApprovedArtifacts(results: ReviewedWorkerResult[]): AgentArtifact[] 
     .filter((result) => result.review.verdict === "pass")
     .flatMap((result) => result.workerResult.artifacts ?? [])
     .filter((artifact) => !isClearlyIrrelevantArtifact(artifact));
+}
+
+/**
+ * Phase 12 follow-up: collect every artifact a worker produced during the
+ * run, regardless of whether the review passed it. Used for the
+ * `run-completed` event (and the UI / API) so users can still see the
+ * screenshots / files that were actually captured even when every worker
+ * went `needs_revision`. The `getApprovedArtifacts` set remains the
+ * source of truth for what synthesis is allowed to cite as proof.
+ */
+function getAllWorkerArtifacts(results: ReviewedWorkerResult[]): AgentArtifact[] {
+  return results.flatMap((result) => result.workerResult.artifacts ?? []);
 }
 
 function asksForScreenshot(task: string): boolean {
@@ -4664,8 +4733,9 @@ function selectBestUrlForArtifact(
   text: string,
   intents: string[] = [],
   extraPatterns: readonly EvidencePattern[] = [],
+  geoAnchors: string[] = [],
 ): string | undefined {
-  return selectBestUrlsForArtifact(text, 1, intents, extraPatterns)[0];
+  return selectBestUrlsForArtifact(text, 1, intents, extraPatterns, geoAnchors)[0];
 }
 
 function selectBestUrlsForArtifact(
@@ -4673,6 +4743,7 @@ function selectBestUrlsForArtifact(
   limit: number,
   intents: string[] = [],
   extraPatterns: readonly EvidencePattern[] = [],
+  geoAnchors: string[] = [],
 ): string[] {
   // Phase 12 Slice C: combine built-in seed with operator-supplied patterns
   // (tool contracts and memory entries). Memory + tool patterns can override
@@ -4686,7 +4757,7 @@ function selectBestUrlsForArtifact(
   if (urls.length === 0) return [];
   const sourceUrls = urls.filter((url) => !isLowValueProofUrl(url));
   const ranked = sourceUrls
-    .map((url) => ({ url, score: scoreArtifactUrl(url, intents, patterns) }))
+    .map((url) => ({ url, score: scoreArtifactUrl(url, intents, patterns) + geoBiasScore(url, geoAnchors) }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score);
   const selected: string[] = [];
@@ -4743,6 +4814,38 @@ function scoreArtifactUrl(
   patterns: readonly EvidencePattern[] = BUILTIN_EVIDENCE_PATTERNS,
 ): number {
   return scoreUrlAgainstPatterns(url, intents, patterns);
+}
+
+/**
+ * Phase 12 follow-up: lightweight, generic geo-bias for URL ranking.
+ * For every geoAnchor token from `TaskComplexity.geoAnchors`, check
+ * whether its lowercase / accent-stripped form appears as a substring
+ * of the URL. Match → +1.0 boost (added on top of intent / pattern
+ * score). Multiple anchors stack, but the bonus is capped at +2.0 so
+ * a heavily geo-named URL doesn't drown out content relevance.
+ *
+ * Intentionally NOT a country-name → TLD lookup table — that would
+ * be the hardcode the rest of Phase 12 explicitly removed. The LLM
+ * planner is responsible for picking concrete `.es` / `.de` retailer
+ * domains when geoAnchors are set; this function just nudges the
+ * ranker to prefer geo-named URLs when several candidates compete.
+ */
+function geoBiasScore(url: string, geoAnchors: string[] = []): number {
+  if (!geoAnchors.length) return 0;
+  const haystack = stripAccentsLower(url);
+  let bonus = 0;
+  for (const anchor of geoAnchors) {
+    const needle = stripAccentsLower(anchor);
+    if (needle.length >= 2 && haystack.includes(needle)) {
+      bonus += 1;
+      if (bonus >= 2) break;
+    }
+  }
+  return bonus;
+}
+
+function stripAccentsLower(value: string): string {
+  return value.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
 function isLowValueProofUrl(url: string): boolean {
@@ -4973,6 +5076,31 @@ function findUngroundedSpecifics(workerResult: WorkerResult): string[] {
     ...(workerResult.toolEvidence ?? []),
   ].join("\n");
   return findUngroundedSpecificsInText(output, evidenceText);
+}
+
+/**
+ * Phase 12 follow-up: pre-call gate on a search query string. Strips
+ * tokens that look like specific product / version identifiers but
+ * are NOT in the user's original task. The planner is allowed to
+ * elaborate on the user's intent, but it is not allowed to seed the
+ * query with a specific model number / brand line / year / price the
+ * user never mentioned — that biases discovery toward the
+ * hallucination from the very first tool call.
+ *
+ * Returns the same string when there is nothing to strip.
+ */
+function guardSearchQueryAgainstUngroundedSpecifics(query: string, originalTask: string): string {
+  if (!query || !originalTask) return query;
+  const ungrounded = findUngroundedSpecificsInText(query, originalTask);
+  if (ungrounded.length === 0) return query;
+
+  let stripped = query;
+  for (const token of ungrounded) {
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    stripped = stripped.replace(new RegExp(escaped, "gi"), " ");
+  }
+  // Collapse whitespace so the cleaned query is still well-formed.
+  return stripped.replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -5317,4 +5445,9 @@ export const __testing__ = {
   findUngroundedSpecificsInText,
   buildSynthesisEvidenceCorpus,
   enforceUngroundedSpecificsOnSynthesis,
+  guardSearchQueryAgainstUngroundedSpecifics,
+  parseForbiddenTokensFromReviewNotes,
+  geoBiasScore,
+  getAllWorkerArtifacts,
+  getApprovedArtifacts,
 };

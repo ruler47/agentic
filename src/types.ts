@@ -79,6 +79,19 @@ export type TaskComplexity = {
    * runtime always normalizes it to `[]` on parse.
    */
   intent?: string[];
+  /**
+   * Phase 12 follow-up: geographic anchors detected in the user's
+   * task — country / city / locale tokens like "Spain", "España",
+   * "Madrid", "in Germany", "in Spain". The classifier extracts them
+   * (free-form, no hardcoded country list) and the runtime uses them
+   * to (a) bias `discoveryUrlRanker` toward matching TLDs / locale
+   * markers, (b) include the anchor verbatim in search queries, and
+   * (c) tell the worker prompt that all navigation MUST stay
+   * inside the requested geography. Empty array means no anchor was
+   * detected and runs proceed without geo-bias. Optional for source
+   * compatibility with older fixtures.
+   */
+  geoAnchors?: string[];
 };
 
 export type Subtask = {

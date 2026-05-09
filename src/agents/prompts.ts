@@ -33,7 +33,8 @@ Return only JSON:
   "reason": "short reason",
   "domains": ["domain"],
   "riskLevel": "low" | "medium" | "high",
-  "intent": ["semantic-intent-label"]
+  "intent": ["semantic-intent-label"],
+  "geoAnchors": ["country or city or locale"]
 }
 
 Notes on "intent":
@@ -47,6 +48,18 @@ Notes on "intent":
 - Do NOT base intent on superficial token overlap (a laptop research task
   contains "GPU/RAM/CPU" but the intent is "product-comparison", NOT
   "flight-search"). Read the actual user goal.
+
+Notes on "geoAnchors":
+- Country names, city names, or locale tokens that the task is anchored to,
+  exactly as the user wrote them. Examples:
+  ["Spain"] for "in Spain" / "продаётся в Испании" / "España",
+  ["Germany", "Berlin"] for "доставка в Берлин Германия",
+  ["LIS", "LAX"] for "flight from LIS to LAX",
+  [] when the task is geography-agnostic.
+- Use the user's spelling (Russian / English / native), do not translate.
+- Empty array [] when no geographic constraint exists. Do not invent locations.
+- These drive geographic constraints on every search query and discovery
+  navigation downstream — getting them wrong sends the run to the wrong country.
 `.trim();
 }
 
@@ -81,6 +94,7 @@ Rules:
 - When a deterministic tool can be called before the worker thinks, include "toolInputs" keyed by the exact tool name. For "browser.operate", provide a generic command list, never site-specific code.
 - For public search/result sites, prefer direct route/result/source URLs when they are known or can be inferred safely. Do not plan brittle form automation against generic homepages unless the task truly requires interaction.
 - Dependent analysis, synthesis, and review subtasks should use upstream worker outputs and artifacts. Do not add new web-search or screenshot requirements to those subtasks unless they must collect new external evidence.
+- If complexity.geoAnchors is non-empty, every discovery / search / verification subtask MUST mention those anchor tokens verbatim in its prompt and expectedOutput so the runtime stays inside the requested geography. Discovery URLs must use the matching country TLD (e.g. .es for Spain, .de for Germany) or domain-known equivalents (amazon.es, mediamarkt.es, pccomponentes.com) — never the US/global default of the same retailer.
 
 Return only JSON:
 {
@@ -145,6 +159,7 @@ Rules:
 - GROUND ALL SPECIFICS IN EVIDENCE. Do NOT name specific product models, version numbers (e.g. "RTX 4080", "M3 Pro"), prices, dates, place names, people, or organizations unless those exact tokens appear verbatim in the External tool evidence or Dependency context. If the evidence only contains a generation reference (e.g. "M5 chip" appears in evidence but you remember "M3"), USE WHAT THE EVIDENCE SAYS — your training data may be outdated relative to the live page text.
 - When evidence contradicts your training data (newer model number, different price, alternate spec), TRUST THE EVIDENCE. Quote the exact line if needed.
 - If the evidence does not contain enough specifics to satisfy the subtask, REPORT THAT and propose what additional search/browse step would unblock you instead of fabricating plausible-looking specifics.
+- RESPECT GEO-ANCHORS. If the subtask prompt mentions a country, city, or locale (e.g. "in Spain", "Madrid", "España", "Germany", "in Berlin"), every search query and every browser navigation MUST stay inside that geography. Use the matching country TLD (e.g. .es for Spain, .de for Germany, .fr for France) or known regional retailers (amazon.es, mediamarkt.es, pccomponentes.com for Spain). Do NOT default to the US / global version of the same retailer (newegg.com, amazon.com, bestbuy.com) unless the user explicitly asked for them.
 `.trim();
 }
 
