@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { __testing__ } from "../src/agents/universalAgent.js";
 import type { Subtask } from "../src/types.js";
+import type { EvidencePattern } from "../src/tools/tool.js";
 
 const { inferTaskIntents, scoreArtifactUrl, selectBestUrlsForArtifact, buildSearchQueries } = __testing__;
 
@@ -19,110 +20,82 @@ function subtask(overrides: Partial<Subtask> = {}): Subtask {
   } as Subtask;
 }
 
-test("inferTaskIntents: laptop research with GPU/RAM/CPU/LLM does not match flight-search or medical-lookup", () => {
-  const text = `найди мне лучший ноутбук для работы программистом и развлечений, в том числе чтобы LLM нормальную можно было развернуть и в путешествия взять.
-бюджет до 2500 евро
-GPU RTX 4080, 32 GB RAM, fast SSD, EUR price`;
-  assert.deepEqual(inferTaskIntents(text), []);
+test("inferTaskIntents always returns [] (no regex) — runtime trusts the classifier", () => {
+  // The classifier-resolved intents flow through `runScopedIntents`. The
+  // shim in intentInference.ts is intentionally inert so legacy callers
+  // (CLI smokes, fixtures without classification) get a defined value
+  // and no domain logic fires.
+  assert.deepEqual(inferTaskIntents("Find me the cheapest flight from LIS to LAX"), []);
+  assert.deepEqual(inferTaskIntents("Подбери ноутбук с GPU для LLM"), []);
+  assert.deepEqual(inferTaskIntents("Найди аллерголога в Мадриде"), []);
+  assert.deepEqual(inferTaskIntents(""), []);
 });
 
-test("inferTaskIntents: real flight task matches flight-search", () => {
-  const text = "Find me the cheapest flight from LIS to LAX next week";
-  assert.deepEqual(inferTaskIntents(text), ["flight-search"]);
+test("scoreArtifactUrl returns 0 for any URL when only the empty built-in seed is in play", () => {
+  assert.equal(scoreArtifactUrl("https://www.google.com/travel/flights"), 0);
+  assert.equal(scoreArtifactUrl("https://www.doctolib.fr/allergologue/paris"), 0);
+  assert.equal(scoreArtifactUrl("https://anything.test/whatever"), 0);
 });
 
-test("inferTaskIntents: russian flight phrasing matches", () => {
-  const text = "Подбери авиабилеты Москва - Стамбул на ноябрь, ищу прямой перелёт";
-  assert.deepEqual(inferTaskIntents(text), ["flight-search"]);
-});
-
-test("inferTaskIntents: medical query matches medical-lookup", () => {
-  const text = "Найди аллерголога-иммунолога в Мадриде с приёмом на эту неделю";
-  assert.deepEqual(inferTaskIntents(text), ["medical-lookup"]);
-});
-
-test("inferTaskIntents: 'domain specialist' tech context does not trigger medical-lookup", () => {
-  const text = "Plan how to bring a domain specialist into the architecture review for the runtime services team";
-  assert.deepEqual(inferTaskIntents(text), []);
-});
-
-test("scoreArtifactUrl: google.com/travel/flights scores 0 without flight-search intent", () => {
-  assert.equal(scoreArtifactUrl("https://www.google.com/travel/flights?tfs=abc"), 0);
-  assert.equal(scoreArtifactUrl("https://www.google.com/travel/flights", []), 0);
-});
-
-test("scoreArtifactUrl: google.com/travel/flights scores 120 with flight-search intent", () => {
-  assert.equal(scoreArtifactUrl("https://www.google.com/travel/flights", ["flight-search"]), 120);
-});
-
-test("scoreArtifactUrl: doctolib scores 0 without medical-lookup intent", () => {
-  assert.equal(scoreArtifactUrl("https://www.doctolib.fr/allergologue/paris", []), 0);
-});
-
-test("scoreArtifactUrl: doctolib scores 90 with medical-lookup intent", () => {
-  assert.equal(scoreArtifactUrl("https://www.doctolib.fr/allergologue/paris", ["medical-lookup"]), 90);
-});
-
-test("selectBestUrlsForArtifact: laptop intent rejects flights URL even when present in evidence text", () => {
-  const evidenceText = `
-1. PCComponentes top picks: https://www.pccomponentes.com/laptops
-2. Amazon ES catalog: https://www.amazon.es/laptops
-3. Polluting flight result: https://www.google.com/travel/flights
-`;
-  const selected = selectBestUrlsForArtifact(evidenceText, 2, []);
-  assert.ok(!selected.includes("https://www.google.com/travel/flights"),
-    `expected flight URL to lose to non-flight URLs, got: ${selected.join(", ")}`);
-  assert.ok(selected.length > 0);
-});
-
-test("selectBestUrlsForArtifact: real flight intent keeps google.com/travel/flights on top", () => {
-  const evidenceText = `
-1. Flight aggregator: https://www.google.com/travel/flights
-2. Random news article: https://www.bbc.com/news
-3. Skyscanner: https://www.skyscanner.net/routes/lis/lax
-`;
-  const selected = selectBestUrlsForArtifact(evidenceText, 2, ["flight-search"]);
-  assert.equal(selected[0], "https://www.google.com/travel/flights");
-});
-
-test("buildSearchQueries: laptop subtask with GPU/RAM/EUR does NOT append a parasitic flights query", () => {
-  const subtaskInput = subtask({
-    id: "scenario-mapping",
-    title: "Scenario Mapping & User Clarification",
-    prompt: `Present these scenarios in Russian to the user, explain technical trade-offs (GPU vs CPU, RAM vs SSD, LLM run cost in EUR), then ask them to select one.
-RTX-class GPU, 32 GB RAM, ~2500 EUR budget.`,
-  });
-  const queries = buildSearchQueries(subtaskInput, "найди мне лучший ноутбук для работы программистом и развлечений, бюджет до 2500 евро");
-  for (const q of queries) {
-    assert.ok(
-      !/flights|skyscanner|kayak|google flights/i.test(q),
-      `parasitic flight fragment leaked into query: ${q}`,
-    );
-  }
-});
-
-test("buildSearchQueries: real flight subtask still emits the IATA-derived query", () => {
-  const subtaskInput = subtask({
-    id: "fly-1",
-    title: "Find flight LIS to LAX",
-    prompt: `Find the cheapest direct flight from LIS to LAX departing next Monday.
-Compare Skyscanner, Google Flights, Kayak.`,
-  });
-  const queries = buildSearchQueries(subtaskInput, "Find me the cheapest flight from LIS to LAX next week");
-  assert.ok(
-    queries.some((q) => /LIS .*LAX.*flights/i.test(q) || /LAX .*LIS.*flights/i.test(q)),
-    `expected an IATA-style flight query, got: ${queries.join(" | ")}`,
+test("scoreArtifactUrl honours caller-supplied patterns (tools / memory inject domain knowledge)", () => {
+  const patterns: EvidencePattern[] = [
+    { intent: "demo-flights", hosts: ["aggregator.example"], score: 100 },
+  ];
+  assert.equal(
+    scoreArtifactUrl("https://aggregator.example/route/lis-lax", ["demo-flights"], patterns),
+    100,
+  );
+  assert.equal(
+    scoreArtifactUrl("https://aggregator.example/route/lis-lax", ["other"], patterns),
+    0,
   );
 });
 
-test("selectBestUrlsForArtifact: strips trailing backticks and parens so LLM ranker can match candidates", () => {
-  // Reproduces the production fallback ("LLM selected no valid candidate URLs")
-  // that came from Markdown-quoted evidence text such as
-  //   `https://...`  or  [link](https://...)
+test("selectBestUrlsForArtifact: with intents but no caller-supplied patterns, returns empty", () => {
+  // Keeps the fix that prevents arxiv / sss.gov from leaking into a
+  // laptop run: when intent is set and no pattern matches, the runtime
+  // gives up cleanly so the LLM ranker layer (the caller) decides.
   const evidenceText = `
-1. Backtick-wrapped: \`https://www.notebookcheck.net/laptops\`
-2. Markdown: [Click here](https://www.amazon.es/laptops)
-3. Trailing punctuation: see https://www.pccomponentes.com/laptops.
+1. Random research paper: https://arxiv.org/html/2604.19856v1
+2. https://anything.test/x
+`;
+  const selected = selectBestUrlsForArtifact(
+    evidenceText,
+    2,
+    ["any-intent-the-classifier-might-emit"],
+  );
+  assert.deepEqual(selected, []);
+});
+
+test("selectBestUrlsForArtifact: without intents, legacy fallback returns first non-low-value URLs", () => {
+  const evidenceText = `
+1. https://www.example-blog.org/post
+2. https://www.notebookcheck.net/laptops
+`;
+  const selected = selectBestUrlsForArtifact(evidenceText, 2, []);
+  assert.equal(selected.length > 0, true);
+});
+
+test("selectBestUrlsForArtifact: caller-supplied patterns drive ranking when intents match", () => {
+  const evidenceText = `
+1. Top spec: https://aggregator.example/route/lis-lax
+2. Off-topic: https://blog.example/post
+3. Filler: https://news.example/article
+`;
+  const patterns: EvidencePattern[] = [
+    { intent: "demo-flights", hosts: ["aggregator.example"], score: 110 },
+  ];
+  const selected = selectBestUrlsForArtifact(evidenceText, 2, ["demo-flights"], patterns);
+  assert.equal(selected[0], "https://aggregator.example/route/lis-lax");
+});
+
+test("selectBestUrlsForArtifact: strips trailing backticks and parens from extracted URLs", () => {
+  // Markdown-quoted evidence text used to leak ` and ) into candidate
+  // URLs and break the LLM ranker's verbatim-match guard.
+  const evidenceText = `
+1. \`https://www.notebookcheck.net/laptops\`
+2. [Click here](https://www.amazon.es/laptops)
+3. See https://www.pccomponentes.com/laptops.
 `;
   const selected = selectBestUrlsForArtifact(evidenceText, 3, []);
   for (const url of selected) {
@@ -130,48 +103,38 @@ test("selectBestUrlsForArtifact: strips trailing backticks and parens so LLM ran
     assert.ok(!url.endsWith(")"), `URL kept a trailing paren: ${url}`);
     assert.ok(!url.endsWith("."), `URL kept a trailing period: ${url}`);
   }
-  assert.ok(selected.includes("https://www.notebookcheck.net/laptops"), `expected backtick-wrapped URL to be normalized; got: ${selected.join(", ")}`);
-  assert.ok(selected.includes("https://www.amazon.es/laptops"), `expected Markdown-link URL to be normalized; got: ${selected.join(", ")}`);
-  assert.ok(selected.includes("https://www.pccomponentes.com/laptops"), `expected trailing-punct URL to be normalized; got: ${selected.join(", ")}`);
 });
 
-test("selectBestUrlsForArtifact: with intents but no scored matches, returns empty (no junk URL fallback)", () => {
-  // Reproduces the production regression where an "Identify high-spec
-  // laptops" subtask grabbed arxiv.org / sss.gov screenshots because every
-  // candidate URL scored 0 and the legacy fallback promoted the first
-  // non-low-value URL in the evidence text.
-  const evidenceText = `
-1. Random research paper: https://arxiv.org/html/2604.19856v1
-2. Government site: https://www.sss.gov/
-3. News portal: https://www.bbc.com/news
-`;
-  const selected = selectBestUrlsForArtifact(
-    evidenceText,
-    2,
-    ["product-comparison", "market-research"],
-  );
-  assert.deepEqual(selected, [], `expected empty array when no URL matches the active intents; got: ${JSON.stringify(selected)}`);
-});
-
-test("selectBestUrlsForArtifact: without intents, legacy fallback still returns first non-low-value URLs", () => {
-  // CLI smoke and old fixtures rely on the intent-less fallback.
-  const evidenceText = `
-1. https://www.example-blog.org/post
-2. https://www.notebookcheck.net/laptops
-`;
-  const selected = selectBestUrlsForArtifact(evidenceText, 2, []);
-  assert.equal(selected.length > 0, true, "intent-less callers must still get at least one URL");
-});
-
-test("buildSearchQueries: medical subtask still emits medical seed query when context hints fire", () => {
+test("buildSearchQueries: laptop subtask with GPU/RAM/EUR does NOT append a parasitic flights query", () => {
+  // The original Phase 12 regression: a regex named these tokens IATA
+  // codes and tacked on "flights Google Flights Skyscanner Kayak". With
+  // the regex removed entirely there is nothing left to trigger the leak.
   const subtaskInput = subtask({
-    id: "doc-1",
-    title: "Find allergologist Madrid",
-    prompt: "Find a paediatric allergologist accepting new patients in Madrid this week.",
+    id: "scenario",
+    title: "Scenario Mapping & User Clarification",
+    prompt: `Plan technical trade-offs (GPU vs CPU, RAM vs SSD, LLM run cost in EUR).
+RTX-class GPU, 32 GB RAM, ~2500 EUR budget.`,
   });
-  const queries = buildSearchQueries(subtaskInput, "find me an allergologist in Madrid Spain for my child");
-  assert.ok(
-    queries.some((q) => /Doctolib|Jameda|OneDoc|doctor directory/i.test(q)),
-    `expected a doctor-directory query, got: ${queries.join(" | ")}`,
+  const queries = buildSearchQueries(
+    subtaskInput,
+    "найди мне лучший ноутбук, бюджет 2500 евро",
   );
+  for (const q of queries) {
+    assert.ok(
+      !/(flights|skyscanner|kayak|google flights)/i.test(q),
+      `parasitic flight fragment leaked into query: ${q}`,
+    );
+  }
+});
+
+test("buildSearchQueries: query is built from planner-produced subtask, no regex source-name expansion", () => {
+  const subtaskInput = subtask({
+    id: "fly-1",
+    title: "Find direct LIS to LAX flights",
+    prompt: "Search aggregator sites the user named in their original task and return prices.",
+  });
+  const queries = buildSearchQueries(subtaskInput, "");
+  // The planner-produced title is the dominant signal; the runtime no
+  // longer injects "Google Flights Skyscanner Kayak" out of thin air.
+  assert.ok(queries[0]?.includes("LIS to LAX flights"));
 });

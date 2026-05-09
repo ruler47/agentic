@@ -120,3 +120,41 @@ test("intentInference.ts exports the documented helpers", async () => {
       `intentInference.ts must export ${symbol}`);
   }
 });
+
+test("intentInference.ts contains no domain-specific regex", async () => {
+  const file = join(AGENTS_DIR, "intentInference.ts");
+  const text = await readFile(file, "utf8");
+  // Phase 12 final: `inferTaskIntents` is a compatibility shim that always
+  // returns []. The runtime reads classifier-resolved intents via
+  // `runScopedIntents`. If a contributor adds a regex with specific
+  // aggregator / portal tokens here they fail this guard.
+  for (const token of [
+    "skyscanner", "kayak", "momondo", "expedia", "doctolib", "jameda",
+    "aviasales", "ryanair", "easyjet", "topdoctors", "onedoc",
+  ]) {
+    assert.equal(
+      text.toLowerCase().includes(token),
+      false,
+      `intentInference.ts must not name "${token}" — domain knowledge belongs on tools / memory / LLM ranker.`,
+    );
+  }
+});
+
+test("builtinEvidencePatterns.ts ships an empty seed", async () => {
+  const file = resolve(__dirname, "..", "src", "tools", "builtinEvidencePatterns.ts");
+  const text = await readFile(file, "utf8");
+  // Phase 12 final: the runtime carries no built-in domain knowledge.
+  // Patterns arrive through tool contracts, scoped memory, or the LLM
+  // URL ranker.
+  assert.match(text, /BUILTIN_EVIDENCE_PATTERNS:\s*EvidencePattern\[\]\s*=\s*\[\]\s*;/, "BUILTIN_EVIDENCE_PATTERNS must be exported as an empty array");
+  for (const token of [
+    "skyscanner", "kayak", "momondo", "expedia", "aviasales",
+    "doctolib", "jameda", "onedoc", "topdoctors", "doctoralia",
+  ]) {
+    assert.equal(
+      text.toLowerCase().includes(token),
+      false,
+      `builtinEvidencePatterns.ts must not contain "${token}" — even in comments — to keep the file domain-neutral.`,
+    );
+  }
+});

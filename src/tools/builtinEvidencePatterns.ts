@@ -1,103 +1,30 @@
 import { EvidencePattern } from "./tool.js";
 
 /**
- * Phase 12 Slice B: the host scores that used to live as a regex switch
- * inside `scoreArtifactUrl` in `universalAgent.ts`. They moved here as data so
- * the runtime no longer hardcodes specific domains. New domain packs should
- * land as additional patterns (or, ultimately, on real registered tools that
- * declare their own `evidencePatterns`).
+ * Phase 12 final: the universal agent has no built-in domain knowledge.
+ * Specific host whitelists (flight aggregators, medical portals, retailers,
+ * …) used to live here as a regex switch in `scoreArtifactUrl`. They were
+ * removed because they encoded private case knowledge into the runtime,
+ * which the "Capability Platform, Not Case Patches" principle forbids.
  *
- * Scores are kept identical to the pre-refactor values to preserve behaviour
- * for runs that DO infer `flight-search` or `medical-lookup`. Slice C lets
- * operators override / extend these via memory entries; Slice D moves URL
- * ranking to an LLM and uses these scores only as a fallback.
+ * Patterns now arrive through three universal channels:
+ *   (a) `Tool.evidencePatterns` declared by registered tools — a flight
+ *       tool brings its own host list with it,
+ *   (b) scoped `evidence-pattern` memory entries — operators publish
+ *       group-specific knowledge through the regular memory lifecycle,
+ *   (c) the LLM URL ranker (`rankDiscoveryUrls`) — the model picks the
+ *       best candidate URL for the subtask using world knowledge over
+ *       result snippets. No host list needed.
+ *
+ * The CI lint in `tests/banDomainTokensInAgents.test.ts` keeps this file
+ * empty by failing the build if a known aggregator/portal token reappears.
  */
-export const BUILTIN_EVIDENCE_PATTERNS: EvidencePattern[] = [
-  // Flight aggregators -----------------------------------------------------
-  {
-    intent: "flight-search",
-    hosts: ["google.com"],
-    pathPatterns: ["/travel/flights"],
-    score: 120,
-    notes: "Google Flights aggregator",
-  },
-  {
-    intent: "flight-search",
-    hosts: ["skyscanner.net", "skyscanner.com"],
-    pathPatterns: ["routes", "flights"],
-    score: 110,
-    notes: "Skyscanner",
-  },
-  {
-    intent: "flight-search",
-    hosts: ["kayak.com"],
-    pathPatterns: ["flight", "route"],
-    score: 105,
-    notes: "Kayak",
-  },
-  {
-    intent: "flight-search",
-    hosts: ["momondo.com", "kiwi.com", "expedia.com", "trip.com", "aviasales.com", "aviasales.ru"],
-    pathPatterns: ["flight", "route"],
-    score: 95,
-    notes: "Tier-2 flight aggregators",
-  },
-  {
-    intent: "flight-search",
-    urlPatterns: ["pegasus", "turkishairlines", "ryanair", "easyjet", "vueling", "lufthansa"],
-    score: 85,
-    notes: "Direct airline carriers",
-  },
-
-  // Medical / doctor portals ----------------------------------------------
-  {
-    intent: "medical-lookup",
-    hosts: ["doctolib.fr", "doctolib.de", "doctoralia.com", "jameda.de", "onedoc.ch", "topdoctors.es", "topdoctors.uk", "sanego.de", "miodottore.it"],
-    score: 90,
-    notes: "EU medical booking portals",
-  },
-  {
-    intent: "medical-lookup",
-    pathPatterns: [
-      "find-?a-?doctor",
-      "doctor",
-      "doctors",
-      "clinician",
-      "specialist",
-      "provider",
-      "appointment",
-      "booking",
-      "aerzte",
-      "arzt",
-      "medecin",
-      "especialista",
-      "allergolog",
-      "immunolog",
-    ],
-    score: 70,
-    notes: "Path-level doctor / provider directory matches",
-  },
-  {
-    intent: "medical-lookup",
-    urlPatterns: ["hospital", "clinic", "medical", "health", "gesundheit", "hopital", "spital"],
-    score: 45,
-    notes: "Generic medical / health host fallback",
-  },
-  // NOTE: Phase 12 keeps the built-in seed deliberately small. Flights and
-  // medical are the migration of pre-Phase 12 hardcodes; new domains
-  // (product-comparison, restaurant, crypto, ...) must NOT be added here.
-  // Instead they should arrive through (a) Tool.evidencePatterns when a
-  // domain tool is registered, (b) memory entries (Slice C), or (c) the
-  // LLM URL ranker (Slice D) which uses world knowledge over candidate
-  // URL snippets and needs no host whitelist at all.
-];
+export const BUILTIN_EVIDENCE_PATTERNS: EvidencePattern[] = [];
 
 /**
- * Slice B: pure pattern matcher. No hardcoded domain knowledge — caller is
- * responsible for filtering patterns by active intents.
- *
- * Returns the highest score among patterns that match `url`, or 0 if none do.
- * Patterns whose `intent` is not in `intents` are skipped.
+ * Pure pattern matcher. Caller filters patterns by active intents and
+ * passes the resulting array. Returns the highest score among patterns
+ * that match `url`, or 0 when none do.
  */
 export function scoreUrlAgainstPatterns(
   url: string,
@@ -153,7 +80,7 @@ export function scoreUrlAgainstPatterns(
       if (!urlMatch) matched = false;
     }
 
-    if (!hadCheck) continue; // pattern with no checks is invalid; skip
+    if (!hadCheck) continue;
     if (matched && pattern.score > best) best = pattern.score;
   }
 
@@ -161,10 +88,10 @@ export function scoreUrlAgainstPatterns(
 }
 
 /**
- * `isGenericLandingUrl` formerly hardcoded the same flight aggregator list.
- * Slice B: a URL is "generic" when it is the bare host or "/" path of any
- * known evidence-pattern host. We keep the same semantics — discovery
- * downgrades a navigation to such a URL to a placeholder.
+ * Detect bare aggregator landings. With an empty built-in seed this only
+ * fires for hosts that appear in tool-contract or memory-supplied
+ * patterns. The result is intentionally pattern-driven: there is no
+ * domain knowledge in the runtime; the data decides.
  */
 export function isGenericLandingUrl(url: string, patterns: readonly EvidencePattern[]): boolean {
   let parsed: URL;
@@ -183,11 +110,7 @@ export function isGenericLandingUrl(url: string, patterns: readonly EvidencePatt
       return host === target || host.endsWith(`.${target}`);
     });
     if (!hostHit) continue;
-    // Bare landing page (no path) or just one of the well-known generic
-    // landings the runtime previously special-cased.
-    if (path === "" || path === "/" || path === "/flights" || path === "/travel/flights") {
-      return true;
-    }
+    if (path === "" || path === "/") return true;
   }
   return false;
 }

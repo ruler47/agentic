@@ -1478,8 +1478,13 @@ test("UniversalAgent collects browser discovery evidence from search URLs for di
   try {
     const result = await agent.run("Find a specialist from professional directory pages in the Schengen area.");
 
-    assert.match(JSON.stringify(searchInputs), /Schengen Europe/);
-    assert.match(JSON.stringify(searchInputs), /Doctolib Jameda OneDoc/);
+    // Phase 12 final: the runtime no longer rewrites the search query
+    // with a country-name dictionary or a domain-specific seed
+    // ("Doctolib Jameda OneDoc"). The query is the planner-produced
+    // subtask title plus its lead line — exactly what the model wrote.
+    // Browser discovery is still triggered by generic discovery verbs +
+    // interactive-source signals on the subtask, so the directory URL
+    // returned by web.search reaches `browser.operate` unchanged.
     assert.equal(browserInputs.length, 1);
     assert.match(JSON.stringify(browserInputs[0]), /clinic\.example\.org/);
     assert.equal(result.reviews[0]?.verdict, "pass");
@@ -1495,7 +1500,7 @@ test("UniversalAgent rewrites brittle browser form automation to direct source U
   const directUrl = "https://www.google.com/travel/flights/flights-from-istanbul-to-malaga.html";
   const kayakUrl = "https://www.kayak.com/flight-routes/Istanbul-IST/Malaga-AGP";
   const fakeLlm = new FakeLlm([
-    '{"mode":"delegated","reason":"needs live browser proof","domains":["travel"],"riskLevel":"medium"}',
+    '{"mode":"delegated","reason":"needs live browser proof","domains":["travel"],"riskLevel":"medium","intent":["flight-search"]}',
     JSON.stringify({
       subtasks: [
         {
@@ -1547,6 +1552,23 @@ test("UniversalAgent rewrites brittle browser form automation to direct source U
           { title: "KAYAK route", url: kayakUrl },
         ],
       };
+    },
+  });
+  // Phase 12 final: a domain-specific tool brings its own evidence
+  // patterns. The runtime no longer ships a flight-aggregator
+  // whitelist; this is how a real flight tool would inject the
+  // domain knowledge that lets URL ranking pick `directUrl`/`kayakUrl`
+  // over the brittle form-automation navigation.
+  registry.register({
+    name: "demo.flight.routes",
+    description: "Demo flight tool that contributes evidencePatterns",
+    capabilities: ["flight-routes"],
+    evidencePatterns: [
+      { intent: "flight-search", hosts: ["google.com"], pathPatterns: ["/travel/flights"], score: 120 },
+      { intent: "flight-search", hosts: ["kayak.com"], pathPatterns: ["flight-routes"], score: 110 },
+    ],
+    async run() {
+      return { ok: true, content: "noop" };
     },
   });
   registry.register({
@@ -1829,8 +1851,13 @@ test("UniversalAgent hard-fails artifact subtasks that only invent placeholder p
 test("UniversalAgent hard-fails irrelevant proof artifacts", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
   const memory = new SkillMemory(join(dir, "skills.json"));
+  // Phase 12 final: classifier emits an intent, no patterns are
+  // registered → URL ranking returns empty → screenshot tool is never
+  // called → hard-gate flags a missing required artifact. The same
+  // outcome the user wanted ("don't capture an irrelevant artifact")
+  // but reached without any domain whitelist in the runtime.
   const fakeLlm = new FakeLlm([
-    '{"mode":"delegated","reason":"needs proof artifact","domains":["travel"],"riskLevel":"medium"}',
+    '{"mode":"delegated","reason":"needs proof artifact","domains":["travel"],"riskLevel":"medium","intent":["flight-search"]}',
     JSON.stringify({
       subtasks: [
         {

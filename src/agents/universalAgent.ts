@@ -292,7 +292,14 @@ export class UniversalAgent {
     const classificationSpanId = createSpanId("classification");
     const runStartedAt = options.now ?? new Date();
     const artifacts: AgentArtifact[] = [...(options.inputArtifacts ?? [])];
-    const toolExecutionContext = buildToolExecutionContext(options);
+    // Phase 12 final: synthesize a runId for paths that did not provide one
+    // (CLI smokes, fixtures, recursive in-memory invocations) so deep
+    // helpers can still find run-scoped state via `toolExecutionContext.runId`.
+    const effectiveRunId = options.runId ?? runSpanId;
+    const toolExecutionContext = buildToolExecutionContext({
+      ...options,
+      runId: effectiveRunId,
+    });
     // Optional Work / Evidence / Run-Retrospective runtime adapter. When no stores are
     // wired up the coordinator short-circuits every method, so this slice is purely
     // additive for existing CLI / fake-LLM flows.
@@ -409,9 +416,10 @@ export class UniversalAgent {
     // Phase 12 Slice A (full): cache classifier-resolved intents per run so
     // deep helpers (browser discovery, screenshot, declared inputs) can read
     // them without threading complexity through every layer.
-    if (options.runId) {
-      this.runScopedIntents.set(options.runId, [...(complexity.intent ?? [])]);
-    }
+    // Phase 12 final: cache classifier-resolved intents under the same
+    // runId that `toolExecutionContext` carries so deep helpers (browser
+    // discovery, declared inputs, screenshot proof) read the right value.
+    this.runScopedIntents.set(effectiveRunId, [...(complexity.intent ?? [])]);
     await emit({
       spanId: classificationSpanId,
       parentSpanId: runSpanId,
@@ -748,7 +756,7 @@ export class UniversalAgent {
         payload: { finalAnswer, artifacts },
       });
 
-      await this.finalizeRunLedger(ledger, "completed", options.runId, runSpanId);
+      await this.finalizeRunLedger(ledger, "completed", effectiveRunId, runSpanId);
       return {
         finalAnswer,
         complexity,
@@ -895,7 +903,7 @@ export class UniversalAgent {
       payload: { finalAnswer, artifacts },
     });
 
-    await this.finalizeRunLedger(ledger, "completed", options.runId, runSpanId);
+    await this.finalizeRunLedger(ledger, "completed", effectiveRunId, runSpanId);
     return {
       finalAnswer,
       complexity,
@@ -908,7 +916,7 @@ export class UniversalAgent {
     } catch (error) {
       ledger?.trackWhatFailed(`Run failed: ${formatErrorMessage(error)}`);
       await ledger?.markUnfinishedWorkFailed(limitText(formatErrorMessage(error), 600));
-      await this.finalizeRunLedger(ledger, "failed", options.runId, runSpanId);
+      await this.finalizeRunLedger(ledger, "failed", effectiveRunId, runSpanId);
       throw error;
     }
   }
@@ -1798,6 +1806,7 @@ export class UniversalAgent {
         subtask,
         priorEvidence,
         declaredExtraPatterns,
+        declaredIntents,
       );
       if (tool.name === "browser.operate" && hasInvalidBrowserNavigation(runnableInput)) {
         evidence.push(
@@ -4192,54 +4201,21 @@ function clampMarketDays(days: number): number {
 
 function buildSearchQueries(
   subtask: Subtask,
-  contextText = "",
-  intents: string[] = [],
+  _contextText = "",
+  _intents: string[] = [],
 ): string[] {
+  // Phase 12 final: a single search query from the planner-produced
+  // subtask. We do not regex the prompt for specific source names, country
+  // dictionaries, or domain-specific seed queries — the planner already
+  // wrote what it wants searched, and any specific source it chose to name
+  // is preserved verbatim in `subtask.title` / `subtask.prompt`.
   const promptLines = subtask.prompt
     .split(/\n+/)
     .map((line) => line.replace(/^[-*\d.\s:]+/, "").trim())
     .filter(Boolean);
   const leadLine = promptLines.find((line) => /search|find|найди|искать|research/i.test(line)) ?? promptLines[0] ?? "";
-  // Phase 12 Slice A (full): intents come from the classifier when
-  // available; we no longer re-derive them from text here. If the caller
-  // passes [], we fall back to regex-based inference so legacy paths still
-  // work.
-  const resolvedIntents = intents.length > 0
-    ? intents
-    : inferTaskIntents(`${subtask.title}\n${subtask.prompt}\n${contextText}`);
-  const sourceHints = extractIntentSourceHints(resolvedIntents, promptLines);
-  const contextHints = buildContextSearchHints(`${contextText}\n${subtask.title}\n${subtask.prompt}`);
-  const raw = `${subtask.title} ${leadLine} ${sourceHints} ${contextHints}`;
-
-  const queries = [cleanSearchQuery(raw)];
-  queries.push(
-    ...expandSearchQueriesByIntent(resolvedIntents, subtask, contextHints, leadLine, cleanSearchQuery),
-  );
-
-  return [...new Set(queries.filter(Boolean))].slice(0, 3);
-}
-
-function buildContextSearchHints(text: string): string {
-  const hints: string[] = [];
-  const candidates: Array<[RegExp, string]> = [
-    [/\bschengen\b|шенген/i, "Schengen Europe"],
-    [/\beurope\b|европ/i, "Europe"],
-    [/\bspain\b|испан/i, "Spain"],
-    [/\bmadrid\b|мадрид/i, "Madrid"],
-    [/\bgermany\b|герман|немец/i, "Germany"],
-    [/\bfrance\b|франц/i, "France"],
-    [/\bswitzerland\b|swiss|швейцар/i, "Switzerland"],
-    [/\baustria\b|австри/i, "Austria"],
-    [/\bitaly\b|итал/i, "Italy"],
-    [/\bportugal\b|португал/i, "Portugal"],
-    [/\bukrainian\b|украин/i, "Ukrainian"],
-    [/\brussian\b|русск/i, "Russian"],
-    [/\benglish\b|англий/i, "English"],
-  ];
-  for (const [pattern, hint] of candidates) {
-    if (pattern.test(text)) hints.push(hint);
-  }
-  return [...new Set(hints)].join(" ");
+  const primary = cleanSearchQuery(`${subtask.title} ${leadLine}`);
+  return primary ? [primary] : [];
 }
 
 function cleanSearchQuery(value: string): string {
@@ -4369,6 +4345,7 @@ function improveDeclaredToolInput(
   subtask: Subtask,
   priorEvidence: string[],
   extraPatterns: readonly EvidencePattern[] = [],
+  intents: string[] = [],
 ): unknown {
   if (toolName !== "browser.operate" || !isRecord(input)) return input;
   const commands = Array.isArray(input.commands) ? input.commands : [];
@@ -4376,21 +4353,30 @@ function improveDeclaredToolInput(
   const hasBrittleInteraction = commands.some(isBrittleBrowserInteractionCommand);
   if (!hasPlaceholderNavigation && !hasBrittleInteraction) return input;
 
+  // Phase 12 final: intents come from the caller (classifier-resolved at
+  // run start). Empty intents fall back to legacy first-non-low-value
+  // path inside `selectBestUrlsForArtifact`.
   const evidenceUrls = selectBestUrlsForArtifact(
     priorEvidence.join("\n\n"),
     requiresMultipleSources(subtask) ? 3 : 1,
-    inferTaskIntents(`${subtask.title}\n${subtask.prompt}`),
+    intents,
     extraPatterns,
   );
   if (evidenceUrls.length === 0) return input;
+  // Phase 12 final: the previous guard required `firstNav` to be a known
+  // generic landing (matched by host whitelist) before rewriting. With
+  // the runtime carrying no domain seed, we now treat brittle
+  // interaction commands themselves as proof that the navigation URL is
+  // a search homepage that needs replacing — site-specific selectors
+  // (`[aria-label='Where from?']` and friends) are the planner's signal
+  // that it expected a form-fill flow. If we have real evidence URLs
+  // and either placeholder navigation OR brittle interaction, rewrite.
+  // No host whitelist required.
   const firstNavigationUrl = commands.find(isNavigateCommand)?.url;
-  const allPatterns = extraPatterns.length > 0
-    ? [...BUILTIN_EVIDENCE_PATTERNS, ...extraPatterns]
-    : BUILTIN_EVIDENCE_PATTERNS;
   if (
     firstNavigationUrl &&
-    !isPlaceholderNavigateCommand({ type: "navigate", url: firstNavigationUrl }) &&
-    !isGenericBrowserSearchUrl(firstNavigationUrl, allPatterns)
+    !hasPlaceholderNavigation &&
+    !hasBrittleInteraction
   ) {
     return input;
   }
@@ -4579,7 +4565,14 @@ function scoreArtifactUrl(
 }
 
 function isLowValueProofUrl(url: string): boolean {
-  return /example\.com|placeholder|localhost|127\.0\.0\.1|facebook\.com|reddit\.com|quora\.com|github\.com|medlineplus\.gov|ahd\.com|\.pdf(?:$|[?#])|faa\.gov|easa\.europa\.eu|aclanthology\.org|stanford\.edu|baymard\.com|codalab\.org|nlp\.biu\.ac\.il/i.test(
+  // Phase 12 final: structural filter only. The previous host blacklist
+  // (facebook, reddit, quora, github, stanford, ...) was domain-specific
+  // judgement that should live in the LLM URL ranker, not in runtime
+  // regex. Localhost and example placeholders stay because they are
+  // structurally invalid as evidence URLs; .pdf stays because the
+  // browser screenshot tool cannot meaningfully render PDFs as visual
+  // proof.
+  return /(?:^|\/\/)(?:localhost|127\.0\.0\.1)(?:[/:?#]|$)|example\.com|placeholder|\.pdf(?:$|[?#])/i.test(
     url,
   );
 }
@@ -4714,13 +4707,14 @@ function containsUnsatisfiedDiscoveryFailure(workerResult: WorkerResult): boolea
     workerResult.subtask.expectedOutput,
     ...(workerResult.subtask.reviewCriteria ?? []),
   ].join("\n");
-  // Phase 12 Slice E: domain-specific discovery anchors moved into
-  // intentInference.ts. The combined check fires either on a generic
-  // discovery keyword or on any inferred task intent.
+  // Phase 12 final: discovery activation depends only on generic verbs that
+  // describe an action (find / search / compare / recommend / ...). Domain-
+  // specific anchors no longer live in this regex; classifier-driven
+  // `intent[]` already gates pattern-based scoring elsewhere.
   const expectsDiscovery =
     /(find|search|identify|discover|collect|candidate|source|lookup|recommend|rank|compare|list|profile|price|найди|поиск|подбери|кандидат|источник|список|рекоменд|сравн|цена)/i.test(
       subtaskText,
-    ) || inferTaskIntents(subtaskText).length > 0;
+    );
   if (!expectsDiscovery) return false;
   const output = workerResult.output;
   const emptyDiscovery =

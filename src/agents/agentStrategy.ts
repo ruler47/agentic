@@ -266,12 +266,23 @@ function inferMissingCapabilityHints(text: string, matchedTools: Tool[]): string
 }
 
 function inferRiskSignals(text: string, complexity: TaskComplexity): string[] {
+  // Phase 12 final: domain risk signals come from the classifier's
+  // `domains[]` array, not from regex over the raw task text. The
+  // classifier already reasoned about what the task is about; we just
+  // map its domain labels onto our internal risk signal vocabulary.
+  // Action-mode signals (send / book / delete / ...) stay regex-based
+  // because they describe behaviour patterns rather than domain
+  // knowledge, and the classifier prompt does not commit to returning
+  // them.
   const signals = new Set<string>();
   if (complexity.riskLevel === "high") signals.add("high-risk-classification");
-  if (/\b(medical|medicine|doctor|clinical|dose|treatment|медицин|лекарств|дозиров)\b/.test(text)) signals.add("medical");
-  if (/\b(legal|law|contract|compliance|gdpr|AML|санкци|юрид)\b/i.test(text)) signals.add("legal-compliance");
-  if (/\b(financial|investment|buy|sell|tax|trading|money|купить|продать|налог)\b/.test(text)) signals.add("financial");
-  if (/\b(security|credential|secret|token|password|auth|vulnerability)\b/.test(text)) signals.add("security");
+  const domains = (complexity.domains ?? []).map((d) => d.toLowerCase());
+  for (const domain of domains) {
+    if (/(medic|health|clinic|pharma|patient)/i.test(domain)) signals.add("medical");
+    if (/(legal|law|compliance|regulator|gdpr|aml)/i.test(domain)) signals.add("legal-compliance");
+    if (/(financ|invest|trading|tax|payment|banking|economi)/i.test(domain)) signals.add("financial");
+    if (/(security|credential|auth|secret|vulnerabil|pentest)/i.test(domain)) signals.add("security");
+  }
   if (/\b(send|book|reserve|purchase|broadcast|delete|notify|message|заброни|отправ|удал)\b/.test(text)) {
     signals.add("outbound-or-state-changing-action");
   }
