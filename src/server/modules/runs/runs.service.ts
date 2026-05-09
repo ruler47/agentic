@@ -281,10 +281,16 @@ export class RunsService implements OnApplicationBootstrap {
 
     const reloaded = await this.runs.get(sourceId);
     if (!reloaded) throw new NotFoundException(`Run ${sourceId} disappeared during resume`);
+    // Phase 12 follow-up: resume from `waiting_tool_rework` is now the
+    // primary path the auto-retry coordinator uses when a tool rework
+    // promotes. Manual resume from this state is also fine — the
+    // operator is choosing to continue rather than wait for promotion.
+    // We move the source out of `waiting_tool_rework` first so the UI
+    // does not show two parallel lifecycles.
     if (reloaded.status === "waiting_tool_rework") {
-      throw new ConflictException(
-        `Run ${sourceId} is waiting for a tool rework; use the auto-retry / promote flow instead of resume.`,
-      );
+      await this.runs
+        .resumeFromToolRework(sourceId, "Resume requested while run was waiting for tool rework")
+        .catch(() => undefined);
     }
 
     const progress = reconstructProgress(reloaded.events ?? []);

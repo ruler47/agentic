@@ -47,6 +47,13 @@ export type ToolImprovementResult = {
   detail?: string;
   error?: string;
   errorCode?: string;
+  /**
+   * Phase 12 follow-up: when an existing open wait for the same
+   * (runId, capability) was found and reused, this flag is true so
+   * callers / audit / UI can show "consolidated with prior request"
+   * instead of treating it as a fresh wait.
+   */
+  deduped?: boolean;
 };
 
 export type InvestigationPromotionTarget = {
@@ -193,6 +200,18 @@ export class ToolImprovementCoordinator {
       };
     }
     try {
+      // Phase 12 follow-up: dedupe concurrent improvement requests for the
+      // same run + capability. Without this guard, every subtask /
+      // revision that hits the same missing-capability condition opens its
+      // own investigation, build, and wait — producing the 4-wait-stack
+      // we saw on `run_1778344006195_ub7dx3ob`. We attach the new evidence
+      // to the existing investigation and return the existing wait so the
+      // caller transparently reuses it.
+      const existingDedup = await this.findExistingOpenWaitForCapability(request);
+      if (existingDedup) {
+        return existingDedup;
+      }
+
       const investigation = await this.resolveOrCreateInvestigation(request);
       if (investigation.runId) {
         const sourceRun = await this.deps.runStore.get(investigation.runId);
@@ -434,6 +453,95 @@ export class ToolImprovementCoordinator {
       },
     });
     return wait;
+  }
+
+  /**
+   * Phase 12 follow-up: when a run hits the same missing-capability
+   * condition from multiple subtasks (or worker revisions) within a few
+   * seconds, only the first one should open a wait/build/investigation.
+   * Subsequent calls find the existing open wait and reuse it. This
+   * prevents the "4 waits for the same browser-screenshot capability"
+   * pattern we saw in production.
+   *
+   * Match key: runId + capability (read from `buildRequestInput.capability`
+   * if present; otherwise we cannot dedupe and return undefined). Wait must
+   * be in `waiting` or `build_running` status — promoted/resumed waits are
+   * already moving forward and a new one is genuinely needed.
+   */
+  private async findExistingOpenWaitForCapability(
+    request: ToolImprovementRequest,
+  ): Promise<ToolImprovementResult | undefined> {
+    const capability = request.buildRequestInput?.capability;
+    const runId = request.runId;
+    if (!capability || !runId) return undefined;
+    if (!this.deps.toolReworkWaitStore || !this.deps.toolBuildRequestStore || !this.deps.toolInvestigationStore) {
+      return undefined;
+    }
+
+    const waits = await this.deps.toolReworkWaitStore.listByRun(runId).catch(() => []);
+    for (const wait of waits) {
+      if (wait.status !== "waiting" && wait.status !== "build_running") continue;
+      if (!wait.buildRequestId) continue;
+      const build = await this.deps.toolBuildRequestStore.get(wait.buildRequestId).catch(() => undefined);
+      if (!build || build.capability !== capability) continue;
+
+      // Found a matching open wait. Attach the new evidence to its
+      // investigation so the operator sees full context and the build
+      // bundle is improved on next attempt.
+      let investigation = wait.investigationId
+        ? await this.deps.toolInvestigationStore.get(wait.investigationId).catch(() => undefined)
+        : undefined;
+      if (investigation && request.contextBundle && this.deps.toolInvestigationStore.update) {
+        try {
+          investigation = await this.deps.toolInvestigationStore.update(investigation.id, {
+            contextBundle: this.mergeContextBundle(investigation.contextBundle, request.contextBundle),
+          });
+        } catch {
+          // best-effort enrichment; we still return the existing wait
+        }
+      }
+      await this.emitAudit({
+        action: "tool_build.requested",
+        targetType: "tool_build_request",
+        targetId: build.id,
+        status: "pending",
+        runId,
+        summary: `Tool improvement deduplicated: existing wait ${wait.id} reused for capability ${capability}`,
+        metadata: {
+          investigationId: wait.investigationId,
+          capability,
+          dedupedFromSpan: request.spanId,
+          dedupedFromTitle: request.title,
+        },
+      });
+      return {
+        status: "waiting",
+        investigation,
+        buildRequest: build,
+        wait,
+        deduped: true,
+      };
+    }
+    return undefined;
+  }
+
+  private mergeContextBundle(
+    existing: Record<string, unknown> | undefined,
+    incoming: Record<string, unknown> | undefined,
+  ): Record<string, unknown> {
+    if (!existing) return incoming ?? {};
+    if (!incoming) return existing;
+    const merged: Record<string, unknown> = { ...existing };
+    let dedupCount = 0;
+    if (typeof merged.dedupCount === "number") dedupCount = merged.dedupCount;
+    merged.dedupCount = dedupCount + 1;
+    const incomingSnapshot = { ...incoming, dedupAttempt: dedupCount + 1 };
+    const additional = Array.isArray(merged.additionalAttempts)
+      ? [...(merged.additionalAttempts as unknown[])]
+      : [];
+    additional.push(incomingSnapshot);
+    merged.additionalAttempts = additional;
+    return merged;
   }
 
   private async resolveOrCreateInvestigation(

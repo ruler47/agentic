@@ -311,21 +311,41 @@ class RuntimeBootstrapper implements OnApplicationBootstrap, OnApplicationShutdo
           channel: sourceRun?.channel,
         },
         async (wait) => {
-          const auto = this.rework.createAutoRetryCoordinator({
-            actorId: "auto-retry-orchestrator",
-            actorType: "agent",
-            instanceId: sourceRun?.instanceId,
-            threadId: sourceRun?.threadId,
-            requesterUserId: sourceRun?.requesterUserId,
-            channel: sourceRun?.channel,
-          });
+          const runs = this.moduleRef.get(RunsService, { strict: false });
+          const auto = this.rework.createAutoRetryCoordinator(
+            {
+              actorId: "auto-retry-orchestrator",
+              actorType: "agent",
+              instanceId: sourceRun?.instanceId,
+              threadId: sourceRun?.threadId,
+              requesterUserId: sourceRun?.requesterUserId,
+              channel: sourceRun?.channel,
+            },
+            {
+              // Phase 12 follow-up: prefer RESUME over creating a separate
+              // retry run. Resume picks up exactly where the source run
+              // paused, reusing classifier output, plan, and any subtask
+              // whose review was `pass`. Only the missing/incomplete
+              // subtasks re-run.
+              resumeRun: async (sourceId) => {
+                try {
+                  const result = await runs.resume(sourceId);
+                  return result?.resume;
+                } catch {
+                  return undefined;
+                }
+              },
+            },
+          );
           const result = await auto?.tryAutoRetry(wait.id);
           if (result?.status === "created" && result.retryRun) {
-            const runs = this.moduleRef.get(RunsService, { strict: false });
             void runs.executeRun(result.retryRun.id, result.retryRun.task, [], {
               threadId: result.retryRun.threadId,
             });
           }
+          // Note: when status === "resumed", the resume hook already
+          // started executeRun via RunsService.resume() — no extra
+          // dispatch needed here.
         },
       );
     });

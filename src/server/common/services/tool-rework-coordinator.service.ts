@@ -1,7 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
 import type { AuditEventInput } from "../../../audit/types.js";
-import type { RunStore } from "../../../runs/types.js";
+import type { AgentRunRecord, RunStore } from "../../../runs/types.js";
 import type { ToolReworkWaitRecord, ToolReworkWaitStore } from "../../../runs/toolReworkWaitStore.js";
 import type { ToolBuildRequestStore } from "../../../tools/toolBuildRequestStore.js";
 import type { ToolInvestigationStore } from "../../../tools/toolInvestigationStore.js";
@@ -121,6 +121,15 @@ export class ToolReworkCoordinatorService {
 
   createAutoRetryCoordinator(
     context: ToolImprovementContext = { actorId: "auto-retry-orchestrator", actorType: "agent" },
+    options: {
+      /**
+       * Phase 12 follow-up: when provided, the auto-retry coordinator will
+       * RESUME the original run instead of creating a separate retry run.
+       * Wire this from `RunsService.resume` so the operator's expectation
+       * ("continue where it stopped") is honoured.
+       */
+      resumeRun?: (sourceRunId: string) => Promise<AgentRunRecord | undefined>;
+    } = {},
   ): ToolReworkAutoRetryCoordinator | undefined {
     if (!this.waits) return undefined;
     const retryCoordinator = this.createRetryCoordinator(context);
@@ -133,6 +142,7 @@ export class ToolReworkCoordinatorService {
       toolReworkWaitStore: this.waits,
       runStore: this.runs,
       retryCoordinator,
+      resumeRun: options.resumeRun,
       policy,
       audit: async (event) => {
         await this.audit.record({

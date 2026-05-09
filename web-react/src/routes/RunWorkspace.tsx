@@ -8,7 +8,6 @@ import {
 import { useCancelRun, useRestartRun, useResumeRun, useRun, useRunWaits } from "@/api/runs";
 import {
   useAutoRetryReworkWait,
-  useCreateRetryRunForWait,
   useResumeReworkWait,
 } from "@/api/reworkWaits";
 import { useRunStream } from "@/api/sse";
@@ -17,10 +16,7 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
 import type { AgentEvent, AgentRunRecord, ToolReworkWaitRecord } from "@/api/types";
-import {
-  canCreateRetryRun,
-  retryRunLabel,
-} from "@/features/tool-builds/reworkWaitPresentation";
+import { retryRunLabel } from "@/features/tool-builds/reworkWaitPresentation";
 
 export function RunWorkspacePage() {
   const params = useParams<{ runId: string }>();
@@ -192,7 +188,7 @@ export function RunWorkspacePage() {
 
         <ChannelSourcePanel run={data} />
 
-        {activeWaits.length > 0 ? <RunWaitPanel waits={activeWaits} /> : null}
+        {activeWaits.length > 0 ? <RunWaitPanel waits={activeWaits} runId={data.id} /> : null}
 
         <RunLedgerPanel
           runId={data.id}
@@ -390,10 +386,11 @@ function TimelineRow({ event }: { event: AgentEvent }) {
   );
 }
 
-function RunWaitPanel({ waits }: { waits: ToolReworkWaitRecord[] }) {
+function RunWaitPanel({ waits, runId }: { waits: ToolReworkWaitRecord[]; runId: string }) {
   const resume = useResumeReworkWait();
-  const createRetry = useCreateRetryRunForWait();
   const autoRetry = useAutoRetryReworkWait();
+  const resumeRun = useResumeRun();
+  const allPromoted = waits.length > 0 && waits.every((w) => w.status === "promoted" || w.status === "resumed");
   return (
     <section className="rounded-[var(--radius-card)] border border-app-warning/40 bg-app-warning-soft p-5">
       <header className="mb-2 flex items-baseline justify-between">
@@ -408,10 +405,30 @@ function RunWaitPanel({ waits }: { waits: ToolReworkWaitRecord[] }) {
         </Link>
       </header>
       <p className="text-xs text-app-text-muted">
-        This run paused because a registered tool needs to be improved or rebuilt before retrying. Once the new tool version
-        is promoted, you can create a linked retry run, force the auto-retry policy to re-check eligibility, or click{" "}
-        <em>Mark ready for retry</em> to close the wait without spawning a retry.
+        This run paused because a registered tool needs to be improved or rebuilt before continuing. When all required tools
+        are promoted the run resumes automatically — picking up where it stopped, reusing classifier output, plan, and any
+        completed subtask. You can also force an auto-retry pass per wait, or trigger a manual resume from above.
       </p>
+      {allPromoted ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-app-accent/40 bg-app-accent-soft/40 p-2 text-xs">
+          <span className="font-semibold text-app-accent">All waits promoted.</span>
+          <span className="text-app-text-muted">Resume should fire automatically — click below if it does not.</span>
+          <button
+            type="button"
+            onClick={() => {
+              resumeRun.mutate(runId, {
+                onSuccess: (response) => {
+                  window.location.assign(`/run/${response.resume.id}`);
+                },
+              });
+            }}
+            disabled={resumeRun.isPending}
+            className="ml-auto rounded-md bg-app-accent px-3 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
+          >
+            {resumeRun.isPending ? "Resuming…" : "Resume now"}
+          </button>
+        </div>
+      ) : null}
       <ul className="mt-3 flex flex-col gap-2">
         {waits.map((wait) => (
           <li
@@ -445,32 +462,28 @@ function RunWaitPanel({ waits }: { waits: ToolReworkWaitRecord[] }) {
               </p>
             ) : null}
             <div className="mt-2 flex flex-wrap gap-2">
-              {canCreateRetryRun(wait) ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => createRetry.mutate({ id: wait.id })}
-                    disabled={createRetry.isPending}
-                    className="rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
-                  >
-                    {createRetry.isPending ? "Creating…" : "Create retry run"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => autoRetry.mutate({ id: wait.id })}
-                    disabled={autoRetry.isPending}
-                    className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
-                  >
-                    {autoRetry.isPending ? "Checking…" : "Force auto retry"}
-                  </button>
-                </>
+              {/* Phase 12 follow-up: a single «Force auto retry» button now triggers the
+                  auto-retry coordinator which prefers RESUMING the parent run over
+                  creating a separate retry run. The legacy «Create retry run» action
+                  has been removed in favour of resume + the per-run «Resume now»
+                  button at the top of the panel. */}
+              {wait.status === "promoted" || wait.status === "waiting" || wait.status === "build_running" ? (
+                <button
+                  type="button"
+                  onClick={() => autoRetry.mutate({ id: wait.id })}
+                  disabled={autoRetry.isPending}
+                  className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
+                  title="Re-run the auto-retry policy decision for this wait. If all run waits are promoted, the parent run will resume from where it stopped."
+                >
+                  {autoRetry.isPending ? "Checking…" : "Force auto retry"}
+                </button>
               ) : null}
               {wait.retryRunId ? (
                 <Link
                   to={`/run/${wait.retryRunId}`}
                   className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
                 >
-                  Open retry run
+                  Open resumed run
                 </Link>
               ) : null}
               {wait.status === "promoted" ? (
@@ -478,9 +491,10 @@ function RunWaitPanel({ waits }: { waits: ToolReworkWaitRecord[] }) {
                   type="button"
                   onClick={() => resume.mutate({ id: wait.id })}
                   disabled={resume.isPending}
-                  className="rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
+                  className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
+                  title="Close this wait without triggering a resume. Use only when you want to abandon this rework."
                 >
-                  {resume.isPending ? "Closing…" : "Mark ready for retry"}
+                  {resume.isPending ? "Closing…" : "Close wait"}
                 </button>
               ) : null}
               <Link
@@ -493,7 +507,7 @@ function RunWaitPanel({ waits }: { waits: ToolReworkWaitRecord[] }) {
             {resume.isError ? (
               <p className="mt-1 text-[11px] text-app-danger">{resume.error.message}</p>
             ) : null}
-            {[createRetry.error, autoRetry.error]
+            {[autoRetry.error]
               .filter((error): error is Error => Boolean(error))
               .map((error, index) => (
                 <p key={index} className="mt-1 text-[11px] text-app-danger">

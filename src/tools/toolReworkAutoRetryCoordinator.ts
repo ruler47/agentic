@@ -28,7 +28,9 @@ export const DEFAULT_AUTO_RETRY_POLICY: AutoRetryPolicy = {
 
 export type AutoRetryDecisionStatus =
   | "created"
+  | "resumed"
   | "already_exists"
+  | "waiting_for_other_waits"
   | "disabled"
   | "wait_not_found"
   | "wait_not_promoted"
@@ -59,12 +61,29 @@ export type AutoRetryAuditEvent = {
 
 export type AutoRetryAuditWriter = (event: AutoRetryAuditEvent) => Promise<void> | void;
 
-export type AutoRetryRunStore = Pick<RunStore, "get">;
+export type AutoRetryRunStore = Pick<RunStore, "get" | "resumeFromToolRework">;
+
+/**
+ * Phase 12 follow-up: when wired, the auto-retry coordinator prefers RESUMING
+ * the original run instead of creating a separate retry run. Resume picks up
+ * where the original paused (via `RunsService.resume`), reusing the
+ * classifier output, plan, and any subtask whose review verdict was
+ * `pass`. Falls back to retry-run creation when the hook is not provided.
+ */
+export type AutoRetryResumeRun = (sourceRunId: string) => Promise<AgentRunRecord | undefined>;
 
 export type ToolReworkAutoRetryCoordinatorDeps = {
   toolReworkWaitStore: ToolReworkWaitStore;
   runStore: AutoRetryRunStore;
   retryCoordinator: ToolReworkRetryCoordinator;
+  /**
+   * Phase 12 follow-up: optional. When provided, auto-retry resumes the
+   * original run instead of creating a separate retry run. The coordinator
+   * also waits until ALL open waits for that run are resolved
+   * (promoted/resumed/cancelled/failed) before resuming, so a run with
+   * multiple concurrent waits does not start before the last build lands.
+   */
+  resumeRun?: AutoRetryResumeRun;
   audit?: AutoRetryAuditWriter;
   policy?: AutoRetryPolicy;
 };
@@ -180,6 +199,66 @@ export class ToolReworkAutoRetryCoordinator {
       return result;
     }
 
+    // Phase 12 follow-up: when the run has additional open waits, do not
+    // resume / retry yet — the next promoted wait will fire this hook
+    // again, and only the LAST one to flip should actually unblock the
+    // run. Otherwise a run with 4 concurrent waits would start (and
+    // finish) on the first one, abandoning the others' build outputs.
+    const otherOpenWaits = await this.findOtherOpenWaits(wait);
+    if (otherOpenWaits.length > 0) {
+      const result: AutoRetryResult = {
+        status: "waiting_for_other_waits",
+        wait,
+        policy,
+        reason:
+          `Run ${sourceRun.id} still has ${otherOpenWaits.length} open tool rework wait(s); ` +
+          `this auto-retry pass defers until all are resolved.`,
+      };
+      await this.audit(result);
+      return result;
+    }
+
+    // Phase 12 follow-up: prefer `resumeRun` over `createRetryRun` when the
+    // service is wired. Resume picks up exactly where the run paused —
+    // classifier output, plan, and any subtask with `verdict=pass` are
+    // reused; only the missing/incomplete subtasks run again.
+    if (this.deps.resumeRun) {
+      try {
+        const resumedRun = await this.deps.resumeRun(sourceRun.id);
+        if (resumedRun) {
+          await this.deps.toolReworkWaitStore.update(wait.id, {
+            status: "resumed",
+            retryRunId: resumedRun.id,
+          });
+          // Drop the source run out of `waiting_tool_rework` so the UI
+          // reflects the resume action immediately. The new resume run
+          // owns the lifecycle from here.
+          await this.deps.runStore
+            .resumeFromToolRework(sourceRun.id, `Auto-resumed after wait ${wait.id} promoted.`)
+            .catch(() => undefined);
+          const result: AutoRetryResult = {
+            status: "resumed",
+            wait: { ...wait, status: "resumed", retryRunId: resumedRun.id },
+            retryRun: resumedRun,
+            policy,
+          };
+          await this.audit(result);
+          return result;
+        }
+      } catch (error) {
+        // Fall through to legacy retry path on resume failure so the run
+        // does not silently stall.
+        const reason = error instanceof Error ? error.message : "unknown error";
+        const fallback: AutoRetryResult = {
+          status: "failed",
+          wait,
+          policy,
+          reason: `resume hook threw: ${reason}; falling back to retry-run creation.`,
+        };
+        await this.audit(fallback);
+      }
+    }
+
     const retryDepth = await this.computeRetryDepth(sourceRun);
     if (retryDepth >= policy.maxAutoRetriesPerRootRun) {
       const result: AutoRetryResult = {
@@ -237,6 +316,24 @@ export class ToolReworkAutoRetryCoordinator {
     };
     await this.audit(result);
     return result;
+  }
+
+  /**
+   * Phase 12 follow-up: find every open wait belonging to the same run
+   * EXCEPT the wait we just received. "Open" means status is not yet
+   * resolved (waiting / build_running). Promoted, resumed, cancelled,
+   * failed are all considered resolved — the caller decides whether
+   * promoted-but-not-yet-retried counts as resolved (we treat it as
+   * resolved here because the build has landed and the run is free to
+   * proceed).
+   */
+  private async findOtherOpenWaits(currentWait: { id: string; runId: string }) {
+    const peers = await this.deps.toolReworkWaitStore
+      .listByRun(currentWait.runId)
+      .catch(() => []);
+    return peers.filter(
+      (peer) => peer.id !== currentWait.id && (peer.status === "waiting" || peer.status === "build_running"),
+    );
   }
 
   private async computeRetryDepth(run: AgentRunRecord): Promise<number> {

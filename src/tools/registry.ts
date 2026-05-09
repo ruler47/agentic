@@ -29,7 +29,16 @@ export class ToolRegistry {
   }
 
   register(tool: Tool): void {
-    this.tools.set(tool.name, tool);
+    // Phase 12 follow-up: defensively dedupe capabilities. Generated tools
+    // sometimes ship `["browser-screenshot", "browser-screenshot",
+    // "artifact-generation"]` from a template bug; the registry should
+    // not propagate that noise into `findByCapability` results or the
+    // /api/tools surface.
+    const dedupedCaps = Array.from(new Set(tool.capabilities ?? []));
+    const cleaned: Tool = dedupedCaps.length === tool.capabilities.length
+      ? tool
+      : { ...tool, capabilities: dedupedCaps };
+    this.tools.set(cleaned.name, cleaned);
   }
 
   list(): Tool[] {

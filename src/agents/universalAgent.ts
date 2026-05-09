@@ -2310,20 +2310,32 @@ export class UniversalAgent {
     const screenshotPatterns = await this.resolveEvidencePatterns(screenshotIntents);
     const url = selectBestUrlForArtifact(context, screenshotIntents, screenshotPatterns);
     if (!url) {
-      await this.handleMissingToolCapability(
-        {
-          capability: "browser-screenshot",
-          reason: "A browser screenshot was requested, but no http(s) source URL was available in the task, dependencies, or tool evidence.",
-          sourceSpanId: parentSpanId,
-          taskSummary: context.slice(0, 1200),
-          requiredInputs: ["url"],
-          requiredOutputs: ["artifact"],
-        },
-        emit,
+      // Phase 12 follow-up: this is a MISSING INPUT, not a missing capability.
+      // The screenshot tool already exists (`browser.operate` + any registered
+      // `browser-screenshot` provider) — we just have no URL to feed it. Do
+      // NOT queue a tool build (which would generate yet another redundant
+      // browser-screenshot tool). Emit a structured failure that the
+      // reviewer will treat as `needs_revision`, and the next worker
+      // iteration can either find a URL or skip the screenshot.
+      await emit({
+        spanId: createSpanId("screenshot-input-missing"),
         parentSpanId,
-        requestToolBuild,
-        improveTool,
-      );
+        type: "tool-missing",
+        actor: "screenshot-artifact",
+        activity: "tool",
+        status: "failed",
+        title: "Screenshot proof skipped: no source URL",
+        detail:
+          "Cannot capture a screenshot artifact because no http(s) source URL was found in the task, " +
+          "dependency outputs, or upstream evidence. The screenshot tool itself is available — only the " +
+          "input data is missing. The worker should produce a real source URL via web.search or " +
+          "browser.operate evidence, or drop the screenshot requirement if the task doesn't need it.",
+        payload: {
+          capability: "browser-screenshot",
+          reason: "input-missing-source-url",
+          intents: screenshotIntents,
+        },
+      });
       return undefined;
     }
 
@@ -3098,6 +3110,35 @@ export class UniversalAgent {
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
     improveTool?: AgentImproveToolFn,
   ): Promise<ToolBuildRequest | undefined> {
+    // Phase 12 follow-up: defensive guard. Each generated tool added to the
+    // registry over time can satisfy `findByCapability(...)`, so by the time
+    // we reach this method the capability is genuinely uncovered. But a
+    // race or legacy caller could still invoke us when a built-in tool DOES
+    // satisfy the capability. In that case do not create yet another
+    // generated tool (the registry already had ~42 redundant
+    // `generated.browser.screenshot.N` entries this fix removes).
+    const alreadyCovered = this.tools.findByCapability(request.capability);
+    if (alreadyCovered.length > 0) {
+      const missingStartedAt = new Date();
+      await emit({
+        spanId: createSpanId(`tool-already-covered-${request.capability}`),
+        parentSpanId,
+        type: "tool-missing",
+        actor: "tool-registry",
+        activity: "tool",
+        status: "completed",
+        title: `Capability ${request.capability} already covered`,
+        detail:
+          `Skipped build request — capability is already provided by ${alreadyCovered.length} ` +
+          `registered tool(s): ${alreadyCovered.map((t) => t.name).join(", ")}.`,
+        startedAt: missingStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(missingStartedAt),
+        payload: { capability: request.capability, existingToolNames: alreadyCovered.map((t) => t.name) },
+      });
+      return undefined;
+    }
+
     const missingStartedAt = new Date();
     await emit({
       spanId: createSpanId(`tool-missing-${request.capability}`),
