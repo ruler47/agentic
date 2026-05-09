@@ -19,6 +19,7 @@ import {
 } from "../tools/builtinEvidencePatterns.js";
 import { loadEvidencePatternsFromMemory } from "../memory/evidencePatternMemory.js";
 import { EvidencePattern } from "../tools/tool.js";
+import { rankDiscoveryUrls } from "./discoveryUrlRanker.js";
 import { shouldUseWebSearch } from "../tools/webSearchTool.js";
 import {
   AgentArtifact,
@@ -1591,13 +1592,54 @@ export class UniversalAgent {
 
     const discoveryIntents = inferTaskIntents(`${subtask.title}\n${subtask.prompt}\n${text}`);
     const extraPatterns = await this.resolveEvidencePatterns(discoveryIntents);
-    const urls = selectBestUrlsForArtifact(
+    const limit = requiresMultipleSources(subtask) ? 3 : 2;
+    // Phase 12 Slice D: heuristic produces a short candidate list (top 3-6
+    // URLs by pattern + recency). The LLM ranker then picks `limit` of those
+    // by reading the subtask. Without a model the heuristic remains the
+    // final answer.
+    const candidatePool = selectBestUrlsForArtifact(
       priorEvidence.join("\n\n"),
-      requiresMultipleSources(subtask) ? 3 : 2,
+      Math.max(limit * 2, 6),
       discoveryIntents,
       extraPatterns,
     );
-    if (urls.length === 0) return { text: "No browser discovery URLs were available.", evidence: [], artifacts: [] };
+    if (candidatePool.length === 0) {
+      return { text: "No browser discovery URLs were available.", evidence: [], artifacts: [] };
+    }
+    const ranked = await rankDiscoveryUrls(
+      {
+        subtask: { title: subtask.title, prompt: subtask.prompt },
+        candidateUrls: candidatePool,
+        candidateContext: priorEvidence.join("\n\n").slice(0, 6_000),
+        intents: discoveryIntents,
+        limit,
+      },
+      {
+        llm: this.llm,
+        fallback: (cap) => candidatePool.slice(0, cap),
+      },
+    );
+    const urls = ranked.selected.length > 0 ? ranked.selected : candidatePool.slice(0, limit);
+    await emit({
+      spanId: createSpanId("discovery-url-ranked"),
+      parentSpanId,
+      type: "discovery-url-ranked",
+      actor: "discovery-url-ranker",
+      activity: "agent",
+      status: "completed",
+      title: "Discovery URL ranking",
+      detail:
+        ranked.source === "llm"
+          ? `LLM picked ${urls.length} of ${candidatePool.length} candidates`
+          : `Heuristic picked ${urls.length} of ${candidatePool.length} candidates${ranked.reason ? ` (${ranked.reason})` : ""}`,
+      payload: {
+        source: ranked.source,
+        intents: discoveryIntents,
+        selected: urls,
+        rejected: ranked.rejected,
+        reason: ranked.reason,
+      },
+    });
 
     const syntheticSubtask: Subtask = {
       ...subtask,

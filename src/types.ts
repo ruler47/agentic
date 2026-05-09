@@ -191,6 +191,7 @@ export type AgentEventType =
   | "agent-self-check-completed"
   | "synthesis-started"
   | "synthesis-completed"
+  | "discovery-url-ranked"
   | "learning-completed"
   | "run-completed"
   | "work-ledger-claim-created"
