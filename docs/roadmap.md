@@ -1956,9 +1956,37 @@ UI tasks:
 
 ## Phase 12: Domain-Neutral Universal Agent
 
-Status: in progress. Slice A.1 has shipped (intent-gate based on regex inference); Slices
-B–E remain. Tracking issue: see "Capability failure example: `run_1778320304262_oanslhzc`"
-in Recent Systemic Findings for the failure that motivated this phase.
+Status: **shipped (Slices A.1 → E)**. The Phase 12 cleanup is complete: domain-specific
+URL whitelists no longer live in `src/agents/*.ts`; they are data on tool contracts,
+in built-in seeds, or in scoped memory entries. A CI-enforced lint test fails the build
+if a flight aggregator or medical portal host name reappears in the runtime. Tracking
+issue: see "Capability failure example: `run_1778320304262_oanslhzc`" in Recent Systemic
+Findings for the failure that motivated this phase.
+
+Shipping summary:
+
+- **Slice A.1** (5f1c069): regex-based `inferTaskIntents` gates the IATA / from-to /
+  source-hints / medical-seed branches in `buildSearchQueries`, plus the flight and
+  medical host categories in `scoreArtifactUrl`. Closes the
+  `run_1778320304262_oanslhzc`-style cross-domain leak.
+- **Slice B** (ff6f0ec): host whitelist moves into `Tool.evidencePatterns` plus a
+  built-in seed (`src/tools/builtinEvidencePatterns.ts`). `scoreArtifactUrl` becomes a
+  thin wrapper around `scoreUrlAgainstPatterns`, which is pure data-driven matching.
+- **Slice C** (a4b6a09): operators can publish, override, or demote evidence patterns
+  through scoped memory entries tagged `evidence-pattern` + `intent:<name>`. JSON spec
+  parsed by `loadEvidencePatternsFromMemory`. Same review queue lifecycle as any other
+  memory.
+- **Slice D** (0f048b0): `rankDiscoveryUrls` asks an S-tier LLM to pick the best
+  candidate URLs for the subtask. Heuristic remains the documented fallback when the
+  LLM is unreachable, the JSON parses fail, or `URL_RANKER_LLM=disabled` is set. New
+  trace span `discovery-url-ranked` exposes the source and rejected URLs.
+- **Slice E** (be2a00f): every domain-specific regex is quarantined in
+  `src/agents/intentInference.ts`. `tests/banDomainTokensInAgents.test.ts` is the CI
+  lint that fails the build if any banned host token leaks back into `src/agents/*.ts`.
+
+Counts: ~1.2k lines net delta across `src/agents/`, `src/tools/`, `src/memory/`. New
+tests: 14 (Slice A) + 12 (Slice B) + 10 (Slice C) + 9 (Slice D) + 2 (Slice E) = 47.
+`npm run verify` exit 0, 412 total.
 
 Goal: remove the domain-specific hardcodes (flights, medical-doctor portals, country
 hint lists) from `src/agents/universalAgent.ts` and re-express them as data living on
