@@ -325,39 +325,14 @@ async function executeCommand(
       // unusable. We keep fullPage=true as the default for backwards
       // compatibility with existing tool calls but clip the result to
       // `maxHeight` (default 4000 px) so the captured image fits a normal
-      // operator screen.
+      // operator screen. If the clipping path fails for any reason
+      // (transient DOM, headless edge case, browser API drift) we fall
+      // back to the original fullPage capture so the run never loses its
+      // proof.
       const wantFullPage = command.fullPage ?? true;
       const rawCap = command.maxHeight === undefined ? 4000 : command.maxHeight;
       const cap = typeof rawCap === "number" && rawCap > 0 ? Math.floor(rawCap) : 0;
-      let buffer: Buffer;
-      if (wantFullPage && cap > 0) {
-        const viewport = page.viewportSize();
-        const docWidth = await page
-          .evaluate(() =>
-            Math.max(
-              document.documentElement.scrollWidth,
-              document.documentElement.clientWidth,
-              document.body?.scrollWidth ?? 0,
-            ),
-          )
-          .catch(() => viewport?.width ?? 1280);
-        const docHeight = await page
-          .evaluate(() =>
-            Math.max(
-              document.documentElement.scrollHeight,
-              document.documentElement.clientHeight,
-              document.body?.scrollHeight ?? 0,
-            ),
-          )
-          .catch(() => viewport?.height ?? 800);
-        const clipHeight = Math.min(Math.max(docHeight, 1), cap);
-        buffer = await page.screenshot({
-          type: "png",
-          clip: { x: 0, y: 0, width: docWidth, height: clipHeight },
-        });
-      } else {
-        buffer = await page.screenshot({ type: "png", fullPage: wantFullPage });
-      }
+      const buffer = await captureScreenshotWithCap(page, wantFullPage, cap);
       const filename = command.filename ? safePngFilename(command.filename) : screenshotFilename(page.url(), command.label);
       screenshots.push({
         filename,
@@ -367,6 +342,54 @@ async function executeCommand(
       });
       return `Captured screenshot ${filename}.`;
     }
+  }
+}
+
+async function captureScreenshotWithCap(
+  page: Page,
+  wantFullPage: boolean,
+  cap: number,
+): Promise<Buffer> {
+  if (!wantFullPage || cap <= 0) {
+    return page.screenshot({ type: "png", fullPage: wantFullPage });
+  }
+  try {
+    const dims = await page.evaluate(() => {
+      const html = document.documentElement;
+      const body = document.body;
+      const width = Math.max(
+        html?.scrollWidth ?? 0,
+        html?.clientWidth ?? 0,
+        body?.scrollWidth ?? 0,
+        1280,
+      );
+      const height = Math.max(
+        html?.scrollHeight ?? 0,
+        html?.clientHeight ?? 0,
+        body?.scrollHeight ?? 0,
+        1,
+      );
+      return { width, height };
+    });
+    if (!dims || !Number.isFinite(dims.width) || !Number.isFinite(dims.height)) {
+      return page.screenshot({ type: "png", fullPage: true });
+    }
+    if (dims.height <= cap) {
+      // Page already fits the cap — full-page capture is fine and tested.
+      return page.screenshot({ type: "png", fullPage: true });
+    }
+    return page.screenshot({
+      type: "png",
+      clip: {
+        x: 0,
+        y: 0,
+        width: Math.max(1, Math.floor(dims.width)),
+        height: Math.max(1, Math.floor(cap)),
+      },
+    });
+  } catch {
+    // Defensive: never let the height cap break a working capture.
+    return page.screenshot({ type: "png", fullPage: true });
   }
 }
 
