@@ -239,6 +239,19 @@ export class UniversalAgent {
   private readonly runScopedThreadArtifacts = new Map<string, AgentArtifact[]>();
 
   /**
+   * Phase 13 follow-up (TB-005b): per-run user-driven tool policy
+   * extracted by `decideAgentStrategy`. Discovery helpers consult it
+   * to drop denied tools and promote preferred ones in
+   * `findByCapability` results, so a user instruction like
+   * "use web.duckduckgo, don't use web.search" actually steers tool
+   * selection inside the worker loop.
+   */
+  private readonly runScopedToolPolicy = new Map<
+    string,
+    { denied: readonly string[]; preferred: readonly string[] }
+  >();
+
+  /**
    * Phase 13: optional callback envelope source. When set, each
    * external tool invocation receives a short-lived bearer token and
    * the runtime callback base URL so dockerized tool services can
@@ -333,8 +346,17 @@ export class UniversalAgent {
         this.runScopedLedgers.delete(runId);
         this.runScopedIntents.delete(runId);
         this.runScopedThreadArtifacts.delete(runId);
+        this.runScopedToolPolicy.delete(runId);
       }
     }
+  }
+
+  /**
+   * Phase 13 follow-up (TB-005b): expose the run-scoped user tool
+   * policy so deep helpers can pass it to `findByCapability`.
+   */
+  private getToolPolicy(runId: string | undefined) {
+    return runId ? this.runScopedToolPolicy.get(runId) : undefined;
   }
 
   async run(task: string, options: RunOptions = {}): Promise<AgentRunResult> {
@@ -507,6 +529,18 @@ export class UniversalAgent {
       hasWorkLedger: Boolean(ledger),
       pendingToolImprovements: pendingToolImprovements.length,
     });
+    // Phase 13 follow-up (TB-005b): stash the user-driven tool policy so
+    // deep `findByCapability` callsites in the worker loop respect
+    // "use X / don't use Y" intent extracted from the task body.
+    if (
+      strategy.toolPolicy.deniedToolNames.length > 0 ||
+      strategy.toolPolicy.preferredToolNames.length > 0
+    ) {
+      this.runScopedToolPolicy.set(effectiveRunId, {
+        denied: strategy.toolPolicy.deniedToolNames,
+        preferred: strategy.toolPolicy.preferredToolNames,
+      });
+    }
     const strategySpanId = createSpanId("agent-strategy");
     await emit({
       spanId: strategySpanId,
@@ -1506,7 +1540,13 @@ export class UniversalAgent {
   ): Promise<CollectedToolEvidence> {
     const evidence: string[] = [];
     const artifacts: AgentArtifact[] = [];
-    const webSearch = this.tools.get("web.search");
+    // Phase 13 follow-up (TB-005a/b): user-driven tool policy applies
+    // here. `findByCapability("web-search", policy)` returns the
+    // built-in `web.search` first if present, but a user instruction
+    // like "use web.duckduckgo, don't use web.search" deletes the
+    // built-in and promotes the user's preferred tool to [0].
+    const webSearchPolicy = this.getToolPolicy(toolExecutionContext?.runId);
+    const webSearch = this.tools.findByCapability("web-search", webSearchPolicy)[0];
     const toolNeedText = `${originalTask}\n${subtask.title}\n${subtask.role}\n${subtask.prompt}\n${subtask.expectedOutput}\n${subtask.reviewCriteria.join("\n")}`;
 
     if (webSearch && shouldCollectWebSearch(subtask, toolNeedText, dependencyContext)) {

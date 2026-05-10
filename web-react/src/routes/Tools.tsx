@@ -367,6 +367,84 @@ function ToolDetail({
 }
 
 /**
+ * Phase 13 follow-up: render the tool's input schema as a compact
+ * field table so the operator can see what shape the runner expects
+ * without having to expand the raw JSON schema dropdown above.
+ * Falls back to a "no declared schema" hint when the tool's
+ * inputSchema is empty.
+ */
+function InputSchemaSummary({
+  schema,
+}: {
+  schema?: ToolModuleMetadata["inputSchema"];
+}) {
+  const properties =
+    schema && typeof schema === "object" && schema !== null
+      ? ((schema as { properties?: Record<string, unknown> }).properties ?? {})
+      : {};
+  const required = new Set(
+    (schema && typeof schema === "object" && schema !== null
+      ? ((schema as { required?: string[] }).required ?? [])
+      : []) ?? [],
+  );
+  const entries = Object.entries(properties);
+
+  return (
+    <details className="rounded border border-app-border bg-app-surface px-2 py-1.5 open:bg-app-surface-2" open>
+      <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-app-text-muted">
+        Input schema {entries.length > 0 ? `(${entries.length} field${entries.length === 1 ? "" : "s"})` : "(no declared properties)"}
+      </summary>
+      {entries.length === 0 ? (
+        <p className="mt-1 text-[11px] text-app-text-muted">
+          This tool doesn't declare an input schema. Pass any JSON object and the runtime will
+          forward it as-is.
+        </p>
+      ) : (
+        <ul className="mt-1.5 flex flex-col gap-1 text-[11px]">
+          {entries.map(([key, raw]) => {
+            const def = raw as {
+              type?: string | string[];
+              description?: string;
+              enum?: unknown[];
+              minLength?: number;
+              minimum?: number;
+              maximum?: number;
+              default?: unknown;
+            };
+            const type = Array.isArray(def?.type) ? def.type.join("|") : def?.type ?? "any";
+            const constraints: string[] = [];
+            if (Array.isArray(def?.enum) && def.enum.length > 0) {
+              constraints.push(`enum: ${def.enum.map((v) => JSON.stringify(v)).join(", ")}`);
+            }
+            if (def?.minLength !== undefined) constraints.push(`minLen ${def.minLength}`);
+            if (def?.minimum !== undefined) constraints.push(`min ${def.minimum}`);
+            if (def?.maximum !== undefined) constraints.push(`max ${def.maximum}`);
+            if (def?.default !== undefined) {
+              constraints.push(`default: ${JSON.stringify(def.default).slice(0, 40)}`);
+            }
+            return (
+              <li key={key} className="flex flex-col rounded bg-app-surface px-2 py-1">
+                <span className="font-mono">
+                  {key}
+                  {required.has(key) ? <span className="ml-1 text-app-warning">*</span> : null}
+                  <span className="ml-2 text-app-text-muted">: {type}</span>
+                </span>
+                {def?.description ? (
+                  <span className="text-app-text-muted">{def.description}</span>
+                ) : null}
+                {constraints.length > 0 ? (
+                  <span className="text-app-text-muted">{constraints.join(" · ")}</span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </details>
+  );
+}
+
+/**
  * Phase 13 follow-up: manual tool runner panel. Lets the operator paste a
  * JSON `input`, click "Run", and see the exact `ToolResult` the runtime
  * would hand back to an agent. Useful for smoke-testing a fresh docker
@@ -409,6 +487,7 @@ function ManualRunPanel({ tool }: { tool: ToolModuleMetadata }) {
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-app-border bg-app-surface-2 p-3 text-xs">
+      <InputSchemaSummary schema={tool.inputSchema} />
       <label className="flex flex-col gap-1">
         <span className="text-[11px] text-app-text-muted">
           Input (JSON object matching the tool's input schema)
