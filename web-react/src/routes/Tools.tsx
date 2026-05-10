@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   settingsByTool,
@@ -631,6 +631,7 @@ function ManualRunPanel({ tool }: { tool: ToolModuleMetadata }) {
 
 function ManualRunResultDisplay({ response }: { response: ManualToolRunResponse }) {
   const { result, durationMs, tool } = response;
+  const artifacts = useMemo(() => collectArtifacts(result.data), [result.data]);
   return (
     <div className="mt-1 rounded border border-app-border bg-app-surface p-2 text-[11px]">
       <p className="flex flex-wrap items-center gap-2">
@@ -643,6 +644,16 @@ function ManualRunResultDisplay({ response }: { response: ManualToolRunResponse 
       <pre className="mt-0.5 max-h-60 overflow-auto whitespace-pre-wrap font-mono text-[10px]">
         {result.content || "(empty)"}
       </pre>
+      {artifacts.length > 0 ? (
+        <div className="mt-1.5">
+          <p className="font-semibold">artifacts:</p>
+          <ul className="mt-0.5 flex flex-col gap-1">
+            {artifacts.map((artifact, index) => (
+              <ArtifactDownloadRow key={`${artifact.filename}-${index}`} artifact={artifact} />
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {result.data !== undefined ? (
         <details className="mt-1.5">
           <summary className="cursor-pointer text-app-text-muted">data</summary>
@@ -653,6 +664,120 @@ function ManualRunResultDisplay({ response }: { response: ManualToolRunResponse 
       ) : null}
     </div>
   );
+}
+
+/**
+ * Phase 13 follow-up: artifact-shaped payload extracted from a manual
+ * tool-run response. Tools return their files under a few different
+ * keys (`data.artifact`, `data.screenshots[]`, `data.artifacts[]`, …),
+ * with either inline string content or base64. `collectArtifacts`
+ * recursively walks the response and surfaces every artifact-shaped
+ * object so the UI can render one download button per file.
+ */
+type ManualRunArtifact = {
+  filename: string;
+  mimeType: string;
+  content?: string;
+  contentBase64?: string;
+  description?: string;
+};
+
+function collectArtifacts(value: unknown): ManualRunArtifact[] {
+  const out: ManualRunArtifact[] = [];
+  const seen = new Set<unknown>();
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object" || seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const entry of node) visit(entry);
+      return;
+    }
+    const candidate = node as Record<string, unknown>;
+    const filename = typeof candidate.filename === "string" ? candidate.filename : undefined;
+    const mimeType = typeof candidate.mimeType === "string" ? candidate.mimeType : undefined;
+    const inlineContent =
+      typeof candidate.content === "string" ? (candidate.content as string) : undefined;
+    const base64 =
+      typeof candidate.contentBase64 === "string" ? (candidate.contentBase64 as string) : undefined;
+    if (filename && mimeType && (inlineContent !== undefined || base64 !== undefined)) {
+      out.push({
+        filename,
+        mimeType,
+        content: inlineContent,
+        contentBase64: base64,
+        description: typeof candidate.description === "string" ? (candidate.description as string) : undefined,
+      });
+    }
+    for (const child of Object.values(candidate)) visit(child);
+  };
+  visit(value);
+  return out;
+}
+
+function ArtifactDownloadRow({ artifact }: { artifact: ManualRunArtifact }) {
+  const href = useMemo(() => {
+    if (artifact.contentBase64) {
+      return `data:${artifact.mimeType};base64,${artifact.contentBase64}`;
+    }
+    if (artifact.content !== undefined) {
+      const blob = new Blob([artifact.content], { type: artifact.mimeType });
+      return URL.createObjectURL(blob);
+    }
+    return undefined;
+  }, [artifact]);
+
+  // Revoke the object URL when the row unmounts so we don't leak.
+  useEffect(() => {
+    return () => {
+      if (href && href.startsWith("blob:")) URL.revokeObjectURL(href);
+    };
+  }, [href]);
+
+  const sizeHint = useMemo(() => {
+    if (artifact.contentBase64) {
+      // Base64 → bytes ≈ length * 3/4 (minus padding).
+      const padding = (artifact.contentBase64.match(/=+$/) ?? [""])[0]!.length;
+      return Math.max(0, Math.floor((artifact.contentBase64.length * 3) / 4) - padding);
+    }
+    if (artifact.content !== undefined) {
+      try {
+        return new TextEncoder().encode(artifact.content).length;
+      } catch {
+        return artifact.content.length;
+      }
+    }
+    return undefined;
+  }, [artifact]);
+
+  return (
+    <li className="flex flex-wrap items-center gap-2 rounded border border-app-border bg-app-surface-2 px-2 py-1">
+      <span className="font-mono text-[10px]">{artifact.filename}</span>
+      <span className="text-[10px] text-app-text-muted">
+        {artifact.mimeType}
+        {sizeHint !== undefined ? ` · ${formatBytes(sizeHint)}` : ""}
+      </span>
+      {artifact.description ? (
+        <span className="text-[10px] text-app-text-muted">{artifact.description}</span>
+      ) : null}
+      {href ? (
+        <a
+          href={href}
+          download={artifact.filename}
+          className="ml-auto rounded bg-app-accent px-2 py-0.5 text-[10px] font-semibold text-app-bg hover:opacity-90"
+        >
+          Download
+        </a>
+      ) : (
+        <span className="ml-auto text-[10px] text-app-text-muted">no content</span>
+      )}
+    </li>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
 function RuntimeSettingRow({
