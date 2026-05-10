@@ -104,6 +104,45 @@ services:
       retries: 5
       start_period: 20s
 
+  # Phase 13: dockerized chart.generate tool service.
+  chart-generate:
+    build:
+      context: ./tools/chart-generate-service
+    environment:
+      PORT: "8080"
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # Phase 13: dockerized market.timeseries tool service.
+  market-timeseries:
+    build:
+      context: ./tools/market-timeseries-service
+    environment:
+      PORT: "8080"
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # Phase 13: dockerized telegram.bot tool service skeleton.
+  telegram-bot:
+    build:
+      context: ./tools/telegram-bot-service
+    environment:
+      PORT: "8080"
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres-data:
   minio-data:

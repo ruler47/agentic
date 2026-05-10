@@ -59,6 +59,7 @@ import { ChartGenerateTool } from "../../tools/chartGenerateTool.js";
 import { MarketTimeseriesTool } from "../../tools/marketTimeseriesTool.js";
 import { BrowserOperateTool } from "../../tools/browserOperateTool.js";
 import { BrowserOperateHttpTool } from "../../tools/browserOperateHttpTool.js";
+import { HttpToolAdapter } from "../../tools/httpToolAdapter.js";
 import { createScopedToolDbClient } from "../../tools/toolScopedDb.js";
 import type { SecretHandleStore } from "../../secrets/secretHandleStore.js";
 import type { ToolMetadataStore } from "../../tools/toolMetadataStore.js";
@@ -278,11 +279,44 @@ const providers: Provider[] = [
     ) => {
       const registry = new ToolRegistry();
       registry.register(new WebSearchTool());
-      registry.register(new TelegramBotServiceTool());
+      // Phase 13: feature-flag select between in-process tools and
+      // their dockerized counterparts. Default = in-process so
+      // existing setups keep working until the operator opts in.
+      if ((process.env.TELEGRAM_BOT_RUNNER ?? "").toLowerCase() === "docker") {
+        registry.register(new HttpToolAdapter({
+          name: "telegram.bot",
+          version: "1.0.0",
+          description: "Receives Telegram bot messages and bridges them to generic Agentic inbound/outbox APIs.",
+          capabilities: ["messaging-channel", "telegram-bridge", "background-service"],
+          startupMode: "always-on",
+        }));
+      } else {
+        registry.register(new TelegramBotServiceTool());
+      }
       registry.register(new FileReadTool());
       registry.register(new FileWriteTool());
-      registry.register(new ChartGenerateTool());
-      registry.register(new MarketTimeseriesTool());
+      if ((process.env.CHART_GENERATE_RUNNER ?? "").toLowerCase() === "docker") {
+        registry.register(new HttpToolAdapter({
+          name: "chart.generate",
+          version: "1.0.0",
+          description: "Generates an SVG line-chart artifact from time-series text or JSON.",
+          capabilities: ["chart-generation", "artifact-generation", "data-visualization"],
+          startupMode: "on-demand",
+        }));
+      } else {
+        registry.register(new ChartGenerateTool());
+      }
+      if ((process.env.MARKET_TIMESERIES_RUNNER ?? "").toLowerCase() === "docker") {
+        registry.register(new HttpToolAdapter({
+          name: "market.timeseries",
+          version: "1.0.0",
+          description: "Fetches structured crypto market time-series data and returns a CSV artifact.",
+          capabilities: ["market-timeseries", "crypto-timeseries", "structured-market-data"],
+          startupMode: "on-demand",
+        }));
+      } else {
+        registry.register(new MarketTimeseriesTool());
+      }
       // Phase 13: select between in-process Playwright and the
       // dockerized browser-operate-service container based on env.
       // BROWSER_OPERATE_RUNNER=docker forwards every browser.operate
