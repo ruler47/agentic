@@ -291,6 +291,76 @@ export class ToolsService {
     }
   }
 
+  /**
+   * Phase 13 — derive per-tool usage stats from the metadata store.
+   * The store already accumulates successCount / failureCount /
+   * lastSuccessAt / lastFailureAt; this method shapes them into a
+   * single structured response with derived metrics (success rate,
+   * total runs, per-version aggregates) so the UI doesn't need to
+   * compute ratios on every render.
+   */
+  async getToolStats(name: string): Promise<{
+    name: string;
+    activeVersion: string;
+    totalRuns: number;
+    successCount: number;
+    failureCount: number;
+    successRate: number | null;
+    lastSuccessAt?: string;
+    lastFailureAt?: string;
+    versions: Array<{
+      version: string;
+      activatedAt?: string;
+      changeSummary?: string;
+    }>;
+  }> {
+    if (!this.metadata) {
+      throw new ServiceUnavailableException("Tool metadata store is not configured");
+    }
+    const tool = (await this.metadata.list()).find((candidate) => candidate.name === name);
+    if (!tool) throw new NotFoundException("Tool not found");
+    const totalRuns = tool.successCount + tool.failureCount;
+    const successRate = totalRuns > 0 ? tool.successCount / totalRuns : null;
+    const versions = await this.metadata.listVersions(name);
+    return {
+      name: tool.name,
+      activeVersion: tool.version,
+      totalRuns,
+      successCount: tool.successCount,
+      failureCount: tool.failureCount,
+      successRate,
+      lastSuccessAt: tool.lastSuccessAt,
+      lastFailureAt: tool.lastFailureAt,
+      versions: versions.map((v) => ({
+        version: v.version,
+        activatedAt: v.updatedAt,
+        changeSummary: v.changeSummary,
+      })),
+    };
+  }
+
+  /**
+   * Phase 13 — return the package manifest as a JSON download. Used
+   * by the export UI to share a tool's blueprint with another
+   * agentic instance. Operators can then POST the same JSON back
+   * via /api/tools/package-manifests on the target instance to
+   * import the tool blueprint (the OCI image lives in the local
+   * Docker daemon and is published / pulled separately).
+   */
+  async exportPackageManifest(name: string): Promise<{
+    manifest: unknown;
+    filename: string;
+  }> {
+    const manifest = await this.getPackageManifest(name);
+    const safeName = name.replace(/[^a-zA-Z0-9_.-]+/g, "-");
+    return {
+      manifest,
+      filename: `${safeName}-${
+        (manifest as { version?: string })?.version ?? "version"
+      }.tool-package.json`,
+    };
+  }
+
   async getPackageManifest(name: string) {
     if (!this.metadata) {
       throw new ServiceUnavailableException("Tool metadata store is not configured");

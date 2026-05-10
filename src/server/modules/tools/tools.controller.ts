@@ -78,6 +78,29 @@ export class ToolsController {
     return { manifest: await this.tools.getPackageManifest(decodeURIComponent(name)) };
   }
 
+  /**
+   * Phase 13 — per-tool usage stats. Returns derived metrics
+   * (success rate, total runs, per-version aggregates) for the UI
+   * tools page; numbers come from the metadata store's existing
+   * successCount / failureCount / lastSuccessAt / lastFailureAt.
+   */
+  @Get("tools/:name/stats")
+  async getStats(@Param("name") name: string) {
+    return await this.tools.getToolStats(decodeURIComponent(name));
+  }
+
+  /**
+   * Phase 13 — export the package manifest as a JSON download. Pair
+   * with POST /api/tools/package-manifests on a target instance to
+   * import the same blueprint there. The OCI image referenced by
+   * the manifest must be published / pulled separately (e.g. via
+   * `docker save | docker load`).
+   */
+  @Get("tools/:name/export")
+  async exportPackage(@Param("name") name: string) {
+    return await this.tools.exportPackageManifest(decodeURIComponent(name));
+  }
+
   @Delete("tools/generated-modules/:name")
   async deleteGenerated(@Param("name") name: string) {
     return this.tools.deleteGenerated(decodeURIComponent(name));
