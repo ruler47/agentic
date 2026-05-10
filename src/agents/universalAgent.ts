@@ -4903,9 +4903,30 @@ function isLowValueProofUrl(url: string): boolean {
   // structurally invalid as evidence URLs; .pdf stays because the
   // browser screenshot tool cannot meaningfully render PDFs as visual
   // proof.
-  return /(?:^|\/\/)(?:localhost|127\.0\.0\.1)(?:[/:?#]|$)|example\.com|placeholder|\.pdf(?:$|[?#])/i.test(
-    url,
-  );
+  if (
+    /(?:^|\/\/)(?:localhost|127\.0\.0\.1)(?:[/:?#]|$)|example\.com|placeholder|\.pdf(?:$|[?#])/i.test(
+      url,
+    )
+  ) {
+    return true;
+  }
+  // Phase 12 follow-up: also reject programmatic / API endpoints that
+  // are not user-facing pages. The LLM URL ranker keeps mistakenly
+  // promoting things like `worksheets.codalab.org/rest/bundles/<id>/contents/blob/...`
+  // (academic dataset blobs) or `*/api/v1/*` REST routes when the
+  // search engine surfaces them. They contain no useful HTML for
+  // browser screenshots and waste a navigation slot. Structural test
+  // only — any path containing `/rest/`, `/api/`, `/v1/`, `/v2/`,
+  // `/raw/`, `/blob/`, or `/contents/` is treated as low-value.
+  try {
+    const parsed = new URL(url);
+    if (/(?:^|\/)(?:rest|api|v\d+|raw|blob|contents)(?:\/|$)/i.test(parsed.pathname)) {
+      return true;
+    }
+  } catch {
+    // Malformed URL — let extractHttpUrls / scoring handle it elsewhere.
+  }
+  return false;
 }
 
 function extractHttpUrls(text: string): string[] {
@@ -5593,4 +5614,5 @@ export const __testing__ = {
   getApprovedArtifacts,
   improveDeclaredToolInput,
   isShallowLandingUrl,
+  isLowValueProofUrl,
 };

@@ -151,6 +151,7 @@ Return:
 - unresolved risks
 
 Rules:
+- NEVER write tool-call syntax in your output. Examples of forbidden output: tags shaped like <|tool_call> or <tool_call>, fenced blocks tagged with "tool" / "tool_code", and prose that names a tool with arguments such as "call:web.search{...}" or "call:browser.operate{...}". The runtime executes tools BEFORE you write your output, and the resulting evidence is already provided to you in the External tool evidence section above. Your job is to write the FINAL prose answer based on that evidence only. If you genuinely need additional evidence, state it as plain prose ("To complete this task I would need a search for X") instead of writing tool-call syntax — the reviewer will catch that and send the subtask back with a stronger discovery plan.
 - Before returning, self-check your own output and evidence. Ask: what am I giving back, does it satisfy the subtask, are artifacts/tool results useful and relevant, and should I retry or clearly report a blocker instead of passing weak output upward?
 - If the result is weak, irrelevant, empty, unsupported, or has unusable artifacts, say what failed and what retry/alternative is needed instead of presenting it as success.
 - If a registered tool failed or returned an incomplete result, explicitly state whether this is operator error, external blocker, credential/policy problem, or a reusable tool improvement request. Include the tool name, current behavior, desired behavior, and acceptance test for a new version.

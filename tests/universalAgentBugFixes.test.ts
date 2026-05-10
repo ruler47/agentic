@@ -11,6 +11,7 @@ const {
   getApprovedArtifacts,
   improveDeclaredToolInput,
   isShallowLandingUrl,
+  isLowValueProofUrl,
 } = __testing__;
 
 // Bug 2: pre-call ungrounded-gate on search query.
@@ -124,6 +125,24 @@ test("improveDeclaredToolInput rewrites homepage navigation to first non-low-val
   const newUrl = (navigates[0] as { url: string }).url;
   assert.notEqual(newUrl, "https://www.amazon.com");
   assert.ok(/tomshardware\.com|nytimes\.com/.test(newUrl), `fallback URL should be from priorEvidence: ${newUrl}`);
+});
+
+test("isLowValueProofUrl rejects programmatic / API endpoints surfaced as search results (Bug 11/13)", () => {
+  // Iter H4 regression: LLM URL ranker promoted
+  // worksheets.codalab.org/rest/bundles/<id>/contents/blob/... as a Skyscanner
+  // candidate. Iter H2: facebook.com/groups/... was a placeholder match. The
+  // first one is a programmatic API path that should be filtered structurally.
+  assert.equal(
+    isLowValueProofUrl("https://worksheets.codalab.org/rest/bundles/0xd74f36/contents/blob/frequent-classes"),
+    true,
+  );
+  assert.equal(isLowValueProofUrl("https://api.example.org/api/v1/search"), true);
+  assert.equal(isLowValueProofUrl("https://github.com/foo/bar/raw/main/file.txt"), true);
+  assert.equal(isLowValueProofUrl("https://github.com/foo/bar/blob/main/README.md"), true);
+  // Real user-facing pages must NOT be filtered.
+  assert.equal(isLowValueProofUrl("https://www.skyscanner.com/transport/flights/lis/lax/"), false);
+  assert.equal(isLowValueProofUrl("https://www.tomshardware.com/laptops/best-laptops"), false);
+  assert.equal(isLowValueProofUrl("https://news.ycombinator.com/item?id=12345"), false);
 });
 
 test("isShallowLandingUrl flags root and single-segment paths", () => {
