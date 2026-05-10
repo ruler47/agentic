@@ -1,3 +1,25 @@
+// Phase 13 follow-up: path→hash redirect for the SPA fallback. The
+// console uses hash routing (`#/tools`), but operators sometimes
+// land on the path-only form (`/tools`) — typed manually, copied
+// from a stripped link, autocompleted from history. The Nest SPA
+// fallback now serves index.html for those URLs, but the loaded
+// console would otherwise show the dashboard (parseRoute reads
+// `location.hash`, which is empty). Convert the pathname into a
+// hash on startup so the user lands on the page they actually
+// asked for.
+(function redirectPathToHash() {
+  const path = window.location.pathname;
+  if (!path || path === "/" || window.location.hash) return;
+  const trimmed = path.replace(/^\/+|\/+$/g, "");
+  if (!trimmed) return;
+  // Static asset paths (anything with a dot in the last segment) are
+  // never console pages — bail so we don't accidentally rewrite a
+  // misrouted asset URL.
+  const last = trimmed.split("/").pop() ?? "";
+  if (last.includes(".")) return;
+  window.location.replace(`/#/${trimmed}${window.location.search}`);
+})();
+
 const app = document.querySelector("#app");
 
 const routes = [

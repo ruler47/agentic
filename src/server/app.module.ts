@@ -5,6 +5,7 @@ import { CommonModule } from "./common/common.module.js";
 import { ConfigModule } from "./config/config.module.js";
 import { AuditModule } from "./modules/audit/audit.module.js";
 import { ConversationsModule } from "./modules/conversations/conversations.module.js";
+import { SpaModule } from "./modules/spa/spa.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
 import { MemoryModule } from "./modules/memory/memory.module.js";
 import { ModelsModule } from "./modules/models/models.module.js";
@@ -54,6 +55,12 @@ import { RuntimeWorkersModule } from "./workers/runtime-workers.module.js";
       exclude: ["/api/{*any}"],
       serveStaticOptions: { cacheControl: false },
     }),
+    // Phase 13 follow-up: SPA fallback. Returns public/index.html for
+    // any non-API, non-static GET request (e.g. /tools, /runs/<id>)
+    // so refreshing a hash-routed URL the operator typed without `#`
+    // doesn't return Nest's 404 JSON. MUST be imported AFTER
+    // ServeStaticModule so concrete static files take priority.
+    SpaModule,
   ],
 })
 export class AppModule {}
