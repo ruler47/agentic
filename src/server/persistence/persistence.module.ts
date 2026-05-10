@@ -54,10 +54,11 @@ import { LlmClient, readLlmConfigFromEnv } from "../../llm/client.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { FileReadTool, FileWriteTool } from "../../tools/fileTools.js";
 import { WebSearchTool } from "../../tools/webSearchTool.js";
-import { TelegramBotServiceTool } from "../../tools/telegramBotServiceTool.js";
-import { ChartGenerateTool } from "../../tools/chartGenerateTool.js";
-import { MarketTimeseriesTool } from "../../tools/marketTimeseriesTool.js";
-import { BrowserOperateTool } from "../../tools/browserOperateTool.js";
+// Phase 13 follow-up: the in-process tool classes have been
+// removed in favour of dockerized tool services. The runtime
+// always wires the HttpToolAdapter / BrowserOperateHttpTool
+// instances below so every browser.operate / chart.generate /
+// market.timeseries / telegram.bot call goes to a container.
 import { BrowserOperateHttpTool } from "../../tools/browserOperateHttpTool.js";
 import { HttpToolAdapter } from "../../tools/httpToolAdapter.js";
 import { createScopedToolDbClient } from "../../tools/toolScopedDb.js";
@@ -279,55 +280,34 @@ const providers: Provider[] = [
     ) => {
       const registry = new ToolRegistry();
       registry.register(new WebSearchTool());
-      // Phase 13: feature-flag select between in-process tools and
-      // their dockerized counterparts. Default = in-process so
-      // existing setups keep working until the operator opts in.
-      if ((process.env.TELEGRAM_BOT_RUNNER ?? "").toLowerCase() === "docker") {
-        registry.register(new HttpToolAdapter({
-          name: "telegram.bot",
-          version: "1.0.0",
-          description: "Receives Telegram bot messages and bridges them to generic Agentic inbound/outbox APIs.",
-          capabilities: ["messaging-channel", "telegram-bridge", "background-service"],
-          startupMode: "always-on",
-        }));
-      } else {
-        registry.register(new TelegramBotServiceTool());
-      }
+      // Phase 13: every built-in tool is now backed by a dockerized
+      // tool service. The runtime forwards each call to the matching
+      // container via HttpToolAdapter / BrowserOperateHttpTool — see
+      // docker-compose.yml `*_RUNNER=docker` env vars.
+      registry.register(new HttpToolAdapter({
+        name: "telegram.bot",
+        version: "1.0.0",
+        description: "Receives Telegram bot messages and bridges them to generic Agentic inbound/outbox APIs.",
+        capabilities: ["messaging-channel", "telegram-bridge", "background-service"],
+        startupMode: "always-on",
+      }));
       registry.register(new FileReadTool());
       registry.register(new FileWriteTool());
-      if ((process.env.CHART_GENERATE_RUNNER ?? "").toLowerCase() === "docker") {
-        registry.register(new HttpToolAdapter({
-          name: "chart.generate",
-          version: "1.0.0",
-          description: "Generates an SVG line-chart artifact from time-series text or JSON.",
-          capabilities: ["chart-generation", "artifact-generation", "data-visualization"],
-          startupMode: "on-demand",
-        }));
-      } else {
-        registry.register(new ChartGenerateTool());
-      }
-      if ((process.env.MARKET_TIMESERIES_RUNNER ?? "").toLowerCase() === "docker") {
-        registry.register(new HttpToolAdapter({
-          name: "market.timeseries",
-          version: "1.0.0",
-          description: "Fetches structured crypto market time-series data and returns a CSV artifact.",
-          capabilities: ["market-timeseries", "crypto-timeseries", "structured-market-data"],
-          startupMode: "on-demand",
-        }));
-      } else {
-        registry.register(new MarketTimeseriesTool());
-      }
-      // Phase 13: select between in-process Playwright and the
-      // dockerized browser-operate-service container based on env.
-      // BROWSER_OPERATE_RUNNER=docker forwards every browser.operate
-      // call to http://browser-operate:8080 (compose service name).
-      // Anything else keeps the legacy in-process tool, so existing
-      // setups without the docker service keep working untouched.
-      if ((process.env.BROWSER_OPERATE_RUNNER ?? "").toLowerCase() === "docker") {
-        registry.register(new BrowserOperateHttpTool());
-      } else {
-        registry.register(new BrowserOperateTool());
-      }
+      registry.register(new HttpToolAdapter({
+        name: "chart.generate",
+        version: "1.0.0",
+        description: "Generates an SVG line-chart artifact from time-series text or JSON.",
+        capabilities: ["chart-generation", "artifact-generation", "data-visualization"],
+        startupMode: "on-demand",
+      }));
+      registry.register(new HttpToolAdapter({
+        name: "market.timeseries",
+        version: "1.0.0",
+        description: "Fetches structured crypto market time-series data and returns a CSV artifact.",
+        capabilities: ["market-timeseries", "crypto-timeseries", "structured-market-data"],
+        startupMode: "on-demand",
+      }));
+      registry.register(new BrowserOperateHttpTool());
       if (metadata) {
         await metadata.syncBuiltins(registry.list());
         registry.setUsageReporter((event) =>
