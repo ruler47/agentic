@@ -17,6 +17,16 @@ services:
       CHROMIUM_PATH: /usr/bin/chromium
       TZ: Europe/Madrid
       AGENT_TIME_ZONE: Europe/Madrid
+      # Phase 13: route built-in tool calls to dockerized services
+      # instead of running them in-process.
+      BROWSER_OPERATE_RUNNER: docker
+      BROWSER_OPERATE_BASE_URL: http://browser-operate:8080
+      CHART_GENERATE_RUNNER: docker
+      CHART_GENERATE_BASE_URL: http://chart-generate:8080
+      MARKET_TIMESERIES_RUNNER: docker
+      MARKET_TIMESERIES_BASE_URL: http://market-timeseries:8080
+      TELEGRAM_BOT_RUNNER: docker
+      TELEGRAM_BOT_BASE_URL: http://telegram-bot:8080
     ports:
       - "3000:3000"
     volumes:
