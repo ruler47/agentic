@@ -28,6 +28,53 @@ export class BrowserOperateHttpTool implements Tool {
     "artifact-generation",
   ];
   readonly startupMode = "on-demand" as const;
+  // Phase 13 follow-up: declare an explicit input schema so the manual-run
+  // panel can render field hints (without this the panel showed
+  // "INPUT SCHEMA (NO DECLARED PROPERTIES)" because Tool.inputSchema was
+  // optional and unset on this adapter). The shape mirrors what the
+  // dockerized browser-operate-service /describe payload accepts.
+  readonly inputSchema = {
+    type: "object" as const,
+    properties: {
+      commands: {
+        type: "array",
+        description:
+          "Sequence of browser commands to run (navigate, dismissDialogs, click, fill, screenshot, extractText, ...).",
+        items: { type: "object" },
+        minItems: 1,
+      },
+      viewport: {
+        type: "object",
+        properties: {
+          width: { type: "number", minimum: 320, maximum: 4096 },
+          height: { type: "number", minimum: 240, maximum: 4096 },
+        },
+      },
+      userAgent: { type: "string" },
+      defaultTimeoutMs: { type: "number", minimum: 1000, maximum: 120_000 },
+      maxCommands: { type: "number", minimum: 1, maximum: 80 },
+    },
+    required: ["commands"],
+  };
+  readonly outputSchema = {
+    type: "object" as const,
+    properties: {
+      ok: { type: "boolean" },
+      content: { type: "string" },
+      data: {
+        type: "object",
+        properties: {
+          finalUrl: { type: "string" },
+          title: { type: "string" },
+          extractedText: { type: "array" },
+          extractedLinks: { type: "array" },
+          screenshots: { type: "array" },
+          steps: { type: "array" },
+        },
+      },
+    },
+    required: ["ok", "content"],
+  };
 
   constructor(
     private readonly options: {

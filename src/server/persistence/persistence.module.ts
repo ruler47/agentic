@@ -290,6 +290,10 @@ const providers: Provider[] = [
         description: "Receives Telegram bot messages and bridges them to generic Agentic inbound/outbox APIs.",
         capabilities: ["messaging-channel", "telegram-bridge", "background-service"],
         startupMode: "always-on",
+        // Always-on bridge driven by the runtime's inbound/outbox APIs;
+        // /run is a noop so the schema is intentionally empty.
+        inputSchema: { type: "object", properties: {} },
+        outputSchema: { type: "object", properties: { ok: { type: "boolean" }, content: { type: "string" } } },
       }));
       registry.register(new FileReadTool());
       registry.register(new FileWriteTool());
@@ -299,6 +303,26 @@ const providers: Provider[] = [
         description: "Generates an SVG line-chart artifact from time-series text or JSON.",
         capabilities: ["chart-generation", "artifact-generation", "data-visualization"],
         startupMode: "on-demand",
+        // Mirrors the docker chart-generate-service /describe schema.
+        inputSchema: {
+          type: "object",
+          properties: {
+            task: { type: "string", minLength: 1 },
+            text: { type: "string", minLength: 1 },
+            title: { type: "string" },
+            filename: { type: "string" },
+          },
+          required: ["task", "text"],
+        },
+        outputSchema: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+            content: { type: "string" },
+            data: { type: "object", properties: { artifact: { type: "object" }, points: { type: "number" } } },
+          },
+          required: ["ok", "content"],
+        },
       }));
       registry.register(new HttpToolAdapter({
         name: "market.timeseries",
@@ -306,6 +330,24 @@ const providers: Provider[] = [
         description: "Fetches structured crypto market time-series data and returns a CSV artifact.",
         capabilities: ["market-timeseries", "crypto-timeseries", "structured-market-data"],
         startupMode: "on-demand",
+        inputSchema: {
+          type: "object",
+          properties: {
+            symbol: { type: "string", minLength: 1 },
+            vsCurrency: { type: "string", default: "usd" },
+            days: { type: "number", minimum: 1, maximum: 3650, default: 30 },
+          },
+          required: ["symbol"],
+        },
+        outputSchema: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+            content: { type: "string" },
+            data: { type: "object" },
+          },
+          required: ["ok", "content"],
+        },
       }));
       registry.register(new BrowserOperateHttpTool());
       if (metadata) {

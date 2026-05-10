@@ -135,8 +135,11 @@ export function useRunToolManually() {
     mutationFn: ({ name, input }: { name: string; input: Record<string, unknown> }) =>
       apiFetch<ManualToolRunResponse>(`/api/tools/${encodeURIComponent(name)}/run`, {
         method: "POST",
-        body: JSON.stringify({ input }),
-        headers: { "content-type": "application/json" },
+        // apiFetch already wraps the body with JSON.stringify and sets the
+        // content-type header. Passing a string here would double-encode
+        // the payload (server saw `"{\"input\":...}"` instead of an object
+        // and rejected the body with "Unexpected token …").
+        body: { input },
       }),
   });
 }
