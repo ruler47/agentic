@@ -4706,11 +4706,34 @@ function improveDeclaredToolInput(
   // detect navigation to a SHALLOW path (root or single segment) and treat
   // it the same as placeholder navigation: rewrite from web.search
   // evidence which already has specific result URLs.
+  //
+  // Phase 13 follow-up: ONLY rewrite a shallow URL when it was NOT
+  // explicitly named by the user in the task / subtask prompt. If the
+  // user typed `https://example.com` and the planner faithfully
+  // forwarded it to browser.operate, replacing that URL with whatever
+  // the search engine surfaced is destructive (iter showed
+  // `chromewebstore.google.com/.../gofullpage` getting picked over
+  // the user's literal `https://example.com`). The intent check is
+  // a simple substring lookup against subtask metadata — no need to
+  // parse URLs because the planner copies them verbatim.
   const firstNavigationUrl = commands.find(isNavigateCommand)?.url;
   const hasShallowLandingNavigation = firstNavigationUrl
     ? isShallowLandingUrl(firstNavigationUrl)
     : false;
-  if (!hasPlaceholderNavigation && !hasBrittleInteraction && !hasShallowLandingNavigation) {
+  const userIntendedNavigation = firstNavigationUrl
+    ? userExplicitlyAskedForUrl(firstNavigationUrl, subtask)
+    : false;
+  // A user-intended URL is honoured regardless of shape — even when the
+  // URL matches the historical "placeholder" regex (literal example.com)
+  // or has a shallow path. The runtime should never silently override a
+  // navigation target the user typed into their task. Brittle interaction
+  // (form-fill loops the runtime cannot drive) is the only trigger that
+  // still fires unconditionally because it isn't about the URL.
+  if (userIntendedNavigation && !hasBrittleInteraction) {
+    return input;
+  }
+  const shallowNeedsRewrite = hasShallowLandingNavigation && !userIntendedNavigation;
+  if (!hasPlaceholderNavigation && !hasBrittleInteraction && !shallowNeedsRewrite) {
     return input;
   }
 
@@ -4778,6 +4801,42 @@ function improveDeclaredToolInput(
  * navigation commands. No domain knowledge — the rule is purely
  * structural: depth of path < 2 segments.
  */
+/**
+ * Phase 13 follow-up: did the user (via the subtask the planner
+ * generated from the user's original task) explicitly name this
+ * URL? When yes, the runtime must NOT rewrite it even if it has a
+ * shallow path. Detection is a simple substring search across
+ * subtask.title / .prompt / .expectedOutput / .reviewCriteria —
+ * the planner copies user-provided URLs verbatim and the runtime
+ * never prefixes the URL with anything, so a substring is enough
+ * to confirm intent. Only http(s) URLs are checked; other schemes
+ * pass through unaltered (no rewrite anyway).
+ */
+function userExplicitlyAskedForUrl(url: string, subtask: Subtask): boolean {
+  if (!url) return false;
+  const haystack = [
+    subtask.title ?? "",
+    subtask.prompt ?? "",
+    subtask.expectedOutput ?? "",
+    ...(subtask.reviewCriteria ?? []),
+  ].join("\n");
+  if (!haystack) return false;
+  // Compare the URL both as-typed and without trailing slash so
+  // `https://example.com` matches both forms in the prompt.
+  const normalized = url.replace(/\/+$/, "");
+  if (haystack.includes(normalized)) return true;
+  // Also check the bare host: planner sometimes writes `example.com`
+  // without the protocol.
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (host && haystack.toLowerCase().includes(host.toLowerCase())) return true;
+  } catch {
+    /* malformed URL — skip */
+  }
+  return false;
+}
+
 function isShallowLandingUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -5983,4 +6042,5 @@ export const __testing__ = {
   improveDeclaredToolInput,
   isShallowLandingUrl,
   isLowValueProofUrl,
+  userExplicitlyAskedForUrl,
 };
