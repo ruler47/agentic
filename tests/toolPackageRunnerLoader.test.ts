@@ -6,11 +6,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { AddressInfo } from "node:net";
-import { loadGeneratedTools, compiledModulePath } from "../src/tools/generatedToolLoader.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import {
+  compiledModulePath,
   dockerRunArgsForToolContainer,
+  loadGeneratedTools,
   OciImageToolPackageRunner,
   SourceBundleHttpProcessToolPackageRunner,
   ToolPackageRunner,

@@ -12,13 +12,13 @@ import { ModuleRef } from "@nestjs/core";
 import { LlmClient } from "../../llm/client.js";
 import {
   ExternalHttpToolPackageRunner,
+  loadGeneratedTools,
   LocalPathToolPackageRunner,
   OciImageToolPackageRunner,
   SourceBundleHttpProcessToolPackageRunner,
   SourceBundleToolPackageRunner,
   type ToolPackageRunner,
 } from "../../tools/toolPackageRunner.js";
-import { loadGeneratedTools } from "../../tools/generatedToolLoader.js";
 import { ToolServiceSupervisor } from "../../tools/toolServiceSupervisor.js";
 import { ToolBuildWorkflow } from "../../tools/toolBuildWorkflow.js";
 import { ToolBuildWorker } from "../../tools/toolBuildWorker.js";
