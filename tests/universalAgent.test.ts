@@ -1532,9 +1532,9 @@ test("UniversalAgent rewrites brittle browser form automation to direct source U
         },
       ],
     }),
-    "Google Flights evidence shows €193 Lufthansa and saved proof /artifacts/flight-proof.png.",
+    "Google Flights evidence shows the direct fare and saved proof /artifacts/flight-proof.png.",
     '{"subtaskId":"flight-data","verdict":"pass","notes":"Direct route source and screenshot were used."}',
-    "Final answer cites €193 and /artifacts/flight-proof.png.",
+    "Final answer mentions the saved proof at /artifacts/flight-proof.png.",
     '{"shouldStore":false}',
   ]);
   const registry = new ToolRegistry();

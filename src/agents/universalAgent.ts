@@ -5400,23 +5400,49 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
 
   const candidates = new Set<string>();
 
-  // Generic "branded specific" extractor: 1-4 word phrases where each
-  // word begins with an uppercase letter or digit, words may be joined
-  // by space or hyphen, and at least one word contains a digit. The
-  // digit requirement is what separates "specific" (model number /
-  // version / year code) from "title-cased prose" — proper nouns
-  // without numbers (people, hospitals, cities) are intentionally NOT
-  // flagged because they are not the kind of fact that reliably comes
-  // from a brand allow-list anyway.
-  const candidatePhraseRe =
-    /\b((?:[\p{Lu}\d][\p{L}\p{N}]*)(?:[-\s](?:[\p{Lu}\d][\p{L}\p{N}]*)){0,3})\b/gu;
-  for (const match of (output ?? "").matchAll(candidatePhraseRe)) {
-    const raw = (match[1] ?? "").trim();
-    if (!raw) continue;
-    if (!/\d/.test(raw)) continue;
-    const normalized = raw.replace(/\s+/g, " ");
-    if (normalized.length < 2) continue;
-    candidates.add(normalized);
+  // Generic "branded specific" extractor without any brand allow-list.
+  // A "specific" is a 1-4 word phrase where:
+  //   1. The phrase starts at a word that contains at least one
+  //      uppercase letter (so "MacBook" / "iPhone" / "RTX" / "Лада"
+  //      qualify, but "the" / "300" / "32" do NOT — bare digits and
+  //      lowercase prose never anchor a specific).
+  //   2. The phrase as a whole contains at least one digit (this is
+  //      what separates a specific model number / version from a plain
+  //      proper-noun like "Hospital Universitario La Paz").
+  // The combined effect: catches "RTX 4080", "MacBook Pro M5", "iPhone
+  // 15 Pro", "Galaxy S25 Ultra", "Boeing 737 MAX", "Лада Гранта 2024"
+  // — without per-brand patches. Drops false positives like bare
+  // numbers ("300"), numeric specs ("12 ГБ VRAM", "32 GB RAM") and
+  // ordinary capitalized prose ("Hospital Universitario La Paz").
+  const wordRe = /\b([\p{L}][\p{L}\p{N}]*|\d+)\b/gu;
+  const wordMatches: { word: string; start: number; end: number }[] = [];
+  const haystack = output ?? "";
+  for (const match of haystack.matchAll(wordRe)) {
+    const word = match[1];
+    if (!word) continue;
+    const start = match.index ?? 0;
+    wordMatches.push({ word, start, end: start + word.length });
+  }
+  for (let i = 0; i < wordMatches.length; i += 1) {
+    if (!/\p{Lu}/u.test(wordMatches[i]!.word)) continue;
+    for (let len = 1; len <= 4 && i + len <= wordMatches.length; len += 1) {
+      // Phrase must be contiguous prose: no sentence-internal
+      // punctuation between consecutive words. Without this guard a
+      // slide of "...GB RAM, 12 ГБ VRAM..." picks "GB RAM 12" as
+      // a fake "specific" because the comma is invisible to a
+      // word-list. Stop expanding the window as soon as we cross a
+      // sentence-internal break.
+      if (len >= 2) {
+        const previousEnd = wordMatches[i + len - 2]!.end;
+        const currentStart = wordMatches[i + len - 1]!.start;
+        const between = haystack.slice(previousEnd, currentStart);
+        if (/[.,;:!?\n\r()\[\]{}]/.test(between)) break;
+      }
+      const phrase = wordMatches.slice(i, i + len).map((w) => w.word).join(" ");
+      if (!/\d/.test(phrase)) continue;
+      if (phrase.length < 2) continue;
+      candidates.add(phrase);
+    }
   }
 
   // Years 2023-2030 mentioned without "20" prefix or as standalone tokens.
@@ -5456,6 +5482,41 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
     // them. That preserves the "tokens travel together" property without
     // demanding strict substring equality.
     if (parts.length >= 2 && pairsAppearTogetherInEvidence(parts, evidenceCorpus)) continue;
+    // Phase 12 follow-up: contiguous sub-phrase fallback. A
+    // candidate token is grounded if any contiguous slice of its
+    // words (containing a digit) appears verbatim in the evidence
+    // OR satisfies the pair-with-gap rule. This handles:
+    //   - "Apple M5 chip" grounded by "Apple M5" (trim trailing
+    //     descriptor word).
+    //   - "Apple M4" grounded by any M4 mention in evidence (the
+    //     digit-bearing chip name is what's specific).
+    //   - "Lenovo Legion Pro 7i Gen 8" grounded by mid-slice
+    //     "Legion Pro 7i" in evidence.
+    // Single-word slices are accepted because the digit-bearing
+    // word IS the specific the gate is policing — if it's anywhere
+    // in evidence, the worker claim is grounded. The pure-digit
+    // exclusion below makes sure we still reject claims like "RTX
+    // 4080" when only "5090" is in evidence.
+    let groundedBySubPhrase = false;
+    outer: for (let i = 0; i < parts.length; i += 1) {
+      for (let j = i + 1; j <= parts.length; j += 1) {
+        if (i === 0 && j === parts.length) continue;
+        const subParts = parts.slice(i, j);
+        const subPhrase = subParts.join(" ");
+        if (!/\d/.test(subPhrase)) continue;
+        // A pure-digit slice ("4080") would falsely ground "RTX
+        // 4080" against any unrelated "4080" appearance — require
+        // the slice to also contain a letter so the digit travels
+        // with its identifier.
+        if (!/\p{L}/u.test(subPhrase)) continue;
+        if (evidenceCorpus.includes(subPhrase)) { groundedBySubPhrase = true; break outer; }
+        if (subParts.length >= 2 && pairsAppearTogetherInEvidence(subParts, evidenceCorpus)) {
+          groundedBySubPhrase = true;
+          break outer;
+        }
+      }
+    }
+    if (groundedBySubPhrase) continue;
     ungrounded.push(token);
   }
   return ungrounded;

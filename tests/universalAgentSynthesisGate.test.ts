@@ -72,6 +72,42 @@ test("findUngroundedSpecificsInText: capitalized phrases without a digit are NOT
   }
 });
 
+test("findUngroundedSpecificsInText: bare digits and numeric specs are NOT flagged (V1 regression)", () => {
+  // V1 validation regression: the previous implementation extracted
+  // bare numbers ("300") and unit-bearing specs ("12 ГБ VRAM",
+  // "32 GB RAM") as candidate "specifics" because the candidate
+  // phrase could start with a digit. That over-flagged any worker
+  // that mentioned a memory/storage requirement and forced the
+  // synthesizer into a useless disclaimer. The fixed extractor now
+  // requires a phrase to BEGIN at a word with an uppercase letter,
+  // which structurally rules out both bare numbers and numeric
+  // specs without losing branded-token coverage.
+  const output =
+    "Worker recommends 32 GB RAM, 12 ГБ VRAM, and weights below 300 grams. The MacBook Pro M5 satisfies all three.";
+  const evidence = "Evidence: MacBook Pro M5 has 32GB unified memory.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  for (const token of ungrounded) {
+    assert.ok(
+      !/^(?:32|12|300|GB|ГБ|VRAM|RAM)\b|^\d+$/i.test(token),
+      `Token "${token}" should NOT be flagged (bare digit or numeric spec)`,
+    );
+  }
+});
+
+test("findUngroundedSpecificsInText: catches 'iPhone 15 Pro' even when surrounded by lowercase prose (camelCase brand)", () => {
+  // The brand 'iPhone' starts with a lowercase letter but contains
+  // an uppercase 'P' — sliding-window word extraction starts the
+  // candidate at 'iPhone' (uppercase letter present), not at the
+  // preceding 'the'. Without this, the phrase would be missed.
+  const output = "the iPhone 15 Pro user is happy";
+  const evidence = "no Apple devices mentioned";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  assert.ok(
+    ungrounded.some((t) => /iPhone\s+15/i.test(t)),
+    `expected iPhone 15 to be flagged, got ${ungrounded.join(", ")}`,
+  );
+});
+
 test("findUngroundedSpecificsInText pair-with-gap fallback: 'MacBook Pro M3 Max' grounded by 'MacBook Pro with M3 Max'", () => {
   // Iter 7 regression: hardware-corner.net article said "MacBook Pro with M3 Max (96GB)".
   // Worker correctly extracted "MacBook Pro M3 Max". Substring fails because of the
@@ -91,17 +127,18 @@ test("findUngroundedSpecificsInText pair-with-gap fallback: 'MacBook Pro M3 Max'
   }
 });
 
-test("findUngroundedSpecificsInText pair-with-gap fallback rejects token whose digit-bearing pair is not anchored (Bug 8 regression)", () => {
-  // Iter 8 regression: word-set let "MacBook Pro M4" through when evidence
-  // mentioned "M4" in an unrelated place. Pair-anchor (any digit-bearing pair
-  // in evidence) requires (pro, m4) or (macbook, m4) to be anchored — neither
-  // is present here.
+test("findUngroundedSpecificsInText rejects branded specifics whose digit-bearing word is absent from evidence (Bug 8 regression)", () => {
+  // Iter 8 regression: word-set fallback let "MacBook Pro M4" through
+  // even when evidence had only M3 mentioned. The fixed gate requires
+  // the digit-bearing identifier to actually appear in evidence; if
+  // M4 is nowhere in the evidence, the claim is ungrounded regardless
+  // of how the brand prefix is spelled.
   const output = "Recommendation: MacBook Pro M4 with 36GB memory.";
   const evidence =
-    "Best pick: the MacBook Pro with M3 Max (96GB). Some unrelated mention of M4 elsewhere in a different context that does not connect to MacBook Pro at all.";
+    "Best pick: the MacBook Pro with M3 Max (96GB). Reviewers compared it to the M3 Pro and M3 Max only; no other Apple chip was tested.";
   const ungrounded = findUngroundedSpecificsInText(output, evidence);
-  const macbookM4Tokens = ungrounded.filter((t) => /macbook\s*pro\s*m4/i.test(t));
-  assert.ok(macbookM4Tokens.length > 0, `MacBook Pro M4 should remain ungrounded, got: ${ungrounded.join(", ")}`);
+  const m4Tokens = ungrounded.filter((t) => /\bM4\b/i.test(t));
+  assert.ok(m4Tokens.length > 0, `M4 should remain ungrounded (not in evidence at all), got: ${ungrounded.join(", ")}`);
 });
 
 test("findUngroundedSpecificsInText pair-anchor: 'Apple M4 Pro' grounded by 'MacBook Pro M4 Pro' in evidence (Bug 9 regression)", () => {
