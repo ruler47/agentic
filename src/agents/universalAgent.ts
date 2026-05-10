@@ -230,6 +230,15 @@ export class UniversalAgent {
   private readonly runScopedIntents = new Map<string, string[]>();
 
   /**
+   * Phase 13 follow-up: per-run thread artifacts (carried over from
+   * `options.threadContext.relevantArtifacts`). Lets `createScreenshotArtifact`
+   * reuse an existing PNG screenshot from a prior turn instead of triggering
+   * yet another `tool-missing: input-missing-source-url` worker iteration
+   * when the user simply asks "send me a screenshot of that".
+   */
+  private readonly runScopedThreadArtifacts = new Map<string, AgentArtifact[]>();
+
+  /**
    * Phase 13: optional callback envelope source. When set, each
    * external tool invocation receives a short-lived bearer token and
    * the runtime callback base URL so dockerized tool services can
@@ -323,6 +332,7 @@ export class UniversalAgent {
       if (runId) {
         this.runScopedLedgers.delete(runId);
         this.runScopedIntents.delete(runId);
+        this.runScopedThreadArtifacts.delete(runId);
       }
     }
   }
@@ -338,6 +348,13 @@ export class UniversalAgent {
     // (CLI smokes, fixtures, recursive in-memory invocations) so deep
     // helpers can still find run-scoped state via `toolExecutionContext.runId`.
     const effectiveRunId = options.runId ?? runSpanId;
+    // Phase 13 follow-up: stash thread artifacts keyed by runId so deep
+    // helpers (createScreenshotArtifact) can pick a reusable existing
+    // screenshot without having to thread the array through every layer.
+    const threadArtifacts = options.threadContext?.relevantArtifacts ?? [];
+    if (threadArtifacts.length > 0) {
+      this.runScopedThreadArtifacts.set(effectiveRunId, threadArtifacts);
+    }
     const toolExecutionContext = buildToolExecutionContext({
       ...options,
       runId: effectiveRunId,
@@ -2063,7 +2080,14 @@ export class UniversalAgent {
         parentSpanId,
         toolExecutionContext,
         metadata: { role: subtask.role, declaredToolName: toolName },
-        reuseCompletedOutput: false,
+        // Phase 13 follow-up: when a sibling subtask in the same run already
+        // exercised this exact (tool, capability, input) tuple, the ledger
+        // returns `reuse_completed` with the previous `outputSummary`. For
+        // browser.operate that summary is the formatted evidence + artifact
+        // ids — so reusing it is strictly better than re-driving Chromium
+        // through the same navigation. Was `false`; flipping to `true`
+        // saves the `duplicatedWork` flagged by retrospective.
+        reuseCompletedOutput: true,
         recordLedgerOutcome: tool.name !== "browser.operate",
       });
       const { result, spanId, claim } = operation;
@@ -2135,7 +2159,11 @@ export class UniversalAgent {
         }
       }
 
-      if (tool.name === "browser.operate" && claim) {
+      if (tool.name === "browser.operate" && claim && !operation.reused) {
+        // Phase 13 follow-up: skip the manual ledger.markCompleted /
+        // markFailed dance when this claim was satisfied by a reused
+        // prior result — the original entry is already terminal, and
+        // the reused branch carries no fresh `result.data` to QA.
         const ledger = this.resolveLedgerFromContext(toolExecutionContext);
         if (!result.ok) {
           await ledger?.markFailed(claim.item.id, limitText(result.content, 600));
@@ -2468,6 +2496,42 @@ export class UniversalAgent {
   ): Promise<AgentArtifact | undefined> {
     const screenshotIntents = this.resolveTaskIntents(context, toolExecutionContext?.runId);
     const screenshotPatterns = await this.resolveEvidencePatterns(screenshotIntents);
+
+    // Phase 13 follow-up: when the user asks for "a screenshot proof" of
+    // information already established earlier in the same conversation
+    // thread, the prior turn typically saved one or more PNG artifacts.
+    // Reusing them is strictly better than spawning yet another browser
+    // navigation (no extra time, no extra LLM tokens, no risk of a
+    // different page state). Only when none of the thread artifacts look
+    // like a usable screenshot do we fall through to the original
+    // capture-or-skip path.
+    const threadArtifacts = toolExecutionContext?.runId
+      ? this.runScopedThreadArtifacts.get(toolExecutionContext.runId) ?? []
+      : [];
+    const reusable = pickReusableThreadScreenshot(threadArtifacts, context, screenshotIntents);
+    if (reusable) {
+      await emit({
+        spanId: createSpanId("screenshot-thread-reuse"),
+        parentSpanId,
+        type: "artifact-created",
+        actor: "screenshot-artifact",
+        activity: "tool",
+        status: "completed",
+        title: "Screenshot proof reused from thread",
+        detail:
+          `Reused existing thread artifact ${reusable.id} (${reusable.filename ?? "<unnamed>"}) ` +
+          "instead of capturing a new screenshot. The capture tool was not invoked.",
+        payload: {
+          capability: "browser-screenshot",
+          reused: true,
+          artifactId: reusable.id,
+          filename: reusable.filename,
+          intents: screenshotIntents,
+        },
+      });
+      return reusable;
+    }
+
     const url = selectBestUrlForArtifact(context, screenshotIntents, screenshotPatterns);
     if (!url) {
       // Phase 12 follow-up: this is a MISSING INPUT, not a missing capability.
@@ -4955,6 +5019,52 @@ function selectBestUrlForArtifact(
   return selectBestUrlsForArtifact(text, 1, intents, extraPatterns, geoAnchors)[0];
 }
 
+/**
+ * Phase 13 follow-up: pick a thread-scoped artifact that already satisfies a
+ * "send me a screenshot proof" request without re-capturing. Selection rules:
+ *
+ *   1. Only PNG artifacts (mimeType `image/png` or `.png` filename) qualify.
+ *   2. Prefer artifacts whose filename overlaps with task/intent tokens —
+ *      e.g. asking for "цена биткоина / proof" matches a thread artifact
+ *      named `discovery-2-coingecko-com-…-bitcoin-screenshot.png`.
+ *   3. If nothing matches by token, fall back to the most recent screenshot
+ *      in the array (thread artifacts are appended chronologically by the
+ *      runtime, so the last entry is freshest).
+ *   4. Returns `undefined` when there is no PNG to reuse, so callers fall
+ *      through to the original capture path.
+ */
+function pickReusableThreadScreenshot(
+  threadArtifacts: readonly AgentArtifact[],
+  context: string,
+  intents: readonly string[],
+): AgentArtifact | undefined {
+  const screenshots = threadArtifacts.filter((artifact) => {
+    if (artifact.mimeType === "image/png") return true;
+    return Boolean(artifact.filename?.toLowerCase().endsWith(".png"));
+  });
+  if (screenshots.length === 0) return undefined;
+
+  const tokens = new Set<string>();
+  for (const intent of intents) {
+    for (const part of intent.toLowerCase().split(/[\s\-_/]+/)) {
+      if (part.length >= 4) tokens.add(part);
+    }
+  }
+  for (const part of context.toLowerCase().split(/[^a-z0-9а-яё]+/i)) {
+    if (part.length >= 4) tokens.add(part);
+  }
+
+  for (const artifact of screenshots) {
+    const fname = (artifact.filename ?? "").toLowerCase();
+    if (!fname) continue;
+    for (const token of tokens) {
+      if (fname.includes(token)) return artifact;
+    }
+  }
+
+  return screenshots[screenshots.length - 1];
+}
+
 function selectBestUrlsForArtifact(
   text: string,
   limit: number,
@@ -6058,4 +6168,5 @@ export const __testing__ = {
   isShallowLandingUrl,
   isLowValueProofUrl,
   userExplicitlyAskedForUrl,
+  pickReusableThreadScreenshot,
 };

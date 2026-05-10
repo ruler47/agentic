@@ -97,9 +97,29 @@ const ORPHAN_STALE_AFTER_MS = 5 * 60 * 1000; // 5 minutes
 const ORPHAN_RECOVERY_REASON =
   "Run was interrupted by an application restart and never resumed; restart it to retry.";
 
+/**
+ * Phase 13 follow-up: collapse identical POST /api/runs submissions that
+ * arrive within this window into the same run. Defends against double-clicks
+ * in the UI and naive client-side network retries from spawning two
+ * parallel runs on the same conversation thread. Window is intentionally
+ * short (10 seconds) — anything longer is a legitimate "user repeated
+ * themselves" signal that should produce a fresh run.
+ */
+const DEDUP_WINDOW_MS = 10 * 1000;
+
 @Injectable()
 export class RunsService implements OnApplicationBootstrap {
   private readonly logger = new Logger(RunsService.name);
+
+  /**
+   * In-memory dedup cache keyed by `(threadId, requesterUserId, task)`.
+   * Survives the lifetime of the Nest process; the worktree-wide DB is the
+   * source of truth, so this is a soft guard rather than a strong lock. Two
+   * simultaneous requests on different replicas could still slip past — at
+   * which point the work-ledger inside the agent loop dedups the actual
+   * tool calls (`work-ledger-reused` events) anyway.
+   */
+  private readonly recentSubmissions = new Map<string, { runId: string; expiresAt: number }>();
 
   constructor(
     @Inject(RUN_STORE) private readonly runs: RunStore,
@@ -398,7 +418,33 @@ export class RunsService implements OnApplicationBootstrap {
     }
 
     const { context, thread, threadContext, threadResolution } = resolved;
+
+    // Phase 13 follow-up: idempotent submission window. If the very same
+    // (threadId, requesterUserId, task) tuple was just accepted within
+    // DEDUP_WINDOW_MS, return the existing run instead of starting a
+    // duplicate parallel one. Excludes terminal-failed runs so a real
+    // retry after an error works.
+    const dedupKey = this.dedupKeyFor(context.threadId, context.requesterUserId, task);
+    const dedupNow = Date.now();
+    this.gcDedupCache(dedupNow);
+    const cached = this.recentSubmissions.get(dedupKey);
+    if (cached && cached.expiresAt > dedupNow) {
+      const existing = await this.runs.get(cached.runId).catch(() => undefined);
+      if (existing && existing.status !== "failed" && existing.status !== "cancelled") {
+        return {
+          run: existing,
+          thread,
+          threadResolution: threadResolution
+            ? { decision: threadResolution.decision, reason: threadResolution.reason, threadId: threadResolution.thread?.id }
+            : undefined,
+        };
+      }
+      // Cached id no longer usable (failed/cancelled/missing): drop and proceed.
+      this.recentSubmissions.delete(dedupKey);
+    }
+
     const run = await this.runs.create(task, context);
+    this.recentSubmissions.set(dedupKey, { runId: run.id, expiresAt: dedupNow + DEDUP_WINDOW_MS });
     await this.audit.record({
       instanceId: context.instanceId,
       actorId: context.requesterUserId,
@@ -675,6 +721,42 @@ export class RunsService implements OnApplicationBootstrap {
       }
     }
     return artifacts;
+  }
+
+  /**
+   * Phase 13 follow-up: build a stable dedup cache key for the
+   * idempotent submission window (`createAndStart`). Trims the task and
+   * tolerates undefined thread / requester ids so single-shot anonymous
+   * fixtures still benefit from the dedup window.
+   */
+  private dedupKeyFor(threadId: string | undefined, requesterUserId: string | undefined, task: string): string {
+    return `${threadId ?? "-"}::${requesterUserId ?? "-"}::${task.trim()}`;
+  }
+
+  /**
+   * Drop entries whose `expiresAt` is in the past. Called once per
+   * `createAndStart` so the cache stays bounded even on a long-running
+   * process; the work is O(N) on the cache size which is bounded by
+   * `submissions per DEDUP_WINDOW_MS`.
+   */
+  private gcDedupCache(now: number): void {
+    for (const [key, entry] of this.recentSubmissions) {
+      if (entry.expiresAt <= now) this.recentSubmissions.delete(key);
+    }
+  }
+
+  /**
+   * Test hook: lets unit tests inspect dedup cache state and simulate
+   * different points in time without exposing the Map directly.
+   */
+  __testing_dedup__() {
+    return {
+      cache: this.recentSubmissions,
+      key: (threadId: string | undefined, requesterUserId: string | undefined, task: string) =>
+        this.dedupKeyFor(threadId, requesterUserId, task),
+      gc: (now: number) => this.gcDedupCache(now),
+      windowMs: DEDUP_WINDOW_MS,
+    };
   }
 
   private requesterError(input: {
