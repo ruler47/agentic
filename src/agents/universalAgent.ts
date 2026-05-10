@@ -5740,9 +5740,23 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
   }
 
   // Specific currency amounts.
-  for (const match of (output ?? "").matchAll(/(?:[$€£¥])\s?\d{2,5}(?:[.,]\d{1,3})?/g)) {
+  // Phase 13 follow-up: broaden to capture amounts with thousands
+  // separators ("$79,581", "€68.819,05") and arbitrarily long decimal
+  // tails ("€68 819,0591"). Numerical grounding below tolerates the
+  // differences between worker output ("$79,581") and CSV evidence
+  // ("79581.42") via normalize+compare instead of literal substring.
+  // Single, non-alternation regex so `\d+` is greedy across the whole
+  // amount — earlier alternation form picked `$249` out of `$2499`.
+  const currencyRe = /(?:[$€£¥])\s?\d+(?:[\s.,]\d{3})*(?:[.,]\d{1,4})?/g;
+  for (const match of (output ?? "").matchAll(currencyRe)) {
     candidates.add(match[0].replace(/\s/g, ""));
   }
+
+  // Phase 13 follow-up: pre-extract every numeric value from the
+  // evidence corpus once so the per-token currency check below stays
+  // O(candidates × evidence-numbers). Without this we'd re-scan the
+  // (potentially large) corpus for every token.
+  const evidenceNumbers = extractNumericValuesFromEvidence(evidenceCorpus);
 
   const ungrounded: string[] = [];
   for (const token of candidates) {
@@ -5806,9 +5820,121 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
       }
     }
     if (groundedBySubPhrase) continue;
+    // Phase 13 follow-up: numerical grounding for currency amounts.
+    // Workers (and synthesizers) round / shorten / re-format numbers
+    // that ARE in evidence — "$79,581" written by synth vs
+    // "79581.42" in a market.timeseries CSV evidence row, "€68 819,0591"
+    // vs "68819.0591", "$81" rounded from "$81,234.56". Substring match
+    // can't bridge those formats. Numerical match (tolerant ±1%) can.
+    if (isCurrencyAmountGroundedNumerically(token, evidenceNumbers)) continue;
     ungrounded.push(token);
   }
   return ungrounded;
+}
+
+/**
+ * Phase 13 follow-up: pull every numeric value out of the evidence
+ * corpus, returning a deduped sorted array. Handles:
+ *   - "79581.42" → 79581.42
+ *   - "79,581.42" → 79581.42 (English thousands separator)
+ *   - "79.581,42" → 79581.42 (European thousands separator)
+ *   - "68 819,0591" → 68819.0591 (space thousands separator)
+ *   - "$79,581" → 79581
+ * Used by the ungrounded-specifics gate to compare numerical
+ * representations of currency amounts independent of formatting.
+ */
+function extractNumericValuesFromEvidence(evidenceCorpus: string): number[] {
+  const found = new Set<number>();
+  // Match runs of digits with optional thousands/decimal separators.
+  // Allow both `,` and `.` as separators in either role; we resolve the
+  // ambiguity by inspecting the trailing group length (1-2 digits → decimal).
+  const numRe = /\d{1,3}(?:[\s.,]\d{3})+(?:[.,]\d{1,4})?|\d+(?:[.,]\d{1,4})?/g;
+  for (const match of evidenceCorpus.matchAll(numRe)) {
+    const raw = match[0];
+    const value = parseFlexibleNumber(raw);
+    if (value !== undefined && value > 0) found.add(value);
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+/**
+ * Phase 13 follow-up: parse a number string that may use English
+ * (`,` thousands, `.` decimal) or European (`.` thousands, `,` decimal)
+ * conventions, optionally with spaces as thousands separators and any
+ * leading currency symbol. Returns `undefined` for unparseable input.
+ *
+ * Disambiguation rules (in order):
+ *   1. No separators → straight Number().
+ *   2. Multiple separators of the same kind (`1,000,000`, `1.000.000`)
+ *      → all separators are thousands.
+ *   3. Multiple separators of different kinds (`79,581.42`,
+ *      `79.581,42`) → last is decimal, earlier ones are thousands.
+ *   4. Single separator with 3 trailing digits (`1,000`) → ambiguous,
+ *      default to thousands (most common English/Russian usage).
+ *   5. Single separator with 1-2 or 4+ trailing digits (`79.42`,
+ *      `68819,0591`) → decimal.
+ */
+function parseFlexibleNumber(raw: string): number | undefined {
+  const cleaned = raw.replace(/[$€£¥\s]/g, "");
+  if (!/\d/.test(cleaned)) return undefined;
+  const dotCount = (cleaned.match(/\./g) ?? []).length;
+  const commaCount = (cleaned.match(/,/g) ?? []).length;
+  const totalSeps = dotCount + commaCount;
+
+  if (totalSeps === 0) {
+    const direct = Number(cleaned);
+    return Number.isFinite(direct) ? direct : undefined;
+  }
+
+  const lastSep = Math.max(cleaned.lastIndexOf("."), cleaned.lastIndexOf(","));
+  const trailing = cleaned.length - lastSep - 1;
+
+  let intPart = "";
+  let decPart = "";
+
+  if (totalSeps > 1) {
+    const allSepsAreSame = dotCount === 0 || commaCount === 0;
+    if (allSepsAreSame) {
+      // All thousands separators (`1,000,000` or `1.000.000`).
+      intPart = cleaned.replace(/[.,]/g, "");
+    } else {
+      // Mixed → last separator is decimal.
+      intPart = cleaned.slice(0, lastSep).replace(/[.,]/g, "");
+      decPart = cleaned.slice(lastSep + 1);
+    }
+  } else if (trailing === 3) {
+    // Single separator with 3 trailing digits → likely thousands.
+    intPart = cleaned.replace(/[.,]/g, "");
+  } else {
+    // Single separator with 1-2 or 4+ trailing digits → decimal.
+    intPart = cleaned.slice(0, lastSep).replace(/[.,]/g, "");
+    decPart = cleaned.slice(lastSep + 1);
+  }
+
+  const numeric = decPart ? Number(`${intPart}.${decPart}`) : Number(intPart);
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+/**
+ * Phase 13 follow-up: a currency token like "$79,581" is grounded if
+ * the evidence corpus contains a numeric value within ±1% of its
+ * normalized magnitude. Tolerates rounding ("$81,000" vs "81234.56"
+ * → 0.4% off, accepted) but rejects fabrications ("$50" vs evidence
+ * showing only "79581.42" → ~37% off, rejected). Returns false for
+ * non-currency tokens so the caller falls through to its other
+ * grounding paths.
+ */
+function isCurrencyAmountGroundedNumerically(token: string, evidenceNumbers: number[]): boolean {
+  if (!/^[$€£¥]/.test(token.trim())) return false;
+  const value = parseFlexibleNumber(token);
+  if (value === undefined || value <= 0) return false;
+  const tolerance = Math.max(value * 0.01, 0.5); // 1%, but at least 0.5 absolute (handles tiny amounts)
+  for (const evidenceValue of evidenceNumbers) {
+    if (Math.abs(evidenceValue - value) <= tolerance) return true;
+    // Worker may shorten "$79,581" → "$81" (thousand-rounded). Try value*1000.
+    if (Math.abs(evidenceValue - value * 1000) <= Math.max(value * 1000 * 0.01, 0.5)) return true;
+  }
+  return false;
 }
 
 /**
@@ -6180,4 +6306,7 @@ export const __testing__ = {
   isLowValueProofUrl,
   userExplicitlyAskedForUrl,
   pickReusableThreadScreenshot,
+  parseFlexibleNumber,
+  extractNumericValuesFromEvidence,
+  isCurrencyAmountGroundedNumerically,
 };
