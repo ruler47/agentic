@@ -1,3 +1,17 @@
+/**
+ * Phase 13 deprecation notice
+ * ---------------------------
+ * This loader handles the legacy "generated tool = local TS module"
+ * format. New tools should ship as OCI images via
+ * `dockerToolPackageManifest()` (see `docs/modules/tools-as-services.md`)
+ * — the `OciImageToolPackageRunner` is already in the runner list
+ * below and will pick those up automatically.
+ *
+ * The loader stays in place for backward compatibility with already-
+ * promoted local-path tools. Plan: deprecate after the four built-in
+ * tools (browser, chart, market, telegram) have run for a while in
+ * docker mode and the agent-driven docker output is the default.
+ */
 import { ToolRegistry } from "./registry.js";
 import { ToolMetadataStore, ToolModuleMetadata } from "./toolMetadataStore.js";
 import {
