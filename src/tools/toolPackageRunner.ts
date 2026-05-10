@@ -1082,11 +1082,30 @@ function parseToolResult(value: unknown): ToolResult {
     : value.data === undefined
       ? JSON.stringify(value)
       : JSON.stringify(value.data);
+  // Phase 13: dockerized tool services return inline artifact bodies as
+  // `contentBase64` strings (Buffer is not JSON-serializable). Recursively
+  // walk the data tree and rehydrate any `contentBase64` field to a real
+  // Buffer in `content`, so existing artifact consumers see the same
+  // shape as in-process tools.
   return {
     ok,
     content,
-    data: value.data,
+    data: rehydrateInlineArtifacts(value.data),
   };
+}
+
+function rehydrateInlineArtifacts(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => rehydrateInlineArtifacts(item));
+  if (!isRecord(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (key === "contentBase64" && typeof nested === "string") {
+      out.content = Buffer.from(nested, "base64");
+      continue;
+    }
+    out[key] = rehydrateInlineArtifacts(nested);
+  }
+  return out;
 }
 
 async function executionContextPayload(

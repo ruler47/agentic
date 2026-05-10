@@ -58,6 +58,7 @@ import { TelegramBotServiceTool } from "../../tools/telegramBotServiceTool.js";
 import { ChartGenerateTool } from "../../tools/chartGenerateTool.js";
 import { MarketTimeseriesTool } from "../../tools/marketTimeseriesTool.js";
 import { BrowserOperateTool } from "../../tools/browserOperateTool.js";
+import { BrowserOperateHttpTool } from "../../tools/browserOperateHttpTool.js";
 import { createScopedToolDbClient } from "../../tools/toolScopedDb.js";
 import type { SecretHandleStore } from "../../secrets/secretHandleStore.js";
 import type { ToolMetadataStore } from "../../tools/toolMetadataStore.js";
@@ -282,7 +283,17 @@ const providers: Provider[] = [
       registry.register(new FileWriteTool());
       registry.register(new ChartGenerateTool());
       registry.register(new MarketTimeseriesTool());
-      registry.register(new BrowserOperateTool());
+      // Phase 13: select between in-process Playwright and the
+      // dockerized browser-operate-service container based on env.
+      // BROWSER_OPERATE_RUNNER=docker forwards every browser.operate
+      // call to http://browser-operate:8080 (compose service name).
+      // Anything else keeps the legacy in-process tool, so existing
+      // setups without the docker service keep working untouched.
+      if ((process.env.BROWSER_OPERATE_RUNNER ?? "").toLowerCase() === "docker") {
+        registry.register(new BrowserOperateHttpTool());
+      } else {
+        registry.register(new BrowserOperateTool());
+      }
       if (metadata) {
         await metadata.syncBuiltins(registry.list());
         registry.setUsageReporter((event) =>
