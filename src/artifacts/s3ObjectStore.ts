@@ -53,8 +53,16 @@ export class S3ObjectStore implements ArtifactObjectStore {
     return Buffer.from(await response.arrayBuffer());
   }
 
+  async deleteObject(key: string): Promise<void> {
+    const response = await this.request("DELETE", key);
+    // 200 / 204 mean deleted; 404 means already gone (idempotent).
+    if (response.status >= 200 && response.status < 300) return;
+    if (response.status === 404) return;
+    throw new Error(`Artifact object delete failed: ${response.status} ${response.statusText}`);
+  }
+
   private request(
-    method: "GET" | "HEAD" | "PUT",
+    method: "GET" | "HEAD" | "PUT" | "DELETE",
     objectKey?: string,
     body?: Buffer,
     contentType?: string,

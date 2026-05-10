@@ -571,6 +571,35 @@ export class RunsService implements OnApplicationBootstrap {
     return { stored, buffer };
   }
 
+  /**
+   * Phase 13 follow-up: delete a single artifact (metadata + underlying
+   * object). Idempotent — returns 404 only when nothing matched the
+   * (runId, artifactId) tuple. Audited so the timeline shows who removed
+   * which file.
+   */
+  async deleteArtifact(
+    runId: string,
+    artifactId: string,
+  ): Promise<{ deleted: true; id: string; runId: string }> {
+    if (!this.artifacts) {
+      throw new ServiceUnavailableException("Artifact store is not configured");
+    }
+    const deleted = await this.artifacts.delete(runId, artifactId);
+    if (!deleted) throw new NotFoundException("Artifact not found");
+    await this.audit.record({
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "artifact.deleted",
+      targetType: "artifact",
+      targetId: artifactId,
+      runId,
+      status: "success",
+      summary: `Artifact deleted: ${artifactId} (run ${runId})`,
+    });
+    return { deleted: true, id: artifactId, runId };
+  }
+
   async resolveContext(
     body: Record<string, unknown>,
     task: string,

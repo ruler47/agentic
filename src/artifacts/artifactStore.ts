@@ -30,12 +30,21 @@ export type ArtifactStore = {
   saveGenerated(runId: string, input: ArtifactCreateInput): Promise<AgentArtifact>;
   list(runId: string): Promise<AgentArtifact[]>;
   read(runId: string, artifactId: string): Promise<StoredArtifact | undefined>;
+  /**
+   * Phase 13 follow-up: remove an artifact by id. Returns true when
+   * something was actually deleted (so callers can return 404 vs 200).
+   * Implementations remove both the metadata record and the underlying
+   * object/file; missing inputs are treated as a no-op (idempotent
+   * delete).
+   */
+  delete(runId: string, artifactId: string): Promise<boolean>;
 };
 
 export type ArtifactMetadataStore = {
   save(record: ArtifactMetadataRecord): Promise<AgentArtifact>;
   list(runId: string): Promise<AgentArtifact[]>;
   get(runId: string, artifactId: string): Promise<ArtifactMetadataRecord | undefined>;
+  delete(runId: string, artifactId: string): Promise<ArtifactMetadataRecord | undefined>;
 };
 
 export type ArtifactObjectStore = {
@@ -43,6 +52,7 @@ export type ArtifactObjectStore = {
   ensureReady?(): Promise<void>;
   putObject(key: string, content: Buffer, metadata: { mimeType: string }): Promise<void>;
   getObject(key: string): Promise<Buffer>;
+  deleteObject(key: string): Promise<void>;
 };
 
 export class LocalArtifactStore implements ArtifactStore {
@@ -79,6 +89,22 @@ export class LocalArtifactStore implements ArtifactStore {
       artifact,
       path: this.artifactPath(runId, artifact.kind, artifact.id, artifact.filename),
     };
+  }
+
+  async delete(runId: string, artifactId: string): Promise<boolean> {
+    const manifest = await this.readManifest(runId);
+    const target = manifest.artifacts.find((item) => item.id === artifactId);
+    if (!target) return false;
+    const path = this.artifactPath(runId, target.kind, target.id, target.filename);
+    try {
+      const { rm } = await import("node:fs/promises");
+      await rm(path, { force: true });
+    } catch {
+      // Missing file → already gone; manifest update still proceeds.
+    }
+    manifest.artifacts = manifest.artifacts.filter((item) => item.id !== artifactId);
+    await this.writeManifest(runId, manifest);
+    return true;
   }
 
   private async save(
@@ -186,6 +212,18 @@ export class DurableArtifactStore implements ArtifactStore {
     };
   }
 
+  async delete(runId: string, artifactId: string): Promise<boolean> {
+    const record = await this.metadataStore.delete(runId, artifactId);
+    if (!record) return false;
+    try {
+      await this.objectStore.deleteObject(record.objectKey);
+    } catch {
+      // Object already gone in the store — metadata is the source of truth
+      // for visibility, so report success either way.
+    }
+    return true;
+  }
+
   private async save(
     runId: string,
     kind: AgentArtifactKind,
@@ -254,6 +292,15 @@ export class FallbackArtifactStore implements ArtifactStore {
   async read(runId: string, artifactId: string): Promise<StoredArtifact | undefined> {
     return (await this.primary.read(runId, artifactId)) ?? this.fallback.read(runId, artifactId);
   }
+
+  async delete(runId: string, artifactId: string): Promise<boolean> {
+    // Try both stores so we don't leak orphan rows when an artifact lived in
+    // one tier but not the other (the historical fallback flow saved
+    // generated artifacts only to primary).
+    const primary = await this.primary.delete(runId, artifactId).catch(() => false);
+    const fallback = await this.fallback.delete(runId, artifactId).catch(() => false);
+    return primary || fallback;
+  }
 }
 
 export class InMemoryArtifactMetadataStore implements ArtifactMetadataStore {
@@ -274,6 +321,14 @@ export class InMemoryArtifactMetadataStore implements ArtifactMetadataStore {
   async get(runId: string, artifactId: string): Promise<ArtifactMetadataRecord | undefined> {
     return this.records.get(recordKey(runId, artifactId));
   }
+
+  async delete(runId: string, artifactId: string): Promise<ArtifactMetadataRecord | undefined> {
+    const key = recordKey(runId, artifactId);
+    const existing = this.records.get(key);
+    if (!existing) return undefined;
+    this.records.delete(key);
+    return existing;
+  }
 }
 
 export class InMemoryArtifactObjectStore implements ArtifactObjectStore {
@@ -288,6 +343,10 @@ export class InMemoryArtifactObjectStore implements ArtifactObjectStore {
     const content = this.objects.get(key);
     if (!content) throw new Error(`Artifact object not found: ${key}`);
     return Buffer.from(content);
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    this.objects.delete(key);
   }
 }
 

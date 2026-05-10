@@ -9,6 +9,7 @@ export type AuditAction =
   | "run.recovered_at_bootstrap"
   | "artifact.uploaded"
   | "artifact.generated"
+  | "artifact.deleted"
   | "tool.used"
   | "tool.failed"
   | "tool.deleted"

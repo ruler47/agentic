@@ -102,6 +102,18 @@ export class PostgresArtifactMetadataStore implements ArtifactMetadataStore {
     );
     return result.rows[0] ? mapArtifactRow(result.rows[0]) : undefined;
   }
+
+  async delete(runId: string, artifactId: string): Promise<ArtifactMetadataRecord | undefined> {
+    const result = await this.pool.query<ArtifactRow>(
+      `
+        delete from artifacts
+        where run_id = $1 and id = $2
+        returning *
+      `,
+      [runId, artifactId],
+    );
+    return result.rows[0] ? mapArtifactRow(result.rows[0]) : undefined;
+  }
 }
 
 function mapArtifactRow(row: ArtifactRow): ArtifactMetadataRecord {

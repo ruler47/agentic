@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Inject,
@@ -92,6 +93,20 @@ export class RunsController {
         "cache-control": "no-store",
       })
       .send(buffer);
+  }
+
+  /**
+   * Phase 13 follow-up: delete a single artifact (metadata row + the
+   * underlying S3/local object). 404 when nothing matched, otherwise
+   * a small `{ deleted, id, runId }` payload that the React Artifacts
+   * page uses to remove the card and invalidate its cache.
+   */
+  @Delete("runs/:id/artifacts/:artifactId")
+  async deleteArtifact(
+    @Param("id") id: string,
+    @Param("artifactId") artifactId: string,
+  ) {
+    return this.service.deleteArtifact(decodeURIComponent(id), decodeURIComponent(artifactId));
   }
 
   @Sse("runs/:id/events")
