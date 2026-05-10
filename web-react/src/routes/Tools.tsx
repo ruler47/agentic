@@ -6,10 +6,12 @@ import {
   useDeleteToolSetting,
   useReloadGeneratedTools,
   useRunToolHealthchecks,
+  useRunToolManually,
   useSetToolSetting,
   useToolPackageRunners,
   useToolSettings,
   useTools,
+  type ManualToolRunResponse,
 } from "@/api/tools";
 import { useToolServiceAction, useToolServices } from "@/api/toolServices";
 import { GenericBadge } from "@/components/StatusBadge";
@@ -340,6 +342,10 @@ function ToolDetail({
         </details>
       </Section>
 
+      <Section title="Manual run">
+        <ManualRunPanel tool={tool} />
+      </Section>
+
       <footer className="flex flex-wrap items-center gap-2 border-t border-app-border pt-3 text-[11px] text-app-text-muted">
         <span>updated {formatRelative(tool.updatedAt)}</span>
         {tool.source === "generated" ? (
@@ -357,6 +363,119 @@ function ToolDetail({
         ) : null}
       </footer>
     </article>
+  );
+}
+
+/**
+ * Phase 13 follow-up: manual tool runner panel. Lets the operator paste a
+ * JSON `input`, click "Run", and see the exact `ToolResult` the runtime
+ * would hand back to an agent. Useful for smoke-testing a fresh docker
+ * build / a new version before promoting it. Pre-fills the textarea
+ * with the tool's first declared example (if any) on mount.
+ */
+function ManualRunPanel({ tool }: { tool: ToolModuleMetadata }) {
+  const run = useRunToolManually();
+  const initialDraft = useMemo(() => {
+    const example = tool.examples?.[0];
+    if (example?.input && typeof example.input === "object") {
+      return JSON.stringify(example.input, null, 2);
+    }
+    const requiredKeys = (tool.inputSchema?.required as string[] | undefined) ?? [];
+    if (requiredKeys.length > 0) {
+      const stub: Record<string, string> = {};
+      for (const key of requiredKeys.slice(0, 6)) stub[key] = "";
+      return JSON.stringify(stub, null, 2);
+    }
+    return "{}";
+  }, [tool]);
+  const [draft, setDraft] = useState(initialDraft);
+  const [parseError, setParseError] = useState<string | undefined>();
+
+  const submit = () => {
+    setParseError(undefined);
+    let parsed: Record<string, unknown>;
+    try {
+      const candidate = JSON.parse(draft || "{}");
+      if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+        throw new Error("Input must be a JSON object.");
+      }
+      parsed = candidate as Record<string, unknown>;
+    } catch (error) {
+      setParseError(error instanceof Error ? error.message : "Invalid JSON");
+      return;
+    }
+    run.mutate({ name: tool.name, input: parsed });
+  };
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-app-border bg-app-surface-2 p-3 text-xs">
+      <label className="flex flex-col gap-1">
+        <span className="text-[11px] text-app-text-muted">
+          Input (JSON object matching the tool's input schema)
+        </span>
+        <textarea
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          rows={6}
+          spellCheck={false}
+          className="rounded border border-app-border bg-app-surface px-2 py-1 font-mono text-[11px] outline-none focus:border-app-accent/60"
+        />
+      </label>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={submit}
+          disabled={run.isPending}
+          className="rounded bg-app-accent px-3 py-1 font-semibold text-app-bg disabled:opacity-50"
+        >
+          {run.isPending ? "Running…" : "Run"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setDraft(initialDraft);
+            setParseError(undefined);
+            run.reset();
+          }}
+          disabled={run.isPending}
+          className="rounded border border-app-border bg-app-surface px-2.5 py-1 disabled:opacity-50"
+        >
+          Reset
+        </button>
+        {parseError ? (
+          <span className="text-app-danger">{parseError}</span>
+        ) : run.isError ? (
+          <span className="text-app-danger">{run.error.message}</span>
+        ) : null}
+      </div>
+      {run.data ? <ManualRunResultDisplay response={run.data} /> : null}
+    </div>
+  );
+}
+
+function ManualRunResultDisplay({ response }: { response: ManualToolRunResponse }) {
+  const { result, durationMs, tool } = response;
+  return (
+    <div className="mt-1 rounded border border-app-border bg-app-surface p-2 text-[11px]">
+      <p className="flex flex-wrap items-center gap-2">
+        <GenericBadge tone={result.ok ? "ok" : "danger"}>{result.ok ? "ok" : "failed"}</GenericBadge>
+        <span className="font-mono text-app-text-muted">
+          {tool.name} v{tool.version} · {durationMs}ms
+        </span>
+      </p>
+      <p className="mt-1.5 font-semibold">content:</p>
+      <pre className="mt-0.5 max-h-60 overflow-auto whitespace-pre-wrap font-mono text-[10px]">
+        {result.content || "(empty)"}
+      </pre>
+      {result.data !== undefined ? (
+        <details className="mt-1.5">
+          <summary className="cursor-pointer text-app-text-muted">data</summary>
+          <pre className="mt-0.5 max-h-60 overflow-auto whitespace-pre-wrap font-mono text-[10px]">
+            {JSON.stringify(result.data, null, 2)}
+          </pre>
+        </details>
+      ) : null}
+    </div>
   );
 }
 

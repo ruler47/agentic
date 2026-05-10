@@ -12,6 +12,7 @@ export type AuditAction =
   | "tool.used"
   | "tool.failed"
   | "tool.deleted"
+  | "tool.manual_run"
   | "tool.setting_updated"
   | "tool.setting_deleted"
   | "tool.package_imported"

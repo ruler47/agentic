@@ -118,6 +118,29 @@ export function useDeleteGeneratedTool() {
   });
 }
 
+/**
+ * Phase 13 follow-up: manual tool invocation. POSTs an arbitrary input
+ * payload to the registered tool and resolves with the exact
+ * `ToolResult` it returned, so the operator can smoke-test a build
+ * (or a freshly-rebuilt docker image) without running an agent task.
+ */
+export type ManualToolRunResponse = {
+  tool: { name: string; version: string };
+  result: { ok: boolean; content: string; data?: unknown };
+  durationMs: number;
+};
+
+export function useRunToolManually() {
+  return useMutation({
+    mutationFn: ({ name, input }: { name: string; input: Record<string, unknown> }) =>
+      apiFetch<ManualToolRunResponse>(`/api/tools/${encodeURIComponent(name)}/run`, {
+        method: "POST",
+        body: JSON.stringify({ input }),
+        headers: { "content-type": "application/json" },
+      }),
+  });
+}
+
 // Convenience: reduce flat settings list into a nested per-tool map.
 export function settingsByTool(records: ToolRuntimeSettingRecord[] | undefined) {
   const map = new Map<string, Record<string, string>>();
