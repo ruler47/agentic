@@ -2,6 +2,15 @@ node_modules/
 dist/
 .env
 .DS_Store
-/tools/
+# Phase 13: tool sources we ship live under tools/. Generated/runtime
+# tool packages (plus old `tools/` workspace) are still ignored, but
+# the SDK and the four extracted tool services we author by hand
+# are explicitly tracked.
+/tools/*
+!/tools/sdk/
+!/tools/browser-operate-service/
+!/tools/chart-generate-service/
+!/tools/market-timeseries-service/
+!/tools/telegram-bot-service/
 workspace/*
 !workspace/.gitkeep

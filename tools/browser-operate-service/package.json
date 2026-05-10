@@ -1,0 +1,17 @@
+{
+  "name": "@agentic/browser-operate-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dockerized browser.operate tool service (Playwright + Chromium)",
+  "type": "module",
+  "scripts": {
+    "start": "node --experimental-strip-types --no-warnings src/server.ts"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.59.1",
+    "express": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
