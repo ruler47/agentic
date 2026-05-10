@@ -4247,11 +4247,44 @@ function appendThreadContext(
     listContext("Open questions", threadContext.openQuestions),
     formatThreadArtifacts(threadContext.relevantArtifacts),
     listContext("Relevant artifact IDs", threadContext.relevantArtifactIds),
+    formatScreenshotReuseDirective(task, threadContext.relevantArtifacts),
   ].filter(Boolean);
 
   return `${task}
 
 ${lines.join("\n")}`;
+}
+
+/**
+ * Phase 13 follow-up: when the user asks "send me a screenshot proof"
+ * (in any language) of something the prior turn already produced, the
+ * planner used to invent a `get-live-screenshot` subtask anyway —
+ * driving Chromium through an unrelated capture and then tripping a
+ * tool-missing failure path. The thread artifacts directive in
+ * `formatThreadArtifacts` was too soft to override that habit, so this
+ * helper surfaces a sharper, screenshot-specific instruction whenever
+ * the task asks for a screenshot AND the thread already carries PNG
+ * artifacts. Returns `undefined` when the case doesn't apply, so the
+ * directive is silent for the common path.
+ */
+function formatScreenshotReuseDirective(
+  task: string,
+  artifacts: AgentArtifact[] | undefined,
+): string | undefined {
+  if (!artifacts || artifacts.length === 0) return undefined;
+  if (!asksForScreenshot(task) && !/proof|доказательств|пруф|подтвержд/i.test(task)) return undefined;
+  const pngs = artifacts.filter(
+    (artifact) => artifact.mimeType === "image/png" || artifact.filename?.toLowerCase().endsWith(".png"),
+  );
+  if (pngs.length === 0) return undefined;
+
+  const idList = pngs.map((p) => `${p.id} (${p.filename ?? "unnamed"})`).join("; ");
+  return [
+    "Screenshot reuse directive:",
+    `The current request asks for a screenshot / proof, AND the conversation thread already contains ${pngs.length} reusable PNG artifact(s): ${idList}.`,
+    "Do NOT plan a fresh `get-live-screenshot`, `capture-bitcoin-page`, or any other browser-driven capture subtask.",
+    "Instead plan ONE attach-and-respond subtask that references the existing artifact id(s) by URL and finishes the turn. The synthesizer is responsible for the final markdown.",
+  ].join("\n");
 }
 
 function appendInstanceContext(
@@ -6309,4 +6342,5 @@ export const __testing__ = {
   parseFlexibleNumber,
   extractNumericValuesFromEvidence,
   isCurrencyAmountGroundedNumerically,
+  formatScreenshotReuseDirective,
 };
