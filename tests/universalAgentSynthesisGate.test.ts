@@ -72,6 +72,36 @@ test("findUngroundedSpecificsInText: capitalized phrases without a digit are NOT
   }
 });
 
+test("findUngroundedSpecificsInText: numeric specs with units are NOT flagged (V1 re-regression)", () => {
+  // Iter V1 second-pass regression: even with first-letter-must-have-Lu,
+  // the extractor still flagged "VRAM 8 GB", "GB 12", "70 Wh" because
+  // the phrase started at the unit word ("VRAM"/"GB") and contained a
+  // digit elsewhere in the slide. Adding a structural numeric-spec
+  // detector (digit attached to a known measurement unit) drops these
+  // candidates without re-introducing a brand allow-list.
+  const output =
+    "Recommended: VRAM 8 GB minimum, RAM 32 GB, battery 70 Wh, weight 2.5 kg, frequency 3.2 GHz, ROM 512 MB.";
+  const evidence = "Generic spec context.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  assert.deepEqual(
+    ungrounded,
+    [],
+    `numeric specs should not be flagged, got: ${ungrounded.join(", ")}`,
+  );
+});
+
+test("findUngroundedSpecificsInText: numeric specs with Russian units are NOT flagged", () => {
+  const output =
+    "Параметры: видеопамять 12 ГБ, оперативная память 32 ГБ, ёмкость 75 Втч, частота 4.5 ГГц.";
+  const evidence = "Общий контекст.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  assert.deepEqual(
+    ungrounded,
+    [],
+    `numeric specs (Russian units) should not be flagged, got: ${ungrounded.join(", ")}`,
+  );
+});
+
 test("findUngroundedSpecificsInText: bare digits and numeric specs are NOT flagged (V1 regression)", () => {
   // V1 validation regression: the previous implementation extracted
   // bare numbers ("300") and unit-bearing specs ("12 ГБ VRAM",

@@ -657,6 +657,21 @@ export class UniversalAgent {
                 rawAnswer: rawFinalAnswer,
                 evidenceCorpus: synthesisCorpus,
               });
+              // Phase 12 follow-up: recover any fenced code blocks
+              // from the direct-mode synthesis answer. The model is
+              // explicitly answering a coding task (no worker
+              // pipeline ran) and the prose contains the file the
+              // user asked for — persist it as an artifact so the
+              // user actually receives the deliverable.
+              if (options.saveArtifact) {
+                const recovered = await recoverCodeArtifactsFromWorkerOutput(
+                  guardedSynthesis.answer,
+                  undefined,
+                  artifacts,
+                  options.saveArtifact,
+                );
+                if (recovered.length > 0) artifacts.push(...recovered);
+              }
               const output = appendPendingImprovements(withArtifactLinks(guardedSynthesis.answer, artifacts));
               await emit({
                 spanId: synthesisSpanId,
@@ -740,6 +755,17 @@ export class UniversalAgent {
           rawAnswer: rawFinalAnswer,
           evidenceCorpus: synthesisCorpus,
         });
+        // Phase 12 follow-up: same code-recovery hook as the
+        // recursive direct-answer path (see runner above).
+        if (options.saveArtifact) {
+          const recovered = await recoverCodeArtifactsFromWorkerOutput(
+            guardedSynthesis.answer,
+            undefined,
+            artifacts,
+            options.saveArtifact,
+          );
+          if (recovered.length > 0) artifacts.push(...recovered);
+        }
         finalAnswer = appendPendingImprovements(withArtifactLinks(guardedSynthesis.answer, artifacts));
         await emit({
           spanId: synthesisSpanId,
@@ -4915,34 +4941,41 @@ function stripAccentsLower(value: string): string {
 }
 
 /**
- * Phase 12 follow-up: when a coding subtask requires a file artifact
- * (e.g. requiredArtifacts has kind "code" / capability "file-write")
- * but the worker only emitted a fenced markdown code block in its
- * prose, hard-gate review fails the subtask for "missing required
- * artifact" and the whole run typically collapses. This function
- * extracts every fenced code block from the worker output, infers a
- * sensible filename + MIME type from the language tag and the
- * subtask title, persists each via the supplied `saveArtifact`, and
- * returns the resulting AgentArtifact list. Called only when a save
- * function is available; safely returns [] on any parse / save
- * failure so it never blocks the worker pipeline.
+ * Phase 12 follow-up: when an output (worker prose OR direct-mode
+ * synthesis answer) contains fenced code blocks that the model
+ * intended to deliver as a file but never wrote through file.write,
+ * hard-gate would fail the run and the user would never get the
+ * code as an artifact. This function extracts every fenced block
+ * from the output, infers a sensible filename + MIME type from the
+ * language tag, persists each via the supplied `saveArtifact`, and
+ * returns the resulting AgentArtifact list. Best-effort: returns []
+ * on parse / save failure so it never blocks the pipeline.
+ *
+ * In delegated mode the caller supplies a `subtask` so the recovery
+ * is gated to coding-style requiredArtifacts. In direct mode no
+ * subtask exists; pass `subtask: undefined` and the function will
+ * recover any fenced block (the user explicitly asked for code, the
+ * model produced code, save it).
  */
 async function recoverCodeArtifactsFromWorkerOutput(
   output: string,
-  subtask: Subtask,
+  subtask: Subtask | undefined,
   existingArtifacts: AgentArtifact[],
   saveArtifact: (input: ArtifactCreateInput) => Promise<AgentArtifact>,
+  fallbackSlug = "code",
 ): Promise<AgentArtifact[]> {
-  const requirements = (subtask.requiredArtifacts ?? []).filter(
-    (req) =>
-      req.required !== false &&
-      (req.kind === "data"
-        || req.kind === "document"
-        || req.kind === "source"
-        || req.capability === "file-write"
-        || req.capability === "code-generation"),
-  );
-  if (requirements.length === 0) return [];
+  if (subtask) {
+    const requirements = (subtask.requiredArtifacts ?? []).filter(
+      (req) =>
+        req.required !== false &&
+        (req.kind === "data"
+          || req.kind === "document"
+          || req.kind === "source"
+          || req.capability === "file-write"
+          || req.capability === "code-generation"),
+    );
+    if (requirements.length === 0) return [];
+  }
   const alreadyHave = new Set(existingArtifacts.map((a) => a.id || a.url));
   const recovered: AgentArtifact[] = [];
   const fenceRe = /```([a-zA-Z0-9_+\-]*)\n([\s\S]*?)```/g;
@@ -4956,7 +4989,7 @@ async function recoverCodeArtifactsFromWorkerOutput(
   }
   if (blocks.length === 0) return [];
 
-  const baseSlug = safeArtifactSlug(subtask.id || subtask.title || "code");
+  const baseSlug = safeArtifactSlug(subtask?.id || subtask?.title || fallbackSlug);
   let counter = 0;
   for (const block of blocks) {
     const ext = languageToExtension(block.language);
@@ -4970,12 +5003,14 @@ async function recoverCodeArtifactsFromWorkerOutput(
         filename,
         mimeType: mime,
         content: block.code,
-        description: `Recovered ${block.language || "code"} artifact from worker output for subtask ${subtask.id}.`,
+        description: subtask
+          ? `Recovered ${block.language || "code"} artifact from worker output for subtask ${subtask.id}.`
+          : `Recovered ${block.language || "code"} artifact from direct-mode synthesis answer.`,
       });
       if (alreadyHave.has(artifact.id || artifact.url)) continue;
       recovered.push(artifact);
     } catch {
-      // Best effort — never block the worker pipeline on a save failure.
+      // Best effort — never block the pipeline on a save failure.
     }
   }
   return recovered;
@@ -5441,6 +5476,14 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
       const phrase = wordMatches.slice(i, i + len).map((w) => w.word).join(" ");
       if (!/\d/.test(phrase)) continue;
       if (phrase.length < 2) continue;
+      // Structural numeric-spec filter: phrases containing a known
+      // measurement unit attached to a number ("8 GB", "12 ГБ",
+      // "2.5 kg", "75 Wh") are quantitative specs, not branded
+      // specifics. Strip them so worker recommendations like "32 GB
+      // of RAM" / "12 ГБ VRAM" never trip the gate. The unit set
+      // covers SI / computing units and their Russian equivalents;
+      // it is a finite well-known config, not a per-case allowlist.
+      if (containsNumericSpec(phrase)) continue;
       candidates.add(phrase);
     }
   }
@@ -5520,6 +5563,33 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
     ungrounded.push(token);
   }
   return ungrounded;
+}
+
+/**
+ * Phase 12 follow-up: structural numeric-spec detector. Returns true
+ * when the phrase contains a number directly attached (with optional
+ * single space) to a known measurement unit. Used to prune candidate
+ * "branded specifics" that are actually quantitative specs the worker
+ * is allowed to mention freely (memory size, weight, battery
+ * capacity, frequency, voltage, etc.).
+ *
+ * The unit set is intentionally finite and well-known (SI + computing
+ * units + their Russian equivalents). It is a "config lookup" not a
+ * per-case allowlist that grows arbitrarily — new units are rare and
+ * adding one is a one-liner.
+ */
+function containsNumericSpec(phrase: string): boolean {
+  // Pattern A: digit attached to a known measurement unit
+  // ("8 GB", "12 ГБ", "2.5 kg", "75 Wh"). Standard SI / computing
+  // unit set + Russian equivalents.
+  const digitThenUnit = /\b\d+(?:[.,]\d+)?\s?(?:GB|MB|TB|KB|PB|GiB|MiB|KiB|TiB|GHz|MHz|kHz|Hz|kW|MW|mW|W|kV|mV|V|mA|A|kg|mg|g|km|cm|mm|nm|μm|m|°C|°F|°K|%|fps|rpm|dpi|ppi|MP|MP\/s|ms|μs|ns|s|min|h|Wh|mAh|kWh|bps|kbps|Mbps|Gbps|ГБ|МБ|ТБ|КБ|ГГц|МГц|кГц|Гц|Вт|КВт|кг|см|мм|мин|ч|Втч|мАч)\b/i;
+  if (digitThenUnit.test(phrase)) return true;
+  // Pattern B: hardware / spec tag attached to a digit
+  // ("VRAM 8", "RAM 32", "CPU 12", "USB 3"). The tags are
+  // well-known component / interface acronyms — finite config
+  // list, not a per-case allowlist that grows arbitrarily.
+  const tagThenDigit = /\b(?:RAM|VRAM|ROM|EEPROM|EPROM|FLASH|NVME|SSD|HDD|EMMC|UFS|CPU|GPU|TPU|NPU|APU|FPGA|ASIC|DSP|MCU|SoC|USB|HDMI|DP|VGA|DVI|PCIe|PCI|SATA|SAS|NIC|GPIO|UART|SPI|I2C|JTAG|RGB|YUV|HEVC|AV1|H264|H265|UHD|HDR|sRGB|DCI|TDP|TGP|PSU|RPM|IP|Wi[-‒–—]?Fi|Bluetooth|BT|NFC|GPS|LTE|5G|4G|3G|ОЗУ|ПЗУ)\s?\d+(?:[.,]\d+)?\b/i;
+  return tagThenDigit.test(phrase);
 }
 
 /**
