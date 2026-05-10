@@ -33,7 +33,7 @@ export class SpaFallbackMiddleware implements NestMiddleware {
   private cachedHtml: string | undefined;
 
   async use(req: Request, res: Response, next: NextFunction): Promise<void> {
-    if (req.method !== "GET") return next();
+    if (req.method !== "GET" && req.method !== "HEAD") return next();
     // Use originalUrl — `req.path` inside a Nest-mounted middleware can be
     // stripped of the prefix the middleware was attached to. originalUrl
     // is always the raw incoming URL.
