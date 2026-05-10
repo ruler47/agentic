@@ -212,3 +212,60 @@ test("getAllWorkerArtifacts returns artifacts from EVERY worker, even failed rev
   assert.equal(approved.length, 1, "only the passed worker's artifact is approved");
   assert.equal(approved[0].id, "a1");
 });
+
+// Bug F (Phase 13 follow-up): when a subtask runs twice
+// (initial worker → needs_revision → revised worker) and only the
+// initial attempt produced screenshots, getAllWorkerArtifacts must
+// preserve them even though `workerResult` points to the (artifact-less)
+// revised attempt. Without this, run-completed.payload.artifacts and
+// thread.artifact_ids both lose every screenshot the run actually
+// captured.
+test("getAllWorkerArtifacts preserves artifacts from earlier attempts when revisions strip them", () => {
+  const initialAttempt = {
+    subtask: { id: "s1" } as never,
+    output: "first try with screenshots",
+    artifacts: [
+      { id: "screenshot-a", filename: "a.png", url: "/a", mimeType: "image/png" } as never,
+      { id: "screenshot-b", filename: "b.png", url: "/b", mimeType: "image/png" } as never,
+    ],
+  };
+  const revisedAttempt = {
+    subtask: { id: "s1" } as never,
+    output: "revised with no new artifacts",
+    artifacts: [],
+  };
+  const reviewed = [
+    {
+      workerResult: revisedAttempt,
+      review: { subtaskId: "s1", verdict: "needs_revision" as const, notes: "" },
+      attempts: [initialAttempt, revisedAttempt],
+      reviews: [],
+    },
+  ];
+  const all = getAllWorkerArtifacts(reviewed as never);
+  assert.equal(all.length, 2, "artifacts from initial attempt survive into all-worker collection");
+  assert.deepEqual(
+    all.map((a) => a.id),
+    ["screenshot-a", "screenshot-b"],
+  );
+});
+
+test("getAllWorkerArtifacts falls back to workerResult when attempts is empty", () => {
+  const reviewed = [
+    {
+      workerResult: {
+        subtask: { id: "s1" } as never,
+        output: "no revisions",
+        artifacts: [
+          { id: "only", filename: "only.png", url: "/x", mimeType: "image/png" } as never,
+        ],
+      },
+      review: { subtaskId: "s1", verdict: "pass" as const, notes: "" },
+      attempts: [],
+      reviews: [],
+    },
+  ];
+  const all = getAllWorkerArtifacts(reviewed as never);
+  assert.equal(all.length, 1);
+  assert.equal(all[0].id, "only");
+});

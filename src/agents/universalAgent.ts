@@ -4467,9 +4467,20 @@ function getApprovedArtifacts(results: ReviewedWorkerResult[]): AgentArtifact[] 
  * screenshots / files that were actually captured even when every worker
  * went `needs_revision`. The `getApprovedArtifacts` set remains the
  * source of truth for what synthesis is allowed to cite as proof.
+ *
+ * Phase 13 follow-up: walk **every attempt** of each subtask, not just
+ * the latest revised `workerResult`. Without this, an initial worker
+ * that captured 3 PNG screenshots followed by a `needs_revision` review
+ * and a stripped revision (zero new artifacts) would lose all 3
+ * screenshots from `run-completed` / `thread.artifact_ids`. That, in
+ * turn, breaks every downstream feature that relies on thread artifact
+ * carry-over (Bug A reuse, follow-up "send a screenshot" requests).
  */
 function getAllWorkerArtifacts(results: ReviewedWorkerResult[]): AgentArtifact[] {
-  return results.flatMap((result) => result.workerResult.artifacts ?? []);
+  return results.flatMap((result) => {
+    const attempts = result.attempts && result.attempts.length > 0 ? result.attempts : [result.workerResult];
+    return attempts.flatMap((attempt) => attempt.artifacts ?? []);
+  });
 }
 
 function asksForScreenshot(task: string): boolean {
