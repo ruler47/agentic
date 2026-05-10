@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-react",
+      "runtimeExecutable": "./node_modules/.bin/vite",
+      "runtimeArgs": ["--port", "3002", "--host", "127.0.0.1"],
+      "port": 3002,
+      "cwd": "web-react",
+      "env": {
+        "AGENTIC_BACKEND_URL": "http://127.0.0.1:4357"
+      }
+    }
+  ]
+}

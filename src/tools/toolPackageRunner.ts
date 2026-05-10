@@ -1113,6 +1113,7 @@ async function executionContextPayload(
     capability: context.capability,
     caller: context.caller,
     now: context.now.toISOString(),
+    callback: context.callback,
     ...configurationEnvelope,
     ...secretEnvelope,
   });

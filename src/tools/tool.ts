@@ -56,6 +56,21 @@ export type ToolExecutionContext = {
   db?: {
     query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[]; rowCount?: number | null }>;
   };
+  /**
+   * Phase 13: callback envelope for dockerized tool services. The
+   * runtime issues a short-lived bearer token scoped to this run +
+   * tool when an external HTTP / OCI tool is about to be invoked,
+   * and bundles it with the public callback base URL into this
+   * field. The HTTP runner then forwards the envelope to the tool
+   * over the wire (in `context.callback`), and the tool SDK uses it
+   * to call back into the runtime for artifacts / ledger / memory /
+   * events. In-process tools never need this and can ignore it.
+   */
+  callback?: {
+    baseUrl: string;
+    token: string;
+    scope: string[];
+  };
 };
 
 export type ToolServiceContext = {

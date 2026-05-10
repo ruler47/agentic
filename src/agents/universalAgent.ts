@@ -229,11 +229,41 @@ export class UniversalAgent {
    */
   private readonly runScopedIntents = new Map<string, string[]>();
 
+  /**
+   * Phase 13: optional callback envelope source. When set, each
+   * external tool invocation receives a short-lived bearer token and
+   * the runtime callback base URL so dockerized tool services can
+   * call back for artifacts / ledger / memory / events. Optional so
+   * the in-process CLI / fixture path keeps working without wiring a
+   * real Nest module.
+   */
+  private callbackIssuer?: {
+    issue(input: { runId: string; toolName: string; scope: string[]; ttlMs?: number }): string;
+  };
+  private callbackBaseUrl?: string;
+  private callbackDefaultScope: string[] = ["artifacts.save", "ledger.claim", "memory.search", "events.emit"];
+
   constructor(
     private readonly llm: LlmClient,
     private readonly skillMemory: SkillMemoryStore,
     private readonly tools = new ToolRegistry(),
   ) {}
+
+  /**
+   * Phase 13: wire the callback envelope source. Called from the
+   * Nest runtime module on startup; CLI / fixture paths leave this
+   * unset and tools that need callbacks fail explicitly with a
+   * clear error.
+   */
+  setCallbackEnvelopeSource(options: {
+    issuer: { issue(input: { runId: string; toolName: string; scope: string[]; ttlMs?: number }): string };
+    baseUrl: string;
+    defaultScope?: string[];
+  }): void {
+    this.callbackIssuer = options.issuer;
+    this.callbackBaseUrl = options.baseUrl;
+    if (options.defaultScope) this.callbackDefaultScope = [...options.defaultScope];
+  }
 
   private resolveLedgerFromContext(
     toolExecutionContext: BaseToolExecutionContext | undefined,
@@ -2581,11 +2611,32 @@ export class UniversalAgent {
       caller?: string;
     },
   ): Promise<ToolResult> {
+    const envelope = this.maybeIssueCallbackEnvelope(tool.name, baseContext?.runId);
     return this.tools.execute(tool, input, {
       ...(baseContext ?? {}),
       ...spanContext,
       now: new Date(),
+      ...(envelope ? { callback: envelope } : {}),
     });
+  }
+
+  /**
+   * Phase 13: build a per-call callback envelope for the tool when
+   * the runtime knows where it lives (`callbackBaseUrl`) and has an
+   * issuer wired. The token is scoped to (runId, toolName) and the
+   * default scope grants the four callback verbs the SDK exposes.
+   * Returns undefined when callbacks are not configured (CLI, tests)
+   * or when there is no run id to scope to (one-off invocations).
+   */
+  private maybeIssueCallbackEnvelope(
+    toolName: string,
+    runId: string | undefined,
+  ): { baseUrl: string; token: string; scope: string[] } | undefined {
+    if (!this.callbackIssuer || !this.callbackBaseUrl) return undefined;
+    if (!runId) return undefined;
+    const scope = [...this.callbackDefaultScope];
+    const token = this.callbackIssuer.issue({ runId, toolName, scope });
+    return { baseUrl: this.callbackBaseUrl, token, scope };
   }
 
   private async runLedgeredToolOperation(

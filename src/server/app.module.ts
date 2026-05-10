@@ -13,6 +13,7 @@ import { EvidenceLedgerModule } from "./modules/evidence-ledger/evidence-ledger.
 import { RunRetrospectivesModule } from "./modules/run-retrospectives/run-retrospectives.module.js";
 import { RunsModule } from "./modules/runs/runs.module.js";
 import { ToolBuildsModule } from "./modules/tool-builds/tool-builds.module.js";
+import { ToolCallbacksModule } from "./modules/tool-callbacks/tool-callbacks.module.js";
 import { WorkLedgerModule } from "./modules/work-ledger/work-ledger.module.js";
 import { ToolInvestigationsModule } from "./modules/tool-investigations/tool-investigations.module.js";
 import { ToolMigrationsModule } from "./modules/tool-migrations/tool-migrations.module.js";
@@ -38,6 +39,7 @@ import { RuntimeWorkersModule } from "./workers/runtime-workers.module.js";
     ModelsModule,
     ToolsModule,
     ToolBuildsModule,
+    ToolCallbacksModule,
     ToolInvestigationsModule,
     ToolReworkWaitsModule,
     ToolMigrationsModule,

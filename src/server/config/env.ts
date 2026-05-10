@@ -17,6 +17,14 @@ export type AppEnv = {
   toolServiceMaxAutoRestarts: number;
   toolSourceBundleHttpRunnerEnabled: boolean;
   internalBaseUrl?: string;
+  /**
+   * Phase 13: callback base URL handed to dockerized tool services so
+   * they can call back into the runtime. Defaults to
+   * `http://app:${PORT}/api/tools/callbacks` (resolves correctly
+   * inside the same docker-compose network). Override with
+   * `TOOL_CALLBACK_BASE_URL` for non-default deployments.
+   */
+  toolCallbackBaseUrl?: string;
 };
 
 export function readEnv(): AppEnv {
@@ -46,5 +54,6 @@ export function readEnv(): AppEnv {
       process.env.TOOL_SOURCE_BUNDLE_HTTP_RUNNER !== "disabled" &&
       process.env.TOOL_SOURCE_BUNDLE_RUNNER !== "in-process",
     internalBaseUrl: process.env.AGENTIC_INTERNAL_BASE_URL,
+    toolCallbackBaseUrl: process.env.TOOL_CALLBACK_BASE_URL,
   };
 }

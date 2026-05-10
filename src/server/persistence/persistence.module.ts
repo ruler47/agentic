@@ -89,6 +89,7 @@ import {
   TOOL_MIGRATION_STORE,
   TOOL_PROMOTION_STORE,
   TOOL_REGISTRY,
+  TOOL_CALLBACK_TOKEN_ISSUER,
   TOOL_REWORK_WAIT_STORE,
   TOOL_RUNTIME_SETTINGS,
   TOOL_SERVICE_EVENT_STORE,
@@ -98,6 +99,7 @@ import {
   USER_STORE,
   WORK_LEDGER_STORE,
 } from "./tokens.js";
+import { ToolCallbackTokenIssuer } from "../../tools/toolCallbackToken.js";
 
 const providers: Provider[] = [
   {
@@ -302,9 +304,33 @@ const providers: Provider[] = [
     useFactory: (tierSettings) => new LlmClient(readLlmConfigFromEnv(), tierSettings),
   },
   {
+    provide: TOOL_CALLBACK_TOKEN_ISSUER,
+    useFactory: () => new ToolCallbackTokenIssuer(),
+  },
+  {
     provide: UNIVERSAL_AGENT,
-    inject: [LLM_CLIENT, SKILL_MEMORY, TOOL_REGISTRY],
-    useFactory: (llm, memory, registry) => new UniversalAgent(llm, memory, registry),
+    inject: [LLM_CLIENT, SKILL_MEMORY, TOOL_REGISTRY, TOOL_CALLBACK_TOKEN_ISSUER, APP_ENV],
+    useFactory: (
+      llm,
+      memory,
+      registry,
+      issuer: ToolCallbackTokenIssuer,
+      env: AppEnv,
+    ) => {
+      const agent = new UniversalAgent(llm, memory, registry);
+      // Phase 13: wire the callback envelope source so dockerized
+      // tool services receive a short-lived bearer token + callback
+      // base URL with every /run invocation. The base URL points at
+      // the runtime's own HTTP API; tools running inside the same
+      // docker network reach it as `http://app:3000/api/tools/callbacks`.
+      const baseUrl = env.toolCallbackBaseUrl
+        ?? `http://app:${env.port ?? 3000}/api/tools/callbacks`;
+      agent.setCallbackEnvelopeSource({
+        issuer,
+        baseUrl,
+      });
+      return agent;
+    },
   },
 ];
 
