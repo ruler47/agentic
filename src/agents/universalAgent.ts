@@ -2045,7 +2045,7 @@ export class UniversalAgent {
         declaredExtraPatterns,
         declaredIntents,
       );
-      if (tool.name === "browser.operate" && hasInvalidBrowserNavigation(runnableInput)) {
+      if (tool.name === "browser.operate" && hasInvalidBrowserNavigation(runnableInput, subtask)) {
         evidence.push(
           `Declared browser.operate input was skipped because it contains a placeholder or invalid navigation URL. Use real http(s) source URLs from previous evidence before running browser automation.`,
         );
@@ -4848,10 +4848,25 @@ function isShallowLandingUrl(url: string): boolean {
   }
 }
 
-function hasInvalidBrowserNavigation(input: unknown): boolean {
+function hasInvalidBrowserNavigation(input: unknown, subtask?: Subtask): boolean {
   if (!isRecord(input)) return false;
   const commands = Array.isArray(input.commands) ? input.commands : [];
-  return commands.some(isPlaceholderNavigateCommand);
+  return commands.some((command) => {
+    if (!isPlaceholderNavigateCommand(command)) return false;
+    // Phase 13 follow-up: when the user explicitly named the URL in
+    // the task / subtask prompt, the URL is intentional even if it
+    // matches the historical placeholder regex (e.g. literal
+    // example.com). The skip would otherwise drop a perfectly
+    // legitimate navigation request.
+    if (
+      subtask &&
+      isNavigateCommand(command) &&
+      userExplicitlyAskedForUrl(command.url, subtask)
+    ) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function requiresMultipleSources(subtask: Subtask): boolean {
