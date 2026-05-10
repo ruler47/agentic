@@ -181,11 +181,18 @@ const buildWorkflowProvider: Provider = {
       buildStore,
       new GeneratedToolFileBuilder(
         [
+          // Phase 13 follow-up: provider order must put MORE-SPECIFIC
+          // shapes first. BrowserScreenshot wins on screenshot/browser
+          // intent. Messaging wins on chat/bot intent. GenericApi wins
+          // on http(s)/REST/JSON intent — including search APIs. Then
+          // DocumentArtifact only for explicit pdf/docx/document
+          // generation. GenericService is a catch-all for "needs to be a
+          // long-running service". Llm is the final fallback.
           new BrowserScreenshotToolBuildProvider(),
-          new DocumentArtifactToolBuildProvider(),
           new MessagingServiceToolBuildProvider(),
-          new GenericServiceToolBuildProvider(),
           new GenericApiToolBuildProvider(),
+          new DocumentArtifactToolBuildProvider(),
+          new GenericServiceToolBuildProvider(),
           ...(env.toolBuildLlmProviderEnabled ? [new LlmToolBuildProvider(llm)] : []),
         ],
         process.cwd(),

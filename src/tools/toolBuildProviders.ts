@@ -1005,7 +1005,21 @@ export class DocumentArtifactToolBuildProvider implements ToolBuildProvider {
       (request.requiredOutputs ?? []).join(" "),
     ].join(" ");
 
-    return /\b(pdf|document|report|docx|markdown|html)\b|pdf[-.\s]?generation|document[-.\s]?generation|report[-.\s]?generation/i.test(text);
+    // Phase 13 follow-up: previously matched `\b(pdf|document|report|docx|
+    // markdown|html)\b` which fired on ANY request whose taskSummary mentioned
+    // an HTML URL (e.g. https://html.duckduckgo.com/html/...) and stole
+    // search/API requests intended for GenericApi. The new pattern requires
+    // a document-shape verb (generate/render/build/export/create + document
+    // noun) or a clear file-format keyword (pdf, docx) — bare "html" or
+    // "markdown" inside a URL or prose is no longer enough to claim the
+    // request.
+    return (
+      /\b(pdf|docx)\b/i.test(text) ||
+      /(pdf|document|report|docx)[-.\s]?generation/i.test(text) ||
+      /\b(generate|render|build|export|create|produce)\s+(?:a\s+|an\s+|the\s+)?(document|report|pdf|docx|markdown\s+document|html\s+document)\b/i.test(
+        text,
+      )
+    );
   }
 
   build(request: ToolBuildRequest): ToolBuildProviderOutput {
