@@ -110,16 +110,30 @@ export function inspectBrowserScreenshotEvidence(input: SemanticArtifactQualityI
   const matchedSignals = expectedSignals.filter((signal) => evidenceTokens.has(signal) || evidenceText.includes(signal));
 
   if (!visual.ok) {
-    return {
-      ok: false,
-      decision: "visually_invalid",
-      reason: visual.reason,
-      visual,
-      expectedSignals,
-      matchedSignals,
-      blockerSignals,
-      evidenceTextLength: evidenceText.length,
-    };
+    // Phase 13 follow-up: a "visually near-empty" screenshot of a
+    // legitimately minimalist page (example.com, a styled 404, a
+    // small landing page) should NOT be treated as failed evidence
+    // when the browser also returned real extracted text from that
+    // page. Pixel-level emptiness is a heuristic for "nothing
+    // rendered"; if 100+ chars of clean text came back, the page
+    // DID render — it's just visually sparse. Only fail when both
+    // the pixels AND the text say "no content".
+    const looksNearEmptyButHasText =
+      /near-empty/i.test(visual.reason) &&
+      evidenceText.length >= 100 &&
+      blockerSignals.length === 0;
+    if (!looksNearEmptyButHasText) {
+      return {
+        ok: false,
+        decision: "visually_invalid",
+        reason: visual.reason,
+        visual,
+        expectedSignals,
+        matchedSignals,
+        blockerSignals,
+        evidenceTextLength: evidenceText.length,
+      };
+    }
   }
 
   if (blockerSignals.length > 0 && (matchedSignals.length < 2 || evidenceText.length < 280)) {
