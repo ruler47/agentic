@@ -3922,7 +3922,16 @@ function normalizeSubtask(subtask: Subtask): Subtask {
     subtask.expectedOutput,
     ...(subtask.reviewCriteria ?? []),
   ].join("\n");
-  const requiredTools = new Set((subtask.requiredTools ?? []).map((tool) => tool.trim()).filter(Boolean));
+  // Phase 13 follow-up: defensive against LLM-emitted plans that put a
+  // `null` entry into requiredTools — `.trim()` on null crashes the
+  // entire review path with "Cannot read properties of null (reading
+  // 'trim')". Filter to strings first.
+  const requiredTools = new Set(
+    (subtask.requiredTools ?? [])
+      .filter((tool): tool is string => typeof tool === "string")
+      .map((tool) => tool.trim())
+      .filter(Boolean),
+  );
   const requiredArtifacts = [...(subtask.requiredArtifacts ?? [])];
 
   if (shouldUseWebSearch(text)) {
@@ -4046,9 +4055,13 @@ function buildWorkerUserPrompt(
  * reasons like missing artifacts, weak browser evidence, etc.).
  */
 function parseForbiddenTokensFromReviewNotes(notes: string): string[] {
-  const match = notes.match(/specifics that are NOT in tool evidence or the task:\s*([^\n.]+)\./i);
+  // Phase 13 follow-up: a reviewer LLM that returned `notes: null` would
+  // crash here. Coerce to empty string instead so the parser harmlessly
+  // returns [].
+  const safeNotes = typeof notes === "string" ? notes : "";
+  const match = safeNotes.match(/specifics that are NOT in tool evidence or the task:\s*([^\n.]+)\./i);
   if (!match) return [];
-  return match[1]
+  return (match[1] ?? "")
     .split(",")
     .map((token) => token.trim())
     .filter((token) => token.length > 0)
