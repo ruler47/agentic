@@ -98,6 +98,93 @@ export function genericToolPackageManifest(input: ToolPackageManifestInput): Too
   };
 }
 
+/**
+ * Phase 13 — manifest factory for the new dockerized tool format.
+ * Identical to the generic factory except the `package` slot points
+ * to an OCI image reference (e.g. `agentic-tool-<name>:1.0.0`)
+ * instead of a local TS module path. The runtime
+ * OciImageToolPackageRunner picks these up when
+ * TOOL_OCI_RUNNER=enabled.
+ */
+export function dockerToolPackageManifest(
+  input: ToolPackageManifestInput & { imageRef?: string },
+): ToolPackageManifest {
+  return {
+    schemaVersion: "agentic.tool-package.v1",
+    name: input.toolName,
+    displayName: input.displayName,
+    version: input.version,
+    description: input.description,
+    capabilities: [...input.capabilities],
+    startupMode: input.startupMode,
+    package: {
+      type: "oci-image",
+      ref: input.imageRef ?? `agentic-tool-${input.toolName.replace(/\./g, "-")}:${input.version}`,
+    },
+    inputSchema: input.inputSchema,
+    outputSchema: input.outputSchema,
+    requiredConfigurationKeys: input.requiredConfigurationKeys,
+    requiredSecretHandles: input.requiredSecretHandles,
+    settingsSchema: input.settingsSchema,
+    storage: input.storage,
+    docsMarkdown: input.docsMarkdown,
+    examples: input.examples,
+  };
+}
+
+/**
+ * Phase 13 — minimal Node.js Docker tool service skeleton. The
+ * tool-builder LLM uses this template as the starting point when
+ * TOOL_BUILD_OUTPUT=docker is set; the LLM fills the handler logic
+ * inside `runHandler` and may extend the Dockerfile with
+ * tool-specific dependencies.
+ */
+export function dockerToolProjectScaffold(input: {
+  toolName: string;
+  version: string;
+  description: string;
+  capabilities: string[];
+  startupMode: ToolStartupMode;
+  requiredConfigurationKeys?: string[];
+  requiredSecretHandles?: string[];
+}): GeneratedFile[] {
+  const dashedName = input.toolName.replace(/\./g, "-");
+  const dockerfile = `FROM node:22-bookworm-slim AS base\nRUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*\n\nFROM base AS runtime\nWORKDIR /app\nCOPY package.json ./\nCOPY src ./src\nENV PORT=8080\nEXPOSE 8080\nHEALTHCHECK --interval=15s --timeout=3s --retries=3 \\\n  CMD curl -fsS http://localhost:8080/health || exit 1\nCMD [\"node\", \"--experimental-strip-types\", \"--no-warnings\", \"src/server.ts\"]\n`;
+  const packageJson = JSON.stringify(
+    {
+      name: `@agentic/${dashedName}-service`,
+      version: input.version,
+      private: true,
+      type: "module",
+      scripts: { start: "node --experimental-strip-types --no-warnings src/server.ts" },
+      engines: { node: ">=22.0.0" },
+    },
+    null,
+    2,
+  ) + "\n";
+  const description = JSON.stringify(
+    {
+      name: input.toolName,
+      version: input.version,
+      description: input.description,
+      capabilities: input.capabilities,
+      startupMode: input.startupMode,
+      requiredConfigurationKeys: input.requiredConfigurationKeys,
+      requiredSecretHandles: input.requiredSecretHandles,
+    },
+    null,
+    2,
+  );
+  const serverTs = `import { createServer, IncomingMessage, ServerResponse } from "node:http";\n\nconst PORT = Number(process.env.PORT ?? 8080);\nconst description = ${description};\n\nasync function readJsonBody(req: IncomingMessage): Promise<unknown> {\n  return new Promise((resolve, reject) => {\n    const chunks: Buffer[] = [];\n    req.on("data", (chunk: Buffer) => chunks.push(chunk));\n    req.on("end", () => {\n      const raw = Buffer.concat(chunks).toString("utf8");\n      if (!raw) return resolve({});\n      try { resolve(JSON.parse(raw)); } catch (error) { reject(error); }\n    });\n    req.on("error", reject);\n  });\n}\nfunction send(res: ServerResponse, status: number, body: unknown) {\n  const payload = JSON.stringify(body);\n  res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(payload) });\n  res.end(payload);\n}\n\n// TODO: tool-builder agent fills this in with the actual handler logic.\nasync function runHandler(input: unknown): Promise<{ ok: boolean; content: string; data?: unknown }> {\n  return { ok: true, content: \`${input.toolName} skeleton received input\`, data: { received: input } };\n}\n\nconst server = createServer(async (req, res) => {\n  const url = req.url ?? "";\n  const method = (req.method ?? "GET").toUpperCase();\n  try {\n    if (method === "GET" && url === "/describe") return send(res, 200, description);\n    if (method === "GET" && url === "/health") return send(res, 200, { status: "ok", version: description.version });\n    if (method === "POST" && url === "/run") {\n      const body = (await readJsonBody(req)) as { input?: unknown };\n      return send(res, 200, await runHandler(body?.input));\n    }\n    if (method === "POST" && (url === "/service/start" || url === "/service/stop")) {\n      return send(res, 200, { ok: true });\n    }\n    send(res, 404, { error: \`Unknown route \${method} \${url}\` });\n  } catch (error) {\n    send(res, 500, { error: error instanceof Error ? error.message : String(error) });\n  }\n});\nserver.listen(PORT, () => console.log(\`${input.toolName} service listening on \${PORT}\`));\n`;
+  const readme = `# ${input.toolName} (v${input.version})\n\n${input.description}\n\nThis tool is a self-contained dockerized service generated by the\nagentic tool-builder agent. It exposes the canonical tool-service\nHTTP envelope (\`/describe\`, \`/health\`, \`/run\`, \`/service/start\`,\n\`/service/stop\`).\n\nBuild and run locally:\n\n\`\`\`sh\ndocker build -t agentic-tool-${dashedName}:${input.version} .\ndocker run --rm -p 8080:8080 agentic-tool-${dashedName}:${input.version}\n\`\`\`\n`;
+  return [
+    { path: `tools/${dashedName}-service/Dockerfile`, content: dockerfile },
+    { path: `tools/${dashedName}-service/package.json`, content: packageJson },
+    { path: `tools/${dashedName}-service/src/server.ts`, content: serverTs },
+    { path: `tools/${dashedName}-service/README.md`, content: readme },
+  ];
+}
+
 export type ToolBuildProvider = {
   canBuild(request: ToolBuildRequest): boolean;
   build(
