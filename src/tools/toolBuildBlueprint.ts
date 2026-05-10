@@ -145,6 +145,42 @@ export function blueprintToPromptSection(blueprint: ToolBuildBlueprint): string 
   ].join("\n");
 }
 
+/**
+ * Phase 13 — when the agent attached a structured improvement spec
+ * to a rebuild request, format it into a dedicated prompt section
+ * that the builder LLM can act on directly. Returns an empty
+ * string when no spec is attached.
+ */
+export function improvementSpecToPromptSection(spec: ToolBuildRequest["improvementSpec"]): string {
+  if (!spec) return "";
+  const lines = [
+    "Improvement Spec (structured request from the agent that hit the failure):",
+    `- Symptom: ${spec.symptom}`,
+    `- Expected behavior: ${spec.expectedBehavior}`,
+  ];
+  if (spec.failureExamples?.length) {
+    lines.push("- Failure examples:");
+    for (const ex of spec.failureExamples) {
+      lines.push(
+        `  • run ${ex.runId}` +
+          (ex.artifactIds?.length ? ` (artifacts: ${ex.artifactIds.join(", ")})` : "") +
+          (ex.notes ? ` — ${ex.notes}` : ""),
+      );
+    }
+  }
+  if (spec.acceptanceTest) {
+    lines.push(`- Acceptance test: ${spec.acceptanceTest}`);
+  }
+  lines.push(
+    "",
+    "Builder must:",
+    "- Address the symptom directly in the new version.",
+    "- Add a regression test that covers the failure example(s) (or a closest reproducible analog).",
+    "- Document the fix in changeSummary so promotion review can see what changed.",
+  );
+  return lines.join("\n");
+}
+
 export function validateToolBuilderResponseAgainstBlueprint(
   output: {
     docsMarkdown?: string;

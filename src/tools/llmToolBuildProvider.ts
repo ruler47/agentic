@@ -12,6 +12,7 @@ import {
 import {
   blueprintToPromptSection,
   createToolBuildBlueprint,
+  improvementSpecToPromptSection,
   ToolBuildBlueprint,
   validateToolBuilderResponseAgainstBlueprint,
 } from "./toolBuildBlueprint.js";
@@ -164,6 +165,7 @@ function buildPrompt(
         "Build a tool from this contract.",
         contractJson,
         blueprintToPromptSection(blueprint),
+        improvementSpecToPromptSection(request.improvementSpec),
         "Required JSON response shape:",
         JSON.stringify(
           {

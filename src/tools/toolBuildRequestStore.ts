@@ -31,6 +31,53 @@ export type ToolBuildRequestInput = {
   replacesToolName?: string;
   replacesVersion?: string;
   startupMode?: ToolStartupMode;
+  /**
+   * Phase 13 — structured improvement specification. When the
+   * agent requests a tool rebuild because the existing version
+   * misbehaved, it can attach a structured spec that the builder
+   * agent reads instead of (or alongside) the free-form `reason`
+   * and `feedback` fields. Example:
+   *
+   *   {
+   *     symptom: "Screenshot is blank because cookie banner blocks page",
+   *     expectedBehavior: "Auto-accept cookie banner before screenshot",
+   *     failureExamples: [
+   *       { runId: "run_X", artifactIds: ["artifact_Y"],
+   *         notes: "Banner: OneTrust on tomshardware.com" }
+   *     ],
+   *     acceptanceTest: "Calling the tool against tomshardware.com returns
+   *                      a screenshot with at least 5 distinct article
+   *                      headlines visible above the fold."
+   *   }
+   *
+   * The builder agent uses this to write a targeted patch + test;
+   * the runtime promotes the new image when the test passes.
+   */
+  improvementSpec?: ToolImprovementSpec;
+};
+
+/**
+ * Phase 13 — structured spec for a tool improvement request. All
+ * fields except `symptom` and `expectedBehavior` are optional; the
+ * builder agent treats absent fields as "no extra context, infer
+ * from reason + feedback".
+ */
+export type ToolImprovementSpec = {
+  /** What went wrong, in plain prose. */
+  symptom: string;
+  /** What the corrected tool should do instead. */
+  expectedBehavior: string;
+  /** Concrete failures the builder should be able to reproduce. */
+  failureExamples?: Array<{
+    runId: string;
+    artifactIds?: string[];
+    notes?: string;
+  }>;
+  /**
+   * Optional human-readable acceptance test the builder can convert
+   * into an automated check (or include verbatim in QA prose).
+   */
+  acceptanceTest?: string;
 };
 
 export type ToolBuildContract = {
