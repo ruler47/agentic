@@ -445,11 +445,105 @@ function InputSchemaSummary({
 }
 
 /**
+ * Phase 13 follow-up: known realistic example payloads for the
+ * built-in tools. The schema-driven generator produces a structurally
+ * valid example, but for a few tools (browser.operate, file.write,
+ * etc.) a domain-realistic command sequence is much more useful as
+ * a starting point. Keyed by tool.name; falls back to schema-driven
+ * generation when the tool isn't listed here.
+ */
+const TOOL_RUN_EXAMPLES: Record<string, unknown> = {
+  "browser.operate": {
+    commands: [
+      { type: "navigate", url: "https://example.com" },
+      { type: "screenshot", label: "demo", maxHeight: 2000 },
+      { type: "extractText", selector: "body", label: "page-text", maxLength: 1500 },
+    ],
+    viewport: { width: 1280, height: 800 },
+    defaultTimeoutMs: 15000,
+  },
+  "chart.generate": {
+    task: "покажи график изменения цены",
+    text: '{"history":[{"timestamp":"2024-01-01","price":100},{"timestamp":"2024-01-02","price":110},{"timestamp":"2024-01-03","price":95},{"timestamp":"2024-01-04","price":130}]}',
+    title: "Demo Price Chart",
+    filename: "demo-chart.svg",
+  },
+  "market.timeseries": { symbol: "BTC", vsCurrency: "usd", days: 30 },
+  "web.search": { query: "what is an agentic universal agent", limit: 5 },
+  "file.read": { path: "manual-checks" },
+  "file.write": { path: "manual-test/hello.txt", content: "hello from manual run\n" },
+  "telegram.bot": {},
+};
+
+/**
+ * Phase 13 follow-up: walk a JSON Schema and produce a structurally
+ * valid example object. Recurses into nested object/array schemas,
+ * uses `default` / `enum[0]` / `minimum` / `minLength` hints when
+ * available, and falls back to type-driven placeholders ("example
+ * string", 0, false, []) otherwise. Returns `{}` for an empty
+ * schema. Pure function — easy to unit-test if it grows.
+ */
+function buildSchemaExample(schema: unknown, toolName?: string): unknown {
+  if (toolName && Object.prototype.hasOwnProperty.call(TOOL_RUN_EXAMPLES, toolName)) {
+    return TOOL_RUN_EXAMPLES[toolName];
+  }
+  return buildExampleForSchema(schema);
+}
+
+function buildExampleForSchema(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return {};
+  const schema = raw as {
+    type?: string | string[];
+    properties?: Record<string, unknown>;
+    required?: string[];
+    items?: unknown;
+    enum?: unknown[];
+    default?: unknown;
+    minimum?: number;
+    minLength?: number;
+  };
+  if (schema.default !== undefined) return schema.default;
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum[0];
+  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+  if (type === "object" || schema.properties) {
+    const out: Record<string, unknown> = {};
+    const props = schema.properties ?? {};
+    const required = new Set(schema.required ?? []);
+    // Prefer required keys first, then a small slice of optional keys for context.
+    const orderedKeys = [
+      ...Object.keys(props).filter((k) => required.has(k)),
+      ...Object.keys(props).filter((k) => !required.has(k)),
+    ];
+    for (const key of orderedKeys.slice(0, 8)) {
+      out[key] = buildExampleForSchema(props[key]);
+    }
+    return out;
+  }
+  if (type === "array") {
+    const itemSchema = schema.items;
+    return itemSchema !== undefined ? [buildExampleForSchema(itemSchema)] : [];
+  }
+  if (type === "number" || type === "integer") {
+    if (typeof schema.minimum === "number") return schema.minimum;
+    return 0;
+  }
+  if (type === "boolean") return false;
+  if (type === "string") {
+    if (typeof schema.minLength === "number" && schema.minLength > 0) {
+      return "example";
+    }
+    return "example string";
+  }
+  return null;
+}
+
+/**
  * Phase 13 follow-up: manual tool runner panel. Lets the operator paste a
  * JSON `input`, click "Run", and see the exact `ToolResult` the runtime
  * would hand back to an agent. Useful for smoke-testing a fresh docker
  * build / a new version before promoting it. Pre-fills the textarea
- * with the tool's first declared example (if any) on mount.
+ * with a realistic example built from the tool's declared input schema
+ * (or a hand-tuned payload from `TOOL_RUN_EXAMPLES`) on mount.
  */
 function ManualRunPanel({ tool }: { tool: ToolModuleMetadata }) {
   const run = useRunToolManually();
@@ -458,13 +552,7 @@ function ManualRunPanel({ tool }: { tool: ToolModuleMetadata }) {
     if (example?.input && typeof example.input === "object") {
       return JSON.stringify(example.input, null, 2);
     }
-    const requiredKeys = (tool.inputSchema?.required as string[] | undefined) ?? [];
-    if (requiredKeys.length > 0) {
-      const stub: Record<string, string> = {};
-      for (const key of requiredKeys.slice(0, 6)) stub[key] = "";
-      return JSON.stringify(stub, null, 2);
-    }
-    return "{}";
+    return JSON.stringify(buildSchemaExample(tool.inputSchema, tool.name), null, 2);
   }, [tool]);
   const [draft, setDraft] = useState(initialDraft);
   const [parseError, setParseError] = useState<string | undefined>();
