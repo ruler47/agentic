@@ -4981,55 +4981,68 @@ async function recoverCodeArtifactsFromWorkerOutput(
   return recovered;
 }
 
+/**
+ * Phase 12 follow-up: the previous implementation shipped a 30-entry
+ * map and fell back to `.txt` for anything missing. Replace with a
+ * structural rule that requires no per-language patches:
+ *   1. The handful of cases where the markdown fence tag differs from
+ *      the file extension (`python` -> `py`, `csharp` -> `cs`) live in
+ *      a tiny ALIASES table that operators rarely need to touch.
+ *   2. Any other tag becomes the extension verbatim. Editors / IDEs
+ *      pick the language by extension regardless of whether we
+ *      shipped its name in a map.
+ */
+const LANGUAGE_TAG_TO_EXTENSION_ALIAS: Record<string, string> = {
+  python: "py",
+  javascript: "js",
+  typescript: "ts",
+  bash: "sh",
+  zsh: "sh",
+  shell: "sh",
+  golang: "go",
+  ruby: "rb",
+  rust: "rs",
+  csharp: "cs",
+  kotlin: "kt",
+  markdown: "md",
+  yml: "yaml",
+  "c++": "cpp",
+  cxx: "cpp",
+  text: "txt",
+  plaintext: "txt",
+};
+
 function languageToExtension(language: string): string {
-  const map: Record<string, string> = {
-    py: ".py", python: ".py",
-    js: ".js", javascript: ".js",
-    ts: ".ts", typescript: ".ts",
-    tsx: ".tsx", jsx: ".jsx",
-    sh: ".sh", bash: ".sh", zsh: ".sh",
-    json: ".json",
-    yaml: ".yaml", yml: ".yaml",
-    toml: ".toml",
-    md: ".md", markdown: ".md",
-    html: ".html",
-    css: ".css",
-    sql: ".sql",
-    rs: ".rs", rust: ".rs",
-    go: ".go", golang: ".go",
-    rb: ".rb", ruby: ".rb",
-    java: ".java",
-    cpp: ".cpp", cxx: ".cpp", "c++": ".cpp",
-    c: ".c",
-    cs: ".cs", csharp: ".cs",
-    php: ".php",
-    lua: ".lua",
-    kt: ".kt", kotlin: ".kt",
-    swift: ".swift",
-    dart: ".dart",
-    dockerfile: ".dockerfile",
-    makefile: ".makefile",
-    text: ".txt", txt: ".txt", "": ".txt",
-  };
-  return map[language] ?? ".txt";
+  const tag = (language ?? "").trim().toLowerCase();
+  if (!tag) return ".txt";
+  const ext = LANGUAGE_TAG_TO_EXTENSION_ALIAS[tag] ?? tag;
+  // Sanitize: editors only honor [a-z0-9_-] extensions; if the tag
+  // contains anything weirder, fall back to the safe `.txt` extension.
+  if (!/^[a-z0-9_-]{1,12}$/.test(ext)) return ".txt";
+  return `.${ext}`;
 }
 
 function languageToMimeType(language: string): string {
+  const ext = languageToExtension(language).slice(1);
   const map: Record<string, string> = {
-    py: "text/x-python", python: "text/x-python",
-    js: "text/javascript", javascript: "text/javascript",
-    ts: "text/typescript", typescript: "text/typescript",
-    tsx: "text/typescript", jsx: "text/javascript",
-    sh: "text/x-shellscript", bash: "text/x-shellscript",
+    py: "text/x-python",
+    js: "text/javascript",
+    ts: "text/typescript",
+    tsx: "text/typescript",
+    jsx: "text/javascript",
+    sh: "text/x-shellscript",
     json: "application/json",
-    yaml: "application/yaml", yml: "application/yaml",
+    yaml: "application/yaml",
     toml: "application/toml",
-    md: "text/markdown", markdown: "text/markdown",
+    md: "text/markdown",
     html: "text/html",
     css: "text/css",
     sql: "application/sql",
   };
-  return map[language] ?? "text/plain";
+  // Anything else gets a structural fallback: editors and the
+  // download path care more about the file extension than the MIME
+  // type, and `text/plain` is a safe default for source code.
+  return map[ext] ?? "text/plain";
 }
 
 function isLowValueProofUrl(url: string): boolean {
@@ -5061,30 +5074,22 @@ function isLowValueProofUrl(url: string): boolean {
     if (/(?:^|\/)(?:rest|api|v\d+|raw|blob|contents)(?:\/|$)/i.test(pathname)) {
       return true;
     }
-    // Phase 12 follow-up: social-platform individual posts /
-    // comments / status updates are almost never useful as direct
-    // evidence for product / shopping / professional research tasks.
-    // The LLM URL ranker is not able to consistently filter them —
-    // iter S5 promoted facebook.com/groups/dullmensclub/posts/... for
-    // a laptop recommendation, iter H2 promoted
-    // facebook.com/groups/nashvillehospitalityprofessionals/posts/...
-    // for a Marbella restaurant. Filter URLs whose path explicitly
-    // contains a post/status indicator on a known social host.
-    // Profile / landing pages on the same hosts (e.g.
-    // linkedin.com/in/<name>, facebook.com/<page>) are NOT filtered —
-    // they may be the brand's own page used for verification.
-    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const socialHosts = new Set([
-      "facebook.com",
-      "twitter.com",
-      "x.com",
-      "instagram.com",
-      "tiktok.com",
-      "linkedin.com",
-      "threads.net",
-      "vk.com",
-    ]);
-    if (socialHosts.has(host) && /(?:^|\/)(?:posts|status|statuses|comments|p)(?:\/|$)/i.test(pathname)) {
+    // Phase 12 follow-up: structural detector for "single-post"
+    // URLs on any social platform. Match URL paths whose last (or
+    // second-to-last) segment is a known post/status/thread indicator
+    // followed by an opaque ID-like segment of 6+ alphanumeric chars.
+    // No host allow-list — the same shape catches facebook posts,
+    // bluesky/mastodon posts, twitter status URLs, linkedin activity
+    // posts, reddit comments, and any future social platform that
+    // adopts the same convention. Profile / landing pages
+    // (linkedin.com/in/<name>, facebook.com/<page>) do NOT have an
+    // ID-segment after a post indicator so they correctly stay
+    // allowed for brand verification.
+    if (
+      /(?:^|\/)(?:posts?|status(?:es)?|comments?|tweets?|reels?|threads?|notes?|p|note)\/[A-Za-z0-9._-]{6,}(?:\/|$)/i.test(
+        pathname,
+      )
+    ) {
       return true;
     }
   } catch {
@@ -5376,9 +5381,16 @@ function guardSearchQueryAgainstUngroundedSpecifics(query: string, originalTask:
 /**
  * Phase 12 follow-up: shared deterministic gate used by both worker
  * review (`hardGateReview`) and the synthesis layer
- * (`enforceUngroundedSpecificsOnSynthesis`). Same regexes / matching
- * strategy as the worker version so a token blocked at worker time is
- * also blocked at synthesis time when it leaks back through the LLM.
+ * (`enforceUngroundedSpecificsOnSynthesis`). The candidate-extraction
+ * step is fully generic — no brand allow-list, no domain-specific
+ * regex. A "specific" is any noun-phrase made of 1-4 tokens where each
+ * token starts with an uppercase letter or a digit AND the phrase
+ * contains at least one digit. That captures product/version/model
+ * shapes ("RTX 4080", "MacBook Pro M5", "Galaxy S25 Ultra", "Boeing
+ * 737 MAX", "GPT-5", "Tesla Model 3", "Лада Гранта 2024", ...) without
+ * naming any brand. Currency amounts and 4-digit years stay as
+ * dedicated structural patterns because they obey their own shape and
+ * may appear without any leading capital.
  */
 function findUngroundedSpecificsInText(output: string, evidenceText: string): string[] {
   const evidenceCorpus = (evidenceText ?? "")
@@ -5388,13 +5400,23 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
 
   const candidates = new Set<string>();
 
-  // Branded chip / GPU / CPU / model names: 2+ uppercase letters then
-  // a number-letter combo. Catches "RTX 4080", "M3 Pro", "Ryzen 9
-  // 7950X", "Snapdragon X Elite", "Core i9".
-  const brandedTokenRe = /\b(RTX|GTX|Ryzen|Radeon|Snapdragon|Core\s+i[3579]|Apple\s+M\d|M\d(?:\s+(?:Pro|Max|Ultra))?|Intel\s+(?:Ultra\s+)?(?:Core\s+)?\d|EPYC|Threadripper|Galaxy\s+(?:S|Note|Z)\d+|Pixel\s+\d+|iPhone\s+\d+(?:\s*Pro)?|Llama\s+\d+|GPT-\d|Claude\s+\d|Gemini\s+\d|XPS\s+\d+|ROG\s+[A-Z][a-z]+|MacBook\s+(?:Air|Pro)|ZenBook|ThinkPad|Surface\s+Pro|Lenovo\s+(?:Legion|IdeaPad|Yoga|Slim)|HP\s+(?:Omen|Pavilion|Spectre|Envy|Victus|EliteBook|ProBook|ZBook)|MSI\s+(?:Raider|Stealth|Vector|Cyborg|Katana|Sword|Titan|Crosshair|Pulse|Creator)|Razer\s+Blade|Acer\s+(?:Predator|Nitro|Swift|Aspire)|Alienware|Dell\s+(?:Inspiron|Latitude|Precision|Vostro)|LG\s+Gram|Samsung\s+Galaxy\s+Book|Framework\s+(?:13|16))\s*[-A-Za-z0-9]*\b/g;
-  for (const match of (output ?? "").matchAll(brandedTokenRe)) {
-    const token = match[0].trim().replace(/\s+/g, " ");
-    if (token.length >= 2) candidates.add(token);
+  // Generic "branded specific" extractor: 1-4 word phrases where each
+  // word begins with an uppercase letter or digit, words may be joined
+  // by space or hyphen, and at least one word contains a digit. The
+  // digit requirement is what separates "specific" (model number /
+  // version / year code) from "title-cased prose" — proper nouns
+  // without numbers (people, hospitals, cities) are intentionally NOT
+  // flagged because they are not the kind of fact that reliably comes
+  // from a brand allow-list anyway.
+  const candidatePhraseRe =
+    /\b((?:[\p{Lu}\d][\p{L}\p{N}]*)(?:[-\s](?:[\p{Lu}\d][\p{L}\p{N}]*)){0,3})\b/gu;
+  for (const match of (output ?? "").matchAll(candidatePhraseRe)) {
+    const raw = (match[1] ?? "").trim();
+    if (!raw) continue;
+    if (!/\d/.test(raw)) continue;
+    const normalized = raw.replace(/\s+/g, " ");
+    if (normalized.length < 2) continue;
+    candidates.add(normalized);
   }
 
   // Years 2023-2030 mentioned without "20" prefix or as standalone tokens.

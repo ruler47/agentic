@@ -32,15 +32,44 @@ test("findUngroundedSpecificsInText accepts tokens that ARE in evidence", () => 
   assert.deepEqual(ungrounded, []);
 });
 
-test("findUngroundedSpecificsInText flags ungrounded laptop-line tokens (Lenovo Legion, HP Omen, MSI Raider, Razer Blade, ROG Zephyrus)", () => {
-  const output = "Top picks: Lenovo Legion Slim 5, HP Omen Transcend, MSI Raider GE78, Razer Blade 16, ROG Zephyrus G14.";
+test("findUngroundedSpecificsInText: generic extractor flags any branded specific containing a digit (no brand allow-list)", () => {
+  // Phase 12 follow-up: the previous brand-allow-list approach forced
+  // every new product line to be added by hand. The generic rule now
+  // catches ANY capitalized phrase that contains a digit — works for
+  // laptop lines (Lenovo Legion 5, MSI Raider GE78), for entirely new
+  // brands not in any list (Acme TurboBook 5000), and for non-laptop
+  // products (Galaxy S25, Boeing 737, Tesla Model 3) all the same.
+  const output =
+    "Top picks: Lenovo Legion Slim 5, MSI Raider GE78, Razer Blade 16, ROG Zephyrus G14, Acme TurboBook 5000, Galaxy S25 Ultra, Boeing 737 MAX.";
   const evidence = "Tool returned a generic page about gaming laptops with no model lines mentioned.";
   const ungrounded = findUngroundedSpecificsInText(output, evidence);
   assert.ok(ungrounded.some((t) => /Lenovo Legion/i.test(t)), `expected Lenovo Legion to be flagged, got ${ungrounded.join(", ")}`);
-  assert.ok(ungrounded.some((t) => /HP Omen/i.test(t)), `expected HP Omen to be flagged, got ${ungrounded.join(", ")}`);
   assert.ok(ungrounded.some((t) => /MSI Raider/i.test(t)), `expected MSI Raider to be flagged, got ${ungrounded.join(", ")}`);
   assert.ok(ungrounded.some((t) => /Razer Blade/i.test(t)), `expected Razer Blade to be flagged, got ${ungrounded.join(", ")}`);
   assert.ok(ungrounded.some((t) => /Zephyrus/i.test(t)), `expected Zephyrus to be flagged, got ${ungrounded.join(", ")}`);
+  // Brand never seen by the runtime: works without any patch.
+  assert.ok(ungrounded.some((t) => /TurboBook/i.test(t)), `expected new brand TurboBook 5000 to be flagged, got ${ungrounded.join(", ")}`);
+  // Non-laptop product line: same generic rule.
+  assert.ok(ungrounded.some((t) => /S25/i.test(t)), `expected Galaxy S25 to be flagged, got ${ungrounded.join(", ")}`);
+  assert.ok(ungrounded.some((t) => /737/.test(t)), `expected Boeing 737 to be flagged, got ${ungrounded.join(", ")}`);
+});
+
+test("findUngroundedSpecificsInText: capitalized phrases without a digit are NOT flagged (proper nouns / series alone)", () => {
+  // The digit requirement is what marks "specific". A series name
+  // alone ("MacBook Pro", "HP Omen", "ROG Zephyrus") refers to a
+  // product LINE, not a particular SKU; flagging would over-block.
+  // Person names, hospital names, organizations, and city names are
+  // also intentionally left alone because they are not the kind of
+  // fact this gate is supposed to police.
+  const output = "Recommendation: HP Omen series. The team at Hospital Universitario La Paz suggested ZenBook variants. Niko Matsakis would approve.";
+  const evidence = "Generic context with none of these terms.";
+  const ungrounded = findUngroundedSpecificsInText(output, evidence);
+  for (const token of ungrounded) {
+    assert.ok(
+      !/HP Omen|Hospital Universitario|ZenBook|Niko Matsakis/i.test(token),
+      `Token "${token}" should NOT be flagged (no digit -> not specific)`,
+    );
+  }
 });
 
 test("findUngroundedSpecificsInText pair-with-gap fallback: 'MacBook Pro M3 Max' grounded by 'MacBook Pro with M3 Max'", () => {
