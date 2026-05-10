@@ -343,7 +343,16 @@ function ToolDetail({
       </Section>
 
       <Section title="Manual run">
-        <ManualRunPanel tool={tool} />
+        {/*
+          Phase 13 follow-up: keying the panel on tool.name forces React
+          to discard local state when the user clicks a different tool
+          in the sidebar. Without the key, `useState(initialDraft)`
+          locks in the draft text from the first-rendered tool and the
+          textarea sticks on whatever example was loaded first — every
+          subsequent tool selection looked identical even though
+          `initialDraft` had recomputed.
+        */}
+        <ManualRunPanel key={tool.name} tool={tool} />
       </Section>
 
       <footer className="flex flex-wrap items-center gap-2 border-t border-app-border pt-3 text-[11px] text-app-text-muted">
