@@ -1312,6 +1312,25 @@ export class UniversalAgent {
           content: buildWorkerUserPrompt(originalTask, collectedEvidence.text, dependencyContext, revisionInstructions),
         },
       ], { modelTier });
+      // Phase 12 follow-up: when a coding subtask declared a file
+      // artifact requirement but the worker only produced a fenced
+      // markdown code block in its prose, auto-recover by saving the
+      // code as the requested file so hard-gate review does not kill
+      // an otherwise valid run.
+      if (saveArtifact) {
+        const recovered = await recoverCodeArtifactsFromWorkerOutput(
+          output,
+          subtask,
+          collectedEvidence.artifacts,
+          saveArtifact,
+        );
+        if (recovered.length > 0) {
+          collectedEvidence.artifacts.push(...recovered);
+          collectedEvidence.evidence.push(
+            ...recovered.map((artifact) => `Recovered code artifact: ${artifact.filename}\n${artifact.url}`),
+          );
+        }
+      }
     } catch (error) {
       await emit({
         spanId,
@@ -4895,6 +4914,124 @@ function stripAccentsLower(value: string): string {
   return value.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
+/**
+ * Phase 12 follow-up: when a coding subtask requires a file artifact
+ * (e.g. requiredArtifacts has kind "code" / capability "file-write")
+ * but the worker only emitted a fenced markdown code block in its
+ * prose, hard-gate review fails the subtask for "missing required
+ * artifact" and the whole run typically collapses. This function
+ * extracts every fenced code block from the worker output, infers a
+ * sensible filename + MIME type from the language tag and the
+ * subtask title, persists each via the supplied `saveArtifact`, and
+ * returns the resulting AgentArtifact list. Called only when a save
+ * function is available; safely returns [] on any parse / save
+ * failure so it never blocks the worker pipeline.
+ */
+async function recoverCodeArtifactsFromWorkerOutput(
+  output: string,
+  subtask: Subtask,
+  existingArtifacts: AgentArtifact[],
+  saveArtifact: (input: ArtifactCreateInput) => Promise<AgentArtifact>,
+): Promise<AgentArtifact[]> {
+  const requirements = (subtask.requiredArtifacts ?? []).filter(
+    (req) =>
+      req.required !== false &&
+      (req.kind === "data"
+        || req.kind === "document"
+        || req.kind === "source"
+        || req.capability === "file-write"
+        || req.capability === "code-generation"),
+  );
+  if (requirements.length === 0) return [];
+  const alreadyHave = new Set(existingArtifacts.map((a) => a.id || a.url));
+  const recovered: AgentArtifact[] = [];
+  const fenceRe = /```([a-zA-Z0-9_+\-]*)\n([\s\S]*?)```/g;
+  const blocks: { language: string; code: string }[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = fenceRe.exec(output)) !== null) {
+    const language = (match[1] || "").trim().toLowerCase();
+    const code = match[2] ?? "";
+    if (!code.trim()) continue;
+    blocks.push({ language, code });
+  }
+  if (blocks.length === 0) return [];
+
+  const baseSlug = safeArtifactSlug(subtask.id || subtask.title || "code");
+  let counter = 0;
+  for (const block of blocks) {
+    const ext = languageToExtension(block.language);
+    const mime = languageToMimeType(block.language);
+    counter += 1;
+    const filename = blocks.length === 1
+      ? `${baseSlug}${ext}`
+      : `${baseSlug}-${counter}${ext}`;
+    try {
+      const artifact = await saveArtifact({
+        filename,
+        mimeType: mime,
+        content: block.code,
+        description: `Recovered ${block.language || "code"} artifact from worker output for subtask ${subtask.id}.`,
+      });
+      if (alreadyHave.has(artifact.id || artifact.url)) continue;
+      recovered.push(artifact);
+    } catch {
+      // Best effort — never block the worker pipeline on a save failure.
+    }
+  }
+  return recovered;
+}
+
+function languageToExtension(language: string): string {
+  const map: Record<string, string> = {
+    py: ".py", python: ".py",
+    js: ".js", javascript: ".js",
+    ts: ".ts", typescript: ".ts",
+    tsx: ".tsx", jsx: ".jsx",
+    sh: ".sh", bash: ".sh", zsh: ".sh",
+    json: ".json",
+    yaml: ".yaml", yml: ".yaml",
+    toml: ".toml",
+    md: ".md", markdown: ".md",
+    html: ".html",
+    css: ".css",
+    sql: ".sql",
+    rs: ".rs", rust: ".rs",
+    go: ".go", golang: ".go",
+    rb: ".rb", ruby: ".rb",
+    java: ".java",
+    cpp: ".cpp", cxx: ".cpp", "c++": ".cpp",
+    c: ".c",
+    cs: ".cs", csharp: ".cs",
+    php: ".php",
+    lua: ".lua",
+    kt: ".kt", kotlin: ".kt",
+    swift: ".swift",
+    dart: ".dart",
+    dockerfile: ".dockerfile",
+    makefile: ".makefile",
+    text: ".txt", txt: ".txt", "": ".txt",
+  };
+  return map[language] ?? ".txt";
+}
+
+function languageToMimeType(language: string): string {
+  const map: Record<string, string> = {
+    py: "text/x-python", python: "text/x-python",
+    js: "text/javascript", javascript: "text/javascript",
+    ts: "text/typescript", typescript: "text/typescript",
+    tsx: "text/typescript", jsx: "text/javascript",
+    sh: "text/x-shellscript", bash: "text/x-shellscript",
+    json: "application/json",
+    yaml: "application/yaml", yml: "application/yaml",
+    toml: "application/toml",
+    md: "text/markdown", markdown: "text/markdown",
+    html: "text/html",
+    css: "text/css",
+    sql: "application/sql",
+  };
+  return map[language] ?? "text/plain";
+}
+
 function isLowValueProofUrl(url: string): boolean {
   // Phase 12 final: structural filter only. The previous host blacklist
   // (facebook, reddit, quora, github, stanford, ...) was domain-specific
@@ -4920,7 +5057,34 @@ function isLowValueProofUrl(url: string): boolean {
   // `/raw/`, `/blob/`, or `/contents/` is treated as low-value.
   try {
     const parsed = new URL(url);
-    if (/(?:^|\/)(?:rest|api|v\d+|raw|blob|contents)(?:\/|$)/i.test(parsed.pathname)) {
+    const pathname = parsed.pathname;
+    if (/(?:^|\/)(?:rest|api|v\d+|raw|blob|contents)(?:\/|$)/i.test(pathname)) {
+      return true;
+    }
+    // Phase 12 follow-up: social-platform individual posts /
+    // comments / status updates are almost never useful as direct
+    // evidence for product / shopping / professional research tasks.
+    // The LLM URL ranker is not able to consistently filter them —
+    // iter S5 promoted facebook.com/groups/dullmensclub/posts/... for
+    // a laptop recommendation, iter H2 promoted
+    // facebook.com/groups/nashvillehospitalityprofessionals/posts/...
+    // for a Marbella restaurant. Filter URLs whose path explicitly
+    // contains a post/status indicator on a known social host.
+    // Profile / landing pages on the same hosts (e.g.
+    // linkedin.com/in/<name>, facebook.com/<page>) are NOT filtered —
+    // they may be the brand's own page used for verification.
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    const socialHosts = new Set([
+      "facebook.com",
+      "twitter.com",
+      "x.com",
+      "instagram.com",
+      "tiktok.com",
+      "linkedin.com",
+      "threads.net",
+      "vk.com",
+    ]);
+    if (socialHosts.has(host) && /(?:^|\/)(?:posts|status|statuses|comments|p)(?:\/|$)/i.test(pathname)) {
       return true;
     }
   } catch {

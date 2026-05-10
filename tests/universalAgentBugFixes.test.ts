@@ -145,6 +145,30 @@ test("isLowValueProofUrl rejects programmatic / API endpoints surfaced as search
   assert.equal(isLowValueProofUrl("https://news.ycombinator.com/item?id=12345"), false);
 });
 
+test("isLowValueProofUrl rejects social-platform deep posts but keeps profile/landing pages (Bug 21)", () => {
+  // Iter S5 regression: URL ranker promoted
+  // facebook.com/groups/dullmensclub/posts/<id> as a laptop research source.
+  // Iter H2: facebook.com/groups/nashvillehospitalityprofessionals/posts/<id>
+  // surfaced in a Marbella restaurant query. Both are noisy single posts
+  // on social hosts; reject any 2+ segment path on a known social host.
+  assert.equal(
+    isLowValueProofUrl("https://www.facebook.com/groups/dullmensclub/posts/1918968805426318"),
+    true,
+  );
+  assert.equal(
+    isLowValueProofUrl("https://www.facebook.com/groups/nashvillehospitalityprofessionals/posts/2604616786594759"),
+    true,
+  );
+  assert.equal(
+    isLowValueProofUrl("https://www.linkedin.com/posts/some-author_activity-1234"),
+    true,
+  );
+  // Profile / landing pages on the same hosts are still allowed
+  // (they may be the brand's own page used for verification).
+  assert.equal(isLowValueProofUrl("https://www.facebook.com/some-restaurant"), false);
+  assert.equal(isLowValueProofUrl("https://www.linkedin.com/in/some-doctor"), false);
+});
+
 test("isShallowLandingUrl flags root and single-segment paths", () => {
   assert.equal(isShallowLandingUrl("https://www.amazon.com"), true);
   assert.equal(isShallowLandingUrl("https://www.amazon.com/"), true);
