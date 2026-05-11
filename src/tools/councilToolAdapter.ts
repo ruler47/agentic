@@ -84,7 +84,7 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
       /** Extra capability tags to advertise besides the defaults. */
       requiredCapabilities?: string[];
     },
-  ): Promise<{ toolName: string; version: string }> {
+  ): Promise<{ toolName: string; version: string; previousVersion?: string }> {
     const version = metadata.version ?? (await this.nextVersionFor(toolName));
     const sanitized = sanitizeName(toolName);
     const baseDir = join(this.toolsRoot, sanitized, version);
@@ -239,7 +239,45 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     //    leaving a v1.0.X dir behind, ~30+ on busy tools).
     await this.pruneOldVersions(sanitized, version);
 
-    return { toolName, version };
+    return { toolName, version, previousVersion: existing?.version };
+  }
+
+  /**
+   * Phase 16 Slice F: undo a just-finished registration whose QA
+   * never passed. Two cases:
+   *
+   *   - Rework (previousVersion present): call `activateVersion` to
+   *     flip the active row in `tool_modules` back to the prior
+   *     version, then reload so the registry picks it up. The DB
+   *     keeps the failed version's row in `tool_module_versions`
+   *     for forensic inspection, but the runtime no longer routes
+   *     calls to it.
+   *
+   *   - Fresh build (previousVersion absent): drop the just-created
+   *     metadata row outright via `deleteGenerated`. There is nothing
+   *     to fall back to, so the right answer is "pretend this never
+   *     happened" instead of leaving a broken active tool around.
+   *
+   * Best-effort: if the rollback itself errors (DB write failed,
+   * loader misbehaves), we surface a console warning but do NOT
+   * throw — the caller has already emitted a registration-aborted
+   * event and the operator's incident is "QA failed", not "rollback
+   * crashed".
+   */
+  async rollbackRegistration(toolName: string, previousVersion: string | undefined): Promise<void> {
+    try {
+      if (previousVersion) {
+        await this.deps.metadataStore.activateVersion(toolName, previousVersion);
+      } else if (this.deps.metadataStore.deleteGenerated) {
+        await this.deps.metadataStore.deleteGenerated(toolName);
+      }
+      await this.deps.reloadGeneratedTools?.();
+    } catch (error) {
+      console.warn(
+        `Council rollback for ${toolName} failed: ${error instanceof Error ? error.message : String(error)}. ` +
+          `The metadata store may still point at the broken just-built version; run a manual /api/tools/${toolName}/activate to fix.`,
+      );
+    }
   }
 
   /**
