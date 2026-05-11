@@ -155,11 +155,13 @@ POST /api/tool-services/:name/heartbeat
 PATCH /api/tool-services/:name/restart-policy
 GET /api/tool-migrations
 POST /api/tool-migrations
-GET /api/tool-build-requests
-POST /api/tool-build-requests
+GET /api/tool-build-requests   # legacy queue (Phase G will delete)
+POST /api/tool-build-requests  # legacy queue (Phase G will delete)
 GET /api/tool-build-requests/:id
 PATCH /api/tool-build-requests/:id
 POST /api/tool-build-requests/:id/run
+GET /api/tool-build-runs        # Phase 14: council pipeline runs
+POST /api/tool-build-runs       # Phase 14: create council run (accepts references[])
 GET /api/tool-investigations
 POST /api/tool-investigations
 GET /api/tool-investigations/:id

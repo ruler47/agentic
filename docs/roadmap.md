@@ -2243,16 +2243,20 @@ page lets the operator delete artifacts (metadata + underlying object).
 
 ## Phase 14: Tool-Build Council
 
-Status: **in flight**. The legacy tool-build pipeline (six provider classes,
-deterministic reviewers, LLM reviewer, background worker, "Build queue" UI) is
-being replaced by a multi-model council driven from inside `UniversalAgent`. See
-`docs/architecture/tool-build-council.md` for the full design.
+Status: **Phases A–F shipped, plus a full set of follow-up fixes; Phase G
+(legacy delete) is the only pending slice.** The legacy tool-build pipeline
+(six provider classes, deterministic reviewers, LLM reviewer, background
+worker, "Build queue" UI) was replaced by a multi-model council driven from
+inside `UniversalAgent.runToolBuildCouncil`. See
+`docs/architecture/tool-build-council.md` for the design + the post-MVP
+follow-ups.
 
 Why: the legacy chain mis-matched providers (TB-001/002), produced generic HTTP
 wrappers without domain inputs (TB-003/006), and required a separate UI concept
 ("build queue") that doesn't match how tools should actually be built. The new
 flow treats tool creation as another mode of the agent: brainstorm → vote →
-implement → review → revise → QA → repair, with every step a normal run event.
+implement → review → revise → QA → repair → register, with every step a normal
+run event.
 
 Principles:
 1. Only three primary entities: `Agent`, `Tool`, `LLM`. Tool-build is a mode of
@@ -2267,17 +2271,32 @@ Slices:
 - **Phase A** (0d40351, 1008460): `coding_council_config` table + Postgres /
   in-memory store + `GET/PUT /api/settings/coding-council` + Settings UI
   section. Defaults: tier=L, maxRevisionAttempts=3, maxQaRepairAttempts=5,
-  qaTimeoutMs=30000.
-- **Phase B** (pending): pure helpers — Borda counting math, brainstorm / vote /
-  implement / review / revise / repair prompt builders. Unit-only.
-- **Phase C** (pending): `UniversalAgent.runToolBuildCouncil` method +
-  `decideAgentStrategy` hook (`primary: "tool_build_council"` when
-  `options.toolBuildContext` present). End-to-end integration test with a FakeLlm.
-- **Phase D** (pending): `POST /api/tool-build-runs` (create + list) wiring the
-  context into RunsService.executeRun.
-- **Phase E** (pending): rewrite the ToolBuilds page (form with prefilled QA
-  criteria, list of all tool-build runs) + new ToolBuildRun.tsx page showing
-  the council timeline.
-- **Phase F** (pending): live smoke with at least two L-tier models loaded.
+  qaTimeoutMs=30000. **Shipped.**
+- **Phase B** (shipped): pure helpers — Borda counting math, brainstorm / vote /
+  implement / review / revise / repair prompt builders + unit coverage.
+- **Phase C** (shipped): `UniversalAgent.runToolBuildCouncil` method end-to-end
+  with a scripted council integration test.
+- **Phase D** (shipped): `POST /api/tool-build-runs` (create + list) wiring the
+  context into `RunsService.executeRun`, production `CouncilToolAdapter` wired
+  via Nest DI.
+- **Phase E** (shipped): Tool Builds page rewritten around
+  `/api/tool-build-runs`; the Tools-page detail view has a Versions panel
+  (rollback + LLM-written change summary) and a Request-changes form (file
+  uploads supported).
+- **Phase F / TB-005** (shipped): canonical source-bundle scaffold owned by
+  `CouncilToolAdapter` so every council-built tool actually loads; LLM only
+  emits the Tool body file. Plus a long tail of fixes:
+    - Trace Graph parent edges + in-progress timers + cancel propagation.
+    - LLM-synthesized canonical description + diff-aware `changeSummary` per
+      version.
+    - `Phase 2` reader sub-builds: missing `reads:<mime>` capability triggers
+      an auto-spawned reader council run; parent run resumes when the reader
+      registers.
+    - Capability-aware self-check, planner, worker, reviewer — they all read
+      `toolCatalogBlock(tools)` from the live registry instead of hard-coded
+      tool names.
+    - `BUILTIN_TOOLS=disabled` env flag for pure-council mode; bootstrap
+      reconciles the `tools/` directory (orphan removal + last-5 version
+      pruning).
 - **Phase G** (pending): delete the legacy provider chain, workflow, worker,
   workspace QA, and "build queue" endpoints once F passes.

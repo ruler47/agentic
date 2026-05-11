@@ -4,6 +4,20 @@ This document describes how tool creation, rework, and bug-fix
 requests are processed end-to-end. It replaces the legacy "build
 provider chain + background worker + build queue" pipeline.
 
+**Status:** Phases A–F shipped (council pipeline + scaffold + UI +
+prompts); the legacy provider chain is gated by feature flags and
+will be removed in Phase G after enough clean live builds.
+
+Post-MVP additions (after Phase F):
+- Reader sub-builds for binary reference docs (Phase 2 below).
+- Capability-aware planner/worker/reviewer via
+  `toolCatalogBlock(tools)` in every system prompt.
+- Pure-council registry mode via `BUILTIN_TOOLS=disabled`.
+- Tools directory reconcile on bootstrap + after every promote.
+- LLM-synthesized canonical description + diff-aware change summary.
+- In-progress events + run-span auto-close + cancel propagation
+  through `AbortSignal`.
+
 ## Principles
 
 1. Only three primary entities exist in the system: `Agent`, `Tool`,
@@ -180,3 +194,98 @@ Live smoke (Phase F, after deploy):
 5. Submit a rework request via the same endpoint with `existingToolName=demo.echo, bugContext="returns wrong field"`. Watch the same loop produce a new version.
 
 Final delete (Phase G): run full `npm run verify` to confirm nothing else depended on the legacy build chain.
+
+---
+
+## Post-MVP additions
+
+### Reader sub-builds (Phase 2)
+
+The operator can attach reference docs (OpenAPI specs, PDFs, README
+markdown) to a build via `POST /api/tool-build-runs` body
+`references: Array<{filename, mimeType, contentBase64}>`. The runtime
+resolves them in two passes:
+
+1. **Direct decode**: text-like MIMEs (`text/*`, `application/json`,
+   `application/yaml`, `application/openapi+yaml`) are decoded as
+   utf-8 in-process and embedded in the council prompts via
+   `formatReferenceDocsBlock`.
+2. **Tool dispatch**: anything else needs a registered reader tool
+   advertising `reads:<mime>` (or `reads:*` for a generic reader).
+   `findReaderTool(registry, mime)` looks one up; if found, it's
+   invoked with `{filename, mimeType, contentBase64}` and the
+   returned `content` becomes the reference text.
+
+When no reader exists, `createAndStartToolBuild` auto-spawns a child
+build for `file.<safe_mime>.read` with `requiredCapabilities:
+[reads:<mime>]` set on the sub-build's context. The parent run is
+marked `waiting_tool_rework` with the spawned sub-build run id in a
+`tool-build-waiting-for-reader` event payload. Once the reader
+registers, `RunsService.onToolRegisteredForCouncil()` re-fires the
+parent build's original POST body — references now resolve and the
+council pipeline runs.
+
+Cycle protection: sub-builds carry `parentBuildRunId` so they
+cannot themselves spawn further sub-builds.
+
+### Capability catalog in every prompt
+
+`toolCatalogBlock(tools)` renders the live registry as a system-prompt
+block (name + version + LLM-written description + capabilities). The
+block is injected into:
+- `workerSystemPrompt(subtask, memories, tools)`
+- `reviewerSystemPrompt(workerResult, tools)`
+- `planPrompt(task, complexity, memories, tools)` — the planner is
+  told to reference capabilities that ACTUALLY exist in the catalog
+  instead of the legacy hard-coded list.
+
+The description shown in the catalog is the canonical one synthesized
+by `descriptionPrompt` on every register (initial build OR rework),
+not the operator's form input.
+
+### Pure-council registry
+
+Setting `BUILTIN_TOOLS=disabled` in the app env skips registration of
+the seven hard-coded built-in tools (`web.search`, `file.read`,
+`file.write`, `chart.generate`, `market.timeseries`, `telegram.bot`,
+`browser.operate`). The only tools visible to the agent become the
+council-built ones. Default is `BUILTIN_TOOLS=enabled` for backwards
+compatibility.
+
+The `tools/` directory is reconciled on bootstrap by
+`reconcileToolsDirectory(toolsRoot, knownVersions)`:
+- Removes top-level dirs that have no metadata row (orphans).
+- Prunes each still-registered tool to the last 5 semver versions
+  (kept for rollback headroom).
+- Skips reserved entries (`sdk`) and docker-compose contexts (`*-service`).
+
+After every successful register, `CouncilToolAdapter.pruneOldVersions`
+does the same per-tool pruning so long rework chains don't pile up
+30+ version dirs.
+
+### Description + change summary per version
+
+After the QA loop ends, the council runs two short S-tier LLM calls:
+
+| step | prompt | output |
+|---|---|---|
+| canonical description | `descriptionPrompt` reads the final source | 2–3 sentence shape-aware description → stored on `metadata.description` |
+| change summary | `changeSummaryPrompt` reads previous + new source side-by-side for reworks (or just new source for initial builds) | 1–2 sentence diff → stored on `metadata.changeSummary` |
+
+Both are surfaced on the Tools page Versions panel and in every
+catalog block.
+
+### Run lifecycle + cancel
+
+- The root coordinator span is re-emitted with the same `spanId` and
+  `status: completed/failed` at the end of `runToolBuildCouncil`, so
+  Trace Lab doesn't show it as "running" forever.
+- `RunOptions.signal` (`AbortSignal`) is threaded from `RunsService`
+  through every `LlmClient.complete` call. `POST /api/runs/:id/cancel`
+  trips the signal; the council loop bails between phases and
+  in-flight LLM HTTP fetches abort immediately.
+- Every LLM call emits a `started` event first with the prompt in
+  payload, then a `completed`/`failed` event with the raw output. The
+  Trace inspector shows live timer + prompt while the model is
+  streaming.
+

@@ -616,17 +616,54 @@ The `tools/` directory contains exactly the tools that show up at `/api/tools`
 (plus `sdk/`, which is a shared TypeScript library, and `web-react/`, the UI
 sources — neither is a tool).
 
-### Tool-build council (Phase 14, in flight)
+### Tool-build council (Phase 14, shipped except final legacy delete)
 
-Tool creation, rework, and bugfix requests run through `UniversalAgent` in
-"tool_build_council" strategy mode. The flow is brainstorm → vote → implement
-→ review → revise → QA → repair, with the council = every model in
-`model_tier_settings.<codingTier>.models`. Settings live in
-`coding_council_config`. See `docs/architecture/tool-build-council.md`.
+Tool creation, rework, and bugfix requests run through `UniversalAgent.runToolBuildCouncil`.
+The pipeline is brainstorm → vote → implement → review → revise → QA → repair →
+register, with the council = every model in `model_tier_settings.<codingTier>.models`.
+Settings live in `coding_council_config`. See
+`docs/architecture/tool-build-council.md` for the full design.
 
-The legacy build chain (`ToolBuildProvider` subclasses, `ToolBuildWorkflow`,
-`ToolBuildWorker`, deterministic/LLM reviewer suite, "Build queue" UI) is
-being removed in Phase G of Phase 14 once the council flow proves on live.
+Highlights (Phases A–F shipped, plus follow-up work):
+
+- **Council pipeline** inside `UniversalAgent` — no separate orchestrator. Brainstorm
+  + vote in parallel across models, Borda count picks winner, fallback to next-best
+  proposal when an LLM returns empty content.
+- **Canonical scaffold** owned by `CouncilToolAdapter` — every council-built tool
+  gets the same `index.ts` + `runtime/server.ts` + `src/tools/tool.ts` +
+  `package.json` + `tsconfig.json` layout. The model only emits the `Tool` body
+  file at `src/tools/generated/<name>Tool.ts`.
+- **Reference doc uploads** on the Tool Builds form. Text-like MIMEs (yaml / json /
+  md / openapi) decode in-process; binary formats (PDF, etc.) trigger an
+  auto-spawned reader sub-build via `reads:<mime>` capability lookup, then the
+  parent run resumes automatically once the reader registers.
+- **In-progress events** — every LLM call emits a `started` event with the prompt,
+  then a `completed` / `failed` event with the same span id. Trace Lab shows a live
+  timer and prompt content while the model is still streaming.
+- **Cancel propagation** — `AbortSignal` flows from `RunsService` through
+  `agent.run` into every `LlmClient.complete`, so `POST /api/runs/:id/cancel`
+  actually stops the council loop instead of just hiding events.
+- **LLM-synthesized canonical description** + diff-aware change summary, persisted
+  per version. Every other agent (planner, worker, reviewer) sees the live
+  description block via `toolCatalogBlock(tools)` in its system prompt — no
+  hard-coded tool names.
+- **Capability-aware self-check** — when no registered tool advertises the
+  capability a planner asked for, the worker isn't punished for failing to
+  produce that artifact.
+- **Pure-council registry** — `BUILTIN_TOOLS=disabled` skips the hard-coded
+  `web.search` / `file.read` / `chart.generate` / `browser.operate` /
+  `market.timeseries` / `telegram.bot` registrations so the only visible tools are
+  the council-built ones. Tools directory is reconciled on bootstrap (orphan
+  removal + version pruning to the last 5).
+- **Tool Builds page** rewritten around `/api/tool-build-runs`; the Tools-page
+  detail view has a Versions panel (rollback per version, change summary) and a
+  Request-changes form (file uploads supported; posts as a rework run).
+
+Pending work (Phase G of Phase 14): delete the legacy provider chain
+(`ToolBuildProvider` subclasses, `ToolBuildWorkflow`, `ToolBuildWorker`,
+deterministic/LLM reviewer suite, `toolPackageWorkspaceQa`, queue-style
+`/api/tool-build-requests` endpoints) once the council flow has logged enough
+clean live builds.
 
 ### Request flow
 
