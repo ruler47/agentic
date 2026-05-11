@@ -186,6 +186,7 @@ export function RunWorkspacePage() {
           </div>
         </header>
 
+        <ToolBuildContextPanel run={data} />
         <ChannelSourcePanel run={data} />
 
         {activeWaits.length > 0 ? <RunWaitPanel waits={activeWaits} runId={data.id} /> : null}
@@ -235,6 +236,101 @@ export function RunWorkspacePage() {
         </article>
       </aside>
     </section>
+  );
+}
+
+/**
+ * Tool-build runs carry a structured `toolBuildContext` on the
+ * run-started event (name / description / qaCriteria / bugContext /
+ * referenceDocs). Without surfacing it, the operator only sees the
+ * run.task headline and has no way to recall "what did I actually
+ * ask for in the rework form?". Render it as a dedicated panel when
+ * present.
+ */
+function ToolBuildContextPanel({ run }: { run: AgentRunRecord }) {
+  const startedEvent = (run.events ?? []).find((event) => event.type === "run-started");
+  const payload = startedEvent?.payload as Record<string, unknown> | undefined;
+  const ctx = payload && typeof payload === "object"
+    ? (payload as { toolBuildContext?: Record<string, unknown> }).toolBuildContext
+    : undefined;
+  if (!ctx || typeof ctx !== "object") return null;
+
+  const name = typeof ctx.name === "string" ? ctx.name : undefined;
+  const description = typeof ctx.description === "string" ? ctx.description : undefined;
+  const bugContext = typeof ctx.bugContext === "string" ? ctx.bugContext : undefined;
+  const existingToolName = typeof ctx.existingToolName === "string" ? ctx.existingToolName : undefined;
+  const qaCriteria = Array.isArray(ctx.qaCriteria)
+    ? (ctx.qaCriteria as unknown[]).filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const referenceDocs = Array.isArray(ctx.referenceDocs)
+    ? (ctx.referenceDocs as unknown[]).filter(
+        (entry): entry is { filename: string; mimeType: string; content: string } =>
+          Boolean(entry) &&
+          typeof entry === "object" &&
+          typeof (entry as { filename?: unknown }).filename === "string",
+      )
+    : [];
+
+  const isRework = Boolean(existingToolName);
+
+  return (
+    <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
+      <div className="flex flex-col gap-3">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-app-accent">
+            Council {isRework ? "rework" : "build"} request
+          </p>
+          <h3 className="text-sm font-semibold">
+            {isRework ? `Rework ${existingToolName}` : `Build ${name ?? "(unknown)"}`}
+          </h3>
+        </div>
+        {isRework ? (
+          <div className="rounded-md border border-app-warning/30 bg-app-warning-soft/30 p-3 text-xs">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-app-warning">
+              What should change
+            </p>
+            <p className="mt-1 whitespace-pre-wrap break-words">
+              {bugContext || "(none provided)"}
+            </p>
+          </div>
+        ) : null}
+        {description ? (
+          <div className="text-xs">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">
+              {isRework ? "Original tool description (unchanged)" : "Description"}
+            </p>
+            <p className="mt-1 whitespace-pre-wrap break-words">{description}</p>
+          </div>
+        ) : null}
+        {qaCriteria.length > 0 ? (
+          <div className="text-xs">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">
+              QA acceptance criteria
+            </p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {qaCriteria.map((criterion, idx) => (
+                <li key={idx}>{criterion}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {referenceDocs.length > 0 ? (
+          <div className="text-xs">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">
+              Reference docs ({referenceDocs.length})
+            </p>
+            <ul className="mt-1 flex flex-col gap-1">
+              {referenceDocs.map((doc, idx) => (
+                <li key={idx} className="font-mono text-[11px]">
+                  {doc.filename}{" "}
+                  <span className="text-app-text-muted">({doc.mimeType})</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    </article>
   );
 }
 

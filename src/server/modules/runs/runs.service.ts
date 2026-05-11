@@ -634,8 +634,13 @@ export class RunsService implements OnApplicationBootstrap {
         : undefined;
     const referenceAttachments = parseReferenceAttachments(body.references);
 
+    // For reworks the operator's "what should change" lives in
+    // `bugContext`; `description` is the existing tool's unchanged
+    // purpose. Surface bugContext in the run headline so the operator
+    // doesn't see "Council rework for demo.echo: <original tool
+    // description>" with no trace of what they actually asked for.
     const task = existingToolName
-      ? `Council rework for ${existingToolName}: ${description}`
+      ? `Council rework for ${existingToolName}: ${bugContext || description}`
       : `Council build for ${name}: ${description}`;
 
     // Forward parentBuildRunId (cycle marker on sub-builds) onto the

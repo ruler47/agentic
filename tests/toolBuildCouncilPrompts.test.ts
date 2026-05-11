@@ -39,6 +39,11 @@ test("brainstormPrompt embeds name, description, criteria, council size", () => 
   assert.match(user, /returns 24 hourly/);
   assert.match(user, /one of 3 peer proposals/);
   assert.match(user, /"packages"/, "must mention the closing JSON line");
+  // Complexity-scaling: prompt must teach the model to bucket the task
+  // so we stop seeing full architecture proposals for one-line fixes.
+  assert.match(user, /Complexity: TRIVIAL/);
+  assert.match(user, /Complexity: BUG/);
+  assert.match(user, /Complexity: NEW/);
 });
 
 test("brainstormPrompt honours system-prompt override", () => {

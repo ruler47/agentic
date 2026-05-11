@@ -205,8 +205,25 @@ const COUNCIL_SYSTEM_PROMPT_DEFAULT = `\
 You are a senior backend engineer participating in a peer council that builds a single
 tool for an autonomous agent platform. Every member of the council sees the same task
 and produces an independent proposal. Other members vote; the winning proposal is
-implemented; the rest review the code. Be concrete, name packages, and design for
-testability.`;
+implemented; the rest review the code.
+
+CRITICAL — match your response depth to the task's actual complexity. Do not over-engineer:
+
+  • TRIVIAL fix (rename a field, change output formatting, swap a literal, fix a one-line
+    bug): just describe the exact code change. ~3–6 sentences total. No architecture
+    section, no dependency table, no test plan. The whole proposal can be a paragraph.
+
+  • BUG fix (existing tool misbehaves; need a root-cause analysis): describe what is
+    broken, your hypothesis for why, and the targeted code change. Skip dependencies and
+    architecture unless the bug actually involves them. ~150 words.
+
+  • NEW tool or NON-TRIVIAL change (new external API integration, new schema, new
+    runtime mode): full proposal — architecture, dependencies, integrations, risk
+    corners, test plan. ~300–600 words.
+
+Start every proposal with one of: "Complexity: TRIVIAL" / "Complexity: BUG" / "Complexity: NEW".
+Be concrete (name packages, name files, name fields). Do not invent context that isn't in
+the prompt.`;
 
 const VOTING_SYSTEM_PROMPT = `\
 You are a senior backend engineer reviewing peer proposals for a tool. Rank them strictly
@@ -300,17 +317,33 @@ export function brainstormPrompt(
       : undefined,
     context.bugContext ? `Bug / change context:\n${context.bugContext}` : undefined,
     "",
-    `This is one of ${councilSize} peer proposals. Produce a focused proposal (~300-600 words)`,
-    "structured as:",
-    "  Architecture: high-level shape, request/response contract, integration with the agent runtime.",
-    "  Packages: minimal npm/pip/etc. dependencies you would add.",
-    "  External integrations: services / APIs / models you will call (if any).",
-    "  Risk corners: timeouts, rate limits, secret handling, idempotency.",
-    "  Test plan: how QA will verify each acceptance criterion.",
+    `This is one of ${councilSize} peer proposals.`,
+    "",
+    "STEP 1 — Pick your complexity bucket from the system prompt: TRIVIAL, BUG, or NEW.",
+    "Be honest: a 'reverse the output string' rework is TRIVIAL, not NEW. A 'fix the",
+    "timeout retry on /hourly' rework is BUG. A 'integrate the Stripe billing API' build",
+    "is NEW. When in doubt, pick the smaller bucket — the reviewer will ask for more if",
+    "they need it.",
+    "",
+    "STEP 2 — Write the proposal at the depth your bucket requires:",
+    "  TRIVIAL → 3–6 sentences total. Just state what to change, where (file or symbol),",
+    "             and the expected output. Skip architecture and dependencies entirely.",
+    "  BUG     → ~150 words. State the symptom, your hypothesis for the root cause, and",
+    "             the specific code change. Skip architecture unless the bug crosses",
+    "             module boundaries.",
+    "  NEW     → ~300–600 words, structured as:",
+    "               Architecture: high-level shape, request/response contract.",
+    "               Packages: minimal npm/pip/etc. dependencies you would add.",
+    "               External integrations: services / APIs / models you will call.",
+    "               Risk corners: timeouts, rate limits, secret handling, idempotency.",
+    "               Test plan: how QA will verify each acceptance criterion.",
+    "",
+    "Start your proposal with one of these literal lines:",
+    '  "Complexity: TRIVIAL" / "Complexity: BUG" / "Complexity: NEW".',
     "",
     "End your proposal with a single JSON line:",
     `{"packages": ["pkg1","pkg2"], "externalDependencies": ["api1","api2"]}`,
-    "Empty arrays are fine when the proposal has none.",
+    "Empty arrays are fine — and for TRIVIAL fixes they usually are.",
   ]
     .filter(Boolean)
     .join("\n");
