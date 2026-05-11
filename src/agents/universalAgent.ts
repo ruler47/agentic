@@ -575,8 +575,11 @@ export class UniversalAgent {
             actor: "coordinator",
             activity: "coordination",
             status: "completed",
-            title: `Fallback winner: ${candidate.winnerModelId}`,
-            detail: `Original winner ${winner.winnerModelId} could not implement; using next-best proposal.`,
+            title: `Implement re-assigned to ${candidate.winnerModelId} (next-best by Borda)`,
+            detail:
+              `Original winner ${winner.winnerModelId} could not produce code ` +
+              `(LLM returned empty / failed twice). Falling back to next-best ` +
+              `proposal by Borda score and continuing the pipeline.`,
             startedAt: new Date().toISOString(),
             completedAt: new Date().toISOString(),
             durationMs: 0,
