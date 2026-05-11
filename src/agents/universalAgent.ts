@@ -580,36 +580,81 @@ export class UniversalAgent {
     });
 
     // ── Step 4-5: REVIEW + REVISE ────────────────────────────────────
+    // Reviews are best-effort per peer model. If a reviewer LLM dies
+    // (empty content, timeout, etc.) we skip that voter and continue
+    // with whoever responded. If ALL reviewers fail we treat the code
+    // as unreviewed and break the loop — the QA stage still gates
+    // whether the tool is usable.
     const reviewerIds = councilModels.filter((id) => id !== winner.winnerModelId);
     for (let attempt = 0; attempt < config.maxRevisionAttempts; attempt += 1) {
-      const reviews = await Promise.all(
-        reviewerIds.map(async (reviewerId) => {
-          const messages = reviewPrompt(context, winner.proposal, formatFilesForPrompt(files));
-          const text = await this.llm.complete(messages, { model: reviewerId });
-          const verdict = parseReviewVerdict(text);
-          await emit({
-            spanId: createSpanId("council-review"),
-            type: "tool-build-code-review-cast",
-            actor: reviewerId,
-            activity: "llm",
-            status: verdict.verdict === "pass" ? "completed" : "failed",
-            title: `Review from ${reviewerId}: ${verdict.verdict}`,
-            startedAt: new Date().toISOString(),
-            completedAt: new Date().toISOString(),
-            durationMs: 0,
-            payload: { reviewerModelId: reviewerId, ...verdict },
-          });
-          return verdict;
-        }),
-      );
+      const reviews = (
+        await Promise.all(
+          reviewerIds.map(async (reviewerId) => {
+            try {
+              const messages = reviewPrompt(context, winner.proposal, formatFilesForPrompt(files));
+              const text = await this.llm.complete(messages, { model: reviewerId });
+              const verdict = parseReviewVerdict(text);
+              await emit({
+                spanId: createSpanId("council-review"),
+                type: "tool-build-code-review-cast",
+                actor: reviewerId,
+                activity: "llm",
+                status: verdict.verdict === "pass" ? "completed" : "failed",
+                title: `Review from ${reviewerId}: ${verdict.verdict}`,
+                startedAt: new Date().toISOString(),
+                completedAt: new Date().toISOString(),
+                durationMs: 0,
+                payload: { reviewerModelId: reviewerId, ...verdict },
+              });
+              return verdict;
+            } catch (error) {
+              await emit({
+                spanId: createSpanId("council-review-skip"),
+                type: "tool-build-code-review-cast",
+                actor: reviewerId,
+                activity: "llm",
+                status: "failed",
+                title: `Reviewer ${reviewerId} skipped`,
+                detail: error instanceof Error ? error.message : String(error),
+                startedAt: new Date().toISOString(),
+                completedAt: new Date().toISOString(),
+                durationMs: 0,
+                payload: { reviewerModelId: reviewerId, skipped: true },
+              });
+              return undefined;
+            }
+          }),
+        )
+      ).filter((entry): entry is { verdict: "pass" | "needs_revision"; findings: string[] } => Boolean(entry));
+      if (reviews.length === 0) break; // no usable reviewers — proceed to QA
       if (reviews.every((r) => r.verdict === "pass")) break;
       const findings = reviews.flatMap((r) => r.findings);
       if (attempt + 1 >= config.maxRevisionAttempts) break;
-      codeText = await this.llm.complete(
-        revisePrompt(context, winner.proposal, formatFilesForPrompt(files), findings),
-        { model: winner.winnerModelId },
-      );
-      files = parseFilesJson(codeText);
+      try {
+        codeText = await this.llm.complete(
+          revisePrompt(context, winner.proposal, formatFilesForPrompt(files), findings),
+          { model: winner.winnerModelId },
+        );
+        const parsed = parseFilesJson(codeText);
+        if (parsed.length > 0) files = parsed;
+      } catch (error) {
+        // Revise call failed — keep current code, proceed to QA so the
+        // run still terminates instead of hard-crashing.
+        await emit({
+          spanId: createSpanId("council-revise-skip"),
+          type: "tool-build-code-revised",
+          actor: winner.winnerModelId,
+          activity: "llm",
+          status: "failed",
+          title: `Revise attempt ${attempt + 1} failed`,
+          detail: error instanceof Error ? error.message : String(error),
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          payload: { attempt: attempt + 1, skipped: true },
+        });
+        break;
+      }
       await emit({
         spanId: createSpanId("council-revise"),
         type: "tool-build-code-revised",
@@ -631,14 +676,35 @@ export class UniversalAgent {
     });
 
     // ── Step 7-8: QA + REPAIR ────────────────────────────────────────
+    // Both the QA oracle call and the repair call are wrapped: a
+    // transient LLM failure shouldn't kill an otherwise registered
+    // tool — break out of the loop and surface a non-passed status.
     let qaPassed = false;
     for (let attempt = 0; attempt < config.maxQaRepairAttempts; attempt += 1) {
       const qaInput = synthesizeQaInput(context);
       const output = await adapter.runToolForQa(registered.toolName, qaInput);
-      const oracleText = await this.llm.complete(qaOraclePrompt(context, output), {
-        modelTier: "M",
-      });
-      const oracle = parseQaOracle(oracleText);
+      let oracle: { verdict: "passed" | "failed"; failures: string[] };
+      try {
+        const oracleText = await this.llm.complete(qaOraclePrompt(context, output), {
+          modelTier: "M",
+        });
+        oracle = parseQaOracle(oracleText);
+      } catch (error) {
+        await emit({
+          spanId: createSpanId("council-qa-skip"),
+          type: "tool-build-qa-attempt",
+          actor: "qa-oracle",
+          activity: "llm",
+          status: "failed",
+          title: `QA attempt ${attempt + 1} oracle failed`,
+          detail: error instanceof Error ? error.message : String(error),
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          payload: { attempt: attempt + 1, qaInput, output, oracleFailed: true },
+        });
+        break;
+      }
       await emit({
         spanId: createSpanId("council-qa"),
         type: "tool-build-qa-attempt",
@@ -656,27 +722,46 @@ export class UniversalAgent {
         break;
       }
       if (attempt + 1 >= config.maxQaRepairAttempts) break;
-      codeText = await this.llm.complete(
-        repairPrompt(context, winner.proposal, formatFilesForPrompt(files), oracle.failures),
-        { model: winner.winnerModelId },
-      );
-      files = parseFilesJson(codeText);
-      registered = await adapter.registerToolFromFiles(context.name, files, {
-        description: context.description,
-        secretHandle: context.secretHandle,
-      });
-      await emit({
-        spanId: createSpanId("council-repair"),
-        type: "tool-build-code-repaired",
-        actor: winner.winnerModelId,
-        activity: "llm",
-        status: "completed",
-        title: `Code repaired (attempt ${attempt + 1})`,
-        startedAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: 0,
-        payload: { attempt: attempt + 1, files, failures: oracle.failures },
-      });
+      try {
+        codeText = await this.llm.complete(
+          repairPrompt(context, winner.proposal, formatFilesForPrompt(files), oracle.failures),
+          { model: winner.winnerModelId },
+        );
+        const parsed = parseFilesJson(codeText);
+        if (parsed.length === 0) throw new Error("Repair step returned no parsable files.");
+        files = parsed;
+        registered = await adapter.registerToolFromFiles(context.name, files, {
+          description: context.description,
+          secretHandle: context.secretHandle,
+        });
+        await emit({
+          spanId: createSpanId("council-repair"),
+          type: "tool-build-code-repaired",
+          actor: winner.winnerModelId,
+          activity: "llm",
+          status: "completed",
+          title: `Code repaired (attempt ${attempt + 1})`,
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          payload: { attempt: attempt + 1, files, failures: oracle.failures },
+        });
+      } catch (error) {
+        await emit({
+          spanId: createSpanId("council-repair-skip"),
+          type: "tool-build-code-repaired",
+          actor: winner.winnerModelId,
+          activity: "llm",
+          status: "failed",
+          title: `Repair attempt ${attempt + 1} failed`,
+          detail: error instanceof Error ? error.message : String(error),
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          payload: { attempt: attempt + 1, skipped: true },
+        });
+        break;
+      }
     }
 
     // ── Step 9: FINALIZE ─────────────────────────────────────────────
