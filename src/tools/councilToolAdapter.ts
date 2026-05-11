@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import type { CodingCouncilStore } from "../settings/codingCouncilStore.js";
 import type { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
 import type { ToolMetadataStore } from "./toolMetadataStore.js";
+import type { Tool } from "./tool.js";
 import type { ToolBuildCouncilAdapter } from "../agents/universalAgent.js";
 import {
   COUNCIL_TOOL_BODY_PATH,
@@ -29,6 +30,14 @@ export type CouncilToolAdapterDeps = {
     toolName: string,
     body: { input: Record<string, unknown> },
   ) => Promise<{ result: { ok: boolean; content: string; data?: unknown } }>;
+  /**
+   * Returns the live Tool object for a registered name (or undefined).
+   * Used after `reloadGeneratedTools` to backfill metadata fields the
+   * adapter can't extract from the TS source — primarily inputSchema
+   * and outputSchema, which the council embeds in the Tool definition
+   * but the metadata row stays empty without this lookup.
+   */
+  getRegisteredTool?: (name: string) => Pick<Tool, "inputSchema" | "outputSchema" | "examples" | "requiredSecretHandles"> | undefined;
 };
 
 export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
@@ -118,6 +127,30 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     // 3. Refresh the in-process registry so the tool is callable
     //    immediately (the QA loop calls it via `runToolManually` next).
     await this.deps.reloadGeneratedTools?.();
+
+    // 4. Backfill metadata with the schemas declared inside the Tool
+    //    body. registerGenerated above only saw scaffold-level fields
+    //    (name, version, description); the inputSchema / outputSchema /
+    //    examples live inside the LLM-emitted TS file and surface only
+    //    once the runtime imports it. Without this step the Tools page
+    //    shows "(no declared properties)" even when the tool body
+    //    declares a full JSON schema.
+    const live = this.deps.getRegisteredTool?.(toolName);
+    if (live) {
+      const enriched = {
+        ...baseInput,
+        inputSchema: live.inputSchema,
+        outputSchema: live.outputSchema,
+        examples: live.examples,
+        requiredSecretHandles:
+          live.requiredSecretHandles && live.requiredSecretHandles.length > 0
+            ? live.requiredSecretHandles
+            : baseInput.requiredSecretHandles,
+      };
+      // Same-version re-register is an in-place update on the metadata
+      // store; promoteReplacement bumps versions and would loop.
+      await this.deps.metadataStore.registerGenerated(enriched);
+    }
 
     return { toolName, version };
   }

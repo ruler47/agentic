@@ -287,6 +287,7 @@ function createRunsService(
     undefined, // modelTierSettings
     undefined, // toolMetadataStore
     undefined, // toolsService
+    undefined, // toolRegistry
   );
 }
 

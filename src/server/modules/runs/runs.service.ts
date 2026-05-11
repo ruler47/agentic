@@ -75,6 +75,7 @@ import {
   CODING_COUNCIL_STORE,
   MODEL_TIER_SETTINGS,
   TOOL_METADATA_STORE,
+  TOOL_REGISTRY,
   UNIVERSAL_AGENT,
   USER_STORE,
   WORK_LEDGER_STORE,
@@ -168,6 +169,9 @@ export class RunsService implements OnApplicationBootstrap {
       | import("../../../tools/toolMetadataStore.js").ToolMetadataStore
       | undefined,
     @Inject(ToolsService) private readonly toolsService: ToolsService | undefined,
+    @Inject(TOOL_REGISTRY) private readonly toolRegistry:
+      | import("../../../tools/registry.js").ToolRegistry
+      | undefined,
   ) {}
 
   /**
@@ -1024,6 +1028,16 @@ export class RunsService implements OnApplicationBootstrap {
               metadataStore: this.toolMetadata,
               reloadGeneratedTools: this.reloadGeneratedTools,
               runToolManually: (name, body) => this.toolsService!.runToolManually(name, body),
+              getRegisteredTool: (name) => {
+                const t = this.toolRegistry?.get(name);
+                if (!t) return undefined;
+                return {
+                  inputSchema: t.inputSchema,
+                  outputSchema: t.outputSchema,
+                  examples: t.examples,
+                  requiredSecretHandles: t.requiredSecretHandles,
+                };
+              },
             })
           : undefined;
 
