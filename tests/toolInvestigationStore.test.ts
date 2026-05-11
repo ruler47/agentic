@@ -38,6 +38,8 @@ test("InMemoryToolInvestigationStore creates, lists, gets, and updates investiga
   assert.equal(list.length, 1);
   assert.equal(list[0]!.id, created.id);
 
+  // Sleep > 1ms so `updatedAt` advances on fast CPUs.
+  await new Promise((resolve) => setTimeout(resolve, 5));
   const updated = await store.update(created.id, {
     status: "linked_to_build",
     operatorComment: "Promoted to build request 42",
