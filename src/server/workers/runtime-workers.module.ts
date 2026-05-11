@@ -20,6 +20,8 @@ import {
   type ToolPackageRunner,
 } from "../../tools/toolPackageRunner.js";
 import { ToolServiceSupervisor } from "../../tools/toolServiceSupervisor.js";
+import { reconcileToolsDirectory } from "../../tools/councilToolAdapter.js";
+import { resolve } from "node:path";
 import { ToolBuildWorkflow } from "../../tools/toolBuildWorkflow.js";
 import { ToolBuildWorker } from "../../tools/toolBuildWorker.js";
 import { ToolPackageWorkspaceStore } from "../../tools/toolPackageWorkspaceStore.js";
@@ -358,6 +360,29 @@ class RuntimeBootstrapper implements OnApplicationBootstrap, OnApplicationShutdo
     });
 
     if (this.metadata) {
+      // Reconcile tools/ dir BEFORE load so loadGeneratedTools doesn't
+      // pick up stale packages whose metadata row got deleted. Safe to
+      // skip on failure — load will still work, the reconcile is just
+      // disk-hygiene.
+      try {
+        const knownVersions = new Map<string, string>(
+          (await this.metadata.list()).map((m) => [
+            m.name.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 120) || "council_tool",
+            m.version,
+          ]),
+        );
+        const toolsRoot = resolve(process.cwd(), "tools");
+        const reconciled = await reconcileToolsDirectory(toolsRoot, knownVersions);
+        if (reconciled.removedTools.length > 0 || reconciled.prunedVersions > 0) {
+          logger.log(
+            `Reconciled tools dir: removed ${reconciled.removedTools.length} orphan(s), pruned ${reconciled.prunedVersions} stale version(s).`,
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          `Tools-dir reconcile skipped: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       const results = await loadGeneratedTools(this.registry, this.metadata, process.cwd(), this.runners);
       const loaded = results.filter((entry) => entry.loaded).length;
       if (loaded > 0) logger.log(`Loaded ${loaded} generated tool(s).`);

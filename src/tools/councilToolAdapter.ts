@@ -4,7 +4,7 @@
  * outside `src/agents/universalAgent.ts` so the agent class stays
  * dependency-light.
  */
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { CodingCouncilStore } from "../settings/codingCouncilStore.js";
 import type { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
@@ -199,7 +199,49 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
       }
     }
 
+    // 6. Sweep older versions on disk. Keep the last KEEP_VERSIONS
+    //    for rollback; drop everything older so the tools directory
+    //    doesn't accumulate (every QA-failed repair attempt was
+    //    leaving a v1.0.X dir behind, ~30+ on busy tools).
+    await this.pruneOldVersions(sanitized, version);
+
     return { toolName, version };
+  }
+
+  private async pruneOldVersions(sanitizedName: string, activeVersion: string): Promise<void> {
+    const KEEP_VERSIONS = 5;
+    const toolDir = join(this.toolsRoot, sanitizedName);
+    let dirents: string[];
+    try {
+      dirents = await readdir(toolDir);
+    } catch {
+      return;
+    }
+    const versions = dirents
+      .filter((entry) => /^\d+\.\d+\.\d+$/.test(entry))
+      .sort((a, b) => compareSemver(b, a)); // newest first
+    // Keep the active version + the next KEEP_VERSIONS-1 newest (so
+    // rolling forward never deletes the running version even if its
+    // semver is mid-pack for some reason).
+    const kept = new Set<string>([activeVersion]);
+    for (const v of versions) {
+      if (kept.size >= KEEP_VERSIONS) break;
+      kept.add(v);
+    }
+    const toDelete = versions.filter((v) => !kept.has(v));
+    await Promise.all(
+      toDelete.map((v) =>
+        rm(join(toolDir, v), { recursive: true, force: true }).catch(() => undefined),
+      ),
+    );
+  }
+
+  async reconcileToolsDirectory(): Promise<{ removedTools: string[]; prunedVersions: number }> {
+    const knownVersions = new Map<string, string>();
+    for (const meta of await this.deps.metadataStore.list()) {
+      knownVersions.set(sanitizeName(meta.name), meta.version);
+    }
+    return reconcileToolsDirectory(this.toolsRoot, knownVersions);
   }
 
   async updateDescription(toolName: string, version: string, description: string): Promise<void> {
@@ -293,6 +335,79 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     const safePatch = Number.isFinite(patch!) ? patch! : 0;
     return `${safeMaj}.${safeMin}.${safePatch + 1}`;
   }
+}
+
+/**
+ * Standalone reconciler: align the on-disk tools/ tree with the
+ * supplied registry. Removes top-level dirs that have no metadata
+ * row (orphans), prunes each still-registered tool to the last 5
+ * versions. Safe to run on bootstrap and after every promote.
+ *
+ * `knownVersions` maps sanitized-name → active version. Pass an
+ * empty Map to remove every council-built dir (e.g. test mode).
+ */
+export async function reconcileToolsDirectory(
+  toolsRoot: string,
+  knownVersions: ReadonlyMap<string, string>,
+): Promise<{ removedTools: string[]; prunedVersions: number }> {
+  const KEEP_VERSIONS = 5;
+  // Utility dirs the runtime owns and which are never council tools.
+  const RESERVED = new Set(["sdk"]);
+  let topLevel: string[];
+  try {
+    topLevel = await readdir(toolsRoot);
+  } catch {
+    return { removedTools: [], prunedVersions: 0 };
+  }
+  const removedTools: string[] = [];
+  let prunedVersions = 0;
+  for (const entry of topLevel) {
+    if (RESERVED.has(entry)) continue;
+    if (entry.endsWith("-service")) continue; // docker compose build contexts
+    const entryPath = join(toolsRoot, entry);
+    const active = knownVersions.get(entry);
+    if (!active) {
+      await rm(entryPath, { recursive: true, force: true }).catch(() => undefined);
+      removedTools.push(entry);
+      continue;
+    }
+    const versions = await readdir(entryPath).catch(() => []);
+    const semverDirs = versions
+      .filter((v) => /^\d+\.\d+\.\d+$/.test(v))
+      .sort((a, b) => compareSemver(b, a));
+    const kept = new Set<string>([active]);
+    for (const v of semverDirs) {
+      if (kept.size >= KEEP_VERSIONS) break;
+      kept.add(v);
+    }
+    const toDelete = semverDirs.filter((v) => !kept.has(v));
+    await Promise.all(
+      toDelete.map((v) =>
+        rm(join(entryPath, v), { recursive: true, force: true }).catch(() => undefined),
+      ),
+    );
+    prunedVersions += toDelete.length;
+  }
+  return { removedTools, prunedVersions };
+}
+
+/** Numeric semver compare: `1.0.10` > `1.0.2`. Returns negative when
+ *  `a < b`, positive when `a > b`, 0 when equal. Inputs that don't
+ *  match `X.Y.Z` sort to the end. */
+function compareSemver(a: string, b: string): number {
+  const parse = (v: string): number[] =>
+    v.split(".").map((part) => Number.parseInt(part, 10)).filter((n) => Number.isFinite(n));
+  const av = parse(a);
+  const bv = parse(b);
+  if (av.length === 0 && bv.length === 0) return 0;
+  if (av.length === 0) return 1;
+  if (bv.length === 0) return -1;
+  for (let i = 0; i < Math.max(av.length, bv.length); i += 1) {
+    const ai = av[i] ?? 0;
+    const bi = bv[i] ?? 0;
+    if (ai !== bi) return ai - bi;
+  }
+  return 0;
 }
 
 function sanitizeName(value: string): string {

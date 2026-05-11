@@ -12,7 +12,7 @@
     "web:legacy": "node dist/server/main.nest.js",
     "web:legacy:dev": "tsx src/server/main.nest.ts",
     "serve": "node dist/db/migrate.js && node dist/server/main.nest.js",
-    "test": "tsx --test tests/*.test.ts tests/**/*.test.ts",
+    "test": "tsx --test --test-concurrency=1 tests/*.test.ts tests/**/*.test.ts",
     "test:types": "tsc --noEmit -p tsconfig.test.json",
     "verify": "npm run typecheck && npm run test:types && npm test && npm run build",
     "typecheck": "tsc --noEmit",

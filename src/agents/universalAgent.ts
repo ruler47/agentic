@@ -2300,7 +2300,7 @@ export class UniversalAgent {
     const promptMemories = compactMemoriesForPrompt(memories);
     const output = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
-      { role: "user", content: planPrompt(promptTask, complexity, promptMemories) },
+      { role: "user", content: planPrompt(promptTask, complexity, promptMemories, this.tools.list()) },
     ], { modelTier });
 
     return extractJson<PlanResponse>(output).subtasks;
