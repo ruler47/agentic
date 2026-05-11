@@ -231,11 +231,19 @@ function coerceInputSchema(value: Record<string, unknown> | undefined): import("
 }
 
 function extractInputSchemaFromSource(source: string): Record<string, unknown> | undefined {
-  // Find `inputSchema:` followed by an opening brace; walk forward
-  // tracking brace depth so nested objects are captured correctly.
-  const marker = source.match(/inputSchema\s*:\s*\{/);
+  // Find an inline `inputSchema: { ... }`. If the LLM used a separate
+  // `const inputSchema = { ... }` declaration and then shorthand'd it
+  // (`inputSchema,`) inside the Tool literal — which both gemma and
+  // qwen do regularly — fall back to that pattern.
+  const inline = source.match(/inputSchema\s*:\s*\{/);
+  const decl = source.match(/(?:const|let|var)\s+inputSchema\s*[:=][^{]*\{/);
+  const marker = inline ?? decl;
   if (!marker || marker.index === undefined) return undefined;
-  const start = marker.index + marker[0].length - 1; // points at `{`
+  // Locate the `{` that starts the schema literal.
+  const matchedText = marker[0];
+  const braceOffsetInMatch = matchedText.lastIndexOf("{");
+  if (braceOffsetInMatch < 0) return undefined;
+  const start = marker.index + braceOffsetInMatch;
   let depth = 0;
   let inString: '"' | "'" | "`" | null = null;
   let escape = false;
