@@ -446,8 +446,15 @@ export class UniversalAgent {
       pickCouncilWinner,
     } = await import("./toolBuildCouncil.js");
 
+    // Parent-tracking: every council event chains to the previous one
+    // (or to the root) so the Trace Graph can draw the call edges. We
+    // keep three rolling anchors:
+    //   - winnerSpanId           → parent of code-drafted
+    //   - currentCodeSpanId      → parent of reviews / revises / QA
+    //   - lastQaSpanId           → parent of repair
+    // and reassign them as the council moves through its phases.
+
     // ── Step 1: BRAINSTORM ────────────────────────────────────────────
-    const proposalSpan = createSpanId("council-brainstorm");
     const proposals = await Promise.all(
       councilModels.map(async (modelId) => {
         const messages = brainstormPrompt(context, councilModels.length, config.brainstormSystemPrompt);
@@ -455,7 +462,7 @@ export class UniversalAgent {
         const parsed = parseProposalTail(text);
         await emit({
           spanId: createSpanId("council-proposal"),
-          parentSpanId: proposalSpan,
+          parentSpanId: runSpanId,
           type: "tool-build-brainstorm-proposal",
           actor: modelId,
           activity: "llm",
@@ -476,7 +483,6 @@ export class UniversalAgent {
     );
 
     // ── Step 2: VOTE ─────────────────────────────────────────────────
-    const voteSpan = createSpanId("council-vote");
     const ballots = await Promise.all(
       councilModels.map(async (voterId) => {
         const messages = votePrompt(context, proposals);
@@ -484,7 +490,7 @@ export class UniversalAgent {
         const ranking = parseRankingJson(text, proposals.length);
         await emit({
           spanId: createSpanId("council-vote-cast"),
-          parentSpanId: voteSpan,
+          parentSpanId: runSpanId,
           type: "tool-build-vote-cast",
           actor: voterId,
           activity: "llm",
@@ -500,8 +506,10 @@ export class UniversalAgent {
     );
 
     let winner = pickCouncilWinner(proposals, ballots);
+    let winnerSpanId = createSpanId("council-winner");
     await emit({
-      spanId: createSpanId("council-winner"),
+      spanId: winnerSpanId,
+      parentSpanId: runSpanId,
       type: "tool-build-council-winner-selected",
       actor: "coordinator",
       activity: "coordination",
@@ -542,8 +550,10 @@ export class UniversalAgent {
         if (parsed.length === 0) throw new Error("Implement step returned no parsable files.");
         files = parsed;
         if (candidate.winnerModelId !== winner.winnerModelId) {
+          const fallbackSpanId = createSpanId("council-winner-fallback");
           await emit({
-            spanId: createSpanId("council-winner-fallback"),
+            spanId: fallbackSpanId,
+            parentSpanId: winnerSpanId,
             type: "tool-build-council-winner-selected",
             actor: "coordinator",
             activity: "coordination",
@@ -556,6 +566,7 @@ export class UniversalAgent {
             payload: { ...candidate, fallbackFrom: winner.winnerModelId },
           });
           winner = candidate;
+          winnerSpanId = fallbackSpanId;
         }
         implementError = undefined;
         break;
@@ -566,8 +577,10 @@ export class UniversalAgent {
     if (implementError !== undefined) throw implementError;
     files = files!;
     codeText = codeText!;
+    let currentCodeSpanId = createSpanId("council-implement");
     await emit({
-      spanId: createSpanId("council-implement"),
+      spanId: currentCodeSpanId,
+      parentSpanId: winnerSpanId,
       type: "tool-build-code-drafted",
       actor: winner.winnerModelId,
       activity: "llm",
@@ -587,6 +600,7 @@ export class UniversalAgent {
     // whether the tool is usable.
     const reviewerIds = councilModels.filter((id) => id !== winner.winnerModelId);
     for (let attempt = 0; attempt < config.maxRevisionAttempts; attempt += 1) {
+      const codeAnchor = currentCodeSpanId;
       const reviews = (
         await Promise.all(
           reviewerIds.map(async (reviewerId) => {
@@ -596,6 +610,7 @@ export class UniversalAgent {
               const verdict = parseReviewVerdict(text);
               await emit({
                 spanId: createSpanId("council-review"),
+                parentSpanId: codeAnchor,
                 type: "tool-build-code-review-cast",
                 actor: reviewerId,
                 activity: "llm",
@@ -610,6 +625,7 @@ export class UniversalAgent {
             } catch (error) {
               await emit({
                 spanId: createSpanId("council-review-skip"),
+                parentSpanId: codeAnchor,
                 type: "tool-build-code-review-cast",
                 actor: reviewerId,
                 activity: "llm",
@@ -642,6 +658,7 @@ export class UniversalAgent {
         // run still terminates instead of hard-crashing.
         await emit({
           spanId: createSpanId("council-revise-skip"),
+          parentSpanId: codeAnchor,
           type: "tool-build-code-revised",
           actor: winner.winnerModelId,
           activity: "llm",
@@ -655,8 +672,10 @@ export class UniversalAgent {
         });
         break;
       }
+      const reviseSpanId = createSpanId("council-revise");
       await emit({
-        spanId: createSpanId("council-revise"),
+        spanId: reviseSpanId,
+        parentSpanId: codeAnchor,
         type: "tool-build-code-revised",
         actor: winner.winnerModelId,
         activity: "llm",
@@ -667,6 +686,7 @@ export class UniversalAgent {
         durationMs: 0,
         payload: { attempt: attempt + 1, files, findings },
       });
+      currentCodeSpanId = reviseSpanId;
     }
 
     // ── Step 6: REGISTER ─────────────────────────────────────────────
@@ -684,6 +704,7 @@ export class UniversalAgent {
       const qaInput = synthesizeQaInput(context);
       const output = await adapter.runToolForQa(registered.toolName, qaInput);
       let oracle: { verdict: "passed" | "failed"; failures: string[] };
+      const qaSpanId = createSpanId("council-qa");
       try {
         const oracleText = await this.llm.complete(qaOraclePrompt(context, output), {
           modelTier: "M",
@@ -691,7 +712,8 @@ export class UniversalAgent {
         oracle = parseQaOracle(oracleText);
       } catch (error) {
         await emit({
-          spanId: createSpanId("council-qa-skip"),
+          spanId: qaSpanId,
+          parentSpanId: currentCodeSpanId,
           type: "tool-build-qa-attempt",
           actor: "qa-oracle",
           activity: "llm",
@@ -706,7 +728,8 @@ export class UniversalAgent {
         break;
       }
       await emit({
-        spanId: createSpanId("council-qa"),
+        spanId: qaSpanId,
+        parentSpanId: currentCodeSpanId,
         type: "tool-build-qa-attempt",
         actor: "qa-oracle",
         activity: "llm",
@@ -734,8 +757,10 @@ export class UniversalAgent {
           description: context.description,
           secretHandle: context.secretHandle,
         });
+        const repairSpanId = createSpanId("council-repair");
         await emit({
-          spanId: createSpanId("council-repair"),
+          spanId: repairSpanId,
+          parentSpanId: qaSpanId,
           type: "tool-build-code-repaired",
           actor: winner.winnerModelId,
           activity: "llm",
@@ -746,9 +771,11 @@ export class UniversalAgent {
           durationMs: 0,
           payload: { attempt: attempt + 1, files, failures: oracle.failures },
         });
+        currentCodeSpanId = repairSpanId;
       } catch (error) {
         await emit({
           spanId: createSpanId("council-repair-skip"),
+          parentSpanId: qaSpanId,
           type: "tool-build-code-repaired",
           actor: winner.winnerModelId,
           activity: "llm",
@@ -767,6 +794,7 @@ export class UniversalAgent {
     // ── Step 9: FINALIZE ─────────────────────────────────────────────
     await emit({
       spanId: createSpanId("council-registered"),
+      parentSpanId: runSpanId,
       type: "tool-build-registered",
       actor: "coordinator",
       activity: "coordination",

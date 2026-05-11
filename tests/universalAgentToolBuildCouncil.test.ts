@@ -155,6 +155,22 @@ test("runToolBuildCouncil orchestrates brainstorm → vote → implement → rev
   // Final answer mentions success.
   assert.match(result.finalAnswer, /Tool \*\*demo\.tool\*\* v1\.0\.0/);
   assert.match(result.finalAnswer, /QA passed/);
+
+  // Trace Graph relies on parentSpanId pointing at a span that's actually
+  // present in the event stream — otherwise the React Flow edges silently
+  // get dropped and the user can't see who called whom. Verify every
+  // non-root council event is parented to a previously-emitted span.
+  const emittedSpans = new Set(events.map((event) => event.spanId));
+  const rooted = events.filter((event) => event.type === "run-started");
+  assert.equal(rooted.length, 1, "exactly one run-started root event expected");
+  const orphans = events
+    .filter((event) => event.type !== "run-started")
+    .filter((event) => !event.parentSpanId || !emittedSpans.has(event.parentSpanId));
+  assert.deepEqual(
+    orphans.map((event) => event.type),
+    [],
+    "every non-root council event must have a parentSpanId that points at an emitted span",
+  );
 });
 
 test("runToolBuildCouncil throws when fewer than 2 council models are available", async () => {
