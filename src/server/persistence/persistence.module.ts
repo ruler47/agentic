@@ -17,6 +17,10 @@ import { PostgresModelTierSettingsStore } from "../../settings/postgresModelTier
 import { InMemoryModelProviderStore } from "../../settings/modelProviderStore.js";
 import { PostgresModelProviderStore } from "../../settings/postgresModelProviderStore.js";
 import { InMemoryToolRuntimeSettingsStore } from "../../settings/toolRuntimeSettings.js";
+import {
+  InMemoryCodingCouncilStore,
+  PostgresCodingCouncilStore,
+} from "../../settings/codingCouncilStore.js";
 import { PostgresToolRuntimeSettingsStore } from "../../settings/postgresToolRuntimeSettings.js";
 import { SkillMemory } from "../../memory/skillMemory.js";
 import { PostgresSkillMemory } from "../../memory/postgresSkillMemory.js";
@@ -95,6 +99,7 @@ import {
   TOOL_CALLBACK_TOKEN_ISSUER,
   TOOL_REWORK_WAIT_STORE,
   TOOL_RUNTIME_SETTINGS,
+  CODING_COUNCIL_STORE,
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_LOG_STORE,
   TOOL_SERVICE_STATUS_STORE,
@@ -178,6 +183,14 @@ const providers: Provider[] = [
     inject: [PG_POOL],
     useFactory: (pool: PgPool | undefined) =>
       pool ? new PostgresToolRuntimeSettingsStore(pool) : new InMemoryToolRuntimeSettingsStore(),
+  },
+  {
+    // Phase 14: coding council settings (which tier acts as the
+    // tool-build council + loop limits).
+    provide: CODING_COUNCIL_STORE,
+    inject: [PG_POOL],
+    useFactory: (pool: PgPool | undefined) =>
+      pool ? new PostgresCodingCouncilStore(pool) : new InMemoryCodingCouncilStore(),
   },
   {
     provide: TOOL_METADATA_STORE,

@@ -10,6 +10,7 @@ import { HealthModule } from "./modules/health/health.module.js";
 import { MemoryModule } from "./modules/memory/memory.module.js";
 import { ModelsModule } from "./modules/models/models.module.js";
 import { SecretsModule } from "./modules/secrets/secrets.module.js";
+import { SettingsModule } from "./modules/settings/settings.module.js";
 import { EvidenceLedgerModule } from "./modules/evidence-ledger/evidence-ledger.module.js";
 import { RunRetrospectivesModule } from "./modules/run-retrospectives/run-retrospectives.module.js";
 import { RunsModule } from "./modules/runs/runs.module.js";
@@ -37,6 +38,7 @@ import { RuntimeWorkersModule } from "./workers/runtime-workers.module.js";
     AuditModule,
     MemoryModule,
     SecretsModule,
+    SettingsModule,
     ModelsModule,
     ToolsModule,
     ToolBuildsModule,
