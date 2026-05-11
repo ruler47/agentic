@@ -607,8 +607,33 @@ export function repairPrompt(
   winner: CouncilProposal,
   code: string,
   qaFailures: readonly string[],
+  toolOutput?: { ok: boolean; content: string; data?: unknown },
 ): Message[] {
   const refsBlock = formatReferenceDocsBlock(context.referenceDocs);
+  // The literal tool output (stderr / runtime exception text) is FAR
+  // more diagnostic than the oracle's high-level "failures" summary
+  // — it tells the model exactly which import is broken, which field
+  // is missing, which stack frame faulted. Without it the repair
+  // loop has historically gotten stuck repeating the same import bug
+  // because the oracle only described the SYMPTOM ("ok=false") and
+  // never the root cause.
+  const outputBlock = toolOutput
+    ? [
+        "Actual tool output from the last QA attempt:",
+        `  ok: ${toolOutput.ok}`,
+        `  content: ${truncate(toolOutput.content || "(empty)", 1500)}`,
+        toolOutput.data !== undefined
+          ? `  data: ${truncate(JSON.stringify(toolOutput.data ?? {}, null, 2), 600)}`
+          : undefined,
+        "",
+        "If `content` contains a SyntaxError, runtime stack trace, or 'Source-bundle HTTP",
+        "runtime exited before healthcheck' message, FIX THAT specific error first — the",
+        "QA oracle only sees ok=false and cannot tell you which import / syntax / module",
+        "is broken.",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : undefined;
   const user = [
     `Tool name: ${context.name}`,
     `User task: ${context.description}`,
@@ -619,6 +644,7 @@ export function repairPrompt(
     "Current code:",
     code.trim(),
     "",
+    outputBlock,
     "QA failures (what the oracle reported):",
     ...qaFailures.map((f) => `  - ${f}`),
     "",

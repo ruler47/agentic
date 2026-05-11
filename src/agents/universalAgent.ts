@@ -998,10 +998,14 @@ export class UniversalAgent {
         type: "tool-build-qa-attempt",
         actor: registered.toolName,
         activity: "tool",
-        // status reflects the tool doing its job: a structured response
-        // with ok=false is still the tool functioning. `failed` here
-        // would mean the runtime crashed / the runner threw.
-        status: "completed",
+        // Status mirrors `output.ok`: a tool returning `ok: false`
+        // IS the tool failing at its job — runtime crash, invalid
+        // input, missing module, etc. — and the operator wants the
+        // node to flash red so it's obvious where the build broke.
+        // The reviewer/oracle exception remains the only path that
+        // produces `failed` for a different reason (the judge itself
+        // breaking) and that's handled on the qa-oracle span below.
+        status: output.ok ? "completed" : "failed",
         title: `${registered.toolName} returned ok=${output.ok}`,
         startedAt: toolCallStartedAt,
         completedAt: new Date().toISOString(),
@@ -1089,7 +1093,19 @@ export class UniversalAgent {
       const repairSpanId = createSpanId("council-repair");
       const repairStartedAtDate = new Date();
       const repairStartedAt = repairStartedAtDate.toISOString();
-      const repairMessages = repairPrompt(context, winner.proposal, formatFilesForPrompt(files), oracle.failures);
+      // Pass the actual tool output (`output`) into the repair prompt
+      // so the model sees the literal runtime error (stack trace,
+      // missing-module, SyntaxError) instead of just the oracle's
+      // summary. Without this the loop has historically wedged on
+      // import-of-non-existent-symbol bugs because the oracle only
+      // saw ok=false.
+      const repairMessages = repairPrompt(
+        context,
+        winner.proposal,
+        formatFilesForPrompt(files),
+        oracle.failures,
+        output,
+      );
       const repairPromptText = messagesToPromptText(repairMessages);
       await emit({
         spanId: repairSpanId,
