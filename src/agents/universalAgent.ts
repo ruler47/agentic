@@ -153,6 +153,15 @@ type RunOptions = {
   workLedgerStore?: WorkLedgerStore;
   evidenceLedgerStore?: EvidenceLedgerStore;
   runRetrospectiveStore?: RunRetrospectiveStore;
+  /**
+   * Phase 14: when present, the agent dispatches to the tool-build
+   * council pipeline (`runToolBuildCouncil`) instead of the standard
+   * classify→plan→delegate flow. `toolBuildCouncil` carries the
+   * injected helpers (model resolution, registration, QA runner) that
+   * the council needs but the agent itself shouldn't own.
+   */
+  toolBuildContext?: import("./toolBuildCouncil.js").ToolBuildContext;
+  toolBuildCouncil?: ToolBuildCouncilAdapter;
   now?: Date;
   timeZone?: string;
   /**
@@ -206,6 +215,40 @@ const promptBudget = {
   reviewWorkerOutputChars: 8_000,
   synthesisWorkerOutputChars: 14_000,
   learningWorkerOutputChars: 10_000,
+};
+
+/**
+ * Phase 14: collaborators the tool-build council needs from outside
+ * the agent class (we keep the agent slim — no direct dependencies on
+ * stores or tool registries). The RunsService wires these in for
+ * production; tests supply stubs.
+ */
+export type ToolBuildCouncilAdapter = {
+  resolveConfig: () => Promise<{
+    tier: import("../settings/codingCouncilStore.js").CodingCouncilConfig["tier"];
+    maxRevisionAttempts: number;
+    maxQaRepairAttempts: number;
+    qaTimeoutMs: number;
+    brainstormSystemPrompt?: string;
+  }>;
+  /** Return the list of model ids registered for the given tier. */
+  resolveCouncilModels: (tier: string) => Promise<string[]>;
+  /**
+   * Register / re-register the freshly-generated tool source bundle and
+   * return its tool name + active version. Called once after the
+   * implement step and again after each repair iteration.
+   */
+  registerToolFromFiles: (
+    toolName: string,
+    files: ReadonlyArray<{ path: string; content: string }>,
+    metadata: { description: string; version?: string; secretHandle?: string },
+  ) => Promise<{ toolName: string; version: string }>;
+  /** Invoke the registered tool with a QA-synthesized input. */
+  runToolForQa: (toolName: string, input: Record<string, unknown>) => Promise<{
+    ok: boolean;
+    content: string;
+    data?: unknown;
+  }>;
 };
 
 export class UniversalAgent {
@@ -352,6 +395,279 @@ export class UniversalAgent {
   }
 
   /**
+   * Phase 14: tool-build council pipeline. Treats the run as a
+   * brainstorm → vote → implement → review → revise → QA → repair
+   * loop. All side-effectful work (model listing, file write,
+   * registration, QA invocation) goes through the injected
+   * `ToolBuildCouncilAdapter` so the agent stays slim.
+   *
+   * Every step emits a normal `AgentEvent` so the run timeline UI
+   * works without changes. Returns an `AgentRunResult` with the
+   * registered tool name + version in `finalAnswer` and the source
+   * files as artifacts.
+   */
+  private async runToolBuildCouncil(
+    context: import("./toolBuildCouncil.js").ToolBuildContext,
+    adapter: ToolBuildCouncilAdapter,
+    options: RunOptions,
+  ): Promise<AgentRunResult> {
+    const emit = createEmitter(options.onEvent);
+    const runSpanId = createSpanId("run");
+    const runStartedAt = options.now ?? new Date();
+
+    await emit({
+      spanId: runSpanId,
+      type: "run-started",
+      actor: "coordinator",
+      activity: "coordination",
+      status: "started",
+      title: "Tool-build council run",
+      detail: `Building tool: ${context.name}`,
+      startedAt: runStartedAt.toISOString(),
+      payload: { kind: "tool_build_council", toolBuildContext: context },
+    });
+
+    const config = await adapter.resolveConfig();
+    const councilModels = await adapter.resolveCouncilModels(config.tier);
+    if (councilModels.length < 2) {
+      throw new Error(
+        `Coding council requires at least 2 models in tier ${config.tier}; got ${councilModels.length}.`,
+      );
+    }
+
+    const {
+      brainstormPrompt,
+      votePrompt,
+      implementPrompt,
+      reviewPrompt,
+      revisePrompt,
+      qaOraclePrompt,
+      repairPrompt,
+      pickCouncilWinner,
+    } = await import("./toolBuildCouncil.js");
+
+    // ── Step 1: BRAINSTORM ────────────────────────────────────────────
+    const proposalSpan = createSpanId("council-brainstorm");
+    const proposals = await Promise.all(
+      councilModels.map(async (modelId) => {
+        const messages = brainstormPrompt(context, councilModels.length, config.brainstormSystemPrompt);
+        const text = await this.llm.complete(messages, { model: modelId });
+        const parsed = parseProposalTail(text);
+        await emit({
+          spanId: createSpanId("council-proposal"),
+          parentSpanId: proposalSpan,
+          type: "tool-build-brainstorm-proposal",
+          actor: modelId,
+          activity: "llm",
+          status: "completed",
+          title: `Council proposal from ${modelId}`,
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          payload: { modelId, content: text, packageList: parsed.packages, externalDependencies: parsed.externalDependencies },
+        });
+        return {
+          modelId,
+          content: text,
+          packageList: parsed.packages,
+          externalDependencies: parsed.externalDependencies,
+        };
+      }),
+    );
+
+    // ── Step 2: VOTE ─────────────────────────────────────────────────
+    const voteSpan = createSpanId("council-vote");
+    const ballots = await Promise.all(
+      councilModels.map(async (voterId) => {
+        const messages = votePrompt(context, proposals);
+        const text = await this.llm.complete(messages, { model: voterId });
+        const ranking = parseRankingJson(text, proposals.length);
+        await emit({
+          spanId: createSpanId("council-vote-cast"),
+          parentSpanId: voteSpan,
+          type: "tool-build-vote-cast",
+          actor: voterId,
+          activity: "llm",
+          status: "completed",
+          title: `Vote from ${voterId}`,
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          payload: { voterModelId: voterId, ranking },
+        });
+        return { voterModelId: voterId, ranking };
+      }),
+    );
+
+    const winner = pickCouncilWinner(proposals, ballots);
+    await emit({
+      spanId: createSpanId("council-winner"),
+      type: "tool-build-council-winner-selected",
+      actor: "coordinator",
+      activity: "coordination",
+      status: "completed",
+      title: `Winner: ${winner.winnerModelId}`,
+      detail: `Tie-break: ${winner.tieBrokenBy}`,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: 0,
+      payload: winner,
+    });
+
+    // ── Step 3: IMPLEMENT ────────────────────────────────────────────
+    let codeText = await this.llm.complete(implementPrompt(context, winner.proposal), {
+      model: winner.winnerModelId,
+    });
+    let files = parseFilesJson(codeText);
+    await emit({
+      spanId: createSpanId("council-implement"),
+      type: "tool-build-code-drafted",
+      actor: winner.winnerModelId,
+      activity: "llm",
+      status: "completed",
+      title: `Code drafted by ${winner.winnerModelId}`,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: 0,
+      payload: { files, raw: codeText },
+    });
+
+    // ── Step 4-5: REVIEW + REVISE ────────────────────────────────────
+    const reviewerIds = councilModels.filter((id) => id !== winner.winnerModelId);
+    for (let attempt = 0; attempt < config.maxRevisionAttempts; attempt += 1) {
+      const reviews = await Promise.all(
+        reviewerIds.map(async (reviewerId) => {
+          const messages = reviewPrompt(context, winner.proposal, formatFilesForPrompt(files));
+          const text = await this.llm.complete(messages, { model: reviewerId });
+          const verdict = parseReviewVerdict(text);
+          await emit({
+            spanId: createSpanId("council-review"),
+            type: "tool-build-code-review-cast",
+            actor: reviewerId,
+            activity: "llm",
+            status: verdict.verdict === "pass" ? "completed" : "failed",
+            title: `Review from ${reviewerId}: ${verdict.verdict}`,
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            durationMs: 0,
+            payload: { reviewerModelId: reviewerId, ...verdict },
+          });
+          return verdict;
+        }),
+      );
+      if (reviews.every((r) => r.verdict === "pass")) break;
+      const findings = reviews.flatMap((r) => r.findings);
+      if (attempt + 1 >= config.maxRevisionAttempts) break;
+      codeText = await this.llm.complete(
+        revisePrompt(context, winner.proposal, formatFilesForPrompt(files), findings),
+        { model: winner.winnerModelId },
+      );
+      files = parseFilesJson(codeText);
+      await emit({
+        spanId: createSpanId("council-revise"),
+        type: "tool-build-code-revised",
+        actor: winner.winnerModelId,
+        activity: "llm",
+        status: "completed",
+        title: `Code revised (attempt ${attempt + 1})`,
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: 0,
+        payload: { attempt: attempt + 1, files, findings },
+      });
+    }
+
+    // ── Step 6: REGISTER ─────────────────────────────────────────────
+    let registered = await adapter.registerToolFromFiles(context.name, files, {
+      description: context.description,
+      secretHandle: context.secretHandle,
+    });
+
+    // ── Step 7-8: QA + REPAIR ────────────────────────────────────────
+    let qaPassed = false;
+    for (let attempt = 0; attempt < config.maxQaRepairAttempts; attempt += 1) {
+      const qaInput = synthesizeQaInput(context);
+      const output = await adapter.runToolForQa(registered.toolName, qaInput);
+      const oracleText = await this.llm.complete(qaOraclePrompt(context, output), {
+        modelTier: "M",
+      });
+      const oracle = parseQaOracle(oracleText);
+      await emit({
+        spanId: createSpanId("council-qa"),
+        type: "tool-build-qa-attempt",
+        actor: "qa-oracle",
+        activity: "llm",
+        status: oracle.verdict === "passed" ? "completed" : "failed",
+        title: `QA attempt ${attempt + 1}: ${oracle.verdict}`,
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: 0,
+        payload: { attempt: attempt + 1, qaInput, output, ...oracle },
+      });
+      if (oracle.verdict === "passed") {
+        qaPassed = true;
+        break;
+      }
+      if (attempt + 1 >= config.maxQaRepairAttempts) break;
+      codeText = await this.llm.complete(
+        repairPrompt(context, winner.proposal, formatFilesForPrompt(files), oracle.failures),
+        { model: winner.winnerModelId },
+      );
+      files = parseFilesJson(codeText);
+      registered = await adapter.registerToolFromFiles(context.name, files, {
+        description: context.description,
+        secretHandle: context.secretHandle,
+      });
+      await emit({
+        spanId: createSpanId("council-repair"),
+        type: "tool-build-code-repaired",
+        actor: winner.winnerModelId,
+        activity: "llm",
+        status: "completed",
+        title: `Code repaired (attempt ${attempt + 1})`,
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: 0,
+        payload: { attempt: attempt + 1, files, failures: oracle.failures },
+      });
+    }
+
+    // ── Step 9: FINALIZE ─────────────────────────────────────────────
+    await emit({
+      spanId: createSpanId("council-registered"),
+      type: "tool-build-registered",
+      actor: "coordinator",
+      activity: "coordination",
+      status: qaPassed ? "completed" : "failed",
+      title: qaPassed
+        ? `Tool registered: ${registered.toolName} v${registered.version}`
+        : `Tool registered (QA failed after ${config.maxQaRepairAttempts} attempts)`,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(runStartedAt),
+      payload: { ...registered, qaPassed, councilSize: councilModels.length, winner: winner.winnerModelId },
+    });
+
+    const finalAnswer = qaPassed
+      ? `Tool **${registered.toolName}** v${registered.version} built by council (winner: ${winner.winnerModelId}). QA passed.`
+      : `Tool **${registered.toolName}** v${registered.version} registered, but QA still fails after ${config.maxQaRepairAttempts} repair attempts. Inspect logs.`;
+
+    return {
+      finalAnswer,
+      complexity: {
+        mode: "direct",
+        domains: ["tool-build"],
+        riskLevel: "medium",
+        sensitivity: "normal",
+      } as never,
+      subtasks: [],
+      workerResults: [],
+      reviews: [],
+      artifacts: [],
+    };
+  }
+
+  /**
    * Phase 13 follow-up (TB-005b): expose the run-scoped user tool
    * policy so deep helpers can pass it to `findByCapability`.
    */
@@ -360,6 +676,13 @@ export class UniversalAgent {
   }
 
   async run(task: string, options: RunOptions = {}): Promise<AgentRunResult> {
+    // Phase 14: tool-build runs are routed to the council pipeline. The
+    // adapter must be present too — without it the agent can't reach
+    // the coding-council config / tool registrar / QA runner.
+    if (options.toolBuildContext && options.toolBuildCouncil) {
+      return this.runToolBuildCouncil(options.toolBuildContext, options.toolBuildCouncil, options);
+    }
+
     const emit = createEmitter(options.onEvent);
     const runSpanId = createSpanId("run");
     const memorySpanId = createSpanId("memory");
@@ -6396,4 +6719,140 @@ export const __testing__ = {
   extractNumericValuesFromEvidence,
   isCurrencyAmountGroundedNumerically,
   formatScreenshotReuseDirective,
+  parseProposalTail,
+  parseRankingJson,
+  parseFilesJson,
+  parseReviewVerdict,
+  parseQaOracle,
+  formatFilesForPrompt,
 };
+
+// ──────────────────────────────────────────────────────────────────────
+// Phase 14 — small parsing helpers for the council pipeline.
+// The LLM output for each step is structured (single-JSON ending lines),
+// but real models sometimes wrap JSON in backticks or prepend prose. These
+// helpers tolerate the common deviations and fall back to safe defaults
+// when the model output is gibberish, so a single bad responder can't
+// crash the entire council run.
+// ──────────────────────────────────────────────────────────────────────
+
+function parseProposalTail(raw: string): { packages: string[]; externalDependencies: string[] } {
+  // Look for the last JSON object in the text, which the prompt instructed
+  // the model to emit on the final line.
+  const match = raw.match(/\{[^{}]*"packages"[^{}]*\}/);
+  if (!match) return { packages: [], externalDependencies: [] };
+  try {
+    const obj = JSON.parse(match[0]) as { packages?: unknown; externalDependencies?: unknown };
+    const packages = Array.isArray(obj.packages)
+      ? obj.packages.filter((v): v is string => typeof v === "string")
+      : [];
+    const externalDependencies = Array.isArray(obj.externalDependencies)
+      ? obj.externalDependencies.filter((v): v is string => typeof v === "string")
+      : [];
+    return { packages, externalDependencies };
+  } catch {
+    return { packages: [], externalDependencies: [] };
+  }
+}
+
+function parseRankingJson(raw: string, proposalCount: number): number[] {
+  const obj = extractFirstJson<{ ranking?: unknown }>(raw);
+  const ranking = Array.isArray(obj?.ranking)
+    ? obj.ranking.filter((v): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) < proposalCount)
+    : [];
+  // Deduplicate while preserving order.
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const idx of ranking) {
+    if (seen.has(idx)) continue;
+    seen.add(idx);
+    out.push(idx);
+  }
+  return out;
+}
+
+function parseFilesJson(raw: string): Array<{ path: string; content: string }> {
+  const obj = extractFirstJson<{ files?: unknown }>(raw);
+  if (!obj || !Array.isArray(obj.files)) return [];
+  const out: Array<{ path: string; content: string }> = [];
+  for (const entry of obj.files) {
+    if (!entry || typeof entry !== "object") continue;
+    const path = (entry as { path?: unknown }).path;
+    const content = (entry as { content?: unknown }).content;
+    if (typeof path === "string" && typeof content === "string") {
+      out.push({ path, content });
+    }
+  }
+  return out;
+}
+
+function parseReviewVerdict(raw: string): { verdict: "pass" | "needs_revision"; findings: string[] } {
+  const obj = extractFirstJson<{ verdict?: unknown; findings?: unknown }>(raw);
+  const verdict = obj?.verdict === "pass" ? "pass" : "needs_revision";
+  const findings = Array.isArray(obj?.findings)
+    ? (obj.findings as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  return { verdict, findings };
+}
+
+function parseQaOracle(raw: string): { verdict: "passed" | "failed"; failures: string[] } {
+  const obj = extractFirstJson<{ verdict?: unknown; failures?: unknown }>(raw);
+  const verdict = obj?.verdict === "passed" ? "passed" : "failed";
+  const failures = Array.isArray(obj?.failures)
+    ? (obj.failures as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  return { verdict, failures };
+}
+
+function extractFirstJson<T>(raw: string): T | undefined {
+  if (!raw) return undefined;
+  // Strip triple-backtick fences the model often wraps JSON in.
+  const stripped = raw.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1").trim();
+  const start = stripped.indexOf("{");
+  if (start < 0) return undefined;
+  // Find the matching closing brace by depth, ignoring those inside strings.
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < stripped.length; i += 1) {
+    const ch = stripped[i]!;
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(stripped.slice(start, i + 1)) as T;
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function formatFilesForPrompt(files: ReadonlyArray<{ path: string; content: string }>): string {
+  if (files.length === 0) return "(no files)";
+  return files
+    .map((file) => `// ===== ${file.path} =====\n${file.content}`)
+    .join("\n\n");
+}
+
+function synthesizeQaInput(context: import("./toolBuildCouncil.js").ToolBuildContext): Record<string, unknown> {
+  // Lightweight stub: use the first qaCriterion as the input task, falling
+  // back to the description. The real QA oracle reads the actual tool
+  // output, so the input only has to be "plausible enough" to exercise the
+  // tool.
+  const firstCriterion = context.qaCriteria[0] ?? context.description;
+  return { task: firstCriterion, query: firstCriterion };
+}

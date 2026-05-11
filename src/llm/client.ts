@@ -21,8 +21,14 @@ export class LlmClient {
     private readonly modelTierSettings?: ModelTierSettingsStore,
   ) {}
 
-  async complete(messages: Message[], options?: { temperature?: number; modelTier?: ModelTier }): Promise<string> {
-    const attempts = await this.modelAttemptsForTier(options?.modelTier);
+  async complete(
+    messages: Message[],
+    options?: { temperature?: number; modelTier?: ModelTier; model?: string },
+  ): Promise<string> {
+    // Phase 14: explicit `model` override bypasses tier resolution so the
+    // tool-build council can address each peer model directly. Falls
+    // through to tier-based attempts when omitted.
+    const attempts = options?.model ? [options.model] : await this.modelAttemptsForTier(options?.modelTier);
     const errors: string[] = [];
 
     for (const model of attempts) {

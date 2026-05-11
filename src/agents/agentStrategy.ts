@@ -8,7 +8,11 @@ export type AgentStrategyKind =
   | "tool_use"
   | "tool_build_or_rework"
   | "ledger_reuse_or_wait"
-  | "council";
+  | "council"
+  // Phase 14: the run was created from the Tool Builds form. The agent
+  // dispatches to a multi-model council (brainstorm → vote → implement
+  // → review → revise → QA → repair) instead of the normal delegate-DAG.
+  | "tool_build_council";
 
 export type AgentStrategyAction =
   | "answer_directly"
