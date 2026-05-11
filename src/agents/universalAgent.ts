@@ -499,7 +499,7 @@ export class UniversalAgent {
       }),
     );
 
-    const winner = pickCouncilWinner(proposals, ballots);
+    let winner = pickCouncilWinner(proposals, ballots);
     await emit({
       spanId: createSpanId("council-winner"),
       type: "tool-build-council-winner-selected",
@@ -515,10 +515,57 @@ export class UniversalAgent {
     });
 
     // ── Step 3: IMPLEMENT ────────────────────────────────────────────
-    let codeText = await this.llm.complete(implementPrompt(context, winner.proposal), {
-      model: winner.winnerModelId,
-    });
-    let files = parseFilesJson(codeText);
+    // Try the winner first; on transient LLM failure (empty content,
+    // context overflow, model not loaded) fall back to the next-best
+    // proposal by Borda score and keep going. The winner is reassigned
+    // so subsequent steps (review, revise, repair) target the model
+    // that actually produced the code.
+    let codeText: string;
+    let files: ReadonlyArray<{ path: string; content: string }>;
+    const rankedAlternatives = proposals
+      .map((p, i) => ({ p, i }))
+      .filter((entry) => entry.p.modelId !== winner.winnerModelId);
+    const implementCandidates = [winner, ...rankedAlternatives.map((entry) => ({
+      ...winner,
+      winnerIndex: entry.i,
+      winnerModelId: entry.p.modelId,
+      proposal: entry.p,
+    }))];
+    let implementError: unknown;
+    for (let candidateIdx = 0; candidateIdx < implementCandidates.length; candidateIdx += 1) {
+      const candidate = implementCandidates[candidateIdx]!;
+      try {
+        codeText = await this.llm.complete(implementPrompt(context, candidate.proposal), {
+          model: candidate.winnerModelId,
+        });
+        const parsed = parseFilesJson(codeText);
+        if (parsed.length === 0) throw new Error("Implement step returned no parsable files.");
+        files = parsed;
+        if (candidate.winnerModelId !== winner.winnerModelId) {
+          await emit({
+            spanId: createSpanId("council-winner-fallback"),
+            type: "tool-build-council-winner-selected",
+            actor: "coordinator",
+            activity: "coordination",
+            status: "completed",
+            title: `Fallback winner: ${candidate.winnerModelId}`,
+            detail: `Original winner ${winner.winnerModelId} could not implement; using next-best proposal.`,
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            durationMs: 0,
+            payload: { ...candidate, fallbackFrom: winner.winnerModelId },
+          });
+          winner = candidate;
+        }
+        implementError = undefined;
+        break;
+      } catch (error) {
+        implementError = error;
+      }
+    }
+    if (implementError !== undefined) throw implementError;
+    files = files!;
+    codeText = codeText!;
     await emit({
       spanId: createSpanId("council-implement"),
       type: "tool-build-code-drafted",
