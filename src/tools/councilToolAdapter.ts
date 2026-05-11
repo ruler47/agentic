@@ -202,6 +202,31 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     return { toolName, version };
   }
 
+  async updateDescription(toolName: string, version: string, description: string): Promise<void> {
+    const existing = (await this.deps.metadataStore.list()).find((m) => m.name === toolName);
+    if (!existing || existing.version !== version) return;
+    await this.deps.metadataStore.registerGenerated({
+      name: existing.name,
+      displayName: existing.displayName,
+      version: existing.version,
+      description,
+      capabilities: [...existing.capabilities],
+      startupMode: existing.startupMode,
+      inputSchema: existing.inputSchema,
+      outputSchema: existing.outputSchema,
+      modulePath: existing.modulePath,
+      testPath: existing.testPath,
+      requiredConfigurationKeys: existing.requiredConfigurationKeys,
+      requiredSecretHandles: existing.requiredSecretHandles,
+      settingsSchema: existing.settingsSchema,
+      storage: existing.storage,
+      docsMarkdown: existing.docsMarkdown,
+      examples: existing.examples,
+      packageManifest: existing.packageManifest,
+      changeSummary: existing.changeSummary,
+    });
+  }
+
   async updateChangeSummary(toolName: string, version: string, changeSummary: string): Promise<void> {
     // Same-version registerGenerated is an in-place update — preserve
     // every field on the existing row and only swap `changeSummary`.

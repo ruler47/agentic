@@ -700,6 +700,66 @@ export function changeSummaryPrompt(args: {
   ];
 }
 
+/**
+ * Phase 14 follow-up: descriptionPrompt synthesizes the canonical
+ * tool description that EVERY OTHER AGENT sees when picking tools
+ * from the registry. The operator's form input is just a hint —
+ * after the council registers the actual implementation, we ask a
+ * fast model to read the final source and write a 2-3 sentence
+ * description focused on shape (inputs, outputs) so a downstream
+ * worker can choose this tool without seeing the source. Re-runs on
+ * every rework so the description follows the code.
+ */
+export function descriptionPrompt(args: {
+  context: ToolBuildContext;
+  toolBodyExcerpt: string;
+}): Message[] {
+  const { context, toolBodyExcerpt } = args;
+  const user = [
+    `Tool name: ${context.name}`,
+    `Operator hint (may be outdated — the code is the source of truth):`,
+    context.description,
+    "",
+    "Tool source:",
+    "```ts",
+    toolBodyExcerpt.slice(0, 4000),
+    toolBodyExcerpt.length > 4000 ? `…[truncated ${toolBodyExcerpt.length - 4000} chars]` : "",
+    "```",
+    "",
+    "Write a 2-3 sentence description for the tool registry. Other agents read this",
+    "when deciding whether to call the tool, so it must be CONCRETE about shape:",
+    "  - What the tool does (one sentence).",
+    "  - What input it accepts (required fields by name + type).",
+    "  - What it returns on success (content + data shape).",
+    "",
+    "Style examples:",
+    '  - "Fetches hourly weather forecast for a city via the open-meteo public API. ' +
+      'Input: {city: string, hours?: number}. Output: ok=true with content=<summary> and ' +
+      'data.forecast: Array<{time, temp, precipitation}>."',
+    '  - "Renders an SVG line chart from numeric data points (no external libraries). ' +
+      'Input: {title: string, points: Array<{x: number, y: number}>}. Output: ok=true ' +
+      'with content being the SVG markup."',
+    "",
+    "Constraints:",
+    "  - Plain English. 2-3 sentences total, max ~60 words.",
+    "  - No quotes / no backticks / no JSON envelope — emit raw prose.",
+    "  - Do NOT mention the version number or `council-built`.",
+    "  - If the code has obvious limits (max input size, supported MIME types,",
+    "    upstream URL), mention them in one short clause.",
+  ].join("\n");
+  return [
+    {
+      role: "system",
+      content:
+        "You write canonical tool descriptions for an agent registry. Every other agent " +
+        "will see your output and decide whether to call the tool based on it — so be " +
+        "concrete about input/output shape, not marketing-speak. Always English, always " +
+        "under 60 words.",
+    },
+    { role: "user", content: user },
+  ];
+}
+
 export function repairPrompt(
   context: ToolBuildContext,
   winner: CouncilProposal,

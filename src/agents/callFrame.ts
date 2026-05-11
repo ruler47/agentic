@@ -126,7 +126,22 @@ export function createReviewerCallFrame(input: {
   };
 }
 
-export function buildWorkerSelfCheck(workerResult: WorkerResult, checkedAt = new Date()): AgentReturnSelfCheck {
+export function buildWorkerSelfCheck(
+  workerResult: WorkerResult,
+  checkedAt = new Date(),
+  /**
+   * Pure-council mode (Phase 14 follow-up): the planner may declare
+   * `requiredArtifacts` for a subtask (e.g. `screenshot/browser-screenshot`)
+   * but the registry might have no tool that advertises that
+   * capability — typically because the operator has built a
+   * different reader (`screenshot.url`) that doesn't share the exact
+   * legacy capability tag. Pass the live registry here so the
+   * self-check can DEMOTE a missing-artifact failure into a soft
+   * warning when no possible provider is registered. Empty array =
+   * legacy strict mode.
+   */
+  registeredTools: ReadonlyArray<{ capabilities?: readonly string[] }> = [],
+): AgentReturnSelfCheck {
   const checks: AgentSelfCheckItem[] = [];
   const warnings: string[] = [];
   const limitations: string[] = [];
@@ -149,12 +164,26 @@ export function buildWorkerSelfCheck(workerResult: WorkerResult, checkedAt = new
     if (requirement.required === false) continue;
     const matchingArtifacts = workerResult.artifacts?.filter((artifact) => artifactMatchesRequirement(artifact, requirement)) ?? [];
     const hasMatchingArtifact = matchingArtifacts.length > 0;
+    // Pure-council demotion: if no registered tool advertises the
+    // capability the planner asked for, the worker had no way to
+    // produce the artifact and this should NOT fail the self-check
+    // — it's a planner mismatch, not a worker failure. Soft-pass with
+    // a clear reason so the reviewer can still flag it if context
+    // demands the artifact anyway.
+    const requirementProviderExists =
+      registeredTools.length === 0 ||
+      registeredTools.some((tool) =>
+        (tool.capabilities ?? []).some((c) => c === requirement.capability || c === "reads:*"),
+      );
+    const softPass = !hasMatchingArtifact && !requirementProviderExists;
     checks.push({
       name: `artifact_required:${requirement.kind}:${requirement.capability}`,
-      ok: hasMatchingArtifact,
+      ok: hasMatchingArtifact || softPass,
       reason: hasMatchingArtifact
         ? `${matchingArtifacts.length} artifact(s) satisfy ${requirement.kind}/${requirement.capability}.`
-        : `Missing required artifact ${requirement.kind}/${requirement.capability}.`,
+        : softPass
+          ? `Skipped: no registered tool advertises capability ${requirement.capability}; planner asked for an unprovisioned artifact.`
+          : `Missing required artifact ${requirement.kind}/${requirement.capability}.`,
     });
 
     for (const artifact of matchingArtifacts) {

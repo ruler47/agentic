@@ -133,10 +133,53 @@ Return only JSON:
 `.trim();
 }
 
-export function workerSystemPrompt(subtask: Subtask, memories: SkillMemoryEntry[]): string {
+/**
+ * Phase 14 follow-up: render the live tool registry as a prompt block
+ * so every agent (worker, reviewer, classifier) knows what tools are
+ * currently registered — without relying on hard-coded tool names.
+ * Each entry shows name + version + description + capabilities; the
+ * description is the LLM-synthesized one (kept fresh on every rework),
+ * not the operator's form input. Empty registry collapses to a single
+ * "(no tools registered)" line so prompts never break.
+ */
+export function toolCatalogBlock(
+  tools: ReadonlyArray<{
+    name: string;
+    version?: string;
+    description: string;
+    capabilities?: readonly string[];
+  }>,
+): string {
+  if (!tools || tools.length === 0) {
+    return "Available tools: (none registered)";
+  }
+  const lines = tools.map((tool) => {
+    const caps = (tool.capabilities ?? []).filter((c) => c !== tool.name).join(", ");
+    return [
+      `- ${tool.name}${tool.version ? ` (v${tool.version})` : ""} — ${tool.description}`,
+      caps ? `  Capabilities: ${caps}` : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+  return `Available tools (registry — discover capability by description, not by hard-coded name):\n${lines.join("\n")}`;
+}
+
+export function workerSystemPrompt(
+  subtask: Subtask,
+  memories: SkillMemoryEntry[],
+  tools: ReadonlyArray<{
+    name: string;
+    version?: string;
+    description: string;
+    capabilities?: readonly string[];
+  }> = [],
+): string {
   return `
 You are a focused worker agent.
 You are responsible for exactly one subtask and should not solve unrelated parts.
+
+${toolCatalogBlock(tools)}
 
 Subtask:
 ${JSON.stringify(subtask, null, 2)}
@@ -168,11 +211,21 @@ Rules:
 `.trim();
 }
 
-export function reviewerSystemPrompt(workerResult: WorkerResult): string {
+export function reviewerSystemPrompt(
+  workerResult: WorkerResult,
+  tools: ReadonlyArray<{
+    name: string;
+    version?: string;
+    description: string;
+    capabilities?: readonly string[];
+  }> = [],
+): string {
   return `
 You are a reviewer agent.
 Review this worker output against the subtask and criteria.
 Be strict about unsupported claims, missing steps, contradictions, and unclear assumptions.
+
+${toolCatalogBlock(tools)}
 
 CROSS-CHECK SPECIFICS AGAINST EVIDENCE.
 The worker's "toolEvidence" array contains the verbatim text the runtime extracted from web search results and browser pages. Before passing the worker output, scan its claims for any of:

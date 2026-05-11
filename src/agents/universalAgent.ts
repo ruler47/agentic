@@ -267,6 +267,14 @@ export type ToolBuildCouncilAdapter = {
    * update can't reach the metadata store.
    */
   updateChangeSummary?: (toolName: string, version: string, changeSummary: string) => Promise<void>;
+  /**
+   * Replace the canonical `description` for the active version. The
+   * council regenerates this from the FINAL source after every build
+   * / rework so other agents see an accurate shape-aware description
+   * when discovering tools. The operator's form input is only the
+   * initial hint; the LLM-written description is authoritative.
+   */
+  updateDescription?: (toolName: string, version: string, description: string) => Promise<void>;
   /** Invoke the registered tool with a QA-synthesized input. */
   runToolForQa: (toolName: string, input: Record<string, unknown>) => Promise<{
     ok: boolean;
@@ -1267,6 +1275,72 @@ export class UniversalAgent {
         startedAt: changeSummaryStartedAt.toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: elapsedMs(changeSummaryStartedAt),
+        payload: { error: error instanceof Error ? error.message : String(error) },
+      });
+    }
+
+    // ── Step 8.7: DESCRIPTION ────────────────────────────────────────
+    // Synthesize the canonical tool description from the FINAL source.
+    // Every other agent reads metadata.description when discovering
+    // tools — leaving the operator's hint in there means downstream
+    // agents see stale shape information after every rework. The
+    // description LLM call follows changeSummary so they share the
+    // same body excerpt.
+    const { descriptionPrompt } = await import("./toolBuildCouncil.js");
+    const descSpanId = createSpanId("council-description");
+    const descStartedAt = new Date();
+    try {
+      const descBody = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
+      const descMessages = descriptionPrompt({ context, toolBodyExcerpt: descBody });
+      await emit({
+        spanId: descSpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "description-synthesizer",
+        activity: "llm",
+        status: "started",
+        title: "Synthesizing canonical description",
+        startedAt: descStartedAt.toISOString(),
+        payload: { prompt: messagesToPromptText(descMessages) },
+      });
+      const descRaw = await this.llm.complete(descMessages, {
+        modelTier: "S",
+        signal: options.signal,
+      });
+      const description = sanitizeChangeSummary(descRaw);
+      if (description && adapter.updateDescription) {
+        await adapter.updateDescription(registered.toolName, registered.version, description);
+      }
+      await emit({
+        spanId: descSpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "description-synthesizer",
+        activity: "llm",
+        status: "completed",
+        title: "Description synthesized",
+        startedAt: descStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(descStartedAt),
+        payload: {
+          prompt: messagesToPromptText(descMessages),
+          output: descRaw,
+          description,
+        },
+      });
+    } catch (error) {
+      await emit({
+        spanId: descSpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "description-synthesizer",
+        activity: "llm",
+        status: "failed",
+        title: "Description synthesis failed — keeping operator hint",
+        detail: error instanceof Error ? error.message : String(error),
+        startedAt: descStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(descStartedAt),
         payload: { error: error instanceof Error ? error.message : String(error) },
       });
     }
@@ -2403,7 +2477,7 @@ export class UniversalAgent {
       );
 
       output = await this.llm.complete([
-        { role: "system", content: workerSystemPrompt(subtask, compactMemoriesForPrompt(memories)) },
+        { role: "system", content: workerSystemPrompt(subtask, compactMemoriesForPrompt(memories), this.tools.list()) },
         {
           role: "user",
           content: buildWorkerUserPrompt(originalTask, collectedEvidence.text, dependencyContext, revisionInstructions),
@@ -2467,7 +2541,7 @@ export class UniversalAgent {
       dependencyContextSnapshot: dependencyContext,
     };
     const selfCheckStartedAt = new Date();
-    const selfCheck = buildWorkerSelfCheck(workerResult, selfCheckStartedAt);
+    const selfCheck = buildWorkerSelfCheck(workerResult, selfCheckStartedAt, this.tools.list());
     await emit({
       spanId: createSpanId(`self-check-${subtask.id}`),
       parentSpanId: spanId,
@@ -4725,7 +4799,7 @@ export class UniversalAgent {
     let review: ReviewResult;
     try {
       const output = await this.llm.complete([
-        { role: "system", content: reviewerSystemPrompt(compactWorkerResultForPrompt(workerResult, promptBudget.reviewWorkerOutputChars)) },
+        { role: "system", content: reviewerSystemPrompt(compactWorkerResultForPrompt(workerResult, promptBudget.reviewWorkerOutputChars), this.tools.list()) },
         { role: "user", content: "Review the worker result now." },
       ], { modelTier });
       review = extractJson<ReviewResult>(output);
