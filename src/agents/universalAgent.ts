@@ -475,12 +475,14 @@ export class UniversalAgent {
     ensureNotCancelled();
     const proposals = await Promise.all(
       councilModels.map(async (modelId) => {
-        // Emit `started` first so the Trace Graph shows the node as
-        // in-flight while LM Studio is still streaming. The completed
-        // event below reuses the same spanId — buildTraceNodes merges
-        // them, with the final status overriding the started one.
+        // Build the prompt BEFORE emitting `started` so the in-progress
+        // card already has Input visible — the operator doesn't have
+        // to wait for the LLM to finish to see what was sent.
         const spanId = createSpanId("council-proposal");
-        const startedAt = new Date().toISOString();
+        const startedAtDate = new Date();
+        const startedAt = startedAtDate.toISOString();
+        const messages = brainstormPrompt(context, councilModels.length, config.brainstormSystemPrompt);
+        const promptText = messagesToPromptText(messages);
         await emit({
           spanId,
           parentSpanId: runSpanId,
@@ -490,9 +492,8 @@ export class UniversalAgent {
           status: "started",
           title: `Brainstorming proposal with ${modelId}`,
           startedAt,
-          payload: { modelId },
+          payload: { modelId, prompt: promptText },
         });
-        const messages = brainstormPrompt(context, councilModels.length, config.brainstormSystemPrompt);
         const text = await this.llm.complete(messages, { model: modelId, signal: options.signal });
         const parsed = parseProposalTail(text);
         await emit({
@@ -505,15 +506,13 @@ export class UniversalAgent {
           title: `Council proposal from ${modelId}`,
           startedAt,
           completedAt: new Date().toISOString(),
-          durationMs: 0,
-          // `prompt` captures what the LLM saw so the Trace inspector can
-          // explain "why did this model say X". `output` is the raw response.
+          durationMs: elapsedMs(startedAtDate),
           payload: {
             modelId,
             content: text,
             packageList: parsed.packages,
             externalDependencies: parsed.externalDependencies,
-            prompt: messagesToPromptText(messages),
+            prompt: promptText,
             output: text,
           },
         });
@@ -531,7 +530,10 @@ export class UniversalAgent {
     const ballots = await Promise.all(
       councilModels.map(async (voterId) => {
         const spanId = createSpanId("council-vote-cast");
-        const startedAt = new Date().toISOString();
+        const startedAtDate = new Date();
+        const startedAt = startedAtDate.toISOString();
+        const messages = votePrompt(context, proposals);
+        const promptText = messagesToPromptText(messages);
         await emit({
           spanId,
           parentSpanId: runSpanId,
@@ -541,9 +543,8 @@ export class UniversalAgent {
           status: "started",
           title: `Voting with ${voterId}`,
           startedAt,
-          payload: { voterModelId: voterId },
+          payload: { voterModelId: voterId, prompt: promptText },
         });
-        const messages = votePrompt(context, proposals);
         const text = await this.llm.complete(messages, { model: voterId, signal: options.signal });
         const ranking = parseRankingJson(text, proposals.length);
         await emit({
@@ -556,11 +557,11 @@ export class UniversalAgent {
           title: `Vote from ${voterId}`,
           startedAt,
           completedAt: new Date().toISOString(),
-          durationMs: 0,
+          durationMs: elapsedMs(startedAtDate),
           payload: {
             voterModelId: voterId,
             ranking,
-            prompt: messagesToPromptText(messages),
+            prompt: promptText,
             output: text,
           },
         });
@@ -607,6 +608,9 @@ export class UniversalAgent {
     // emit below reuses this same spanId so the Trace Graph shows one
     // implement node transitioning from blue → green.
     let currentCodeSpanId = createSpanId("council-implement");
+    const implementStartedAtDate = new Date();
+    const implementStartedAt = implementStartedAtDate.toISOString();
+    const implementPromptPreview = messagesToPromptText(implementPrompt(context, winner.proposal));
     await emit({
       spanId: currentCodeSpanId,
       parentSpanId: winnerSpanId,
@@ -615,8 +619,8 @@ export class UniversalAgent {
       activity: "llm",
       status: "started",
       title: `Drafting code with ${winner.winnerModelId}`,
-      startedAt: new Date().toISOString(),
-      payload: { modelId: winner.winnerModelId },
+      startedAt: implementStartedAt,
+      payload: { modelId: winner.winnerModelId, prompt: implementPromptPreview },
     });
 
     let implementError: unknown;
@@ -673,9 +677,9 @@ export class UniversalAgent {
       activity: "llm",
       status: "completed",
       title: `Code drafted by ${winner.winnerModelId}`,
-      startedAt: new Date().toISOString(),
+      startedAt: implementStartedAt,
       completedAt: new Date().toISOString(),
-      durationMs: 0,
+      durationMs: elapsedMs(implementStartedAtDate),
       payload: { files, raw: codeText, prompt: lastImplementPromptText, output: codeText },
     });
 
@@ -700,7 +704,10 @@ export class UniversalAgent {
             // a green node — that's the reviewer succeeding at finding
             // real problems, not failing.
             const spanId = createSpanId("council-review");
-            const startedAt = new Date().toISOString();
+            const startedAtDate = new Date();
+            const startedAt = startedAtDate.toISOString();
+            const messages = reviewPrompt(context, winner.proposal, formatFilesForPrompt(files));
+            const promptText = messagesToPromptText(messages);
             await emit({
               spanId,
               parentSpanId: codeAnchor,
@@ -710,10 +717,8 @@ export class UniversalAgent {
               status: "started",
               title: `Reviewing code with ${reviewerId}`,
               startedAt,
-              payload: { reviewerModelId: reviewerId },
+              payload: { reviewerModelId: reviewerId, prompt: promptText },
             });
-            const messages = reviewPrompt(context, winner.proposal, formatFilesForPrompt(files));
-            const promptText = messagesToPromptText(messages);
             try {
               const text = await this.llm.complete(messages, { model: reviewerId, signal: options.signal });
               const verdict = parseReviewVerdict(text);
@@ -727,7 +732,7 @@ export class UniversalAgent {
                 title: `Review from ${reviewerId}: ${verdict.verdict}`,
                 startedAt,
                 completedAt: new Date().toISOString(),
-                durationMs: 0,
+                durationMs: elapsedMs(startedAtDate),
                 payload: {
                   reviewerModelId: reviewerId,
                   ...verdict,
@@ -748,7 +753,7 @@ export class UniversalAgent {
                 detail: error instanceof Error ? error.message : String(error),
                 startedAt,
                 completedAt: new Date().toISOString(),
-                durationMs: 0,
+                durationMs: elapsedMs(startedAtDate),
                 payload: {
                   reviewerModelId: reviewerId,
                   skipped: true,
@@ -766,7 +771,10 @@ export class UniversalAgent {
       const findings = reviews.flatMap((r) => r.findings);
       if (attempt + 1 >= config.maxRevisionAttempts) break;
       const reviseSpanId = createSpanId("council-revise");
-      const reviseStartedAt = new Date().toISOString();
+      const reviseStartedAtDate = new Date();
+      const reviseStartedAt = reviseStartedAtDate.toISOString();
+      const reviseMessages = revisePrompt(context, winner.proposal, formatFilesForPrompt(files), findings);
+      const revisePromptText = messagesToPromptText(reviseMessages);
       await emit({
         spanId: reviseSpanId,
         parentSpanId: codeAnchor,
@@ -776,10 +784,8 @@ export class UniversalAgent {
         status: "started",
         title: `Revising code (attempt ${attempt + 1}) with ${winner.winnerModelId}`,
         startedAt: reviseStartedAt,
-        payload: { attempt: attempt + 1 },
+        payload: { attempt: attempt + 1, prompt: revisePromptText },
       });
-      const reviseMessages = revisePrompt(context, winner.proposal, formatFilesForPrompt(files), findings);
-      const revisePromptText = messagesToPromptText(reviseMessages);
       try {
         codeText = await this.llm.complete(reviseMessages, { model: winner.winnerModelId, signal: options.signal });
         const parsed = parseFilesJson(codeText);
@@ -798,7 +804,7 @@ export class UniversalAgent {
           detail: error instanceof Error ? error.message : String(error),
           startedAt: reviseStartedAt,
           completedAt: new Date().toISOString(),
-          durationMs: 0,
+          durationMs: elapsedMs(reviseStartedAtDate),
           payload: {
             attempt: attempt + 1,
             skipped: true,
@@ -818,7 +824,7 @@ export class UniversalAgent {
         title: `Code revised (attempt ${attempt + 1})`,
         startedAt: reviseStartedAt,
         completedAt: new Date().toISOString(),
-        durationMs: 0,
+        durationMs: elapsedMs(reviseStartedAtDate),
         payload: {
           attempt: attempt + 1,
           files,
@@ -857,7 +863,10 @@ export class UniversalAgent {
     const toolBodyExcerpt = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
     let qaInput: Record<string, unknown> = synthesizeQaInput(context);
     const qaInputSpanId = createSpanId("council-qa-input");
-    const qaInputStartedAt = new Date().toISOString();
+    const qaInputStartedAtDate = new Date();
+    const qaInputStartedAt = qaInputStartedAtDate.toISOString();
+    const qaInputMessages = synthesizeQaInputPrompt(context, toolBodyExcerpt);
+    const qaInputPromptText = messagesToPromptText(qaInputMessages);
     await emit({
       spanId: qaInputSpanId,
       parentSpanId: currentCodeSpanId,
@@ -867,9 +876,9 @@ export class UniversalAgent {
       status: "started",
       title: "Synthesizing QA tool input from schema",
       startedAt: qaInputStartedAt,
+      payload: { prompt: qaInputPromptText },
     });
     try {
-      const qaInputMessages = synthesizeQaInputPrompt(context, toolBodyExcerpt);
       const qaInputText = await this.llm.complete(qaInputMessages, {
         modelTier: "S",
         signal: options.signal,
@@ -886,9 +895,9 @@ export class UniversalAgent {
         title: "QA tool input synthesized",
         startedAt: qaInputStartedAt,
         completedAt: new Date().toISOString(),
-        durationMs: 0,
+        durationMs: elapsedMs(qaInputStartedAtDate),
         payload: {
-          prompt: messagesToPromptText(qaInputMessages),
+          prompt: qaInputPromptText,
           output: qaInputText,
           qaInput,
         },
@@ -905,8 +914,8 @@ export class UniversalAgent {
         detail: error instanceof Error ? error.message : String(error),
         startedAt: qaInputStartedAt,
         completedAt: new Date().toISOString(),
-        durationMs: 0,
-        payload: { error: error instanceof Error ? error.message : String(error), qaInput },
+        durationMs: elapsedMs(qaInputStartedAtDate),
+        payload: { prompt: qaInputPromptText, error: error instanceof Error ? error.message : String(error), qaInput },
       });
     }
 
@@ -917,7 +926,8 @@ export class UniversalAgent {
       // operator can see whether the tool actually ran (`completed`,
       // ok=true/false) or crashed at startup (`failed`).
       const toolCallSpanId = createSpanId("council-qa-tool-call");
-      const toolCallStartedAt = new Date().toISOString();
+      const toolCallStartedAtDate = new Date();
+      const toolCallStartedAt = toolCallStartedAtDate.toISOString();
       await emit({
         spanId: toolCallSpanId,
         parentSpanId: currentCodeSpanId,
@@ -936,11 +946,14 @@ export class UniversalAgent {
         type: "tool-build-qa-attempt",
         actor: registered.toolName,
         activity: "tool",
-        status: output.ok ? "completed" : "failed",
+        // status reflects the tool doing its job: a structured response
+        // with ok=false is still the tool functioning. `failed` here
+        // would mean the runtime crashed / the runner threw.
+        status: "completed",
         title: `${registered.toolName} returned ok=${output.ok}`,
         startedAt: toolCallStartedAt,
         completedAt: new Date().toISOString(),
-        durationMs: 0,
+        durationMs: elapsedMs(toolCallStartedAtDate),
         payload: { attempt: attempt + 1, qaInput, output },
       });
 
@@ -949,7 +962,10 @@ export class UniversalAgent {
       // producing a verdict — the verdict (passed / failed) is in the
       // title + payload so the user sees both signals.
       const qaSpanId = createSpanId("council-qa");
-      const qaStartedAt = new Date().toISOString();
+      const qaStartedAtDate = new Date();
+      const qaStartedAt = qaStartedAtDate.toISOString();
+      const qaMessages = qaOraclePrompt(context, output);
+      const qaPromptText = messagesToPromptText(qaMessages);
       await emit({
         spanId: qaSpanId,
         parentSpanId: toolCallSpanId,
@@ -959,10 +975,9 @@ export class UniversalAgent {
         status: "started",
         title: `QA oracle judging attempt ${attempt + 1}`,
         startedAt: qaStartedAt,
+        payload: { attempt: attempt + 1, qaInput, output, prompt: qaPromptText },
       });
       let oracle: { verdict: "passed" | "failed"; failures: string[] };
-      const qaMessages = qaOraclePrompt(context, output);
-      const qaPromptText = messagesToPromptText(qaMessages);
       let qaOracleText = "";
       try {
         qaOracleText = await this.llm.complete(qaMessages, { modelTier: "M", signal: options.signal });
@@ -979,7 +994,7 @@ export class UniversalAgent {
           detail: error instanceof Error ? error.message : String(error),
           startedAt: qaStartedAt,
           completedAt: new Date().toISOString(),
-          durationMs: 0,
+          durationMs: elapsedMs(qaStartedAtDate),
           payload: {
             attempt: attempt + 1,
             qaInput,
@@ -1003,7 +1018,7 @@ export class UniversalAgent {
         title: `QA attempt ${attempt + 1}: ${oracle.verdict}`,
         startedAt: qaStartedAt,
         completedAt: new Date().toISOString(),
-        durationMs: 0,
+        durationMs: elapsedMs(qaStartedAtDate),
         payload: {
           attempt: attempt + 1,
           qaInput,
@@ -1020,7 +1035,10 @@ export class UniversalAgent {
       if (attempt + 1 >= config.maxQaRepairAttempts) break;
 
       const repairSpanId = createSpanId("council-repair");
-      const repairStartedAt = new Date().toISOString();
+      const repairStartedAtDate = new Date();
+      const repairStartedAt = repairStartedAtDate.toISOString();
+      const repairMessages = repairPrompt(context, winner.proposal, formatFilesForPrompt(files), oracle.failures);
+      const repairPromptText = messagesToPromptText(repairMessages);
       await emit({
         spanId: repairSpanId,
         parentSpanId: qaSpanId,
@@ -1030,10 +1048,8 @@ export class UniversalAgent {
         status: "started",
         title: `Repairing code (attempt ${attempt + 1}) with ${winner.winnerModelId}`,
         startedAt: repairStartedAt,
-        payload: { attempt: attempt + 1, failures: oracle.failures },
+        payload: { attempt: attempt + 1, failures: oracle.failures, prompt: repairPromptText },
       });
-      const repairMessages = repairPrompt(context, winner.proposal, formatFilesForPrompt(files), oracle.failures);
-      const repairPromptText = messagesToPromptText(repairMessages);
       try {
         codeText = await this.llm.complete(repairMessages, { model: winner.winnerModelId, signal: options.signal });
         const parsed = parseFilesJson(codeText);
@@ -1053,7 +1069,7 @@ export class UniversalAgent {
           title: `Code repaired (attempt ${attempt + 1})`,
           startedAt: repairStartedAt,
           completedAt: new Date().toISOString(),
-          durationMs: 0,
+          durationMs: elapsedMs(repairStartedAtDate),
           payload: {
             attempt: attempt + 1,
             files,
@@ -1075,7 +1091,7 @@ export class UniversalAgent {
           detail: error instanceof Error ? error.message : String(error),
           startedAt: repairStartedAt,
           completedAt: new Date().toISOString(),
-          durationMs: 0,
+          durationMs: elapsedMs(repairStartedAtDate),
           payload: {
             attempt: attempt + 1,
             skipped: true,

@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 import type { TraceNode } from "@/features/trace/buildTraceNodes";
 import { modelTierForNode } from "@/features/trace/buildTraceNodes";
 import { ArtifactGallery } from "@/components/ArtifactPreview";
@@ -60,7 +62,8 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
           <span className="text-app-text-muted">{node.activity}</span>
           <span className="font-mono text-app-text-muted">{node.actor}</span>
           {tier ? <GenericBadge tone="muted">tier {tier}</GenericBadge> : null}
-          {typeof node.durationMs === "number" ? (
+          <LiveDuration node={node} />
+          {typeof node.durationMs === "number" && node.status !== "started" ? (
             <span className="font-mono text-app-text-muted">{formatDuration(node.durationMs)}</span>
           ) : null}
         </div>
@@ -371,6 +374,29 @@ function statusTone(status: string): "ok" | "running" | "danger" | "muted" {
   if (status === "failed") return "danger";
   if (status === "started") return "running";
   return "muted";
+}
+
+/**
+ * Renders a live ticking duration for spans still in `started` status.
+ * Once the span transitions to completed/failed the parent header shows
+ * the final durationMs (computed on the backend); this component only
+ * fires while the work is in-flight.
+ */
+function LiveDuration({ node }: { node: TraceNode }) {
+  const isRunning = node.status === "started";
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isRunning) return;
+    const id = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, [isRunning]);
+  if (!isRunning) return null;
+  const startedMs = new Date(node.startedAt).getTime();
+  if (!Number.isFinite(startedMs)) return null;
+  const elapsed = Math.max(0, now - startedMs);
+  return (
+    <span className="font-mono text-app-info">{formatDuration(elapsed)} (running)</span>
+  );
 }
 
 // ── Council event details ─────────────────────────────────────────────

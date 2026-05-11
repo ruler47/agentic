@@ -166,9 +166,27 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/run") {
       const body = await readJsonBody(request);
-      const result = await tool.run(asRecord(body.input), asRecord(body.context));
-      response.statusCode = result.ok ? 200 : 500;
-      response.end(JSON.stringify(result));
+      try {
+        const result = await tool.run(asRecord(body.input), asRecord(body.context));
+        // ALWAYS return HTTP 200 when tool.run() returned a structured
+        // response, regardless of result.ok. ok=false is a normal
+        // domain-level signal ("the tool reports the action did not
+        // succeed") — not an HTTP error. Returning 500 here caused the
+        // runner to drop the structured payload and report
+        // "External tool runtime call failed with HTTP 500", masking
+        // the actual reason from QA + repair loops.
+        response.statusCode = 200;
+        response.end(JSON.stringify(result));
+      } catch (err) {
+        // tool.run threw — turn it into a structured ok=false so the
+        // oracle can still judge it and the repair loop can act on
+        // the error message rather than getting "HTTP 500".
+        response.statusCode = 200;
+        response.end(JSON.stringify({
+          ok: false,
+          content: \`Tool threw: \${err instanceof Error ? err.message : String(err)}\`,
+        }));
+      }
       return;
     }
 
