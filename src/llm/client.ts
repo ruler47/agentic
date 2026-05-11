@@ -23,7 +23,13 @@ export class LlmClient {
 
   async complete(
     messages: Message[],
-    options?: { temperature?: number; modelTier?: ModelTier; model?: string },
+    options?: {
+      temperature?: number;
+      modelTier?: ModelTier;
+      model?: string;
+      /** Aborts the underlying fetch when the operator cancels the run. */
+      signal?: AbortSignal;
+    },
   ): Promise<string> {
     // Phase 14: explicit `model` override bypasses tier resolution so the
     // tool-build council can address each peer model directly. Falls
@@ -37,6 +43,11 @@ export class LlmClient {
     const errors: string[] = [];
 
     for (const model of attempts) {
+      // Short-circuit before each attempt so a cancelled run doesn't
+      // also burn the fallback candidates.
+      if (options?.signal?.aborted) {
+        throw new Error("LLM request cancelled by caller");
+      }
       try {
         const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
           method: "POST",
@@ -46,6 +57,7 @@ export class LlmClient {
             messages,
             temperature: options?.temperature ?? this.config.temperature,
           }),
+          signal: options?.signal,
         });
 
         const rawBody = await response.text();

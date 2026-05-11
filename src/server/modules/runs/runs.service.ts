@@ -126,6 +126,15 @@ export class RunsService implements OnApplicationBootstrap {
    */
   private readonly recentSubmissions = new Map<string, { runId: string; expiresAt: number }>();
 
+  /**
+   * AbortController per in-flight run. Lets `cancel()` interrupt the
+   * agent loop (and any underlying LLM HTTP request) immediately
+   * instead of only suppressing event emission while the agent keeps
+   * burning tokens. Entries are deleted when the run reaches a
+   * terminal state.
+   */
+  private readonly runAbortControllers = new Map<string, AbortController>();
+
   constructor(
     @Inject(RUN_STORE) private readonly runs: RunStore,
     @Inject(UNIVERSAL_AGENT) private readonly agent: UniversalAgent,
@@ -560,6 +569,15 @@ export class RunsService implements OnApplicationBootstrap {
       parseOptionalReason(rawBody) ??
       "Cancelled by operator. In-flight LLM/tool calls may finish, but their result will not replace this terminal state.";
     await this.runs.cancel(id, reason);
+    // Trip the AbortController so the agent loop unblocks immediately
+    // — without this the council pipeline would keep firing LLM
+    // requests for the remaining steps, even though their events are
+    // silently dropped by the cancelled-status guard.
+    const controller = this.runAbortControllers.get(id);
+    if (controller && !controller.signal.aborted) {
+      controller.abort(new Error(`Run ${id} cancelled by operator`));
+    }
+    this.runAbortControllers.delete(id);
     await this.audit.record({
       instanceId: run.instanceId,
       actorId: "user-admin",
@@ -978,6 +996,13 @@ export class RunsService implements OnApplicationBootstrap {
       summary: `Run started: ${task.slice(0, 160)}`,
     });
 
+    // One AbortController per run, owned by RunsService. Tripped by
+    // `cancel()`; cleared in the finally block below regardless of
+    // outcome. The agent passes this signal into LlmClient.complete
+    // and checks it between council phases.
+    const runAbort = new AbortController();
+    this.runAbortControllers.set(id, runAbort);
+
     try {
       const [groupProfile, requesterUser] = await Promise.all([
         this.groupProfiles?.get().catch(() => undefined) ?? Promise.resolve(undefined),
@@ -1012,6 +1037,7 @@ export class RunsService implements OnApplicationBootstrap {
         workLedgerStore: this.workLedger,
         evidenceLedgerStore: this.evidenceLedger,
         runRetrospectiveStore: this.retrospectives,
+        signal: runAbort.signal,
         runId: id,
         instanceId: run?.instanceId ?? "group-local",
         requesterUserId: run?.requesterUserId ?? "user-admin",
@@ -1287,6 +1313,13 @@ export class RunsService implements OnApplicationBootstrap {
         summary: `Run failed: ${message.slice(0, 200)}`,
         payload: { error: message },
       });
+    } finally {
+      // Always release the controller — if the operator cancels mid-run
+      // we already cleared it in cancel(); if the run finished naturally
+      // we clear it here. Leaving stale entries would slowly leak
+      // controllers + abort-signal subscriptions.
+      const existing = this.runAbortControllers.get(id);
+      if (existing === runAbort) this.runAbortControllers.delete(id);
     }
   }
 

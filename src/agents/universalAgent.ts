@@ -176,6 +176,14 @@ type RunOptions = {
    * evidence rather than calling the tools again.
    */
   resumeFrom?: import("./runResumption.js").RunResumptionState;
+  /**
+   * When the operator cancels a run via POST /api/runs/:id/cancel, the
+   * server aborts this signal. The agent (and the council loop in
+   * particular) checks `signal.aborted` between LLM calls and passes
+   * the signal to `LlmClient.complete` so in-flight HTTP requests
+   * unblock immediately instead of letting the model finish.
+   */
+  signal?: AbortSignal;
 };
 
 type BaseToolExecutionContext = Partial<Omit<ToolExecutionContext, "toolName" | "now">>;
@@ -454,11 +462,21 @@ export class UniversalAgent {
     //   - lastQaSpanId           → parent of repair
     // and reassign them as the council moves through its phases.
 
+    // Helper used between phases to bail out as soon as the operator
+    // cancels the run. Each LLM call also gets the same signal so an
+    // in-flight HTTP request to the model unblocks immediately.
+    const ensureNotCancelled = () => {
+      if (options.signal?.aborted) {
+        throw new Error("Tool-build council run cancelled by operator");
+      }
+    };
+
     // ── Step 1: BRAINSTORM ────────────────────────────────────────────
+    ensureNotCancelled();
     const proposals = await Promise.all(
       councilModels.map(async (modelId) => {
         const messages = brainstormPrompt(context, councilModels.length, config.brainstormSystemPrompt);
-        const text = await this.llm.complete(messages, { model: modelId });
+        const text = await this.llm.complete(messages, { model: modelId, signal: options.signal });
         const parsed = parseProposalTail(text);
         await emit({
           spanId: createSpanId("council-proposal"),
@@ -492,10 +510,11 @@ export class UniversalAgent {
     );
 
     // ── Step 2: VOTE ─────────────────────────────────────────────────
+    ensureNotCancelled();
     const ballots = await Promise.all(
       councilModels.map(async (voterId) => {
         const messages = votePrompt(context, proposals);
-        const text = await this.llm.complete(messages, { model: voterId });
+        const text = await this.llm.complete(messages, { model: voterId, signal: options.signal });
         const ranking = parseRankingJson(text, proposals.length);
         await emit({
           spanId: createSpanId("council-vote-cast"),
@@ -556,12 +575,14 @@ export class UniversalAgent {
     let implementError: unknown;
     let lastImplementPromptText = "";
     for (let candidateIdx = 0; candidateIdx < implementCandidates.length; candidateIdx += 1) {
+      ensureNotCancelled();
       const candidate = implementCandidates[candidateIdx]!;
       try {
         const implementMessages = implementPrompt(context, candidate.proposal);
         lastImplementPromptText = messagesToPromptText(implementMessages);
         codeText = await this.llm.complete(implementMessages, {
           model: candidate.winnerModelId,
+          signal: options.signal,
         });
         const parsed = parseFilesJson(codeText);
         if (parsed.length === 0) throw new Error("Implement step returned no parsable files.");
@@ -620,6 +641,7 @@ export class UniversalAgent {
     // whether the tool is usable.
     const reviewerIds = councilModels.filter((id) => id !== winner.winnerModelId);
     for (let attempt = 0; attempt < config.maxRevisionAttempts; attempt += 1) {
+      ensureNotCancelled();
       const codeAnchor = currentCodeSpanId;
       const reviews = (
         await Promise.all(
@@ -627,7 +649,7 @@ export class UniversalAgent {
             const messages = reviewPrompt(context, winner.proposal, formatFilesForPrompt(files));
             const promptText = messagesToPromptText(messages);
             try {
-              const text = await this.llm.complete(messages, { model: reviewerId });
+              const text = await this.llm.complete(messages, { model: reviewerId, signal: options.signal });
               const verdict = parseReviewVerdict(text);
               await emit({
                 spanId: createSpanId("council-review"),
@@ -680,7 +702,7 @@ export class UniversalAgent {
       const reviseMessages = revisePrompt(context, winner.proposal, formatFilesForPrompt(files), findings);
       const revisePromptText = messagesToPromptText(reviseMessages);
       try {
-        codeText = await this.llm.complete(reviseMessages, { model: winner.winnerModelId });
+        codeText = await this.llm.complete(reviseMessages, { model: winner.winnerModelId, signal: options.signal });
         const parsed = parseFilesJson(codeText);
         if (parsed.length > 0) files = parsed;
       } catch (error) {
@@ -742,6 +764,7 @@ export class UniversalAgent {
     // tool — break out of the loop and surface a non-passed status.
     let qaPassed = false;
     for (let attempt = 0; attempt < config.maxQaRepairAttempts; attempt += 1) {
+      ensureNotCancelled();
       const qaInput = synthesizeQaInput(context);
       const output = await adapter.runToolForQa(registered.toolName, qaInput);
       let oracle: { verdict: "passed" | "failed"; failures: string[] };
@@ -750,7 +773,7 @@ export class UniversalAgent {
       const qaPromptText = messagesToPromptText(qaMessages);
       let qaOracleText = "";
       try {
-        qaOracleText = await this.llm.complete(qaMessages, { modelTier: "M" });
+        qaOracleText = await this.llm.complete(qaMessages, { modelTier: "M", signal: options.signal });
         oracle = parseQaOracle(qaOracleText);
       } catch (error) {
         await emit({
@@ -804,7 +827,7 @@ export class UniversalAgent {
       const repairMessages = repairPrompt(context, winner.proposal, formatFilesForPrompt(files), oracle.failures);
       const repairPromptText = messagesToPromptText(repairMessages);
       try {
-        codeText = await this.llm.complete(repairMessages, { model: winner.winnerModelId });
+        codeText = await this.llm.complete(repairMessages, { model: winner.winnerModelId, signal: options.signal });
         const parsed = parseFilesJson(codeText);
         if (parsed.length === 0) throw new Error("Repair step returned no parsable files.");
         files = parsed;

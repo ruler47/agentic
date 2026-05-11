@@ -13,11 +13,17 @@ import type { AgentEvent, Message } from "../src/types.js";
  */
 
 class ScriptedLlm implements Pick<LlmClient, "complete"> {
-  public calls: Array<{ messages: Message[]; model?: string }> = [];
+  public calls: Array<{ messages: Message[]; model?: string; signal?: AbortSignal }> = [];
   constructor(private readonly script: (call: { model?: string; index: number }) => string) {}
-  async complete(messages: Message[], options?: { model?: string; modelTier?: string }): Promise<string> {
+  async complete(
+    messages: Message[],
+    options?: { model?: string; modelTier?: string; signal?: AbortSignal },
+  ): Promise<string> {
+    if (options?.signal?.aborted) {
+      throw new Error("LLM request cancelled by caller");
+    }
     const index = this.calls.length;
-    this.calls.push({ messages, model: options?.model });
+    this.calls.push({ messages, model: options?.model, signal: options?.signal });
     return this.script({ model: options?.model, index });
   }
 }
@@ -170,6 +176,67 @@ test("runToolBuildCouncil orchestrates brainstorm → vote → implement → rev
     orphans.map((event) => event.type),
     [],
     "every non-root council event must have a parentSpanId that points at an emitted span",
+  );
+});
+
+test("runToolBuildCouncil stops issuing LLM calls once the abort signal fires", async () => {
+  // Operator cancels the run after the brainstorm phase. The council
+  // should bail before voting / implement / review and not burn any
+  // further LLM tokens. Pre-fix the loop kept running through every
+  // phase and only the events were suppressed.
+  const controller = new AbortController();
+  let callCount = 0;
+  const llm = new ScriptedLlm(() => {
+    callCount += 1;
+    // After the first call (one of the two brainstorm proposals), the
+    // operator clicks Cancel. The next council step should refuse to
+    // issue any further LLM requests.
+    if (callCount === 1) controller.abort();
+    return [
+      "Stub proposal.",
+      `{"packages":[],"externalDependencies":[]}`,
+    ].join("\n");
+  });
+
+  const adapter: ToolBuildCouncilAdapter = {
+    async resolveConfig() {
+      return { tier: "L", maxRevisionAttempts: 3, maxQaRepairAttempts: 5, qaTimeoutMs: 30_000 };
+    },
+    async resolveCouncilModels() {
+      return ["council-a", "council-b"];
+    },
+    async registerToolFromFiles() {
+      throw new Error("should not be called on cancelled run");
+    },
+    async runToolForQa() {
+      throw new Error("should not be called on cancelled run");
+    },
+  };
+
+  const agent = new UniversalAgent(
+    llm as unknown as LlmClient,
+    new SkillMemory(),
+    new ToolRegistry(),
+  );
+
+  await assert.rejects(
+    agent.run("cancel-test", {
+      runId: "run-cancel",
+      signal: controller.signal,
+      toolBuildContext: { name: "demo.tool", description: "stub", qaCriteria: [] },
+      toolBuildCouncil: adapter,
+    }),
+    /cancelled/i,
+    "agent run must reject with a cancellation error",
+  );
+
+  // 2 brainstorm calls (run concurrently) MAY both complete before the
+  // signal trip is observed — they're already in flight when the abort
+  // fires. What matters is that we do NOT progress to the vote / winner
+  // / implement phases (which would each issue more LLM calls).
+  assert.ok(
+    llm.calls.length <= 2,
+    `expected at most 2 LLM calls (brainstorm pair), saw ${llm.calls.length}`,
   );
 });
 
