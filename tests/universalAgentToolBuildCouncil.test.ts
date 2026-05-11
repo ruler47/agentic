@@ -45,10 +45,23 @@ function scriptedCouncil() {
       return `{"ranking":[1,0]}`;
     }
     if (index === 4) {
+      // TB-005: model emits one Tool body file at the canonical location.
+      // The adapter overlays the scaffold around it on disk.
       return JSON.stringify({
         files: [
-          { path: "src/server.ts", content: "console.log('hello council');" },
-          { path: "package.json", content: '{"name":"demo.tool","version":"1.0.0"}' },
+          {
+            path: "src/tools/generated/demo_toolTool.ts",
+            content:
+              'import { Tool, ToolExecutionContext, ToolInput, ToolResult } from "../tool.js";\n' +
+              'export const tool: Tool = {\n' +
+              '  name: "demo.tool",\n' +
+              '  version: "1.0.0",\n' +
+              '  description: "echo input back",\n' +
+              '  capabilities: ["demo.tool"],\n' +
+              '  startupMode: "on-demand",\n' +
+              '  async run(input: ToolInput): Promise<ToolResult> { return { ok: true, content: String(input.text ?? "") }; },\n' +
+              '};\n',
+          },
         ],
       });
     }
@@ -137,7 +150,7 @@ test("runToolBuildCouncil orchestrates brainstorm → vote → implement → rev
   // Tool was actually registered.
   assert.equal(ctx.registered.length, 1);
   assert.equal(ctx.registered[0]!.toolName, "demo.tool");
-  assert.equal(ctx.registered[0]!.fileCount, 2);
+  assert.equal(ctx.registered[0]!.fileCount, 1);
 
   // Final answer mentions success.
   assert.match(result.finalAnswer, /Tool \*\*demo\.tool\*\* v1\.0\.0/);

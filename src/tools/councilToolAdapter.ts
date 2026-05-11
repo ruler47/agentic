@@ -10,6 +10,11 @@ import type { CodingCouncilStore } from "../settings/codingCouncilStore.js";
 import type { ModelTierSettingsStore } from "../settings/modelTierSettings.js";
 import type { ToolMetadataStore } from "./toolMetadataStore.js";
 import type { ToolBuildCouncilAdapter } from "../agents/universalAgent.js";
+import {
+  COUNCIL_TOOL_BODY_PATH,
+  extractToolBody,
+  renderCouncilScaffold,
+} from "../agents/councilScaffold.js";
 
 export type CouncilToolAdapterDeps = {
   instanceId?: string;
@@ -51,14 +56,30 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     metadata: { description: string; version?: string; secretHandle?: string },
   ): Promise<{ toolName: string; version: string }> {
     const version = metadata.version ?? (await this.nextVersionFor(toolName));
-    const baseDir = join(this.toolsRoot, sanitizeName(toolName), version);
+    const sanitized = sanitizeName(toolName);
+    const baseDir = join(this.toolsRoot, sanitized, version);
 
-    // 1. Write source-bundle files to disk so tool-package-runner can pick
-    //    them up. Tool authors may emit nested paths (e.g. src/server.ts),
-    //    so create parent dirs as needed.
-    for (const file of files) {
-      const safe = sanitizeRelativePath(file.path);
-      const target = join(baseDir, safe);
+    // 1. Extract the model's Tool body and overlay it onto the canonical
+    //    source-bundle scaffold (index.ts, runtime/server.ts, package.json,
+    //    tsconfig.json, src/tools/tool.ts). The model only writes ONE file:
+    //    the Tool definition itself — the runtime expects a precise layout
+    //    that we own here instead of asking the model to reproduce.
+    const toolBody = extractToolBody(files, sanitized);
+    if (!toolBody) {
+      throw new Error(
+        `Council emitted no recognisable Tool body for ${toolName}. ` +
+          `Expected ${COUNCIL_TOOL_BODY_PATH(sanitized)} or any .ts file with \`export const tool\`.`,
+      );
+    }
+
+    const scaffold = renderCouncilScaffold({
+      toolName,
+      sanitizedName: sanitized,
+      version,
+      toolBody,
+    });
+    for (const file of scaffold) {
+      const target = join(baseDir, sanitizeRelativePath(file.path));
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, file.content, "utf8");
     }
@@ -72,7 +93,7 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
       description: metadata.description,
       capabilities: [toolName, "council-built"],
       startupMode: "on-demand" as const,
-      modulePath: join(baseDir, "src/server.ts"),
+      modulePath: join(baseDir, "index.ts"),
       requiredSecretHandles: metadata.secretHandle ? [metadata.secretHandle] : undefined,
       packageManifest: {
         schemaVersion: "agentic.tool-package.v1" as const,
@@ -81,7 +102,7 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
         description: metadata.description,
         capabilities: [toolName, "council-built"],
         startupMode: "on-demand" as const,
-        package: { type: "source-bundle" as const, ref: `${sanitizeName(toolName)}/${version}` },
+        package: { type: "source-bundle" as const, ref: `${sanitized}/${version}` },
       },
       changeSummary: `Council-built version ${version}.`,
     };

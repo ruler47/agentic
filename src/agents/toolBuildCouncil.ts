@@ -204,6 +204,33 @@ You are a QA oracle. Given a tool's actual output and the operator's acceptance 
 decide whether the output satisfies every criterion. Reply with JSON:
 {"verdict": "passed"|"failed", "failures": ["criterion: why it's not met", ...]}.`;
 
+/** Shown to council members so they emit code matching the runtime contract. */
+const TOOL_INTERFACE_SNIPPET = `\
+export type ToolResult = { ok: boolean; content: string; data?: unknown };
+export type ToolInput = Record<string, unknown>;
+export type ToolExecutionContext = {
+  toolName?: string; now?: Date; caller?: string; signal?: AbortSignal;
+  logger?: { info(msg: string, data?: unknown): void; warn(msg: string, data?: unknown): void; error(msg: string, data?: unknown): void };
+  resolveSecret?: (handle: string) => Promise<string | undefined>;
+  resolveConfiguration?: (key: string, toolName?: string) => Promise<string | undefined>;
+  [key: string]: unknown;
+};
+export type Tool = {
+  name: string;
+  version: string;
+  description: string;
+  capabilities: string[];
+  startupMode?: "on-demand" | "always-on" | "ephemeral";
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  healthcheck?: () => Promise<{ ok: boolean; detail: string }> | { ok: boolean; detail: string };
+  run: (input: ToolInput, ctx?: ToolExecutionContext) => Promise<ToolResult> | ToolResult;
+};`;
+
+function sanitizeForFileName(value: string): string {
+  return (value.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 120) || "council_tool");
+}
+
 export function brainstormPrompt(
   context: ToolBuildContext,
   councilSize: number,
@@ -276,6 +303,8 @@ export function implementPrompt(
   context: ToolBuildContext,
   winner: CouncilProposal,
 ): Message[] {
+  const sanitized = sanitizeForFileName(context.name);
+  const targetPath = `src/tools/generated/${sanitized}Tool.ts`;
   const user = [
     `Tool name: ${context.name}`,
     `User task: ${context.description}`,
@@ -291,14 +320,24 @@ export function implementPrompt(
     "Winning proposal (your own):",
     winner.content.trim(),
     "",
-    "Now produce the production TypeScript module that implements this tool exactly per",
-    "the proposal. Use the docker-tool-service envelope: export an HTTP server that",
-    "speaks /describe, /health, /run, /service/start, /service/stop. Imports must stick",
-    "to declared packages.",
+    "Produce ONE TypeScript file: the Tool definition itself. The runtime",
+    "automatically wraps it with an HTTP server, type definitions, package.json,",
+    "and tsconfig.json — DO NOT emit those. The file must export a `tool` const",
+    "matching this exact interface:",
+    "",
+    TOOL_INTERFACE_SNIPPET,
+    "",
+    "Constraints on your file:",
+    `  1. Path MUST be: ${targetPath}`,
+    `  2. First line: import { Tool, ToolExecutionContext, ToolInput, ToolResult } from "../tool.js";`,
+    `  3. Export: \`export const tool: Tool = { name: "${context.name}", version: "1.0.0", ... };\``,
+    "  4. tool.run must return { ok: boolean; content: string; data?: unknown }.",
+    "  5. Use ONLY Node built-ins (node:http, node:fs, node:path, fetch, etc.).",
+    "     Do NOT import any npm package — there is no `node_modules` to install from.",
+    "  6. Keep the file self-contained — no top-level side effects, no helper files.",
     "",
     "Reply with a SINGLE JSON object only:",
-    `{"files":[{"path":"src/server.ts","content":"…"},{"path":"package.json","content":"…"},`,
-    `         {"path":"Dockerfile","content":"…"}]}`,
+    `{"files":[{"path":"${targetPath}","content":"…the file body…"}]}`,
     "Do not wrap the JSON in backticks. Do not add commentary.",
   ]
     .filter(Boolean)
@@ -357,8 +396,9 @@ export function revisePrompt(
     ...reviewFindings.map((f) => `  - ${f}`),
     "",
     "Apply targeted fixes that satisfy every finding without regressing prior",
-    "behaviour. Keep the same docker-tool-service envelope. Reply with the same",
-    `JSON shape as in the initial implement call: {"files":[{"path","content"}, …]}.`,
+    "behaviour. Emit the FULL revised tool body (same single file at the same",
+    `path), wrapped in the same JSON envelope: {"files":[{"path","content"}]}.`,
+    "Do not re-emit scaffolding (index.ts, runtime/server.ts, package.json, etc).",
   ].join("\n");
   return [
     { role: "system", content: COUNCIL_SYSTEM_PROMPT_DEFAULT },
@@ -412,8 +452,10 @@ export function repairPrompt(
     ...qaFailures.map((f) => `  - ${f}`),
     "",
     "Apply targeted fixes that make every criterion pass without breaking the others.",
-    "Keep the docker-tool-service envelope. Reply with the same JSON files object as",
-    "before. Do not change the tool name.",
+    "Emit the FULL revised tool body (same single file at the same path), wrapped",
+    `in the same JSON envelope: {"files":[{"path","content"}]}. Do not re-emit`,
+    "scaffolding (index.ts, runtime/server.ts, package.json, etc). Do not change",
+    "the tool name.",
   ].join("\n");
   return [
     { role: "system", content: COUNCIL_SYSTEM_PROMPT_DEFAULT },

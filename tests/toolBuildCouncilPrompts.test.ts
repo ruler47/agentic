@@ -74,7 +74,10 @@ test("implementPrompt includes proposal text and asks for files JSON", () => {
   const msgs = implementPrompt(ctx, winner);
   const user = msgs[1].content;
   assert.match(user, /Architecture: \.\.\./);
-  assert.match(user, /docker-tool-service envelope/);
+  // TB-005: prompt now pins the exact path the model should emit instead of
+  // asking for free-form server/Dockerfile shapes.
+  assert.match(user, /src\/tools\/generated\//);
+  assert.match(user, /export const tool: Tool/);
   assert.match(user, /"files":\[/);
 });
 
@@ -112,5 +115,8 @@ test("repairPrompt enumerates each QA failure", () => {
   const user = msgs[1].content;
   assert.match(user, /only 12 entries returned/);
   assert.match(user, /missing humidity field/);
-  assert.match(user, /docker-tool-service envelope/);
+  // TB-005: scaffolding is owned by the adapter; the prompt asks the
+  // model not to re-emit it.
+  assert.match(user, /Do not re-emit/);
+  assert.match(user, /scaffolding/);
 });
