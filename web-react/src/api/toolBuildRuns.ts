@@ -59,9 +59,13 @@ export function useCreateToolBuildRun() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: ToolBuildRunInput) =>
+      // apiFetch handles JSON.stringify internally — passing a string
+      // here would double-encode the payload and the server would see
+      // `"{\"name\":...}"` (a JSON string containing JSON) instead of
+      // an object, then reject with "Unexpected token ... is not valid JSON".
       apiFetch<{ run: AgentRunRecord }>("/api/tool-build-runs", {
         method: "POST",
-        body: JSON.stringify(input),
+        body: input,
       }).then((data) => data.run),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: TOOL_BUILD_RUNS_KEY });
