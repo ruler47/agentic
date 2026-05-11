@@ -284,14 +284,22 @@ const providers: Provider[] = [
   // OnModuleInit hooks.
   {
     provide: TOOL_REGISTRY,
-    inject: [TOOL_METADATA_STORE, PG_POOL, SECRET_HANDLE_STORE, TOOL_RUNTIME_SETTINGS],
+    inject: [TOOL_METADATA_STORE, PG_POOL, SECRET_HANDLE_STORE, TOOL_RUNTIME_SETTINGS, APP_ENV],
     useFactory: async (
       metadata: ToolMetadataStore | undefined,
       pool: PgPool | undefined,
       secrets: SecretHandleStore | undefined,
       runtimeSettings: { resolve(toolName: string, key: string): Promise<string | undefined> } | undefined,
+      env: import("../config/env.js").AppEnv,
     ) => {
       const registry = new ToolRegistry();
+      // The hard-coded built-ins (web.search, file.read/write, chart.generate,
+      // market.timeseries, telegram.bot, browser.operate) skip registration
+      // when BUILTIN_TOOLS=disabled — operators running a "pure council"
+      // registry want only the council-built tools visible. The metadata
+      // rows for previously-synced built-ins are cleaned up below via the
+      // explicit DELETE in db/migrate.ts (one-shot, idempotent).
+      if (env.builtinToolsEnabled) {
       registry.register(new WebSearchTool());
       // Phase 13: every built-in tool is now backed by a dockerized
       // tool service. The runtime forwards each call to the matching
@@ -363,6 +371,7 @@ const providers: Provider[] = [
         },
       }));
       registry.register(new BrowserOperateHttpTool());
+      } // end if (env.builtinToolsEnabled)
       if (metadata) {
         await metadata.syncBuiltins(registry.list());
         registry.setUsageReporter((event) =>

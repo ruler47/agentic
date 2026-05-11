@@ -16,6 +16,15 @@ export type AppEnv = {
   toolServiceAutoRestartOnFailedHeartbeat: boolean;
   toolServiceMaxAutoRestarts: number;
   toolSourceBundleHttpRunnerEnabled: boolean;
+  /**
+   * Phase 14 follow-up: gate the legacy "always-on" built-in tools
+   * (web.search, file.read/write, chart.generate, browser.operate,
+   * telegram.bot, market.timeseries) on a single env flag so an
+   * operator can run a "pure council" registry where the only tools
+   * are the ones the agent council has built itself. Defaults to
+   * `enabled` for back-compat; set BUILTIN_TOOLS=disabled to omit.
+   */
+  builtinToolsEnabled: boolean;
   internalBaseUrl?: string;
   /**
    * Phase 13: callback base URL handed to dockerized tool services so
@@ -53,6 +62,7 @@ export function readEnv(): AppEnv {
     toolSourceBundleHttpRunnerEnabled:
       process.env.TOOL_SOURCE_BUNDLE_HTTP_RUNNER !== "disabled" &&
       process.env.TOOL_SOURCE_BUNDLE_RUNNER !== "in-process",
+    builtinToolsEnabled: process.env.BUILTIN_TOOLS !== "disabled",
     internalBaseUrl: process.env.AGENTIC_INTERNAL_BASE_URL,
     toolCallbackBaseUrl: process.env.TOOL_CALLBACK_BASE_URL,
   };

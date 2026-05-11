@@ -27,6 +27,9 @@ services:
       MARKET_TIMESERIES_BASE_URL: http://market-timeseries:8080
       TELEGRAM_BOT_RUNNER: docker
       TELEGRAM_BOT_BASE_URL: http://telegram-bot:8080
+      # Pure-council registry: skip hard-coded built-ins. The only tools
+      # visible to the agent are the ones the council has built itself.
+      BUILTIN_TOOLS: disabled
     ports:
       - "3000:3000"
     volumes:
