@@ -494,6 +494,51 @@ function CouncilEventDetails({ node }: { node: TraceNode }) {
           </div>
         </Collapsible>
       ) : null}
+      {/* Phase 2: child sub-build links — when a parent council run
+          halted waiting for a reader tool, it spawned one or more
+          sub-build runs. Render each as a clickable link into Trace
+          Lab so the operator can drill into the sub-build's
+          progress without copying run ids manually. */}
+      {summary.subBuildRunIds.length > 0 ? (
+        <Collapsible title={`Spawned reader sub-builds (${summary.subBuildRunIds.length})`} defaultOpen>
+          {summary.missingCapabilities.length > 0 ? (
+            <ul className="mb-2 space-y-1 text-[11px] text-app-text-muted">
+              {summary.missingCapabilities.map((entry, i) => (
+                <li key={i}>
+                  needs <span className="font-mono text-app-text">{entry.capability}</span>
+                  {entry.filename ? <> (for {entry.filename})</> : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <ul className="flex flex-col gap-1 text-[11px]">
+            {summary.subBuildRunIds.map((id) => (
+              <li key={id}>
+                <Link
+                  to={`/trace/${id}`}
+                  className="block break-all rounded border border-app-border bg-app-surface px-2 py-1 font-mono text-app-accent hover:border-app-accent/40"
+                >
+                  {id}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Collapsible>
+      ) : null}
+      {summary.successorRunId ? (
+        <Collapsible title="Successor run" defaultOpen>
+          <p className="text-[11px] text-app-text-muted">
+            All reader tools became available — this build was replayed as a fresh council
+            run. Click through to see the resumed pipeline.
+          </p>
+          <Link
+            to={`/trace/${summary.successorRunId}`}
+            className="mt-2 inline-block break-all rounded border border-app-accent/40 bg-app-accent-soft/40 px-2 py-1 font-mono text-[11px] text-app-accent hover:bg-app-accent-soft"
+          >
+            {summary.successorRunId}
+          </Link>
+        </Collapsible>
+      ) : null}
     </Section>
   );
 }
@@ -507,6 +552,13 @@ type PayloadSummary = {
   findings: string[];
   failures: string[];
   files: { path: string; content: string }[];
+  /** Sub-builds the parent council spawned (Phase 2 auto-spawn). */
+  subBuildRunIds: string[];
+  /** When the parent build was replayed after waiting on readers, this
+   *  is the new run id that picked up the work. */
+  successorRunId?: string;
+  /** Reader-tool capabilities the parent build was blocked on. */
+  missingCapabilities: { capability: string; filename: string; mimeType: string }[];
 };
 
 /**
@@ -535,6 +587,8 @@ function buildPayloadSummary(node: TraceNode, payload: Record<string, unknown>):
     findings: [],
     failures: [],
     files: [],
+    subBuildRunIds: [],
+    missingCapabilities: [],
   };
 
   const promptText = stringField(payload.prompt);
@@ -564,6 +618,24 @@ function buildPayloadSummary(node: TraceNode, payload: Record<string, unknown>):
   summary.findings = findings;
   summary.failures = failures;
   summary.files = files;
+  summary.subBuildRunIds = readStringList(payload.subBuildRunIds);
+  if (typeof payload.successorRunId === "string" && payload.successorRunId.trim()) {
+    summary.successorRunId = payload.successorRunId.trim();
+  }
+  if (Array.isArray(payload.missingCapabilities)) {
+    summary.missingCapabilities = (payload.missingCapabilities as unknown[])
+      .filter(
+        (entry): entry is { capability: string; filename: string; mimeType: string } =>
+          Boolean(entry) &&
+          typeof entry === "object" &&
+          typeof (entry as { capability?: unknown }).capability === "string",
+      )
+      .map((entry) => ({
+        capability: entry.capability,
+        filename: typeof entry.filename === "string" ? entry.filename : "",
+        mimeType: typeof entry.mimeType === "string" ? entry.mimeType : "",
+      }));
+  }
 
   // Headline lines that work for any council event.
   if (verdict) summary.headerLines.push({ label: "Verdict", value: verdict, note: tieBrokenBy || undefined });
@@ -615,7 +687,10 @@ function buildPayloadSummary(node: TraceNode, payload: Record<string, unknown>):
     Boolean(summary.error) ||
     summary.findings.length > 0 ||
     summary.failures.length > 0 ||
-    summary.files.length > 0;
+    summary.files.length > 0 ||
+    summary.subBuildRunIds.length > 0 ||
+    Boolean(summary.successorRunId) ||
+    summary.missingCapabilities.length > 0;
 
   return summary;
 }

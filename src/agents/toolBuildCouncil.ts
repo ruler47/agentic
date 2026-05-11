@@ -537,6 +537,71 @@ export function synthesizeQaInputPrompt(
   ];
 }
 
+/**
+ * Phase 14 / changeSummary: after the council registers a new version,
+ * ask a fast S-tier model to produce a 1-2 sentence human-readable
+ * summary of what this version adds or fixes. The Tools page renders
+ * this verbatim as the "what changed" caption on each version row,
+ * so the operator can scan history without diff'ing source.
+ *
+ * Three shapes of summary, depending on context:
+ *   - Initial build (no prior version): "Initial release: <one-liner
+ *     of what the tool does>."
+ *   - Rework (existingToolName + bugContext supplied): "Fixed <what>;
+ *     <how>." anchored on the bugContext + the QA findings the
+ *     council had to repair through.
+ *   - QA-failed registrations: same as rework but also notes that QA
+ *     didn't pass so the operator knows the version is not yet trusted.
+ */
+export function changeSummaryPrompt(args: {
+  context: ToolBuildContext;
+  toolBodyExcerpt: string;
+  repairFailures: string[];
+  qaPassed: boolean;
+  isRework: boolean;
+}): Message[] {
+  const { context, toolBodyExcerpt, repairFailures, qaPassed, isRework } = args;
+  const user = [
+    `Tool name: ${context.name}`,
+    `Description: ${context.description}`,
+    isRework && context.bugContext ? `Bug / change request:\n${context.bugContext}` : undefined,
+    repairFailures.length > 0
+      ? `QA failures the council repaired:\n${repairFailures.map((f) => `  - ${f}`).join("\n")}`
+      : undefined,
+    !qaPassed ? "Note: this build did NOT pass QA after all repair attempts." : undefined,
+    "",
+    "Tool body (current source):",
+    toolBodyExcerpt.slice(0, 4000),
+    "",
+    "Produce a SINGLE 1-2 sentence changelog entry for this version, in English.",
+    "Style examples:",
+    isRework
+      ? '  - "Added precipitation_probability handling on /hourly; added a 5s timeout retry on upstream 5xx."'
+      : '  - "Initial release: fetches hourly weather forecast for a city via the open-meteo public API."',
+    isRework
+      ? '  - "Fixed validation crash when text was empty; now returns ok=false with a descriptive content message."'
+      : '  - "Initial release: echoes user-provided text back as content, rejecting empty payloads."',
+    "",
+    "Constraints:",
+    "  - Write in plain English (NOT Russian, NOT another language).",
+    "  - 1-2 sentences total, max ~25 words.",
+    "  - Do NOT wrap in quotes, JSON, backticks, or any envelope — emit raw prose.",
+    "  - Do NOT mention the version number or `council-built` — those are in metadata already.",
+    !qaPassed ? "  - Prefix the sentence with `(QA failed)` so the operator notices." : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return [
+    {
+      role: "system",
+      content:
+        "You write tight, factual one-line changelog entries for a tool registry. " +
+        "Always English, always under 25 words, always plain prose.",
+    },
+    { role: "user", content: user },
+  ];
+}
+
 export function repairPrompt(
   context: ToolBuildContext,
   winner: CouncilProposal,

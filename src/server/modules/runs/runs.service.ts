@@ -638,10 +638,19 @@ export class RunsService implements OnApplicationBootstrap {
       ? `Council rework for ${existingToolName}: ${description}`
       : `Council build for ${name}: ${description}`;
 
+    // Forward parentBuildRunId (cycle marker on sub-builds) onto the
+    // new run record so the Trace Lab header can render an "↑ Parent
+    // run" link. Without this the operator has no breadcrumb from a
+    // reader-tool sub-build back up to the parent that spawned it.
+    const parentBuildRunId =
+      typeof body.parentBuildRunId === "string" && body.parentBuildRunId.trim()
+        ? body.parentBuildRunId.trim()
+        : undefined;
     const run = await this.runs.create(task, {
       instanceId: "instance-local",
       requesterUserId: "user-admin",
       channel: "tool-build",
+      parentRunId: parentBuildRunId,
     } as never);
 
     await this.audit.record({
@@ -677,9 +686,8 @@ export class RunsService implements OnApplicationBootstrap {
         // run, and we DO NOT recurse — sub-builds reject attachments so
         // an infinite "sub-build needs sub-sub-build" chain can't happen.
         // We detect that by checking `body.parentBuildRunId` which the
-        // recursive call sets on its child requests.
-        const parentBuildRunId =
-          typeof body.parentBuildRunId === "string" ? body.parentBuildRunId : undefined;
+        // recursive call sets on its child requests. (Already extracted
+        // above as `parentBuildRunId` for the run-record link.)
         if (parentBuildRunId) {
           await this.runs.fail(
             run.id,

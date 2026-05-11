@@ -259,6 +259,14 @@ export type ToolBuildCouncilAdapter = {
       requiredCapabilities?: string[];
     },
   ) => Promise<{ toolName: string; version: string }>;
+  /**
+   * Replace the `changeSummary` on an already-registered version. The
+   * council synthesizes this after the QA/repair loop ends because the
+   * "what changed" line wants to describe the final state, not the
+   * initial draft. Best-effort: caller should not fail the run if the
+   * update can't reach the metadata store.
+   */
+  updateChangeSummary?: (toolName: string, version: string, changeSummary: string) => Promise<void>;
   /** Invoke the registered tool with a QA-synthesized input. */
   runToolForQa: (toolName: string, input: Record<string, unknown>) => Promise<{
     ok: boolean;
@@ -1148,6 +1156,78 @@ export class UniversalAgent {
       }
     }
 
+    // ── Step 8.5: CHANGE SUMMARY ─────────────────────────────────────
+    // Synthesize a 1-2 sentence changelog entry so the Tools-page
+    // version history is actually useful instead of every row reading
+    // "Council-built version X". Best-effort: if the synth fails we
+    // keep the default summary the adapter wrote at register time.
+    const { changeSummaryPrompt } = await import("./toolBuildCouncil.js");
+    let changeSummary = "";
+    const changeSummarySpanId = createSpanId("council-change-summary");
+    const changeSummaryStartedAt = new Date();
+    try {
+      const summaryToolBody = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
+      const repairFailures = collectRepairFailuresFromEvents(options.onEvent);
+      const summaryMessages = changeSummaryPrompt({
+        context,
+        toolBodyExcerpt: summaryToolBody,
+        repairFailures,
+        qaPassed,
+        isRework: Boolean(context.existingToolName),
+      });
+      await emit({
+        spanId: changeSummarySpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "change-summary-synthesizer",
+        activity: "llm",
+        status: "started",
+        title: "Synthesizing change summary",
+        startedAt: changeSummaryStartedAt.toISOString(),
+        payload: { prompt: messagesToPromptText(summaryMessages) },
+      });
+      const summaryRaw = await this.llm.complete(summaryMessages, {
+        modelTier: "S",
+        signal: options.signal,
+      });
+      changeSummary = sanitizeChangeSummary(summaryRaw);
+      if (changeSummary && adapter.updateChangeSummary) {
+        await adapter.updateChangeSummary(registered.toolName, registered.version, changeSummary);
+      }
+      await emit({
+        spanId: changeSummarySpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "change-summary-synthesizer",
+        activity: "llm",
+        status: "completed",
+        title: "Change summary synthesized",
+        startedAt: changeSummaryStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(changeSummaryStartedAt),
+        payload: {
+          prompt: messagesToPromptText(summaryMessages),
+          output: summaryRaw,
+          changeSummary,
+        },
+      });
+    } catch (error) {
+      await emit({
+        spanId: changeSummarySpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "change-summary-synthesizer",
+        activity: "llm",
+        status: "failed",
+        title: "Change summary synthesis failed — keeping default",
+        detail: error instanceof Error ? error.message : String(error),
+        startedAt: changeSummaryStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(changeSummaryStartedAt),
+        payload: { error: error instanceof Error ? error.message : String(error) },
+      });
+    }
+
     // ── Step 9: FINALIZE ─────────────────────────────────────────────
     await emit({
       spanId: createSpanId("council-registered"),
@@ -1162,7 +1242,13 @@ export class UniversalAgent {
       startedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(runStartedAt),
-      payload: { ...registered, qaPassed, councilSize: councilModels.length, winner: winner.winnerModelId },
+      payload: {
+        ...registered,
+        qaPassed,
+        councilSize: councilModels.length,
+        winner: winner.winnerModelId,
+        changeSummary,
+      },
     });
 
     // Close out the root coordinator span. Without this the Trace view
@@ -7384,6 +7470,42 @@ function formatFilesForPrompt(files: ReadonlyArray<{ path: string; content: stri
   return files
     .map((file) => `// ===== ${file.path} =====\n${file.content}`)
     .join("\n\n");
+}
+
+/**
+ * Pull repair-failure strings out of the in-process event stream so
+ * the change-summary synthesizer can describe what was being fixed.
+ * We don't actually re-read from a store — the run already emitted
+ * qa-attempt events with payload.failures. The synthesizer reads
+ * them via a closure-captured array on the emitter (best effort).
+ *
+ * Implementation note: we don't have access to the sink's internal
+ * state here so we return [] for now. The synthesizer prompt still
+ * gets the bugContext for reworks, which covers the "what changed"
+ * case where it matters most. A follow-up could thread an event
+ * buffer through.
+ */
+function collectRepairFailuresFromEvents(_sink: unknown): string[] {
+  return [];
+}
+
+/**
+ * Trim and sanitize the LLM's free-form summary into something safe
+ * to render on the Tools page. The LLM occasionally wraps the line
+ * in quotes / code fences / "Summary:" prefixes; strip those.
+ */
+function sanitizeChangeSummary(raw: string): string {
+  if (!raw) return "";
+  let trimmed = raw.trim();
+  // Strip leading "Summary:", "Changelog:" etc.
+  trimmed = trimmed.replace(/^(?:summary|changelog|changes?)\s*[:\-]\s*/i, "");
+  // Strip surrounding code fences.
+  trimmed = trimmed.replace(/^```[a-z]*\s*|\s*```$/g, "");
+  // Strip surrounding single/double/back quotes.
+  if (/^["'`].*["'`]$/.test(trimmed)) trimmed = trimmed.slice(1, -1);
+  // Cap to ~280 chars to be safe.
+  if (trimmed.length > 280) trimmed = `${trimmed.slice(0, 277)}…`;
+  return trimmed.trim();
 }
 
 function messagesToPromptText(messages: ReadonlyArray<{ role: string; content: string }>): string {
