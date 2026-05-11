@@ -105,6 +105,51 @@ export function useRunToolHealthchecks() {
   });
 }
 
+export type ToolVersionSummary = {
+  version: string;
+  active: boolean;
+  status: "available" | "disabled" | "failed";
+  changeSummary?: string;
+  successCount?: number;
+  failureCount?: number;
+  updatedAt: string;
+  lastHealthDetail?: string;
+};
+
+/**
+ * Fetch the full version history for a generated tool. The metadata
+ * store keeps every promoted version in Postgres so the operator can
+ * roll back / inspect run stats. The InMemory store only keeps the
+ * active one, but that's fine for tests.
+ */
+export function useToolVersions(name: string | undefined) {
+  return useQuery({
+    queryKey: ["tool-versions", name],
+    enabled: Boolean(name),
+    queryFn: () =>
+      apiFetch<{ versions: ToolVersionSummary[] }>(
+        `/api/tools/generated-modules/${encodeURIComponent(name!)}/versions`,
+      ).then((data) => data.versions ?? []),
+    refetchInterval: 30_000,
+    staleTime: 5_000,
+  });
+}
+
+export function useActivateToolVersion() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, version }: { name: string; version: string }) =>
+      apiFetch<{ tool: ToolModuleMetadata }>(
+        `/api/tools/generated-modules/${encodeURIComponent(name)}/activate-version`,
+        { method: "POST", body: { version } },
+      ),
+    onSuccess: (_data, vars) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tools });
+      void queryClient.invalidateQueries({ queryKey: ["tool-versions", vars.name] });
+    },
+  });
+}
+
 export function useDeleteGeneratedTool() {
   const queryClient = useQueryClient();
   return useMutation({

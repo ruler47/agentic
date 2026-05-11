@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   settingsByTool,
+  useActivateToolVersion,
   useDeleteGeneratedTool,
   useDeleteToolSetting,
   useReloadGeneratedTools,
@@ -11,8 +12,11 @@ import {
   useToolPackageRunners,
   useToolSettings,
   useTools,
+  useToolVersions,
   type ManualToolRunResponse,
+  type ToolVersionSummary,
 } from "@/api/tools";
+import { useCreateToolBuildRun } from "@/api/toolBuildRuns";
 import { useToolServiceAction, useToolServices } from "@/api/toolServices";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
@@ -354,6 +358,18 @@ function ToolDetail({
         */}
         <ManualRunPanel key={tool.name} tool={tool} />
       </Section>
+
+      {tool.source === "generated" ? (
+        <Section title="Versions">
+          <VersionsPanel toolName={tool.name} activeVersion={tool.version} />
+        </Section>
+      ) : null}
+
+      {tool.source === "generated" ? (
+        <Section title="Request changes">
+          <RequestChangesPanel tool={tool} />
+        </Section>
+      ) : null}
 
       <footer className="flex flex-wrap items-center gap-2 border-t border-app-border pt-3 text-[11px] text-app-text-muted">
         <span>updated {formatRelative(tool.updatedAt)}</span>
@@ -923,4 +939,348 @@ function serviceTone(status?: string): "ok" | "warn" | "danger" | "muted" | "run
   if (status === "starting") return "warn";
   if (status === "failed") return "danger";
   return "muted";
+}
+
+/**
+ * Phase 14 / Phase E follow-up: per-tool version history. Postgres
+ * preserves every promoted version (change_summary, success/failure
+ * counts, last health detail, updated_at) — surfaces it as a
+ * scannable list with a one-click "Activate" affordance on inactive
+ * versions so the operator can roll back without leaving the page.
+ */
+function VersionsPanel({
+  toolName,
+  activeVersion,
+}: {
+  toolName: string;
+  activeVersion: string;
+}) {
+  const versionsQuery = useToolVersions(toolName);
+  const activate = useActivateToolVersion();
+
+  if (versionsQuery.isLoading) {
+    return <p className="text-xs text-app-text-muted">Loading versions…</p>;
+  }
+  const versions = versionsQuery.data ?? [];
+  if (versions.length === 0) {
+    return <p className="text-xs text-app-text-muted">No version history.</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <ul className="flex flex-col gap-2">
+        {versions.map((version) => (
+          <VersionRow
+            key={version.version}
+            toolName={toolName}
+            version={version}
+            isActive={version.version === activeVersion}
+            onActivate={() => activate.mutate({ name: toolName, version: version.version })}
+            isPending={activate.isPending}
+          />
+        ))}
+      </ul>
+      {activate.isError ? (
+        <p className="text-[11px] text-app-danger">{activate.error.message}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function VersionRow({
+  toolName: _toolName,
+  version,
+  isActive,
+  onActivate,
+  isPending,
+}: {
+  toolName: string;
+  version: ToolVersionSummary;
+  isActive: boolean;
+  onActivate: () => void;
+  isPending: boolean;
+}) {
+  const success = version.successCount ?? 0;
+  const failure = version.failureCount ?? 0;
+  const total = success + failure;
+  return (
+    <li
+      className={[
+        "rounded-md border p-3 text-xs",
+        isActive
+          ? "border-app-accent bg-app-accent-soft/30"
+          : "border-app-border bg-app-surface-2",
+      ].join(" ")}
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className="font-mono text-[13px] font-semibold">v{version.version}</span>
+          <GenericBadge tone={statusTone(version.status)}>{version.status}</GenericBadge>
+          {isActive ? (
+            <GenericBadge tone="ok">active</GenericBadge>
+          ) : null}
+          <span className="text-app-text-muted">
+            promoted {formatRelative(version.updatedAt)}
+          </span>
+        </div>
+        {!isActive ? (
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Activate v${version.version}? The current active version will become inactive.`,
+                )
+              ) {
+                onActivate();
+              }
+            }}
+            disabled={isPending}
+            className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40 disabled:opacity-50"
+          >
+            {isPending ? "Activating…" : "Activate"}
+          </button>
+        ) : null}
+      </div>
+      {version.changeSummary ? (
+        <p className="mt-2 whitespace-pre-wrap break-words text-[11px] text-app-text">
+          {version.changeSummary}
+        </p>
+      ) : null}
+      <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-app-text-muted">
+        {total > 0 ? (
+          <>
+            <span>runs: {total}</span>
+            <span className="text-app-accent">{success} ok</span>
+            <span className="text-app-danger">{failure} failed</span>
+            <span>
+              ({total > 0 ? Math.round((success / total) * 100) : 0}% success)
+            </span>
+          </>
+        ) : (
+          <span>no runs recorded</span>
+        )}
+        {version.lastHealthDetail ? (
+          <span className="text-app-text-muted">
+            health: {truncate(version.lastHealthDetail, 80)}
+          </span>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+/**
+ * Phase 14 / Phase E follow-up: in-place "Request changes" form for a
+ * registered tool. Posts to /api/tool-build-runs with
+ * `existingToolName` + `bugContext` so the council treats it as a
+ * rework (kept the original tool name, bumps the version). Accepts
+ * the same reference-doc attachments as the create flow — operator
+ * can drop in updated OpenAPI specs or bug repro PDFs.
+ */
+function RequestChangesPanel({ tool }: { tool: ToolModuleMetadata }) {
+  const create = useCreateToolBuildRun();
+  const [bugContext, setBugContext] = useState("");
+  const [qaCriteriaText, setQaCriteriaText] = useState("");
+  const [references, setReferences] = useState<
+    Array<{ filename: string; mimeType: string; size: number; contentBase64: string }>
+  >([]);
+  const [referenceError, setReferenceError] = useState<string | undefined>();
+  const [open, setOpen] = useState(false);
+
+  const onFilesPicked = async (files: FileList | null) => {
+    setReferenceError(undefined);
+    if (!files) return;
+    const REFERENCE_FILE_CAP_MB = 5;
+    const next: Array<{ filename: string; mimeType: string; size: number; contentBase64: string }> = [];
+    for (const file of Array.from(files)) {
+      if (file.size > REFERENCE_FILE_CAP_MB * 1024 * 1024) {
+        setReferenceError(`${file.name}: exceeds ${REFERENCE_FILE_CAP_MB} MB cap.`);
+        return;
+      }
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const chunkSize = 0x8000;
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + chunkSize, bytes.length)));
+      }
+      next.push({
+        filename: file.name,
+        mimeType: file.type || guessMimeFromName(file.name),
+        size: file.size,
+        contentBase64: btoa(binary),
+      });
+    }
+    setReferences((prev) => [...prev, ...next]);
+  };
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (create.isPending || !bugContext.trim()) return;
+    const qaCriteria = qaCriteriaText
+      .split(/\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    create.mutate(
+      {
+        name: tool.name,
+        description: tool.description,
+        existingToolName: tool.name,
+        bugContext: bugContext.trim(),
+        qaCriteria: qaCriteria.length > 0 ? qaCriteria : undefined,
+        references: references.length > 0
+          ? references.map((ref) => ({
+              filename: ref.filename,
+              mimeType: ref.mimeType,
+              contentBase64: ref.contentBase64,
+            }))
+          : undefined,
+      },
+      {
+        onSuccess: () => {
+          setBugContext("");
+          setQaCriteriaText("");
+          setReferences([]);
+          setReferenceError(undefined);
+          setOpen(false);
+        },
+      },
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-app-text-muted">
+          Describe what should change and (optionally) attach updated docs. The council
+          treats this as a rework: same tool name, bumped version, change summary written
+          to the next version.
+        </p>
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          className="rounded-md border border-app-border bg-app-surface-2 px-2.5 py-1 text-[11px]"
+        >
+          {open ? "Close" : "Open form"}
+        </button>
+      </div>
+      {open ? (
+        <form onSubmit={submit} className="flex flex-col gap-3 rounded-md border border-app-border bg-app-surface-2 p-3 text-xs">
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
+              What should change? (bug report, new field, broken edge case…)
+            </span>
+            <textarea
+              required
+              rows={4}
+              value={bugContext}
+              onChange={(event) => setBugContext(event.target.value)}
+              placeholder="The /hourly endpoint now returns precipitation_probability; the tool ignores it."
+              className="resize-y rounded-md border border-app-border bg-app-surface px-3 py-1.5 text-sm outline-none focus:border-app-accent/60"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
+              Additional QA criteria (one per line, optional)
+            </span>
+            <textarea
+              rows={3}
+              value={qaCriteriaText}
+              onChange={(event) => setQaCriteriaText(event.target.value)}
+              placeholder="precipitation_probability appears in the output for each hour"
+              className="resize-y rounded-md border border-app-border bg-app-surface px-3 py-1.5 text-sm outline-none focus:border-app-accent/60"
+            />
+          </label>
+          <fieldset className="flex flex-col gap-2 rounded-md border border-app-border bg-app-surface p-2">
+            <legend className="text-[10px] uppercase tracking-wider text-app-text-muted">
+              Reference docs (optional)
+            </legend>
+            <input
+              type="file"
+              multiple
+              onChange={(event) => void onFilesPicked(event.target.files)}
+              className="text-[11px] file:mr-3 file:rounded-md file:border file:border-app-border file:bg-app-surface-2 file:px-3 file:py-1 file:text-[11px] file:text-app-text"
+            />
+            {references.length > 0 ? (
+              <ul className="flex flex-col gap-1 text-[11px]">
+                {references.map((ref) => (
+                  <li
+                    key={ref.filename}
+                    className="flex items-center justify-between gap-2 rounded border border-app-border bg-app-surface-2 px-2 py-1"
+                  >
+                    <span className="min-w-0 truncate font-mono">
+                      {ref.filename}
+                      <span className="ml-2 text-app-text-muted">
+                        {formatFileSize(ref.size)}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setReferences((prev) => prev.filter((r) => r.filename !== ref.filename))
+                      }
+                      className="rounded text-app-text-muted hover:text-app-danger"
+                    >
+                      remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {referenceError ? (
+              <p className="text-[11px] text-app-danger">{referenceError}</p>
+            ) : null}
+          </fieldset>
+          {create.isError ? (
+            <p className="text-[11px] text-app-danger">{create.error.message}</p>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="rounded-md border border-app-border bg-app-surface px-3 py-1.5 text-xs"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={create.isPending || !bugContext.trim()}
+              className="rounded-md bg-app-accent px-3 py-1.5 text-xs font-semibold text-app-bg disabled:opacity-50"
+            >
+              {create.isPending ? "Starting rework…" : "Start rework build"}
+            </button>
+          </div>
+        </form>
+      ) : null}
+    </div>
+  );
+}
+
+function guessMimeFromName(filename: string): string {
+  const ext = filename.toLowerCase().split(".").pop() ?? "";
+  switch (ext) {
+    case "yaml":
+    case "yml":
+      return "application/yaml";
+    case "json":
+      return "application/json";
+    case "md":
+    case "markdown":
+      return "text/markdown";
+    case "txt":
+      return "text/plain";
+    case "openapi":
+      return "application/openapi+yaml";
+    case "pdf":
+      return "application/pdf";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
