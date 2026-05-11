@@ -39,9 +39,14 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
   const callFrame = readCallFrame(node.payload);
   const selfCheck = readSelfCheck(node.payload);
   const memoryHits = readMemoryEntries(node.payload);
-  const toolEvidence = readToolEvidence(node.payload);
+  // Tool evidence is only meaningful for actual tool runs. For LLM /
+  // coordination events the same `content` field carries the model's
+  // reply and would mis-render here — we surface it through
+  // CouncilEventDetails below instead.
+  const toolEvidence = node.activity === "tool" ? readToolEvidence(node.payload) : "";
   const artifacts = runId ? readArtifactRefs(node.payload, runId) : [];
   const tier = modelTierForNode(node);
+  const hasNodeDetail = Boolean(node.detail && node.detail.trim());
 
   return (
     <aside className="flex max-h-[calc(100vh-260px)] flex-col gap-3 overflow-y-auto rounded-[var(--radius-card)] border border-app-border bg-app-surface p-5">
@@ -66,13 +71,15 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
         ) : null}
       </header>
 
-      <Section title="Output / detail">
-        <p className="whitespace-pre-wrap break-words text-[11px]">
-          {truncate(node.detail ?? "—", 1200)}
-        </p>
-      </Section>
-
       <CouncilEventDetails node={node} />
+
+      {hasNodeDetail ? (
+        <Section title="Status detail">
+          <p className="whitespace-pre-wrap break-words text-[11px]">
+            {truncate(node.detail ?? "", 1200)}
+          </p>
+        </Section>
+      ) : null}
 
       {node.dependencySpanIds.length > 0 ? (
         <Section title="Dependency spans">
@@ -373,159 +380,86 @@ function statusTone(status: string): "ok" | "running" | "danger" | "muted" {
 // available block in a collapsible <details> block so the inspector
 // stays scannable but the operator can drill into "why did this fail?".
 
+/**
+ * Inspector panel for a single trace span. Two rules drive the layout:
+ *   1. Always answer "what was sent in?" (Input) and "what came back?"
+ *      (Output) first — those are the operator's main questions when a
+ *      span fails.
+ *   2. Auto-open Input + Output for failed spans so the reason is
+ *      visible without an extra click. For completed spans they stay
+ *      collapsed to keep the panel scannable.
+ */
 function CouncilEventDetails({ node }: { node: TraceNode }) {
   const payload = node.payload as Record<string, unknown> | null | undefined;
   if (!payload || typeof payload !== "object") return null;
 
-  const prompt = stringField(payload.prompt);
-  const output = stringField(payload.output);
-  const oracleOutput = stringField(payload.oracleOutput);
-  const rawOutput = stringField(payload.raw);
-  const error = stringField(payload.error);
-  const files = readFiles(payload.files);
-  const findings = readStringList(payload.findings);
-  const failures = readStringList(payload.failures);
-  const verdict = stringField(payload.verdict);
-  const ranking = readNumberList(payload.ranking);
-  const scores = readNumberList(payload.scores);
-  const tieBrokenBy = stringField(payload.tieBrokenBy);
-  const winnerModelId = stringField(payload.winnerModelId);
-  const fallbackFrom = stringField(payload.fallbackFrom);
-  const proposalContent = stringField(extractProposalContent(payload));
-  const qaInput = payload.qaInput;
-  const qaOutput = payload.output && typeof payload.output === "object"
-    && "ok" in (payload.output as object)
-    ? (payload.output as Record<string, unknown>)
-    : undefined;
-  const content = stringField(payload.content);
+  const summary = buildPayloadSummary(node, payload);
+  if (!summary.hasAny) return null;
 
-  const hasAny =
-    prompt ||
-    output ||
-    oracleOutput ||
-    rawOutput ||
-    error ||
-    proposalContent ||
-    content ||
-    files.length > 0 ||
-    findings.length > 0 ||
-    failures.length > 0 ||
-    verdict ||
-    ranking.length > 0 ||
-    scores.length > 0 ||
-    winnerModelId ||
-    fallbackFrom ||
-    qaInput ||
-    qaOutput;
-  if (!hasAny) return null;
+  const autoOpen = node.status === "failed";
 
   return (
     <Section title="Call details">
-      {verdict ? (
-        <p className="mb-2 text-[11px]">
-          <span className="text-app-text-muted">Verdict:</span>{" "}
-          <span className="font-mono">{verdict}</span>
-          {tieBrokenBy ? <span className="text-app-text-muted"> (tie-break: {tieBrokenBy})</span> : null}
-        </p>
+      {summary.headerLines.length > 0 ? (
+        <div className="mb-2 flex flex-col gap-0.5 text-[11px]">
+          {summary.headerLines.map((line, idx) => (
+            <p key={idx}>
+              <span className="text-app-text-muted">{line.label}:</span>{" "}
+              <span className="font-mono">{line.value}</span>
+              {line.note ? <span className="text-app-text-muted"> ({line.note})</span> : null}
+            </p>
+          ))}
+        </div>
       ) : null}
-      {winnerModelId ? (
-        <p className="mb-2 text-[11px]">
-          <span className="text-app-text-muted">Winner:</span>{" "}
-          <span className="font-mono">{winnerModelId}</span>
-          {fallbackFrom ? (
-            <span className="text-app-text-muted"> (fallback from {fallbackFrom})</span>
-          ) : null}
-        </p>
-      ) : null}
-      {ranking.length > 0 ? (
-        <p className="mb-2 text-[11px]">
-          <span className="text-app-text-muted">Ranking:</span>{" "}
-          <span className="font-mono">[{ranking.join(", ")}]</span>
-        </p>
-      ) : null}
-      {scores.length > 0 ? (
-        <p className="mb-2 text-[11px]">
-          <span className="text-app-text-muted">Borda scores:</span>{" "}
-          <span className="font-mono">[{scores.join(", ")}]</span>
-        </p>
-      ) : null}
-      {error ? (
+      {summary.error ? (
         <Collapsible title="Error" tone="danger" defaultOpen>
-          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-danger">{error}</pre>
+          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-danger">{summary.error}</pre>
         </Collapsible>
       ) : null}
-      {findings.length > 0 ? (
-        <Collapsible title={`Findings (${findings.length})`} defaultOpen>
+      {summary.findings.length > 0 ? (
+        <Collapsible title={`Findings (${summary.findings.length})`} defaultOpen>
           <ul className="space-y-1 text-[11px] text-app-text-muted">
-            {findings.map((finding, index) => (
+            {summary.findings.map((finding, index) => (
               <li key={index} className="break-words">• {finding}</li>
             ))}
           </ul>
         </Collapsible>
       ) : null}
-      {failures.length > 0 ? (
-        <Collapsible title={`Failures (${failures.length})`} tone="danger" defaultOpen>
+      {summary.failures.length > 0 ? (
+        <Collapsible title={`Failures (${summary.failures.length})`} tone="danger" defaultOpen>
           <ul className="space-y-1 text-[11px] text-app-danger">
-            {failures.map((failure, index) => (
+            {summary.failures.map((failure, index) => (
               <li key={index} className="break-words">• {failure}</li>
             ))}
           </ul>
         </Collapsible>
       ) : null}
-      {proposalContent ? (
-        <Collapsible title="Winning proposal">
+      {summary.input ? (
+        <Collapsible
+          title={summary.input.label}
+          defaultOpen={autoOpen}
+        >
           <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">
-            {proposalContent}
+            {summary.input.text}
           </pre>
         </Collapsible>
       ) : null}
-      {content && !proposalContent ? (
-        <Collapsible title="Model output (content)">
-          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{content}</pre>
-        </Collapsible>
-      ) : null}
-      {prompt ? (
-        <Collapsible title="Prompt sent to the LLM">
-          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{prompt}</pre>
-        </Collapsible>
-      ) : null}
-      {output && output !== content ? (
-        <Collapsible title="LLM response (raw)">
-          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{output}</pre>
-        </Collapsible>
-      ) : null}
-      {oracleOutput && oracleOutput !== output ? (
-        <Collapsible title="QA oracle response">
-          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{oracleOutput}</pre>
-        </Collapsible>
-      ) : null}
-      {rawOutput && rawOutput !== output ? (
-        <Collapsible title="Raw response">
-          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{rawOutput}</pre>
-        </Collapsible>
-      ) : null}
-      {qaInput && typeof qaInput === "object" ? (
-        <Collapsible title="QA tool input">
+      {summary.output ? (
+        <Collapsible
+          title={summary.output.label}
+          defaultOpen={autoOpen || !summary.input}
+        >
           <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">
-            {safeJson(qaInput)}
+            {summary.output.text}
           </pre>
         </Collapsible>
       ) : null}
-      {qaOutput ? (
-        <Collapsible title="QA tool output" defaultOpen={node.status === "failed"}>
-          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">
-            {safeJson(qaOutput)}
-          </pre>
-        </Collapsible>
-      ) : null}
-      {files.length > 0 ? (
-        <Collapsible title={`Emitted files (${files.length})`}>
+      {summary.files.length > 0 ? (
+        <Collapsible title={`Emitted files (${summary.files.length})`}>
           <div className="flex flex-col gap-1.5">
-            {files.map((file, index) => (
+            {summary.files.map((file, index) => (
               <details key={index} className="rounded border border-app-border bg-app-surface px-2 py-1 text-[11px]">
-                <summary className="cursor-pointer break-all font-mono text-app-text">
-                  {file.path}
-                </summary>
+                <summary className="cursor-pointer break-all font-mono text-app-text">{file.path}</summary>
                 <pre className="mt-1 whitespace-pre-wrap break-words text-[10px] text-app-text-muted">
                   {file.content}
                 </pre>
@@ -536,6 +470,154 @@ function CouncilEventDetails({ node }: { node: TraceNode }) {
       ) : null}
     </Section>
   );
+}
+
+type PayloadSummary = {
+  hasAny: boolean;
+  headerLines: { label: string; value: string; note?: string }[];
+  input?: { label: string; text: string };
+  output?: { label: string; text: string };
+  error: string;
+  findings: string[];
+  failures: string[];
+  files: { path: string; content: string }[];
+};
+
+/**
+ * Normalises whatever the council emitted into a uniform Input/Output
+ * pair plus a few headline fields. The mapping is event-type aware so
+ * each kind of span gets a meaningful label:
+ *
+ *   brainstorm-proposal → Input: "Brainstorm prompt", Output: "Council proposal"
+ *   vote-cast           → Input: "Voting prompt",     Output: "Ranking JSON"
+ *   winner-selected     → headline only (Borda scores, winner)
+ *   code-drafted        → Input: "Implement prompt",  Output: "Drafted code"
+ *   code-review-cast    → Input: "Review prompt",     Output: "Verdict + findings"
+ *   code-revised        → Input: "Revise prompt",     Output: "Revised code"
+ *   qa-attempt          → Input: "QA tool input",     Output: "Tool output + oracle verdict"
+ *   code-repaired       → Input: "Repair prompt",     Output: "Repaired code"
+ *   tool-build-registered → headline only
+ *
+ * Falls back gracefully when the new payload fields (`prompt` / `output`)
+ * are missing — older events stored only `content`/`raw`/`ranking`.
+ */
+function buildPayloadSummary(node: TraceNode, payload: Record<string, unknown>): PayloadSummary {
+  const summary: PayloadSummary = {
+    hasAny: false,
+    headerLines: [],
+    error: "",
+    findings: [],
+    failures: [],
+    files: [],
+  };
+
+  const promptText = stringField(payload.prompt);
+  const outputText = stringField(payload.output);
+  const oracleOutputText = stringField(payload.oracleOutput);
+  const rawText = stringField(payload.raw);
+  const contentText = stringField(payload.content);
+  const errorText = stringField(payload.error);
+  const verdict = stringField(payload.verdict);
+  const tieBrokenBy = stringField(payload.tieBrokenBy);
+  const winnerModelId = stringField(payload.winnerModelId);
+  const fallbackFrom = stringField(payload.fallbackFrom);
+  const ranking = readNumberList(payload.ranking);
+  const scores = readNumberList(payload.scores);
+  const findings = readStringList(payload.findings);
+  const failures = readStringList(payload.failures);
+  const files = readFiles(payload.files);
+  const proposalContent = stringField(extractProposalContent(payload));
+  const qaInput = payload.qaInput;
+  const qaToolOutput = payload.output && typeof payload.output === "object" && "ok" in (payload.output as object)
+    ? (payload.output as Record<string, unknown>)
+    : undefined;
+  const attempt = typeof payload.attempt === "number" ? payload.attempt : undefined;
+  const skipped = payload.skipped === true;
+
+  summary.error = errorText;
+  summary.findings = findings;
+  summary.failures = failures;
+  summary.files = files;
+
+  // Headline lines that work for any council event.
+  if (verdict) summary.headerLines.push({ label: "Verdict", value: verdict, note: tieBrokenBy || undefined });
+  if (winnerModelId) {
+    summary.headerLines.push({
+      label: "Winner",
+      value: winnerModelId,
+      note: fallbackFrom ? `fallback from ${fallbackFrom}` : undefined,
+    });
+  }
+  if (ranking.length > 0) summary.headerLines.push({ label: "Ranking", value: `[${ranking.join(", ")}]` });
+  if (scores.length > 0) summary.headerLines.push({ label: "Borda scores", value: `[${scores.join(", ")}]` });
+  if (attempt !== undefined) {
+    summary.headerLines.push({ label: "Attempt", value: String(attempt), note: skipped ? "skipped" : undefined });
+  }
+
+  // Event-type-aware Input/Output labels.
+  const labels = inputOutputLabelsFor(node);
+
+  // Input: prefer the new prompt field; fall back to qaInput JSON.
+  if (promptText) {
+    summary.input = { label: labels.inputLabel, text: promptText };
+  } else if (qaInput && typeof qaInput === "object") {
+    summary.input = { label: labels.inputLabel, text: safeJson(qaInput) };
+  }
+
+  // Output: prefer the new output field; for review/qa surface the
+  // verdict + findings/failures inline; fall back to content/raw for
+  // older events.
+  if (qaToolOutput && node.type?.includes("qa")) {
+    const oracleNote = oracleOutputText ? `\n\nOracle response:\n${oracleOutputText}` : "";
+    summary.output = { label: labels.outputLabel, text: `${safeJson(qaToolOutput)}${oracleNote}` };
+  } else if (outputText) {
+    summary.output = { label: labels.outputLabel, text: outputText };
+  } else if (rawText) {
+    summary.output = { label: labels.outputLabel, text: rawText };
+  } else if (proposalContent) {
+    summary.output = { label: labels.outputLabel, text: proposalContent };
+  } else if (contentText) {
+    summary.output = { label: labels.outputLabel, text: contentText };
+  } else if (ranking.length > 0 && !summary.output) {
+    summary.output = { label: labels.outputLabel, text: `Ranking: [${ranking.join(", ")}]` };
+  }
+
+  summary.hasAny =
+    summary.headerLines.length > 0 ||
+    Boolean(summary.input) ||
+    Boolean(summary.output) ||
+    Boolean(summary.error) ||
+    summary.findings.length > 0 ||
+    summary.failures.length > 0 ||
+    summary.files.length > 0;
+
+  return summary;
+}
+
+function inputOutputLabelsFor(node: TraceNode): { inputLabel: string; outputLabel: string } {
+  const type = node.type ?? "";
+  if (type === "tool-build-brainstorm-proposal") {
+    return { inputLabel: "Input — brainstorm prompt", outputLabel: "Output — council proposal" };
+  }
+  if (type === "tool-build-vote-cast") {
+    return { inputLabel: "Input — voting prompt", outputLabel: "Output — vote response" };
+  }
+  if (type === "tool-build-code-drafted") {
+    return { inputLabel: "Input — implement prompt", outputLabel: "Output — drafted code" };
+  }
+  if (type === "tool-build-code-review-cast") {
+    return { inputLabel: "Input — review prompt", outputLabel: "Output — review response" };
+  }
+  if (type === "tool-build-code-revised") {
+    return { inputLabel: "Input — revise prompt", outputLabel: "Output — revised code" };
+  }
+  if (type === "tool-build-qa-attempt") {
+    return { inputLabel: "Input — tool call payload", outputLabel: "Output — tool result + oracle" };
+  }
+  if (type === "tool-build-code-repaired") {
+    return { inputLabel: "Input — repair prompt", outputLabel: "Output — repaired code" };
+  }
+  return { inputLabel: "Input", outputLabel: "Output" };
 }
 
 function Collapsible({

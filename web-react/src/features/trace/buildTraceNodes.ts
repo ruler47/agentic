@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentEventStatus, AgentActivity, ModelTier } from "@/api/types";
+import type { AgentEvent, AgentEventStatus, AgentActivity, AgentEventType, ModelTier } from "@/api/types";
 
 /**
  * Trace span model derived from per-event records. Mirrors the legacy
@@ -9,6 +9,9 @@ export type TraceNode = {
   spanId: string;
   parentSpanId?: string;
   parentTitle?: string;
+  /** Event type of the most-recent record for this span. The inspector
+   *  picks Input/Output labels off this — see `inputOutputLabelsFor`. */
+  type?: AgentEventType;
   title: string;
   actor: string;
   activity: AgentActivity;
@@ -31,6 +34,7 @@ export function buildTraceNodes(events: AgentEvent[]): TraceNode[] {
     const merged: TraceNode = {
       spanId: event.spanId,
       parentSpanId: previous?.parentSpanId ?? event.parentSpanId,
+      type: event.type ?? previous?.type,
       title: event.title || previous?.title || event.spanId,
       actor: event.actor || previous?.actor || "unknown",
       activity: event.activity ?? previous?.activity ?? "coordination",
