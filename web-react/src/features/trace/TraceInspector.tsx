@@ -72,6 +72,8 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
         </p>
       </Section>
 
+      <CouncilEventDetails node={node} />
+
       {node.dependencySpanIds.length > 0 ? (
         <Section title="Dependency spans">
           <ul className="min-w-0 text-[11px] font-mono text-app-text-muted">
@@ -362,4 +364,244 @@ function statusTone(status: string): "ok" | "running" | "danger" | "muted" {
   if (status === "failed") return "danger";
   if (status === "started") return "running";
   return "muted";
+}
+
+// ── Council event details ─────────────────────────────────────────────
+// Every council event (brainstorm, vote, draft, review, revise, qa,
+// repair) carries rich payload data — the prompt that was sent, the raw
+// model response, the files emitted, the verdict, etc. Render each
+// available block in a collapsible <details> block so the inspector
+// stays scannable but the operator can drill into "why did this fail?".
+
+function CouncilEventDetails({ node }: { node: TraceNode }) {
+  const payload = node.payload as Record<string, unknown> | null | undefined;
+  if (!payload || typeof payload !== "object") return null;
+
+  const prompt = stringField(payload.prompt);
+  const output = stringField(payload.output);
+  const oracleOutput = stringField(payload.oracleOutput);
+  const rawOutput = stringField(payload.raw);
+  const error = stringField(payload.error);
+  const files = readFiles(payload.files);
+  const findings = readStringList(payload.findings);
+  const failures = readStringList(payload.failures);
+  const verdict = stringField(payload.verdict);
+  const ranking = readNumberList(payload.ranking);
+  const scores = readNumberList(payload.scores);
+  const tieBrokenBy = stringField(payload.tieBrokenBy);
+  const winnerModelId = stringField(payload.winnerModelId);
+  const fallbackFrom = stringField(payload.fallbackFrom);
+  const proposalContent = stringField(extractProposalContent(payload));
+  const qaInput = payload.qaInput;
+  const qaOutput = payload.output && typeof payload.output === "object"
+    && "ok" in (payload.output as object)
+    ? (payload.output as Record<string, unknown>)
+    : undefined;
+  const content = stringField(payload.content);
+
+  const hasAny =
+    prompt ||
+    output ||
+    oracleOutput ||
+    rawOutput ||
+    error ||
+    proposalContent ||
+    content ||
+    files.length > 0 ||
+    findings.length > 0 ||
+    failures.length > 0 ||
+    verdict ||
+    ranking.length > 0 ||
+    scores.length > 0 ||
+    winnerModelId ||
+    fallbackFrom ||
+    qaInput ||
+    qaOutput;
+  if (!hasAny) return null;
+
+  return (
+    <Section title="Call details">
+      {verdict ? (
+        <p className="mb-2 text-[11px]">
+          <span className="text-app-text-muted">Verdict:</span>{" "}
+          <span className="font-mono">{verdict}</span>
+          {tieBrokenBy ? <span className="text-app-text-muted"> (tie-break: {tieBrokenBy})</span> : null}
+        </p>
+      ) : null}
+      {winnerModelId ? (
+        <p className="mb-2 text-[11px]">
+          <span className="text-app-text-muted">Winner:</span>{" "}
+          <span className="font-mono">{winnerModelId}</span>
+          {fallbackFrom ? (
+            <span className="text-app-text-muted"> (fallback from {fallbackFrom})</span>
+          ) : null}
+        </p>
+      ) : null}
+      {ranking.length > 0 ? (
+        <p className="mb-2 text-[11px]">
+          <span className="text-app-text-muted">Ranking:</span>{" "}
+          <span className="font-mono">[{ranking.join(", ")}]</span>
+        </p>
+      ) : null}
+      {scores.length > 0 ? (
+        <p className="mb-2 text-[11px]">
+          <span className="text-app-text-muted">Borda scores:</span>{" "}
+          <span className="font-mono">[{scores.join(", ")}]</span>
+        </p>
+      ) : null}
+      {error ? (
+        <Collapsible title="Error" tone="danger" defaultOpen>
+          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-danger">{error}</pre>
+        </Collapsible>
+      ) : null}
+      {findings.length > 0 ? (
+        <Collapsible title={`Findings (${findings.length})`} defaultOpen>
+          <ul className="space-y-1 text-[11px] text-app-text-muted">
+            {findings.map((finding, index) => (
+              <li key={index} className="break-words">• {finding}</li>
+            ))}
+          </ul>
+        </Collapsible>
+      ) : null}
+      {failures.length > 0 ? (
+        <Collapsible title={`Failures (${failures.length})`} tone="danger" defaultOpen>
+          <ul className="space-y-1 text-[11px] text-app-danger">
+            {failures.map((failure, index) => (
+              <li key={index} className="break-words">• {failure}</li>
+            ))}
+          </ul>
+        </Collapsible>
+      ) : null}
+      {proposalContent ? (
+        <Collapsible title="Winning proposal">
+          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">
+            {proposalContent}
+          </pre>
+        </Collapsible>
+      ) : null}
+      {content && !proposalContent ? (
+        <Collapsible title="Model output (content)">
+          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{content}</pre>
+        </Collapsible>
+      ) : null}
+      {prompt ? (
+        <Collapsible title="Prompt sent to the LLM">
+          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{prompt}</pre>
+        </Collapsible>
+      ) : null}
+      {output && output !== content ? (
+        <Collapsible title="LLM response (raw)">
+          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{output}</pre>
+        </Collapsible>
+      ) : null}
+      {oracleOutput && oracleOutput !== output ? (
+        <Collapsible title="QA oracle response">
+          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{oracleOutput}</pre>
+        </Collapsible>
+      ) : null}
+      {rawOutput && rawOutput !== output ? (
+        <Collapsible title="Raw response">
+          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">{rawOutput}</pre>
+        </Collapsible>
+      ) : null}
+      {qaInput && typeof qaInput === "object" ? (
+        <Collapsible title="QA tool input">
+          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">
+            {safeJson(qaInput)}
+          </pre>
+        </Collapsible>
+      ) : null}
+      {qaOutput ? (
+        <Collapsible title="QA tool output" defaultOpen={node.status === "failed"}>
+          <pre className="whitespace-pre-wrap break-words text-[11px] text-app-text-muted">
+            {safeJson(qaOutput)}
+          </pre>
+        </Collapsible>
+      ) : null}
+      {files.length > 0 ? (
+        <Collapsible title={`Emitted files (${files.length})`}>
+          <div className="flex flex-col gap-1.5">
+            {files.map((file, index) => (
+              <details key={index} className="rounded border border-app-border bg-app-surface px-2 py-1 text-[11px]">
+                <summary className="cursor-pointer break-all font-mono text-app-text">
+                  {file.path}
+                </summary>
+                <pre className="mt-1 whitespace-pre-wrap break-words text-[10px] text-app-text-muted">
+                  {file.content}
+                </pre>
+              </details>
+            ))}
+          </div>
+        </Collapsible>
+      ) : null}
+    </Section>
+  );
+}
+
+function Collapsible({
+  title,
+  children,
+  defaultOpen,
+  tone,
+}: {
+  title: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  tone?: "danger";
+}) {
+  return (
+    <details className="mt-2 rounded border border-app-border bg-app-surface px-2 py-1" open={defaultOpen}>
+      <summary
+        className={[
+          "cursor-pointer text-[10px] font-semibold uppercase tracking-wider",
+          tone === "danger" ? "text-app-danger" : "text-app-text-muted",
+        ].join(" ")}
+      >
+        {title}
+      </summary>
+      <div className="mt-1 min-w-0">{children}</div>
+    </details>
+  );
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value : "";
+}
+
+function readFiles(value: unknown): Array<{ path: string; content: string }> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(
+      (entry): entry is { path: string; content: string } =>
+        Boolean(entry) &&
+        typeof entry === "object" &&
+        typeof (entry as { path?: unknown }).path === "string" &&
+        typeof (entry as { content?: unknown }).content === "string",
+    )
+    .map((entry) => ({ path: entry.path, content: entry.content }));
+}
+
+function readStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function readNumberList(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is number => typeof entry === "number");
+}
+
+function extractProposalContent(payload: Record<string, unknown>): string | undefined {
+  const proposal = payload.proposal;
+  if (!proposal || typeof proposal !== "object") return undefined;
+  const content = (proposal as { content?: unknown }).content;
+  return typeof content === "string" ? content : undefined;
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }

@@ -471,7 +471,16 @@ export class UniversalAgent {
           startedAt: new Date().toISOString(),
           completedAt: new Date().toISOString(),
           durationMs: 0,
-          payload: { modelId, content: text, packageList: parsed.packages, externalDependencies: parsed.externalDependencies },
+          // `prompt` captures what the LLM saw so the Trace inspector can
+          // explain "why did this model say X". `output` is the raw response.
+          payload: {
+            modelId,
+            content: text,
+            packageList: parsed.packages,
+            externalDependencies: parsed.externalDependencies,
+            prompt: messagesToPromptText(messages),
+            output: text,
+          },
         });
         return {
           modelId,
@@ -499,7 +508,12 @@ export class UniversalAgent {
           startedAt: new Date().toISOString(),
           completedAt: new Date().toISOString(),
           durationMs: 0,
-          payload: { voterModelId: voterId, ranking },
+          payload: {
+            voterModelId: voterId,
+            ranking,
+            prompt: messagesToPromptText(messages),
+            output: text,
+          },
         });
         return { voterModelId: voterId, ranking };
       }),
@@ -540,10 +554,13 @@ export class UniversalAgent {
       proposal: entry.p,
     }))];
     let implementError: unknown;
+    let lastImplementPromptText = "";
     for (let candidateIdx = 0; candidateIdx < implementCandidates.length; candidateIdx += 1) {
       const candidate = implementCandidates[candidateIdx]!;
       try {
-        codeText = await this.llm.complete(implementPrompt(context, candidate.proposal), {
+        const implementMessages = implementPrompt(context, candidate.proposal);
+        lastImplementPromptText = messagesToPromptText(implementMessages);
+        codeText = await this.llm.complete(implementMessages, {
           model: candidate.winnerModelId,
         });
         const parsed = parseFilesJson(codeText);
@@ -589,7 +606,7 @@ export class UniversalAgent {
       startedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: 0,
-      payload: { files, raw: codeText },
+      payload: { files, raw: codeText, prompt: lastImplementPromptText, output: codeText },
     });
 
     // ── Step 4-5: REVIEW + REVISE ────────────────────────────────────
@@ -604,8 +621,9 @@ export class UniversalAgent {
       const reviews = (
         await Promise.all(
           reviewerIds.map(async (reviewerId) => {
+            const messages = reviewPrompt(context, winner.proposal, formatFilesForPrompt(files));
+            const promptText = messagesToPromptText(messages);
             try {
-              const messages = reviewPrompt(context, winner.proposal, formatFilesForPrompt(files));
               const text = await this.llm.complete(messages, { model: reviewerId });
               const verdict = parseReviewVerdict(text);
               await emit({
@@ -619,7 +637,12 @@ export class UniversalAgent {
                 startedAt: new Date().toISOString(),
                 completedAt: new Date().toISOString(),
                 durationMs: 0,
-                payload: { reviewerModelId: reviewerId, ...verdict },
+                payload: {
+                  reviewerModelId: reviewerId,
+                  ...verdict,
+                  prompt: promptText,
+                  output: text,
+                },
               });
               return verdict;
             } catch (error) {
@@ -635,7 +658,12 @@ export class UniversalAgent {
                 startedAt: new Date().toISOString(),
                 completedAt: new Date().toISOString(),
                 durationMs: 0,
-                payload: { reviewerModelId: reviewerId, skipped: true },
+                payload: {
+                  reviewerModelId: reviewerId,
+                  skipped: true,
+                  prompt: promptText,
+                  error: error instanceof Error ? error.message : String(error),
+                },
               });
               return undefined;
             }
@@ -646,11 +674,10 @@ export class UniversalAgent {
       if (reviews.every((r) => r.verdict === "pass")) break;
       const findings = reviews.flatMap((r) => r.findings);
       if (attempt + 1 >= config.maxRevisionAttempts) break;
+      const reviseMessages = revisePrompt(context, winner.proposal, formatFilesForPrompt(files), findings);
+      const revisePromptText = messagesToPromptText(reviseMessages);
       try {
-        codeText = await this.llm.complete(
-          revisePrompt(context, winner.proposal, formatFilesForPrompt(files), findings),
-          { model: winner.winnerModelId },
-        );
+        codeText = await this.llm.complete(reviseMessages, { model: winner.winnerModelId });
         const parsed = parseFilesJson(codeText);
         if (parsed.length > 0) files = parsed;
       } catch (error) {
@@ -668,7 +695,12 @@ export class UniversalAgent {
           startedAt: new Date().toISOString(),
           completedAt: new Date().toISOString(),
           durationMs: 0,
-          payload: { attempt: attempt + 1, skipped: true },
+          payload: {
+            attempt: attempt + 1,
+            skipped: true,
+            prompt: revisePromptText,
+            error: error instanceof Error ? error.message : String(error),
+          },
         });
         break;
       }
@@ -684,7 +716,13 @@ export class UniversalAgent {
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: 0,
-        payload: { attempt: attempt + 1, files, findings },
+        payload: {
+          attempt: attempt + 1,
+          files,
+          findings,
+          prompt: revisePromptText,
+          output: codeText,
+        },
       });
       currentCodeSpanId = reviseSpanId;
     }
@@ -705,11 +743,12 @@ export class UniversalAgent {
       const output = await adapter.runToolForQa(registered.toolName, qaInput);
       let oracle: { verdict: "passed" | "failed"; failures: string[] };
       const qaSpanId = createSpanId("council-qa");
+      const qaMessages = qaOraclePrompt(context, output);
+      const qaPromptText = messagesToPromptText(qaMessages);
+      let qaOracleText = "";
       try {
-        const oracleText = await this.llm.complete(qaOraclePrompt(context, output), {
-          modelTier: "M",
-        });
-        oracle = parseQaOracle(oracleText);
+        qaOracleText = await this.llm.complete(qaMessages, { modelTier: "M" });
+        oracle = parseQaOracle(qaOracleText);
       } catch (error) {
         await emit({
           spanId: qaSpanId,
@@ -723,7 +762,14 @@ export class UniversalAgent {
           startedAt: new Date().toISOString(),
           completedAt: new Date().toISOString(),
           durationMs: 0,
-          payload: { attempt: attempt + 1, qaInput, output, oracleFailed: true },
+          payload: {
+            attempt: attempt + 1,
+            qaInput,
+            output,
+            oracleFailed: true,
+            prompt: qaPromptText,
+            error: error instanceof Error ? error.message : String(error),
+          },
         });
         break;
       }
@@ -738,18 +784,24 @@ export class UniversalAgent {
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
         durationMs: 0,
-        payload: { attempt: attempt + 1, qaInput, output, ...oracle },
+        payload: {
+          attempt: attempt + 1,
+          qaInput,
+          output,
+          ...oracle,
+          prompt: qaPromptText,
+          oracleOutput: qaOracleText,
+        },
       });
       if (oracle.verdict === "passed") {
         qaPassed = true;
         break;
       }
       if (attempt + 1 >= config.maxQaRepairAttempts) break;
+      const repairMessages = repairPrompt(context, winner.proposal, formatFilesForPrompt(files), oracle.failures);
+      const repairPromptText = messagesToPromptText(repairMessages);
       try {
-        codeText = await this.llm.complete(
-          repairPrompt(context, winner.proposal, formatFilesForPrompt(files), oracle.failures),
-          { model: winner.winnerModelId },
-        );
+        codeText = await this.llm.complete(repairMessages, { model: winner.winnerModelId });
         const parsed = parseFilesJson(codeText);
         if (parsed.length === 0) throw new Error("Repair step returned no parsable files.");
         files = parsed;
@@ -769,7 +821,13 @@ export class UniversalAgent {
           startedAt: new Date().toISOString(),
           completedAt: new Date().toISOString(),
           durationMs: 0,
-          payload: { attempt: attempt + 1, files, failures: oracle.failures },
+          payload: {
+            attempt: attempt + 1,
+            files,
+            failures: oracle.failures,
+            prompt: repairPromptText,
+            output: codeText,
+          },
         });
         currentCodeSpanId = repairSpanId;
       } catch (error) {
@@ -785,7 +843,12 @@ export class UniversalAgent {
           startedAt: new Date().toISOString(),
           completedAt: new Date().toISOString(),
           durationMs: 0,
-          payload: { attempt: attempt + 1, skipped: true },
+          payload: {
+            attempt: attempt + 1,
+            skipped: true,
+            prompt: repairPromptText,
+            error: error instanceof Error ? error.message : String(error),
+          },
         });
         break;
       }
@@ -7006,6 +7069,14 @@ function formatFilesForPrompt(files: ReadonlyArray<{ path: string; content: stri
   return files
     .map((file) => `// ===== ${file.path} =====\n${file.content}`)
     .join("\n\n");
+}
+
+function messagesToPromptText(messages: ReadonlyArray<{ role: string; content: string }>): string {
+  // Joins the system + user messages we send to the LLM into a single
+  // human-readable string. Used to attach the actual prompt to each
+  // council event payload so the Trace inspector can show "what did
+  // this model see?" alongside its response.
+  return messages.map((m) => `[${m.role}]\n${m.content}`).join("\n\n");
 }
 
 function synthesizeQaInput(context: import("./toolBuildCouncil.js").ToolBuildContext): Record<string, unknown> {
