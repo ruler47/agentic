@@ -9,7 +9,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiFetch } from "@/api/client";
+import { apiFetch } from "@/lib/fetch";
 import type { AgentRunRecord } from "@/api/types";
 
 export type ToolBuildRunInput = {
