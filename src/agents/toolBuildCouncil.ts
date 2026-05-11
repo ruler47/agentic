@@ -29,6 +29,19 @@ export type ToolBuildContext = {
   /** QA acceptance criteria, one bullet per requirement. */
   qaCriteria: string[];
   /**
+   * Reference docs the operator attached: OpenAPI specs, API READMEs,
+   * PDF manuals, etc. Each entry is the EXTRACTED TEXT (the council
+   * upstream already turned PDFs / non-text into utf-8 via reader
+   * tools). The prompts embed these so models don't hallucinate the
+   * external contract.
+   */
+  referenceDocs?: Array<{
+    filename: string;
+    mimeType: string;
+    /** Plain-text content extracted from the file. */
+    content: string;
+  }>;
+  /**
    * For rework / bugfix: existing tool name + context of what went wrong.
    * If both are present the prompts shift from "build new" to "fix this
    * existing tool".
@@ -231,6 +244,35 @@ function sanitizeForFileName(value: string): string {
   return (value.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 120) || "council_tool");
 }
 
+/**
+ * Render the operator-attached reference docs as a single block the
+ * model can read. We cap each doc at 12 000 chars to keep the prompt
+ * from blowing the context window; the model gets a "[truncated …]"
+ * marker so it knows there's more content available if it asks.
+ *
+ * Returns undefined when there are no docs — the caller filters
+ * undefined entries out of the prompt so an empty block doesn't show.
+ */
+function formatReferenceDocsBlock(
+  docs: ToolBuildContext["referenceDocs"] | undefined,
+): string | undefined {
+  if (!docs || docs.length === 0) return undefined;
+  const sections = docs.map((doc, i) => {
+    const truncated = doc.content.length > 12000;
+    const body = truncated
+      ? `${doc.content.slice(0, 12000)}\n…[truncated ${doc.content.length - 12000} chars]`
+      : doc.content;
+    return `--- Reference #${i + 1}: ${doc.filename} (${doc.mimeType}) ---\n${body}`;
+  });
+  return [
+    "Reference materials the operator attached (API docs, OpenAPI specs, READMEs, etc.).",
+    "Treat these as ground truth for any external contract — endpoints, payload shapes,",
+    "field names, auth, error codes. Do not invent details that contradict them.",
+    "",
+    sections.join("\n\n"),
+  ].join("\n");
+}
+
 export function brainstormPrompt(
   context: ToolBuildContext,
   councilSize: number,
@@ -244,6 +286,7 @@ export function brainstormPrompt(
     context.qaCriteria.length > 0
       ? `QA acceptance criteria:\n${context.qaCriteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
       : undefined,
+    formatReferenceDocsBlock(context.referenceDocs),
     context.existingToolName
       ? `Rework target — existing tool: ${context.existingToolName}`
       : undefined,
@@ -312,6 +355,7 @@ export function implementPrompt(
       ? `Acceptance criteria:\n${context.qaCriteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
       : undefined,
     context.secretHandle ? `Secret handle available: ${context.secretHandle}` : undefined,
+    formatReferenceDocsBlock(context.referenceDocs),
     context.existingToolName
       ? `Rework target: ${context.existingToolName} (start from this tool, do not duplicate state).`
       : undefined,
@@ -393,9 +437,11 @@ export function revisePrompt(
   code: string,
   reviewFindings: readonly string[],
 ): Message[] {
+  const refsBlock = formatReferenceDocsBlock(context.referenceDocs);
   const user = [
     `Tool name: ${context.name}`,
     `User task: ${context.description}`,
+    refsBlock,
     "Proposal:",
     winner.content.trim(),
     "",
@@ -409,7 +455,9 @@ export function revisePrompt(
     "behaviour. Emit the FULL revised tool body (same single file at the same",
     `path), wrapped in the same JSON envelope: {"files":[{"path","content"}]}.`,
     "Do not re-emit scaffolding (index.ts, runtime/server.ts, package.json, etc).",
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
   return [
     { role: "system", content: COUNCIL_SYSTEM_PROMPT_DEFAULT },
     { role: "user", content: user },
@@ -487,9 +535,11 @@ export function repairPrompt(
   code: string,
   qaFailures: readonly string[],
 ): Message[] {
+  const refsBlock = formatReferenceDocsBlock(context.referenceDocs);
   const user = [
     `Tool name: ${context.name}`,
     `User task: ${context.description}`,
+    refsBlock,
     "Proposal:",
     winner.content.trim(),
     "",
@@ -504,7 +554,9 @@ export function repairPrompt(
     `in the same JSON envelope: {"files":[{"path","content"}]}. Do not re-emit`,
     "scaffolding (index.ts, runtime/server.ts, package.json, etc). Do not change",
     "the tool name.",
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
   return [
     { role: "system", content: COUNCIL_SYSTEM_PROMPT_DEFAULT },
     { role: "user", content: user },

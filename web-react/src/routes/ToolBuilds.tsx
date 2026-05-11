@@ -67,6 +67,15 @@ export function ToolBuildsPage() {
   );
 }
 
+type PendingReference = {
+  filename: string;
+  mimeType: string;
+  size: number;
+  contentBase64: string;
+};
+
+const REFERENCE_FILE_CAP_MB = 5;
+
 function NewCouncilBuild({ defaultQaCriteria }: { defaultQaCriteria: string }) {
   const create = useCreateToolBuildRun();
   const [open, setOpen] = useState(false);
@@ -74,6 +83,32 @@ function NewCouncilBuild({ defaultQaCriteria }: { defaultQaCriteria: string }) {
   const [description, setDescription] = useState("");
   const [qaCriteriaText, setQaCriteriaText] = useState("");
   const [secretHandle, setSecretHandle] = useState("");
+  const [references, setReferences] = useState<PendingReference[]>([]);
+  const [referenceError, setReferenceError] = useState<string | undefined>();
+
+  const onFilesPicked = async (files: FileList | null) => {
+    setReferenceError(undefined);
+    if (!files) return;
+    const next: PendingReference[] = [];
+    for (const file of Array.from(files)) {
+      if (file.size > REFERENCE_FILE_CAP_MB * 1024 * 1024) {
+        setReferenceError(`${file.name}: exceeds ${REFERENCE_FILE_CAP_MB} MB cap.`);
+        return;
+      }
+      const buffer = await file.arrayBuffer();
+      next.push({
+        filename: file.name,
+        mimeType: file.type || guessMimeFromName(file.name),
+        size: file.size,
+        contentBase64: arrayBufferToBase64(buffer),
+      });
+    }
+    setReferences((prev) => [...prev, ...next]);
+  };
+
+  const removeReference = (filename: string) => {
+    setReferences((prev) => prev.filter((ref) => ref.filename !== filename));
+  };
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -88,6 +123,13 @@ function NewCouncilBuild({ defaultQaCriteria }: { defaultQaCriteria: string }) {
         description: description.trim(),
         qaCriteria: qaCriteria.length > 0 ? qaCriteria : undefined,
         secretHandle: secretHandle.trim() || undefined,
+        references: references.length > 0
+          ? references.map((ref) => ({
+              filename: ref.filename,
+              mimeType: ref.mimeType,
+              contentBase64: ref.contentBase64,
+            }))
+          : undefined,
       },
       {
         onSuccess: () => {
@@ -95,6 +137,8 @@ function NewCouncilBuild({ defaultQaCriteria }: { defaultQaCriteria: string }) {
           setDescription("");
           setQaCriteriaText("");
           setSecretHandle("");
+          setReferences([]);
+          setReferenceError(undefined);
           setOpen(false);
         },
       },
@@ -158,6 +202,51 @@ function NewCouncilBuild({ defaultQaCriteria }: { defaultQaCriteria: string }) {
               className="resize-y rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-sm outline-none focus:border-app-accent/60"
             />
           </label>
+          <fieldset className="flex flex-col gap-2 rounded-md border border-app-border bg-app-surface-2 p-3">
+            <legend className="text-[10px] uppercase tracking-wider text-app-text-muted">
+              Reference docs (OpenAPI, README, PDF, YAML, …)
+            </legend>
+            <p className="text-[11px] text-app-text-muted">
+              The council reads these before brainstorming. Text-like files (md / yaml /
+              json / openapi / txt) are read in-process. Binary files (PDF, etc.) require
+              a registered tool with capability <code>reads:&lt;mime&gt;</code> — if missing,
+              the run halts with a clear message and you build the reader first.
+              Cap: {REFERENCE_FILE_CAP_MB} MB per file.
+            </p>
+            <input
+              type="file"
+              multiple
+              onChange={(event) => void onFilesPicked(event.target.files)}
+              className="text-[11px] file:mr-3 file:rounded-md file:border file:border-app-border file:bg-app-surface file:px-3 file:py-1 file:text-[11px] file:text-app-text"
+            />
+            {references.length > 0 ? (
+              <ul className="flex flex-col gap-1 text-[11px]">
+                {references.map((ref) => (
+                  <li
+                    key={ref.filename}
+                    className="flex items-center justify-between gap-2 rounded border border-app-border bg-app-surface px-2 py-1"
+                  >
+                    <span className="min-w-0 truncate font-mono">
+                      {ref.filename}
+                      <span className="ml-2 text-app-text-muted">
+                        {formatFileSize(ref.size)} · {ref.mimeType || "unknown"}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeReference(ref.filename)}
+                      className="rounded text-app-text-muted hover:text-app-danger"
+                    >
+                      remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {referenceError ? (
+              <p className="text-[11px] text-app-danger">{referenceError}</p>
+            ) : null}
+          </fieldset>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
               Secret handle (optional — the tool reads this at runtime)
@@ -275,4 +364,46 @@ function RecentCouncilRuns({
 function extractToolName(run: AgentRunRecord): string | undefined {
   const match = /^Council build for ([^:]+):/.exec(run.task ?? "");
   return match ? match[1].trim() : undefined;
+}
+
+/** Convert ArrayBuffer to base64 without blowing the call stack on
+ *  large files — `String.fromCharCode(...arr)` overflows past ~100 kB. */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + chunkSize, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+/** Best-effort MIME guess from the file extension when the browser
+ *  doesn't supply one (which happens for .yaml / .openapi / .md). */
+function guessMimeFromName(filename: string): string {
+  const ext = filename.toLowerCase().split(".").pop() ?? "";
+  switch (ext) {
+    case "yaml":
+    case "yml":
+      return "application/yaml";
+    case "json":
+      return "application/json";
+    case "md":
+    case "markdown":
+      return "text/markdown";
+    case "txt":
+      return "text/plain";
+    case "openapi":
+      return "application/openapi+yaml";
+    case "pdf":
+      return "application/pdf";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

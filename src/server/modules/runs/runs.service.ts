@@ -56,6 +56,7 @@ import {
   parseOptionalReason,
   parseOptionalText,
   parseOptionalTextArray,
+  parseReferenceAttachments,
   sanitizeAuditMetadata,
 } from "../../common/parsers.js";
 import {
@@ -631,6 +632,7 @@ export class RunsService implements OnApplicationBootstrap {
       typeof body.bugContext === "string" && body.bugContext.trim().length > 0
         ? body.bugContext.trim()
         : undefined;
+    const referenceAttachments = parseReferenceAttachments(body.references);
 
     const task = existingToolName
       ? `Council rework for ${existingToolName}: ${description}`
@@ -651,8 +653,43 @@ export class RunsService implements OnApplicationBootstrap {
       targetId: name,
       status: "pending",
       runId: run.id,
-      summary: `Tool-build council requested: ${name}${existingToolName ? ` (rework of ${existingToolName})` : ""}`,
+      summary: `Tool-build council requested: ${name}${existingToolName ? ` (rework of ${existingToolName})` : ""}${referenceAttachments.length > 0 ? ` with ${referenceAttachments.length} reference doc(s)` : ""}`,
     });
+
+    // Resolve reference docs into plain text before kicking the
+    // council. Text-like MIMEs (utf-8) decode directly; binary
+    // formats need a registered reader tool — when one's missing the
+    // run halts early with `waiting_tool_rework` so the operator can
+    // either build the reader first or remove the attachment.
+    let referenceDocs: import("../../../agents/toolBuildCouncil.js").ToolBuildContext["referenceDocs"] = undefined;
+    if (referenceAttachments.length > 0) {
+      const { resolveReferences } = await import("../../../agents/councilReferenceReader.js");
+      const registry = this.toolRegistry;
+      if (!registry) {
+        throw new ServiceUnavailableException(
+          "Reference docs were attached but the tool registry is not configured.",
+        );
+      }
+      const resolved = await resolveReferences({ attachments: referenceAttachments, registry });
+      if (resolved.missing.length > 0) {
+        // Surface the gap on the run and bail before we touch any
+        // LLM. The operator sees exactly which reader tool needs to
+        // exist before they can re-submit.
+        const summary = resolved.missing
+          .map((m) => `${m.filename} (${m.mimeType}): ${m.reason}`)
+          .join("\n");
+        await this.runs.fail(
+          run.id,
+          `Council build blocked: missing reader tools for ${resolved.missing.length} reference doc(s).\n\n${summary}`,
+        );
+        return { run: await this.runs.get(run.id) };
+      }
+      referenceDocs = resolved.texts.map((doc) => ({
+        filename: doc.filename,
+        mimeType: doc.mimeType,
+        content: doc.content,
+      }));
+    }
 
     void this.executeRun(run.id, task, [], {
       toolBuildContext: {
@@ -662,6 +699,7 @@ export class RunsService implements OnApplicationBootstrap {
         secretHandle,
         existingToolName,
         bugContext,
+        referenceDocs,
       },
     });
 

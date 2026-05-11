@@ -24,6 +24,17 @@ export type ToolBuildRunInput = {
   /** When provided, the council reworks the existing tool instead of building fresh. */
   existingToolName?: string;
   bugContext?: string;
+  /**
+   * Reference docs the council should read before brainstorming
+   * (OpenAPI specs, READMEs, PDFs). Each file is sent inline as
+   * base64; the backend resolves text-like MIMEs in place and
+   * delegates binary formats to registered reader tools.
+   */
+  references?: Array<{
+    filename: string;
+    mimeType: string;
+    contentBase64: string;
+  }>;
 };
 
 const TOOL_BUILD_RUNS_KEY = ["tool-build-runs"] as const;

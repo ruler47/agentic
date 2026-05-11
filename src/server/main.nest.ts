@@ -14,7 +14,12 @@ async function bootstrap() {
     bufferLogs: false,
   });
 
-  app.use(json());
+  // Allow 25 MB JSON bodies — the Tool Builds form lets the operator
+  // attach reference docs (OpenAPI specs, PDFs, README dumps) inline
+  // as base64. The per-attachment cap (5 MB) is enforced in
+  // parseReferenceAttachments; this just leaves room for a handful
+  // of them plus the request envelope.
+  app.use(json({ limit: "25mb" }));
   app.use((error: unknown, _request: Request, response: Response, next: NextFunction) => {
     const candidate = error as { status?: unknown; statusCode?: unknown; type?: unknown; message?: unknown };
     if (
