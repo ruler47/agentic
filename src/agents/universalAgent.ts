@@ -249,7 +249,13 @@ export type ToolBuildCouncilAdapter = {
   registerToolFromFiles: (
     toolName: string,
     files: ReadonlyArray<{ path: string; content: string }>,
-    metadata: { description: string; version?: string; secretHandle?: string },
+    metadata: {
+      description: string;
+      version?: string;
+      secretHandle?: string;
+      /** QA-synthesized sample input, persisted as a metadata example. */
+      sampleInput?: Record<string, unknown>;
+    },
   ) => Promise<{ toolName: string; version: string }>;
   /** Invoke the registered tool with a QA-synthesized input. */
   runToolForQa: (toolName: string, input: Record<string, unknown>) => Promise<{
@@ -836,29 +842,13 @@ export class UniversalAgent {
       currentCodeSpanId = reviseSpanId;
     }
 
-    // ── Step 6: REGISTER ─────────────────────────────────────────────
-    let registered = await adapter.registerToolFromFiles(context.name, files, {
-      description: context.description,
-      secretHandle: context.secretHandle,
-    });
-
-    // ── Step 7-8: QA + REPAIR ────────────────────────────────────────
-    // Status semantic in this section:
-    //   `completed` = the agent for this step (tool / oracle / repair
-    //     model) finished its task and produced a result. The result
-    //     itself may be a failing verdict — that is still a success for
-    //     the agent (e.g. oracle correctly caught that the tool returned
-    //     ok=false). The verdict lives in payload + title.
-    //   `failed` = the agent itself broke (LLM exception, tool runtime
-    //     crashed, cancellation) and no useful result came back.
-    //
-    // Sample-input synthesis: the legacy `synthesizeQaInput` returned
-    // `{task, query}` which almost never matched a tool's declared
-    // inputSchema — the tool would throw on the missing field, then
-    // QA judged the error message instead of the tool's actual output.
-    // Ask a fast model to read the tool body and produce a JSON input
-    // that matches the schema. Falls back to the legacy stub if the
-    // synthesis step itself breaks.
+    // ── Step 5.5: QA INPUT SYNTHESIS ─────────────────────────────────
+    // We synthesize the QA input BEFORE registering so we can pass it
+    // through to the adapter — that lets `registerGenerated` persist
+    // the sample as a tool example. Manual Run on the Tools page then
+    // pre-fills the JSON input field with this sample instead of `{}`,
+    // so the operator can hit Run immediately without guessing the
+    // tool's input shape.
     const { synthesizeQaInputPrompt } = await import("./toolBuildCouncil.js");
     const toolBodyExcerpt = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
     let qaInput: Record<string, unknown> = synthesizeQaInput(context);
@@ -918,6 +908,26 @@ export class UniversalAgent {
         payload: { prompt: qaInputPromptText, error: error instanceof Error ? error.message : String(error), qaInput },
       });
     }
+
+    // ── Step 6: REGISTER ─────────────────────────────────────────────
+    // Pass the just-synthesized sample input to the adapter so it
+    // persists as a metadata example — the Tools-page Manual Run form
+    // pre-fills it.
+    let registered = await adapter.registerToolFromFiles(context.name, files, {
+      description: context.description,
+      secretHandle: context.secretHandle,
+      sampleInput: qaInput,
+    });
+
+    // ── Step 7-8: QA + REPAIR ────────────────────────────────────────
+    // Status semantic in this section:
+    //   `completed` = the agent for this step (tool / oracle / repair
+    //     model) finished its task and produced a result. The result
+    //     itself may be a failing verdict — that is still a success for
+    //     the agent (e.g. oracle correctly caught that the tool returned
+    //     ok=false). The verdict lives in payload + title.
+    //   `failed` = the agent itself broke (LLM exception, tool runtime
+    //     crashed, cancellation) and no useful result came back.
 
     let qaPassed = false;
     for (let attempt = 0; attempt < config.maxQaRepairAttempts; attempt += 1) {
@@ -1058,6 +1068,7 @@ export class UniversalAgent {
         registered = await adapter.registerToolFromFiles(context.name, files, {
           description: context.description,
           secretHandle: context.secretHandle,
+          sampleInput: qaInput,
         });
         await emit({
           spanId: repairSpanId,

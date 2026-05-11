@@ -62,7 +62,19 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
   async registerToolFromFiles(
     toolName: string,
     files: ReadonlyArray<{ path: string; content: string }>,
-    metadata: { description: string; version?: string; secretHandle?: string },
+    metadata: {
+      description: string;
+      version?: string;
+      secretHandle?: string;
+      /**
+       * Optional sample input — the QA-input-synthesizer's output for
+       * this tool. Persisted as a metadata `example` so the Tools-page
+       * Manual Run form shows it as a pre-filled JSON sample. Without
+       * this the operator gets `{}` and has to guess what shape the
+       * tool wants.
+       */
+      sampleInput?: Record<string, unknown>;
+    },
   ): Promise<{ toolName: string; version: string }> {
     const version = metadata.version ?? (await this.nextVersionFor(toolName));
     const sanitized = sanitizeName(toolName);
@@ -132,25 +144,34 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     //    body. registerGenerated above only saw scaffold-level fields
     //    (name, version, description); the inputSchema / outputSchema /
     //    examples live inside the LLM-emitted TS file and surface only
-    //    once the runtime imports it. Without this step the Tools page
-    //    shows "(no declared properties)" even when the tool body
-    //    declares a full JSON schema.
+    //    once the runtime imports it. We also persist the QA-synthesized
+    //    sample input as an example so the Tools-page Manual Run form
+    //    pre-fills it for the operator.
     const live = this.deps.getRegisteredTool?.(toolName);
-    if (live) {
-      const enriched = {
-        ...baseInput,
-        inputSchema: live.inputSchema,
-        outputSchema: live.outputSchema,
-        examples: live.examples,
-        requiredSecretHandles:
-          live.requiredSecretHandles && live.requiredSecretHandles.length > 0
-            ? live.requiredSecretHandles
-            : baseInput.requiredSecretHandles,
-      };
-      // Same-version re-register is an in-place update on the metadata
-      // store; promoteReplacement bumps versions and would loop.
-      await this.deps.metadataStore.registerGenerated(enriched);
-    }
+    // Always-on backfill paths so the Tools page is useful even when
+    // the tool failed to load (TS error, missing dep, etc.):
+    //   - inputSchema falls back to regex-parsed schema from the body
+    //   - examples falls back to the QA sampleInput if any
+    const fallbackInputSchema = extractInputSchemaFromSource(toolBody);
+    const exampleFromSample = metadata.sampleInput
+      ? [{ title: "Synthesized QA input", input: metadata.sampleInput }]
+      : undefined;
+    const enriched = {
+      ...baseInput,
+      inputSchema: (live?.inputSchema ?? coerceInputSchema(fallbackInputSchema)),
+      outputSchema: live?.outputSchema,
+      examples:
+        live?.examples && live.examples.length > 0
+          ? live.examples
+          : exampleFromSample,
+      requiredSecretHandles:
+        live?.requiredSecretHandles && live.requiredSecretHandles.length > 0
+          ? live.requiredSecretHandles
+          : baseInput.requiredSecretHandles,
+    };
+    // Same-version re-register is an in-place update on the metadata
+    // store; promoteReplacement bumps versions and would loop.
+    await this.deps.metadataStore.registerGenerated(enriched);
 
     return { toolName, version };
   }
@@ -177,6 +198,85 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
 
 function sanitizeName(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 120) || "council_tool";
+}
+
+/**
+ * Best-effort regex parse of the Tool body to extract the `inputSchema`
+ * literal. Used as a fallback when the runtime fails to load the tool
+ * (TS error, missing dep) — without this the Tools page shows
+ * "(no declared properties)" and the operator can't even tell what the
+ * tool's input shape is supposed to be. Returns undefined when the
+ * literal can't be found or parsed.
+ */
+/**
+ * Coerce a free-form JSON object into the strict ToolSchema shape that
+ * the metadata store requires (`{ type: "object", properties, required? }`).
+ * Returns undefined if the input isn't shaped like a JSON Schema object.
+ */
+function coerceInputSchema(value: Record<string, unknown> | undefined): import("./tool.js").ToolSchema | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const type = value.type;
+  const properties = value.properties;
+  if (type !== "object" || !properties || typeof properties !== "object") {
+    return undefined;
+  }
+  const out: import("./tool.js").ToolSchema = {
+    type: "object",
+    properties: properties as Record<string, unknown>,
+  };
+  if (Array.isArray(value.required)) {
+    out.required = (value.required as unknown[]).filter((entry): entry is string => typeof entry === "string");
+  }
+  return out;
+}
+
+function extractInputSchemaFromSource(source: string): Record<string, unknown> | undefined {
+  // Find `inputSchema:` followed by an opening brace; walk forward
+  // tracking brace depth so nested objects are captured correctly.
+  const marker = source.match(/inputSchema\s*:\s*\{/);
+  if (!marker || marker.index === undefined) return undefined;
+  const start = marker.index + marker[0].length - 1; // points at `{`
+  let depth = 0;
+  let inString: '"' | "'" | "`" | null = null;
+  let escape = false;
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source[i]!;
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") escape = true;
+      else if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      inString = ch;
+      continue;
+    }
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        const literal = source.slice(start, i + 1);
+        // Convert simple TS object literal → JSON. Two heuristics that
+        // cover what LLMs emit in practice:
+        //   - quote unquoted keys: `{ text: { type: "string" } }` → `{"text":{"type":"string"}}`
+        //   - strip trailing commas before } or ]
+        const jsonish = literal
+          .replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, '$1"$2":')
+          .replace(/,(\s*[}\]])/g, "$1")
+          // Single-quoted strings → double-quoted.
+          .replace(/'([^'\\]*)'/g, '"$1"');
+        try {
+          return JSON.parse(jsonish) as Record<string, unknown>;
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 function sanitizeRelativePath(value: string): string {
