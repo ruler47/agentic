@@ -428,6 +428,37 @@ export class UniversalAgent {
     const emit = createEmitter(options.onEvent);
     const runSpanId = createSpanId("run");
     const runStartedAt = options.now ?? new Date();
+    try {
+      return await this.runToolBuildCouncilInner(context, adapter, options, emit, runSpanId, runStartedAt);
+    } catch (error) {
+      // Close out the root span as `failed` so the Trace view doesn't
+      // keep it ticking forever while RunsService records the run as
+      // failed. Re-throw so the outer catch handles the actual error.
+      await emit({
+        spanId: runSpanId,
+        type: "run-started",
+        actor: "coordinator",
+        activity: "coordination",
+        status: "failed",
+        title: "Tool-build council run",
+        detail: error instanceof Error ? error.message : String(error),
+        startedAt: runStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(runStartedAt),
+        payload: { kind: "tool_build_council", toolBuildContext: context, error: error instanceof Error ? error.message : String(error) },
+      }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async runToolBuildCouncilInner(
+    context: import("./toolBuildCouncil.js").ToolBuildContext,
+    adapter: ToolBuildCouncilAdapter,
+    options: RunOptions,
+    emit: ReturnType<typeof createEmitter>,
+    runSpanId: string,
+    runStartedAt: Date,
+  ): Promise<AgentRunResult> {
 
     await emit({
       spanId: runSpanId,
@@ -1129,6 +1160,27 @@ export class UniversalAgent {
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(runStartedAt),
       payload: { ...registered, qaPassed, councilSize: councilModels.length, winner: winner.winnerModelId },
+    });
+
+    // Close out the root coordinator span. Without this the Trace view
+    // shows the council run as `started` (with a live ticking timer)
+    // even after RunsService has already marked the run as `completed`
+    // in the database. Re-emitting with the same spanId is an in-place
+    // status update via buildTraceNodes' last-event-wins merge.
+    await emit({
+      spanId: runSpanId,
+      type: "run-started",
+      actor: "coordinator",
+      activity: "coordination",
+      status: qaPassed ? "completed" : "failed",
+      title: "Tool-build council run",
+      detail: qaPassed
+        ? `Built ${registered.toolName} v${registered.version} (winner: ${winner.winnerModelId}); QA passed.`
+        : `Built ${registered.toolName} v${registered.version}; QA never passed after ${config.maxQaRepairAttempts} repair attempts.`,
+      startedAt: runStartedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(runStartedAt),
+      payload: { kind: "tool_build_council", toolBuildContext: context, qaPassed },
     });
 
     const finalAnswer = qaPassed

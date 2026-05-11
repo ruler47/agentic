@@ -207,8 +207,13 @@ test("runToolBuildCouncil orchestrates brainstorm → vote → implement → rev
   // get dropped and the user can't see who called whom. Verify every
   // non-root council event is parented to a previously-emitted span.
   const emittedSpans = new Set(events.map((event) => event.spanId));
+  // run-started is now emitted twice with the same spanId — once at
+  // the beginning (status=started) and once at the end (status=completed
+  // / failed) so the Trace Graph can close the coordinator span.
   const rooted = events.filter((event) => event.type === "run-started");
-  assert.equal(rooted.length, 1, "exactly one run-started root event expected");
+  assert.ok(rooted.length >= 1, "expected at least one run-started event");
+  const rootSpanIds = new Set(rooted.map((e) => e.spanId));
+  assert.equal(rootSpanIds.size, 1, "all run-started events must share one spanId");
   const orphans = events
     .filter((event) => event.type !== "run-started")
     .filter((event) => !event.parentSpanId || !emittedSpans.has(event.parentSpanId));
