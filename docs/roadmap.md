@@ -2300,3 +2300,129 @@ Slices:
       pruning).
 - **Phase G** (pending): delete the legacy provider chain, workflow, worker,
   workspace QA, and "build queue" endpoints once F passes.
+
+## Phase 15: Skill Memory Consolidation (JSON → Postgres)
+
+Status: **Designed, not started.**
+
+Today `SkillMemoryStore` has two implementations:
+`SkillMemory` (JSON file, default path `memory/skills.json`) and
+`PostgresSkillMemory` (full implementation: lexical+semantic search,
+embeddings, scope/sensitivity). The `skill_memories` Postgres table already
+exists (`src/db/migrate.ts:285`) with pgvector + gin indexes. Production
+runtime selects between them at
+`src/server/persistence/persistence.module.ts:132`:
+`pool ? new PostgresSkillMemory(...) : new SkillMemory()`.
+
+The JSON store is now effectively a legacy fallback that creates more problems
+than it solves:
+
+1. **Tests dirty the repo.** `tests/universalAgentToolBuildCouncil.test.ts:111,263,306`
+   call `new SkillMemory()` without arguments, which writes to the
+   real `memory/skills.json` in the working tree. The file shows as modified
+   in every fresh checkout.
+2. **Silent fallback hides misconfig.** If Postgres is briefly unavailable
+   at server bootstrap, the server flips to JSON without telling anyone, then
+   accumulates state in a file nobody is watching.
+3. **CLI writes into the repo.** `src/cli.ts:15` instantiates
+   `new SkillMemory()` next to the source tree, so the same default-path
+   issue bleeds into local CLI runs.
+
+**Why now:** memory shouldn't be a runtime artifact in git. Server has a
+proper backend already — it just needs to be the only backend, with the
+JSON path repurposed for explicit standalone use.
+
+### Principles (kept deliberately small so any slice can be skipped)
+
+1. **`SkillMemoryStore` interface is the contract.** No agent or service
+   code learns about the concrete backend. Adding SQLite / Redis later is a
+   new class, nothing else.
+2. **Each slice is one PR, independently revertible.** No slice depends on a
+   later slice's wiring. Slice 1 ships even if Slice 3 never does.
+3. **Server fail-fast is opt-in via config flag**, so if the new behaviour
+   regresses we toggle one env var instead of reverting a PR.
+4. **No data migration assumed.** Existing JSON content is either junk (test
+   artefacts) or one real entry — Slice 5 is optional and only runs if the
+   operator decides the existing file is worth preserving.
+
+### Slices
+
+- **Slice A — add ephemeral in-memory store, make file path explicit.**
+  Files: `src/memory/skillMemory.ts`.
+  - Add `InMemorySkillMemory implements SkillMemoryStore` — a pure `Map`,
+    no disk I/O, no semantic search (just substring/lexical match).
+  - Drop the default value on `SkillMemory` constructor — `filePath`
+    becomes a required arg. The compiler now flags every call site that
+    relied on the implicit `memory/skills.json` write.
+  - Purely additive (new class) plus one small signature tightening.
+  - Revert = restore default arg + delete the new class.
+
+- **Slice B — migrate CLI and tests to in-memory or explicit paths.**
+  Files: `src/cli.ts`, ~16 test files under `tests/`.
+  - `src/cli.ts`: branch on `DATABASE_URL`. If set → create pool, run
+    `migrate`, return `PostgresSkillMemory`. Otherwise → `InMemorySkillMemory`.
+    JSON file remains available only when the user passes
+    `--memory-file=<path>`.
+  - `tests/universalAgentToolBuildCouncil.test.ts` (the 3 dirty call sites):
+    `new InMemorySkillMemory()`.
+  - Other tests already pass an explicit `join(tmpdir, "skills.json")` —
+    leave them alone unless trivial to flip; their writes never touch the
+    repo.
+  - Revert = restore `new SkillMemory()` calls + reintroduce default arg.
+
+- **Slice C — gate the server fallback behind a flag.**
+  Files: `src/server/persistence/persistence.module.ts`, `src/server/config/env.ts`.
+  - Add `skillMemoryRequirePostgres: boolean` (default `true`) to env.
+  - Replace the silent ternary with:
+    ```ts
+    if (pool) return new PostgresSkillMemory(pool, embedding);
+    if (env.skillMemoryRequirePostgres) {
+      throw new Error("Skill memory requires Postgres; set DATABASE_URL or skillMemoryRequirePostgres=false");
+    }
+    return new InMemorySkillMemory(); // ephemeral fallback, never touches disk
+    ```
+  - Rollback path: set `skillMemoryRequirePostgres=false` in the env file,
+    no code change.
+
+- **Slice D — stop tracking `memory/skills.json`.**
+  Files: `.gitignore`, repo state.
+  - `git rm --cached memory/skills.json`.
+  - Add `memory/skills.json` to `.gitignore`.
+  - Commit "Stop tracking runtime skill memory state".
+  - Revert = `git add memory/skills.json` + remove gitignore line.
+
+- **Slice E (optional) — one-shot importer for existing JSON state.**
+  Files: new `scripts/import-skill-memory-json.mjs`.
+  - Reads `memory/skills.json`, iterates entries.
+  - For each: compute embedding via the same provider Postgres uses,
+    insert into `skill_memories` with `ON CONFLICT (id) DO NOTHING`.
+  - Idempotent: re-running has no effect once entries exist.
+  - Pure addition; deletable in one commit.
+  - Only worth running if operators want the one "Multi-Criteria Set
+    Intersection" entry currently in the file preserved into Postgres.
+
+### What doesn't change
+
+- `SkillMemoryStore` interface, `SkillMemoryEntry` schema.
+- Postgres table, indexes, migrations.
+- Docker production runtime (it was already on Postgres).
+- Agent read/write call sites in `UniversalAgent`.
+
+### Risks and rollback
+
+| Risk | Mitigation |
+|---|---|
+| Server suddenly refuses to start on a host without DB | Slice C ships behind `skillMemoryRequirePostgres` flag; set to `false` to restore old fallback without redeploy. |
+| In-memory CLI mode silently loses learning between runs | Documented; users who want persistence pass `--memory-file=<path>` or set `DATABASE_URL`. |
+| Lost the one accepted JSON entry on cutover | Slice E (importer) handles it; skip the slice if entry is considered junk. |
+| 16 test call sites take longer than expected | Slices A–C still ship as a working set even if Slice B drags; the file just stays dirty until the test migration lands. |
+
+### Estimate
+
+- Slice A: ~30 min
+- Slice B: ~1 h (mechanical, type-driven)
+- Slice C: ~15 min
+- Slice D: ~5 min
+- Slice E: ~1–2 h if needed
+
+Core cleanup ≈ 2 h. Optional importer adds 1–2 h.
