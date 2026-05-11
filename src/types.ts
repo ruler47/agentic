@@ -194,6 +194,27 @@ export type AgentRunResult = {
   reviews: ReviewResult[];
   artifacts?: AgentArtifact[];
   learnedSkill?: SkillMemoryEntry;
+  /**
+   * Phase 16 Slice D: optional terminal-status override.
+   *
+   * The default contract is "agent.run() returned, so the run is
+   * `completed`". For tool-build council runs that finish the
+   * pipeline but never passed QA, that label is misleading — the
+   * tool was registered in metadata but the operator's actual
+   * intent (a working tool) failed. Setting `runStatus: "failed"`
+   * lets the runtime caller (RunsService) record the run as
+   * `failed` while still preserving the final-answer text, trace
+   * events, and any artefacts. Absent or "completed" means the
+   * normal happy-path completion.
+   */
+  runStatus?: "completed" | "failed";
+  /**
+   * Phase 16 Slice D: human-readable reason for `runStatus: "failed"`.
+   * Used as the message persisted on the runs row so the Runs page
+   * shows why the run is red. Ignored when `runStatus` is not
+   * "failed".
+   */
+  runFailureReason?: string;
 };
 
 export type AgentEventType =
@@ -246,6 +267,7 @@ export type AgentEventType =
   | "tool-build-qa-attempt"
   | "tool-build-code-repaired"
   | "tool-build-registered"
+  | "tool-build-registration-aborted"
   // Phase 14 / Phase 2: parent build halted on a missing reader tool.
   | "tool-build-waiting-for-reader";
 

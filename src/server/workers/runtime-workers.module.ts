@@ -21,6 +21,7 @@ import {
 } from "../../tools/toolPackageRunner.js";
 import { ToolServiceSupervisor } from "../../tools/toolServiceSupervisor.js";
 import { reconcileToolsDirectory } from "../../tools/councilToolAdapter.js";
+import { createAtomicReloader } from "../../tools/atomicReload.js";
 import { resolve } from "node:path";
 import { ToolBuildWorkflow } from "../../tools/toolBuildWorkflow.js";
 import { ToolBuildWorker } from "../../tools/toolBuildWorker.js";
@@ -102,21 +103,25 @@ const reloadGeneratedToolsProvider: Provider = {
     registry: ToolRegistry,
     metadata: ToolMetadataStore | undefined,
     runners: ToolPackageRunner[],
-  ): (() => Promise<void>) => {
-    const loadedNames = new Set<string>();
-    return async () => {
-      for (const name of loadedNames) registry.unregister(name);
-      loadedNames.clear();
-      const results = metadata
-        ? await loadGeneratedTools(registry, metadata, process.cwd(), runners)
-        : [];
-      for (const result of results.filter((entry) => entry.loaded)) {
-        loadedNames.add(result.name);
-      }
-      const loaded = results.filter((entry) => entry.loaded).length;
-      if (loaded > 0) logger.log(`Reloaded ${loaded} generated tool(s).`);
-    };
-  },
+  ): (() => Promise<void>) =>
+    // Phase 16 Slice A — atomic reload (see `src/tools/atomicReload.ts`
+    // for the rationale). The orchestrator now (1) loads first and
+    // only unregisters stale tools AFTER the new set is in place, so
+    // there is no empty window for concurrent QA reads, and (2)
+    // serializes calls via a promise chain so parallel council
+    // builds cannot race on the shared "loaded names" state.
+    createAtomicReloader({
+      load: async () => {
+        const results = metadata
+          ? await loadGeneratedTools(registry, metadata, process.cwd(), runners)
+          : [];
+        return results.filter((entry) => entry.loaded).map((entry) => entry.name);
+      },
+      unregister: (name) => {
+        registry.unregister(name);
+      },
+      log: (message) => logger.log(message),
+    }),
 };
 
 const supervisorProvider: Provider = {

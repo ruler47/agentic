@@ -1006,6 +1006,16 @@ export class UniversalAgent {
     //     crashed, cancellation) and no useful result came back.
 
     let qaPassed = false;
+    // Phase 16 Slice E: track the actual number of QA attempts the
+    // loop performed. Previously the run summary read "QA failed
+    // after `config.maxQaRepairAttempts` repair attempts" regardless
+    // of how many cycles actually ran, because the inner `break` on
+    // "repair returned no parsable files" exited the loop early. The
+    // trace then showed a single broken-repair event paired with a
+    // summary that lied about the count. We now record the real
+    // count and surface it in every downstream message.
+    let attemptsRun = 0;
+    let repairBrokenEarly = false;
     for (let attempt = 0; attempt < config.maxQaRepairAttempts; attempt += 1) {
       ensureNotCancelled();
       // Tool call span: visible separately from the oracle so the
@@ -1118,6 +1128,12 @@ export class UniversalAgent {
           oracleOutput: qaOracleText,
         },
       });
+      // Phase 16 Slice E: count this QA cycle as run before we
+      // decide whether to repair or stop. Every iteration of the
+      // outer loop either passed QA, hit the cap, or attempted a
+      // repair — that's three terminal paths and we want all of
+      // them reflected in `attemptsRun`.
+      attemptsRun = attempt + 1;
       if (oracle.verdict === "passed") {
         qaPassed = true;
         break;
@@ -1202,6 +1218,15 @@ export class UniversalAgent {
             error: error instanceof Error ? error.message : String(error),
           },
         });
+        // Phase 16 Slice E: record that we stopped because the repair
+        // step itself broke (no parsable files, LLM exception). The
+        // distinction matters in the final run summary because
+        // "QA failed after N attempts; repair gave up" is a different
+        // operator story than "QA failed after N attempts, all
+        // parsable, no improvement". The outer `attemptsRun` was
+        // already advanced to `attempt + 1` above before the repair
+        // started.
+        repairBrokenEarly = true;
         break;
       }
     }
@@ -1346,22 +1371,40 @@ export class UniversalAgent {
     }
 
     // ── Step 9: FINALIZE ─────────────────────────────────────────────
+    // Phase 16 Slice C: use distinct event types for happy-path
+    // registration vs. registration-without-passing-QA. The Trace
+    // Graph and Run timeline now show
+    // `tool-build-registration-aborted` instead of a green
+    // "Registered" pill that contradicts the failed run-level
+    // status. The payload still carries `qaPassed` so consumers can
+    // distinguish if needed.
+    // Phase 16 Slice E: report the actual number of attempts the loop
+    // ran, with a tail clause when the repair LLM broke before we
+    // exhausted the cap. The old summary always read
+    // "after `maxQaRepairAttempts` repair attempts" even when the
+    // loop only ran once and bailed on a non-parsable repair
+    // response — see `run_1778537976034_gyr3a62p`.
+    const attemptsLabel = attemptsRun === 1 ? "attempt" : "attempts";
+    const qaFailureDetail = `QA failed after ${attemptsRun} ${attemptsLabel}` +
+      (repairBrokenEarly ? "; repair step returned no parsable files" : "");
     await emit({
       spanId: createSpanId("council-registered"),
       parentSpanId: runSpanId,
-      type: "tool-build-registered",
+      type: qaPassed ? "tool-build-registered" : "tool-build-registration-aborted",
       actor: "coordinator",
       activity: "coordination",
       status: qaPassed ? "completed" : "failed",
       title: qaPassed
         ? `Tool registered: ${registered.toolName} v${registered.version}`
-        : `Tool registered (QA failed after ${config.maxQaRepairAttempts} attempts)`,
+        : `Tool registration aborted (${qaFailureDetail})`,
       startedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(runStartedAt),
       payload: {
         ...registered,
         qaPassed,
+        attemptsRun,
+        repairBrokenEarly,
         councilSize: councilModels.length,
         winner: winner.winnerModelId,
         changeSummary,
@@ -1382,16 +1425,34 @@ export class UniversalAgent {
       title: "Tool-build council run",
       detail: qaPassed
         ? `Built ${registered.toolName} v${registered.version} (winner: ${winner.winnerModelId}); QA passed.`
-        : `Built ${registered.toolName} v${registered.version}; QA never passed after ${config.maxQaRepairAttempts} repair attempts.`,
+        : `Built ${registered.toolName} v${registered.version}; ${qaFailureDetail}.`,
       startedAt: runStartedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(runStartedAt),
-      payload: { kind: "tool_build_council", toolBuildContext: context, qaPassed },
+      payload: {
+        kind: "tool_build_council",
+        toolBuildContext: context,
+        qaPassed,
+        attemptsRun,
+        repairBrokenEarly,
+      },
     });
 
     const finalAnswer = qaPassed
       ? `Tool **${registered.toolName}** v${registered.version} built by council (winner: ${winner.winnerModelId}). QA passed.`
-      : `Tool **${registered.toolName}** v${registered.version} registered, but QA still fails after ${config.maxQaRepairAttempts} repair attempts. Inspect logs.`;
+      : `Tool **${registered.toolName}** v${registered.version} registered, but ${qaFailureDetail}. Inspect logs.`;
+
+    // Phase 16 Slice D: the run trace already records the final
+    // `run-started` span as `failed` when QA never passed, but the
+    // run record itself was being marked `completed` because we
+    // returned normally. The runs.complete() vs runs.fail() decision
+    // sits in RunsService, which now respects `runStatus` here so
+    // the Runs page chips a QA-failed council run as `failed` and
+    // the operator sees one consistent label across trace + list.
+    const runStatus: "completed" | "failed" = qaPassed ? "completed" : "failed";
+    const runFailureReason = qaPassed
+      ? undefined
+      : `Tool ${registered.toolName} v${registered.version} built but ${qaFailureDetail}.`;
 
     return {
       finalAnswer,
@@ -1405,6 +1466,8 @@ export class UniversalAgent {
       workerResults: [],
       reviews: [],
       artifacts: [],
+      runStatus,
+      runFailureReason,
     };
   }
 

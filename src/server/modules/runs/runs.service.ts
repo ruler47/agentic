@@ -1446,7 +1446,21 @@ export class RunsService implements OnApplicationBootstrap {
       });
       const current = await this.runs.get(id);
       if (!current || current.status === "cancelled") return;
-      await this.runs.complete(id, result);
+      // Phase 16 Slice D: respect the optional `runStatus` override
+      // on the agent result. Tool-build council runs that finish the
+      // pipeline but never pass QA set `runStatus: "failed"` so the
+      // runs row and the Runs page show `failed`, matching the final
+      // trace span. Without this, runs were marked `completed`
+      // whenever the agent function returned normally — even when
+      // its own final event was a red `run-started:failed`.
+      if (result.runStatus === "failed") {
+        await this.runs.fail(
+          id,
+          result.runFailureReason ?? "Run finished without meeting its acceptance criteria.",
+        );
+      } else {
+        await this.runs.complete(id, result);
+      }
       const completed = await this.runs.get(id);
       if (completed?.status === "waiting_tool_rework") {
         await this.audit.record({
@@ -1470,24 +1484,50 @@ export class RunsService implements OnApplicationBootstrap {
         return;
       }
       await this.auditLearnedMemory(id, result, run);
-      await this.audit.record({
-        instanceId: run?.instanceId,
-        actorId: "coordinator",
-        actorType: "agent",
-        action: "run.completed",
-        targetType: "run",
-        targetId: id,
-        runId: id,
-        threadId: run?.threadId,
-        requesterUserId: run?.requesterUserId,
-        channel: run?.channel,
-        summary: `Run completed: ${task.slice(0, 160)}`,
-        metadata: {
-          artifacts: result.artifacts?.length ?? 0,
-          subtasks: result.subtasks?.length ?? 0,
-          reviews: result.reviews?.length ?? 0,
-        },
-      });
+      // Phase 16 Slice D: keep the audit log honest. When the agent
+      // marked the run as failed via `runStatus`, we record a
+      // `run.failed` event with the failure reason instead of
+      // `run.completed`. The Activity feed and downstream consumers
+      // get a single coherent label across runs row + audit + trace.
+      if (result.runStatus === "failed") {
+        await this.audit.record({
+          instanceId: run?.instanceId,
+          actorId: "coordinator",
+          actorType: "agent",
+          action: "run.failed",
+          targetType: "run",
+          targetId: id,
+          status: "failure",
+          runId: id,
+          threadId: run?.threadId,
+          requesterUserId: run?.requesterUserId,
+          channel: run?.channel,
+          summary: `Run failed: ${task.slice(0, 160)}`,
+          metadata: {
+            reason: result.runFailureReason,
+            artifacts: result.artifacts?.length ?? 0,
+          },
+        });
+      } else {
+        await this.audit.record({
+          instanceId: run?.instanceId,
+          actorId: "coordinator",
+          actorType: "agent",
+          action: "run.completed",
+          targetType: "run",
+          targetId: id,
+          runId: id,
+          threadId: run?.threadId,
+          requesterUserId: run?.requesterUserId,
+          channel: run?.channel,
+          summary: `Run completed: ${task.slice(0, 160)}`,
+          metadata: {
+            artifacts: result.artifacts?.length ?? 0,
+            subtasks: result.subtasks?.length ?? 0,
+            reviews: result.reviews?.length ?? 0,
+          },
+        });
+      }
       if (context.threadId) {
         await this.threads?.completeRun({
           threadId: context.threadId,
