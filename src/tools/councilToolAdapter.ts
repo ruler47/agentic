@@ -38,6 +38,13 @@ export type CouncilToolAdapterDeps = {
    * but the metadata row stays empty without this lookup.
    */
   getRegisteredTool?: (name: string) => Pick<Tool, "inputSchema" | "outputSchema" | "examples" | "requiredSecretHandles"> | undefined;
+  /**
+   * Fires after a successful council registration. RunsService uses
+   * this to wake any parent tool-build runs that were waiting on a
+   * capability the newly-registered tool provides (Phase 2:
+   * auto-resume after a sub-build finishes its reader tool).
+   */
+  onToolRegistered?: (toolName: string, capabilities: readonly string[]) => Promise<void>;
 };
 
 export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
@@ -74,6 +81,8 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
        * tool wants.
        */
       sampleInput?: Record<string, unknown>;
+      /** Extra capability tags to advertise besides the defaults. */
+      requiredCapabilities?: string[];
     },
   ): Promise<{ toolName: string; version: string }> {
     const version = metadata.version ?? (await this.nextVersionFor(toolName));
@@ -108,11 +117,16 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     // 2. Register / replace metadata row. Use replacement when the tool
     //    already exists (rework / bugfix flow); otherwise register fresh.
     const existing = (await this.deps.metadataStore.list()).find((m) => m.name === toolName);
+    // Deduplicate so we don't end up with two copies of `council-built`
+    // if a sub-build asks for that exact tag too.
+    const capabilities = Array.from(
+      new Set([toolName, "council-built", ...(metadata.requiredCapabilities ?? [])]),
+    );
     const baseInput = {
       name: toolName,
       version,
       description: metadata.description,
-      capabilities: [toolName, "council-built"],
+      capabilities,
       startupMode: "on-demand" as const,
       modulePath: join(baseDir, "index.ts"),
       requiredSecretHandles: metadata.secretHandle ? [metadata.secretHandle] : undefined,
@@ -121,7 +135,7 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
         name: toolName,
         version,
         description: metadata.description,
-        capabilities: [toolName, "council-built"],
+        capabilities,
         startupMode: "on-demand" as const,
         package: { type: "source-bundle" as const, ref: `${sanitized}/${version}` },
       },
@@ -172,6 +186,18 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     // Same-version re-register is an in-place update on the metadata
     // store; promoteReplacement bumps versions and would loop.
     await this.deps.metadataStore.registerGenerated(enriched);
+
+    // 5. Notify RunsService so it can wake any parent tool-build runs
+    //    that were waiting on a capability this tool now provides
+    //    (Phase 2 auto-resume). Best-effort — a failed callback must
+    //    not retroactively fail the registration that just succeeded.
+    if (this.deps.onToolRegistered) {
+      try {
+        await this.deps.onToolRegistered(toolName, capabilities);
+      } catch {
+        // ignore; the operator can manually resume from the Tool Builds page
+      }
+    }
 
     return { toolName, version };
   }

@@ -658,9 +658,10 @@ export class RunsService implements OnApplicationBootstrap {
 
     // Resolve reference docs into plain text before kicking the
     // council. Text-like MIMEs (utf-8) decode directly; binary
-    // formats need a registered reader tool — when one's missing the
-    // run halts early with `waiting_tool_rework` so the operator can
-    // either build the reader first or remove the attachment.
+    // formats need a registered reader tool. When a reader is
+    // missing, Phase 2 kicks in: we auto-spawn a sub-build for the
+    // reader tool, mark this run `waiting_tool_rework`, and resume
+    // automatically once the reader registers.
     let referenceDocs: import("../../../agents/toolBuildCouncil.js").ToolBuildContext["referenceDocs"] = undefined;
     if (referenceAttachments.length > 0) {
       const { resolveReferences } = await import("../../../agents/councilReferenceReader.js");
@@ -672,16 +673,26 @@ export class RunsService implements OnApplicationBootstrap {
       }
       const resolved = await resolveReferences({ attachments: referenceAttachments, registry });
       if (resolved.missing.length > 0) {
-        // Surface the gap on the run and bail before we touch any
-        // LLM. The operator sees exactly which reader tool needs to
-        // exist before they can re-submit.
-        const summary = resolved.missing
-          .map((m) => `${m.filename} (${m.mimeType}): ${m.reason}`)
-          .join("\n");
-        await this.runs.fail(
-          run.id,
-          `Council build blocked: missing reader tools for ${resolved.missing.length} reference doc(s).\n\n${summary}`,
-        );
+        // Phase 2: cycle protection. A sub-build is itself a tool-build
+        // run, and we DO NOT recurse — sub-builds reject attachments so
+        // an infinite "sub-build needs sub-sub-build" chain can't happen.
+        // We detect that by checking `body.parentBuildRunId` which the
+        // recursive call sets on its child requests.
+        const parentBuildRunId =
+          typeof body.parentBuildRunId === "string" ? body.parentBuildRunId : undefined;
+        if (parentBuildRunId) {
+          await this.runs.fail(
+            run.id,
+            `Sub-build refused: a sub-build cannot itself depend on another reader tool (would loop).`,
+          );
+          return { run: await this.runs.get(run.id) };
+        }
+        await this.spawnReaderSubBuildsAndWait({
+          parentRun: run,
+          parentBody: body,
+          missing: resolved.missing,
+          texts: resolved.texts,
+        });
         return { run: await this.runs.get(run.id) };
       }
       referenceDocs = resolved.texts.map((doc) => ({
@@ -711,6 +722,176 @@ export class RunsService implements OnApplicationBootstrap {
    * channel="tool-build". Cheap because the runs table is already
    * indexed by channel.
    */
+  /**
+   * Phase 2: Reader sub-builds.
+   *
+   * The parent build attached one or more reference docs in a MIME
+   * type we can't decode in-process. We auto-spawn a tool-build run
+   * for each missing reader, mark the parent as `waiting_tool_rework`
+   * with structured payload describing what it's blocked on, and
+   * return — when the readers finish, `onToolRegisteredForCouncil`
+   * spots the matching capabilities and re-creates the parent build.
+   *
+   * Cycle protection: each sub-build's body carries
+   * `parentBuildRunId` so a sub-build that itself tries to attach
+   * references gets rejected immediately at the createAndStartToolBuild
+   * boundary.
+   */
+  private async spawnReaderSubBuildsAndWait(args: {
+    parentRun: AgentRunRecord;
+    parentBody: Record<string, unknown>;
+    missing: Array<{ filename: string; mimeType: string; capability: string; reason: string }>;
+    texts: Array<{ filename: string; mimeType: string; content: string }>;
+  }): Promise<void> {
+    const { parentRun, parentBody, missing } = args;
+    const subBuildRunIds: string[] = [];
+    for (const entry of missing) {
+      // Stable derived tool name so we don't spawn 5 copies of
+      // `file.application_pdf.read` when the same MIME comes up
+      // multiple times across reference batches.
+      const safeMime = entry.mimeType.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+      const subBuildName = `file.${safeMime}.read`;
+      const subBuildBody = {
+        name: subBuildName,
+        description:
+          `Read content from a base64-encoded ${entry.mimeType} file. ` +
+          `Input is {filename: string, mimeType: string, contentBase64: string}. ` +
+          `Output must be {ok: true, content: <plain text extracted from the file>} ` +
+          `or {ok: false, content: <human-readable error message>} on failure. ` +
+          `Use Node built-ins or zod only — no other npm packages are guaranteed to resolve.`,
+        qaCriteria: [
+          "input has filename, mimeType, contentBase64 fields",
+          `mimeType equals "${entry.mimeType}"`,
+          "returns ok=true with content being a non-empty string when given a valid file",
+          "returns ok=false with a descriptive content string when given an invalid file",
+        ],
+        // Tells `findReaderTool` what this reader can read.
+        requiredCapabilities: [entry.capability],
+        // Cycle marker: child cannot itself spawn further sub-builds.
+        parentBuildRunId: parentRun.id,
+      };
+
+      const subRun = await this.createAndStartToolBuild(subBuildBody);
+      if (subRun.run) {
+        subBuildRunIds.push(subRun.run.id);
+      }
+    }
+
+    // Snapshot the parent's POST body on the run so we can replay it
+    // when the readers finish. Stripping `parentBuildRunId` defensively
+    // even though createAndStartToolBuild already ignores it on
+    // resume — keeps the replay body clean.
+    const blockedEvent = {
+      spanId: `tool-build-waiting-${parentRun.id}`,
+      timestamp: new Date().toISOString(),
+      type: "tool-build-waiting-for-reader" as const,
+      actor: "coordinator",
+      activity: "coordination" as const,
+      status: "started" as const,
+      title: `Waiting on ${missing.length} reader tool(s)`,
+      detail: `Blocked on capabilities: ${missing.map((m) => m.capability).join(", ")}.`,
+      startedAt: new Date().toISOString(),
+      payload: {
+        missingCapabilities: missing.map((m) => ({
+          capability: m.capability,
+          filename: m.filename,
+          mimeType: m.mimeType,
+        })),
+        subBuildRunIds,
+        // The replay body — minus the parent marker (so the next
+        // createAndStartToolBuild call goes through the normal path).
+        replayBody: { ...parentBody, parentBuildRunId: undefined },
+      },
+    } as unknown as AgentEvent;
+    await this.runs.appendEvent(parentRun.id, blockedEvent);
+    await this.runs.markWaitingForToolRework(
+      parentRun.id,
+      `Waiting on ${missing.length} reader tool(s): ${missing
+        .map((m) => `${m.capability} (${m.filename})`)
+        .join(", ")}.`,
+    );
+  }
+
+  /**
+   * Adapter callback: a council just registered a new tool with
+   * `capabilities`. Walk the list of waiting tool-build parent runs
+   * and re-issue any whose blocked-on capabilities are now all
+   * satisfied by the in-process tool registry. Best-effort — a
+   * failure here must not retroactively fail the registration.
+   */
+  async onToolRegisteredForCouncil(
+    _toolName: string,
+    capabilities: readonly string[],
+  ): Promise<void> {
+    if (!this.toolRegistry) return;
+    const waiting = (await this.runs.list()).filter(
+      (run) => run.channel === "tool-build" && run.status === "waiting_tool_rework",
+    );
+    for (const parent of waiting) {
+      const blockedEvent = (parent.events ?? [])
+        .filter((event) => event.type === "tool-build-waiting-for-reader")
+        .at(-1);
+      if (!blockedEvent) continue;
+      const payload = (blockedEvent.payload ?? {}) as {
+        missingCapabilities?: Array<{ capability: string; filename: string; mimeType: string }>;
+        replayBody?: Record<string, unknown>;
+      };
+      const blockedOn = payload.missingCapabilities ?? [];
+      if (blockedOn.length === 0) continue;
+      // Quick filter: does this registration even mention one of our
+      // blocked-on capabilities?
+      if (!blockedOn.some((b) => capabilities.includes(b.capability) || capabilities.includes("reads:*"))) {
+        continue;
+      }
+      // Strong check: is every capability now resolvable in-registry?
+      const stillMissing = blockedOn.filter(
+        (b) =>
+          !this.toolRegistry!.list().some(
+            (tool) => tool.capabilities?.includes(b.capability) || tool.capabilities?.includes("reads:*"),
+          ),
+      );
+      if (stillMissing.length > 0) continue;
+      // All resolvers exist → resume by replaying the original body
+      // as a fresh tool-build run. Mark the parent done with a
+      // pointer to its successor so the UI can navigate the chain.
+      const replayBody = payload.replayBody ?? {};
+      try {
+        await this.runs.resumeFromToolRework(
+          parent.id,
+          "All reader tools registered — replaying original build.",
+        );
+        const successor = await this.createAndStartToolBuild(replayBody);
+        const successorId = successor.run?.id;
+        await this.runs.appendEvent(parent.id, {
+          spanId: `tool-build-resumed-${parent.id}`,
+          timestamp: new Date().toISOString(),
+          type: "tool-build-waiting-for-reader",
+          actor: "coordinator",
+          activity: "coordination",
+          status: "completed",
+          title: "Reader tools ready — build replayed",
+          detail: successorId ? `Replayed as run ${successorId}` : "Replayed as a fresh build run.",
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          payload: { successorRunId: successorId },
+        } as unknown as AgentEvent);
+        // Move parent into a terminal state so it doesn't show as
+        // running. The successor carries the actual work.
+        await this.runs.complete(parent.id, {
+          finalAnswer: successorId
+            ? `Reader tools became available; build replayed as run ${successorId}.`
+            : `Reader tools became available; build replayed.`,
+          artifacts: [],
+        } as never);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to auto-resume waiting council run ${parent.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
   async listToolBuildRuns(): Promise<AgentRunRecord[]> {
     const all = await this.runs.list();
     return all.filter((entry) => entry.channel === "tool-build");
@@ -1076,6 +1257,8 @@ export class RunsService implements OnApplicationBootstrap {
                   requiredSecretHandles: t.requiredSecretHandles,
                 };
               },
+              onToolRegistered: (toolName, capabilities) =>
+                this.onToolRegisteredForCouncil(toolName, capabilities),
             })
           : undefined;
 

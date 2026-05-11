@@ -245,7 +245,9 @@ export type AgentEventType =
   | "tool-build-code-revised"
   | "tool-build-qa-attempt"
   | "tool-build-code-repaired"
-  | "tool-build-registered";
+  | "tool-build-registered"
+  // Phase 14 / Phase 2: parent build halted on a missing reader tool.
+  | "tool-build-waiting-for-reader";
 
 export type AgentActivity =
   | "coordination"

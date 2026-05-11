@@ -48,6 +48,14 @@ export type ToolBuildContext = {
    */
   existingToolName?: string;
   bugContext?: string;
+  /**
+   * Capability tags the registered tool MUST advertise (besides the
+   * default `<name> + council-built` set). Used by the auto-spawned
+   * reader-tool sub-builds — the parent build searches the registry
+   * by capability so the freshly-built reader must include the right
+   * `reads:<mime>` tag.
+   */
+  requiredCapabilities?: string[];
 };
 
 /** One council member's full ranked ballot. */

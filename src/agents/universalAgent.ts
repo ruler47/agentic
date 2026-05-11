@@ -255,6 +255,8 @@ export type ToolBuildCouncilAdapter = {
       secretHandle?: string;
       /** QA-synthesized sample input, persisted as a metadata example. */
       sampleInput?: Record<string, unknown>;
+      /** Extra capability tags the registered tool must declare. */
+      requiredCapabilities?: string[];
     },
   ) => Promise<{ toolName: string; version: string }>;
   /** Invoke the registered tool with a QA-synthesized input. */
@@ -948,6 +950,7 @@ export class UniversalAgent {
       description: context.description,
       secretHandle: context.secretHandle,
       sampleInput: qaInput,
+      requiredCapabilities: context.requiredCapabilities,
     });
 
     // ── Step 7-8: QA + REPAIR ────────────────────────────────────────
