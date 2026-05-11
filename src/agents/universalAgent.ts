@@ -258,7 +258,23 @@ export type ToolBuildCouncilAdapter = {
       /** Extra capability tags the registered tool must declare. */
       requiredCapabilities?: string[];
     },
-  ) => Promise<{ toolName: string; version: string }>;
+  ) => Promise<{ toolName: string; version: string; previousVersion?: string }>;
+  /**
+   * Phase 16 Slice F: undo a registration whose QA loop never passed.
+   *
+   * For reworks the previous (known-working) version is re-activated
+   * via `metadataStore.activateVersion`. For fresh builds where there
+   * is no prior version, the just-registered row is dropped via
+   * `metadataStore.deleteGenerated`. Either way the runtime registry
+   * is reloaded so the active in-memory tool matches the post-rollback
+   * DB state. Without this hook, a failed QA loop left the broken
+   * just-built version active and the operator's previously-working
+   * tool effectively disappeared.
+   */
+  rollbackRegistration?: (
+    toolName: string,
+    previousVersion: string | undefined,
+  ) => Promise<void>;
   /**
    * Replace the `changeSummary` on an already-registered version. The
    * council synthesizes this after the QA/repair loop ends because the
@@ -995,6 +1011,15 @@ export class UniversalAgent {
       requiredCapabilities: context.requiredCapabilities,
     });
 
+    // Phase 16 Slice F: remember the previous active version on the
+    // FIRST register call so we can roll back if every QA attempt
+    // fails. Repair iterations later in the loop re-call
+    // registerToolFromFiles, but at that point the row in
+    // tool_modules already points at one of OUR new versions — only
+    // the original `previousVersion` (the rework's starting point)
+    // is a safe fallback. Stays undefined for fresh builds.
+    const originalPreviousVersion = registered.previousVersion;
+
     // ── Step 7-8: QA + REPAIR ────────────────────────────────────────
     // Status semantic in this section:
     //   `completed` = the agent for this step (tool / oracle / repair
@@ -1228,6 +1253,25 @@ export class UniversalAgent {
         // started.
         repairBrokenEarly = true;
         break;
+      }
+    }
+
+    // Phase 16 Slice F: roll back the registration when QA never
+    // passed. For reworks (`originalPreviousVersion` set) we
+    // re-activate the prior known-working version so the operator
+    // doesn't lose their working tool to a failed rework. For fresh
+    // builds we drop the broken just-built tool outright. Either
+    // way the registry is reloaded so subsequent `runToolManually`
+    // calls hit the post-rollback state. Best-effort: failures here
+    // are warnings, not run-fatal — the run is already failing for
+    // the operator-visible reason (QA never passed).
+    if (!qaPassed && adapter.rollbackRegistration) {
+      try {
+        await adapter.rollbackRegistration(registered.toolName, originalPreviousVersion);
+      } catch (error) {
+        // Already logged inside rollbackRegistration; do not let a
+        // secondary failure mask the QA outcome.
+        void error;
       }
     }
 
