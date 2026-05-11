@@ -49,6 +49,8 @@ import type {
 import { AuditService } from "../../common/services/audit.service.js";
 import { ToolBuildInputFinalizerService } from "../../common/services/tool-build-input-finalizer.service.js";
 import { ToolReworkCoordinatorService } from "../../common/services/tool-rework-coordinator.service.js";
+import { ToolsService } from "../tools/tools.service.js";
+import { CouncilToolAdapter } from "../../../tools/councilToolAdapter.js";
 import {
   isRecord,
   parseOptionalReason,
@@ -70,6 +72,9 @@ import {
   TOOL_RUNTIME_SETTINGS,
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_SUPERVISOR,
+  CODING_COUNCIL_STORE,
+  MODEL_TIER_SETTINGS,
+  TOOL_METADATA_STORE,
   UNIVERSAL_AGENT,
   USER_STORE,
   WORK_LEDGER_STORE,
@@ -141,6 +146,19 @@ export class RunsService implements OnApplicationBootstrap {
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(ToolBuildInputFinalizerService) private readonly finalizer: ToolBuildInputFinalizerService,
     @Inject(ToolReworkCoordinatorService) private readonly rework: ToolReworkCoordinatorService,
+    // Phase 14: deps for the council adapter. All optional so older
+    // wiring (CLI, fixtures, deployments without coding-council config)
+    // still constructs a working service.
+    @Inject(CODING_COUNCIL_STORE) private readonly codingCouncil:
+      | import("../../../settings/codingCouncilStore.js").CodingCouncilStore
+      | undefined,
+    @Inject(MODEL_TIER_SETTINGS) private readonly modelTierSettings:
+      | import("../../../settings/modelTierSettings.js").ModelTierSettingsStore
+      | undefined,
+    @Inject(TOOL_METADATA_STORE) private readonly toolMetadata:
+      | import("../../../tools/toolMetadataStore.js").ToolMetadataStore
+      | undefined,
+    @Inject(ToolsService) private readonly toolsService: ToolsService | undefined,
   ) {}
 
   /**
@@ -561,6 +579,83 @@ export class RunsService implements OnApplicationBootstrap {
     return cancelled ?? run;
   }
 
+  /**
+   * Phase 14: create a "tool-build" run and dispatch the council
+   * pipeline. The run looks like any other in the runs table (so it
+   * shows up in the trace lab, run workspace, etc.) but the task
+   * body is a structured marker and the agent dispatches to
+   * `runToolBuildCouncil` thanks to `toolBuildContext` plumbing.
+   */
+  async createAndStartToolBuild(rawBody: unknown): Promise<{ run: AgentRunRecord | undefined }> {
+    const body = isRecord(rawBody) ? rawBody : {};
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const description = typeof body.description === "string" ? body.description.trim() : "";
+    if (!name) throw new BadRequestException("name is required");
+    if (!description) throw new BadRequestException("description is required");
+    const qaCriteriaInput = Array.isArray(body.qaCriteria) ? body.qaCriteria : [];
+    const qaCriteria = qaCriteriaInput
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    const secretHandle =
+      typeof body.secretHandle === "string" && body.secretHandle.trim().length > 0
+        ? body.secretHandle.trim()
+        : undefined;
+    const existingToolName =
+      typeof body.existingToolName === "string" && body.existingToolName.trim().length > 0
+        ? body.existingToolName.trim()
+        : undefined;
+    const bugContext =
+      typeof body.bugContext === "string" && body.bugContext.trim().length > 0
+        ? body.bugContext.trim()
+        : undefined;
+
+    const task = existingToolName
+      ? `Council rework for ${existingToolName}: ${description}`
+      : `Council build for ${name}: ${description}`;
+
+    const run = await this.runs.create(task, {
+      instanceId: "instance-local",
+      requesterUserId: "user-admin",
+      channel: "tool-build",
+    } as never);
+
+    await this.audit.record({
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "tool_build.requested",
+      targetType: "tool_build_request",
+      targetId: name,
+      status: "pending",
+      runId: run.id,
+      summary: `Tool-build council requested: ${name}${existingToolName ? ` (rework of ${existingToolName})` : ""}`,
+    });
+
+    void this.executeRun(run.id, task, [], {
+      toolBuildContext: {
+        name,
+        description,
+        qaCriteria,
+        secretHandle,
+        existingToolName,
+        bugContext,
+      },
+    });
+
+    return { run: await this.runs.get(run.id) };
+  }
+
+  /**
+   * Phase 14: list of tool-build runs. Filters the global run list by
+   * channel="tool-build". Cheap because the runs table is already
+   * indexed by channel.
+   */
+  async listToolBuildRuns(): Promise<AgentRunRecord[]> {
+    const all = await this.runs.list();
+    return all.filter((entry) => entry.channel === "tool-build");
+  }
+
   async getArtifact(runId: string, artifactId: string) {
     if (!this.artifacts) {
       throw new ServiceUnavailableException("Artifact store is not configured");
@@ -855,6 +950,15 @@ export class RunsService implements OnApplicationBootstrap {
        * re-run.
        */
       resumeFrom?: import("../../../agents/runResumption.js").RunResumptionState;
+      /**
+       * Phase 14: when present, the agent dispatches to the tool-build
+       * council pipeline (see UniversalAgent.runToolBuildCouncil)
+       * instead of the standard classify→plan→delegate flow. The
+       * adapter is wired by Nest DI (CouncilToolAdapter) and reaches
+       * the model tier settings, metadata store, file system, and
+       * the manual-run path for QA.
+       */
+      toolBuildContext?: import("../../../agents/toolBuildCouncil.js").ToolBuildContext;
     } = {},
   ): Promise<void> {
     await this.runs.markRunning(id);
@@ -879,11 +983,32 @@ export class RunsService implements OnApplicationBootstrap {
         this.groupProfiles?.get().catch(() => undefined) ?? Promise.resolve(undefined),
         run?.requesterUserId ? this.users.get(run.requesterUserId).catch(() => undefined) : Promise.resolve(undefined),
       ]);
+      // Phase 14: build the council adapter on demand when this run is
+      // a tool-build run. All deps optional → only fire if the
+      // operator wired every store + ToolsService through DI.
+      const councilAdapter =
+        context.toolBuildContext &&
+        this.codingCouncil &&
+        this.modelTierSettings &&
+        this.toolMetadata &&
+        this.toolsService
+          ? new CouncilToolAdapter({
+              instanceId: run?.instanceId ?? "instance-local",
+              codingCouncilStore: this.codingCouncil,
+              modelTierSettings: this.modelTierSettings,
+              metadataStore: this.toolMetadata,
+              reloadGeneratedTools: this.reloadGeneratedTools,
+              runToolManually: (name, body) => this.toolsService!.runToolManually(name, body),
+            })
+          : undefined;
+
       const result = await this.agent.run(task, {
         inputArtifacts,
         threadContext: context.threadContext,
         instanceContext: { groupProfile, requesterUser },
         resumeFrom: context.resumeFrom,
+        toolBuildContext: context.toolBuildContext,
+        toolBuildCouncil: councilAdapter,
         workLedgerStore: this.workLedger,
         evidenceLedgerStore: this.evidenceLedger,
         runRetrospectiveStore: this.retrospectives,

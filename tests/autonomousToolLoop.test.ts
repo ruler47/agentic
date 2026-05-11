@@ -283,6 +283,10 @@ function createRunsService(
     harness.audit,
     { finalize: async (input: ToolBuildRequestInput) => input } as never,
     harness.rework as unknown as ToolReworkCoordinatorService,
+    undefined, // codingCouncilStore
+    undefined, // modelTierSettings
+    undefined, // toolMetadataStore
+    undefined, // toolsService
   );
 }
 
