@@ -135,9 +135,22 @@ export class ToolsService {
       },
     });
 
+    // Phase 13 follow-up: HttpToolAdapter rehydrates artifact
+    // `contentBase64` → Node `Buffer` in `result.data` so downstream
+    // helpers (saveArtifact, etc.) get usable binary. But the
+    // /api/tools/:name/run response is plain JSON, where Buffer serializes
+    // to `{ type: "Buffer", data: [...] }` and the UI sees an object
+    // instead of file bytes. Re-serialize Buffer back to `contentBase64`
+    // here so the Manual Run panel can render a Download link.
+    const wireResult = {
+      ok: result.ok,
+      content: typeof result.content === "string" ? result.content : "",
+      data: serializeBuffersForWire(result.data),
+    };
+
     return {
       tool: { name: tool.name, version: tool.version ?? "unknown" },
-      result,
+      result: wireResult,
       durationMs,
     };
   }
@@ -582,4 +595,31 @@ export class ToolsService {
     }
     return issues;
   }
+}
+
+/**
+ * Phase 13 follow-up: walk a tool result and re-encode any Node `Buffer`
+ * we find back into the wire-friendly `contentBase64` shape (with the
+ * sibling `content` key removed). HttpToolAdapter rehydrates docker
+ * services' base64 payloads into Buffers so the in-process saveArtifact
+ * path gets binary; for the Manual Run JSON response we need to reverse
+ * that so the UI's artifact detector sees a usable file. Pure function;
+ * cycle-safe via the `seen` set.
+ */
+function serializeBuffersForWire(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
+  if (value === null || value === undefined) return value;
+  if (Buffer.isBuffer(value)) return { contentBase64: value.toString("base64") };
+  if (typeof value !== "object") return value;
+  if (seen.has(value as object)) return undefined;
+  seen.add(value as object);
+  if (Array.isArray(value)) return value.map((item) => serializeBuffersForWire(item, seen));
+  const out: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "content" && Buffer.isBuffer(nested)) {
+      out.contentBase64 = (nested as Buffer).toString("base64");
+      continue;
+    }
+    out[key] = serializeBuffersForWire(nested, seen);
+  }
+  return out;
 }
