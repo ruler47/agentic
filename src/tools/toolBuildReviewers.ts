@@ -25,6 +25,20 @@ export class DeterministicToolCodeReviewer implements ToolBuildReviewer {
     if (output.capabilities && !output.capabilities.includes(request.capability)) {
       findings.push(`Output capabilities must include requested capability ${request.capability}.`);
     }
+    // Phase 13 follow-up (TB-004): every name listed in
+    // request.requiredOutputs must show up in the generated
+    // outputSchema. Without this check, a misclassified provider can
+    // build a tool whose result shape has nothing to do with what the
+    // requester asked for, and the run will silently succeed all the
+    // way through registration.
+    const missingOutputs = findRequiredOutputsNotInSchema(request, output);
+    if (missingOutputs.length > 0) {
+      findings.push(
+        `Output schema does not declare requested output(s): ${missingOutputs.join(", ")}. ` +
+          "The builder picked a template that doesn't match the request — pick a different provider " +
+          "or have the LLM provider author one that exposes these output keys.",
+      );
+    }
     for (const handle of output.requiredSecretHandles ?? []) {
       if (looksLikeRawSecret(handle)) {
         findings.push("Required secret handles must be stable handles, not raw credential material.");
@@ -315,4 +329,54 @@ async function readGeneratedOutputPreview(
 function normalizeDecision(value: unknown): ToolBuildReviewDecision | undefined {
   if (value === "pass" || value === "needs_revision" || value === "fail") return value;
   return undefined;
+}
+
+/**
+ * Phase 13 follow-up (TB-004): walk request.requiredOutputs[] and
+ * confirm each name appears in output.outputSchema.properties (or
+ * a nested `data.properties` for tools that wrap their structured
+ * payload under a `data` key). Returns the list of requested-but-
+ * missing names.
+ *
+ * Matching is case-insensitive against property keys and any
+ * declared `title` so a request asking for `results` is satisfied
+ * by a schema property `results` OR a property with title `results`.
+ */
+export function findRequiredOutputsNotInSchema(
+  request: ToolBuildRequest,
+  output: ToolBuildOutput,
+): string[] {
+  const required = request.requiredOutputs ?? [];
+  if (required.length === 0) return [];
+  const properties = collectSchemaPropertyKeys(output.outputSchema);
+  const missing: string[] = [];
+  for (const name of required) {
+    const key = name.toLowerCase().trim();
+    if (!key) continue;
+    if (!properties.has(key)) missing.push(name);
+  }
+  return missing;
+}
+
+function collectSchemaPropertyKeys(schema: unknown): Set<string> {
+  const keys = new Set<string>();
+  if (!schema || typeof schema !== "object") return keys;
+  const properties = (schema as { properties?: Record<string, unknown> }).properties;
+  if (properties && typeof properties === "object") {
+    for (const [name, value] of Object.entries(properties)) {
+      keys.add(name.toLowerCase());
+      if (value && typeof value === "object") {
+        const title = (value as { title?: unknown }).title;
+        if (typeof title === "string") keys.add(title.toLowerCase());
+      }
+    }
+  }
+  // Walk one level deeper for ToolResult-shaped schemas where the
+  // payload lives under `data.properties.<...>`.
+  const dataProperty = properties?.data as { properties?: unknown } | undefined;
+  if (dataProperty && typeof dataProperty === "object") {
+    const nested = collectSchemaPropertyKeys(dataProperty);
+    for (const k of nested) keys.add(k);
+  }
+  return keys;
 }

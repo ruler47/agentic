@@ -25,6 +25,7 @@ export const queryKeys = {
   toolServiceEvents: ["tool-service-events"] as const,
   secretHandles: ["secret-handles"] as const,
   modelTiers: ["settings", "model-tiers"] as const,
+  codingCouncil: ["settings", "coding-council"] as const,
   modelProviders: ["model-providers"] as const,
   modelCatalog: ["models", "catalog"] as const,
   users: ["users"] as const,

@@ -12,7 +12,7 @@
     "web:legacy": "node dist/server/main.nest.js",
     "web:legacy:dev": "tsx src/server/main.nest.ts",
     "serve": "node dist/db/migrate.js && node dist/server/main.nest.js",
-    "test": "tsx --test tests/*.test.ts tests/**/*.test.ts",
+    "test": "tsx --test --test-concurrency=1 tests/*.test.ts tests/**/*.test.ts",
     "test:types": "tsc --noEmit -p tsconfig.test.json",
     "verify": "npm run typecheck && npm run test:types && npm test && npm run build",
     "typecheck": "tsc --noEmit",
@@ -37,8 +37,10 @@
     "@nestjs/swagger": "^11.4.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.20.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2"
+    "rxjs": "^7.8.2",
+    "zod": "^3.25.76"
   }
 }

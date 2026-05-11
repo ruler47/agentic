@@ -31,6 +31,18 @@ export class ToolsController {
     return this.tools.reloadGenerated();
   }
 
+  /**
+   * Phase 13 follow-up: manual tool runner. Lets the operator hit a
+   * tool with a hand-crafted input from the UI / curl, get the exact
+   * `ToolResult` back, and see if a build is healthy without
+   * orchestrating a full agent run. Body: `{ "input": {...} }` (or
+   * just the input object directly for terse curl-style calls).
+   */
+  @Post("tools/:name/run")
+  async runManual(@Param("name") name: string, @Body() body: unknown) {
+    return this.tools.runToolManually(decodeURIComponent(name), body);
+  }
+
   @Get("tool-settings")
   async listSettings(@Query("toolName") toolName?: string) {
     return { settings: await this.tools.listSettings(toolName) };

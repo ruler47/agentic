@@ -49,11 +49,14 @@ import type {
 import { AuditService } from "../../common/services/audit.service.js";
 import { ToolBuildInputFinalizerService } from "../../common/services/tool-build-input-finalizer.service.js";
 import { ToolReworkCoordinatorService } from "../../common/services/tool-rework-coordinator.service.js";
+import { ToolsService } from "../tools/tools.service.js";
+import { CouncilToolAdapter } from "../../../tools/councilToolAdapter.js";
 import {
   isRecord,
   parseOptionalReason,
   parseOptionalText,
   parseOptionalTextArray,
+  parseReferenceAttachments,
   sanitizeAuditMetadata,
 } from "../../common/parsers.js";
 import {
@@ -70,6 +73,10 @@ import {
   TOOL_RUNTIME_SETTINGS,
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_SUPERVISOR,
+  CODING_COUNCIL_STORE,
+  MODEL_TIER_SETTINGS,
+  TOOL_METADATA_STORE,
+  TOOL_REGISTRY,
   UNIVERSAL_AGENT,
   USER_STORE,
   WORK_LEDGER_STORE,
@@ -97,9 +104,38 @@ const ORPHAN_STALE_AFTER_MS = 5 * 60 * 1000; // 5 minutes
 const ORPHAN_RECOVERY_REASON =
   "Run was interrupted by an application restart and never resumed; restart it to retry.";
 
+/**
+ * Phase 13 follow-up: collapse identical POST /api/runs submissions that
+ * arrive within this window into the same run. Defends against double-clicks
+ * in the UI and naive client-side network retries from spawning two
+ * parallel runs on the same conversation thread. Window is intentionally
+ * short (10 seconds) — anything longer is a legitimate "user repeated
+ * themselves" signal that should produce a fresh run.
+ */
+const DEDUP_WINDOW_MS = 10 * 1000;
+
 @Injectable()
 export class RunsService implements OnApplicationBootstrap {
   private readonly logger = new Logger(RunsService.name);
+
+  /**
+   * In-memory dedup cache keyed by `(threadId, requesterUserId, task)`.
+   * Survives the lifetime of the Nest process; the worktree-wide DB is the
+   * source of truth, so this is a soft guard rather than a strong lock. Two
+   * simultaneous requests on different replicas could still slip past — at
+   * which point the work-ledger inside the agent loop dedups the actual
+   * tool calls (`work-ledger-reused` events) anyway.
+   */
+  private readonly recentSubmissions = new Map<string, { runId: string; expiresAt: number }>();
+
+  /**
+   * AbortController per in-flight run. Lets `cancel()` interrupt the
+   * agent loop (and any underlying LLM HTTP request) immediately
+   * instead of only suppressing event emission while the agent keeps
+   * burning tokens. Entries are deleted when the run reaches a
+   * terminal state.
+   */
+  private readonly runAbortControllers = new Map<string, AbortController>();
 
   constructor(
     @Inject(RUN_STORE) private readonly runs: RunStore,
@@ -121,6 +157,22 @@ export class RunsService implements OnApplicationBootstrap {
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(ToolBuildInputFinalizerService) private readonly finalizer: ToolBuildInputFinalizerService,
     @Inject(ToolReworkCoordinatorService) private readonly rework: ToolReworkCoordinatorService,
+    // Phase 14: deps for the council adapter. All optional so older
+    // wiring (CLI, fixtures, deployments without coding-council config)
+    // still constructs a working service.
+    @Inject(CODING_COUNCIL_STORE) private readonly codingCouncil:
+      | import("../../../settings/codingCouncilStore.js").CodingCouncilStore
+      | undefined,
+    @Inject(MODEL_TIER_SETTINGS) private readonly modelTierSettings:
+      | import("../../../settings/modelTierSettings.js").ModelTierSettingsStore
+      | undefined,
+    @Inject(TOOL_METADATA_STORE) private readonly toolMetadata:
+      | import("../../../tools/toolMetadataStore.js").ToolMetadataStore
+      | undefined,
+    @Inject(ToolsService) private readonly toolsService: ToolsService | undefined,
+    @Inject(TOOL_REGISTRY) private readonly toolRegistry:
+      | import("../../../tools/registry.js").ToolRegistry
+      | undefined,
   ) {}
 
   /**
@@ -398,7 +450,33 @@ export class RunsService implements OnApplicationBootstrap {
     }
 
     const { context, thread, threadContext, threadResolution } = resolved;
+
+    // Phase 13 follow-up: idempotent submission window. If the very same
+    // (threadId, requesterUserId, task) tuple was just accepted within
+    // DEDUP_WINDOW_MS, return the existing run instead of starting a
+    // duplicate parallel one. Excludes terminal-failed runs so a real
+    // retry after an error works.
+    const dedupKey = this.dedupKeyFor(context.threadId, context.requesterUserId, task);
+    const dedupNow = Date.now();
+    this.gcDedupCache(dedupNow);
+    const cached = this.recentSubmissions.get(dedupKey);
+    if (cached && cached.expiresAt > dedupNow) {
+      const existing = await this.runs.get(cached.runId).catch(() => undefined);
+      if (existing && existing.status !== "failed" && existing.status !== "cancelled") {
+        return {
+          run: existing,
+          thread,
+          threadResolution: threadResolution
+            ? { decision: threadResolution.decision, reason: threadResolution.reason, threadId: threadResolution.thread?.id }
+            : undefined,
+        };
+      }
+      // Cached id no longer usable (failed/cancelled/missing): drop and proceed.
+      this.recentSubmissions.delete(dedupKey);
+    }
+
     const run = await this.runs.create(task, context);
+    this.recentSubmissions.set(dedupKey, { runId: run.id, expiresAt: dedupNow + DEDUP_WINDOW_MS });
     await this.audit.record({
       instanceId: context.instanceId,
       actorId: context.requesterUserId,
@@ -496,6 +574,15 @@ export class RunsService implements OnApplicationBootstrap {
       parseOptionalReason(rawBody) ??
       "Cancelled by operator. In-flight LLM/tool calls may finish, but their result will not replace this terminal state.";
     await this.runs.cancel(id, reason);
+    // Trip the AbortController so the agent loop unblocks immediately
+    // — without this the council pipeline would keep firing LLM
+    // requests for the remaining steps, even though their events are
+    // silently dropped by the cancelled-status guard.
+    const controller = this.runAbortControllers.get(id);
+    if (controller && !controller.signal.aborted) {
+      controller.abort(new Error(`Run ${id} cancelled by operator`));
+    }
+    this.runAbortControllers.delete(id);
     await this.audit.record({
       instanceId: run.instanceId,
       actorId: "user-admin",
@@ -515,6 +602,314 @@ export class RunsService implements OnApplicationBootstrap {
     return cancelled ?? run;
   }
 
+  /**
+   * Phase 14: create a "tool-build" run and dispatch the council
+   * pipeline. The run looks like any other in the runs table (so it
+   * shows up in the trace lab, run workspace, etc.) but the task
+   * body is a structured marker and the agent dispatches to
+   * `runToolBuildCouncil` thanks to `toolBuildContext` plumbing.
+   */
+  async createAndStartToolBuild(rawBody: unknown): Promise<{ run: AgentRunRecord | undefined }> {
+    const body = isRecord(rawBody) ? rawBody : {};
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const description = typeof body.description === "string" ? body.description.trim() : "";
+    if (!name) throw new BadRequestException("name is required");
+    if (!description) throw new BadRequestException("description is required");
+    const qaCriteriaInput = Array.isArray(body.qaCriteria) ? body.qaCriteria : [];
+    const qaCriteria = qaCriteriaInput
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    const secretHandle =
+      typeof body.secretHandle === "string" && body.secretHandle.trim().length > 0
+        ? body.secretHandle.trim()
+        : undefined;
+    const existingToolName =
+      typeof body.existingToolName === "string" && body.existingToolName.trim().length > 0
+        ? body.existingToolName.trim()
+        : undefined;
+    const bugContext =
+      typeof body.bugContext === "string" && body.bugContext.trim().length > 0
+        ? body.bugContext.trim()
+        : undefined;
+    const referenceAttachments = parseReferenceAttachments(body.references);
+
+    // For reworks the operator's "what should change" lives in
+    // `bugContext`; `description` is the existing tool's unchanged
+    // purpose. Surface bugContext in the run headline so the operator
+    // doesn't see "Council rework for demo.echo: <original tool
+    // description>" with no trace of what they actually asked for.
+    const task = existingToolName
+      ? `Council rework for ${existingToolName}: ${bugContext || description}`
+      : `Council build for ${name}: ${description}`;
+
+    // Forward parentBuildRunId (cycle marker on sub-builds) onto the
+    // new run record so the Trace Lab header can render an "↑ Parent
+    // run" link. Without this the operator has no breadcrumb from a
+    // reader-tool sub-build back up to the parent that spawned it.
+    const parentBuildRunId =
+      typeof body.parentBuildRunId === "string" && body.parentBuildRunId.trim()
+        ? body.parentBuildRunId.trim()
+        : undefined;
+    const run = await this.runs.create(task, {
+      instanceId: "instance-local",
+      requesterUserId: "user-admin",
+      channel: "tool-build",
+      parentRunId: parentBuildRunId,
+    } as never);
+
+    await this.audit.record({
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "tool_build.requested",
+      targetType: "tool_build_request",
+      targetId: name,
+      status: "pending",
+      runId: run.id,
+      summary: `Tool-build council requested: ${name}${existingToolName ? ` (rework of ${existingToolName})` : ""}${referenceAttachments.length > 0 ? ` with ${referenceAttachments.length} reference doc(s)` : ""}`,
+    });
+
+    // Resolve reference docs into plain text before kicking the
+    // council. Text-like MIMEs (utf-8) decode directly; binary
+    // formats need a registered reader tool. When a reader is
+    // missing, Phase 2 kicks in: we auto-spawn a sub-build for the
+    // reader tool, mark this run `waiting_tool_rework`, and resume
+    // automatically once the reader registers.
+    let referenceDocs: import("../../../agents/toolBuildCouncil.js").ToolBuildContext["referenceDocs"] = undefined;
+    if (referenceAttachments.length > 0) {
+      const { resolveReferences } = await import("../../../agents/councilReferenceReader.js");
+      const registry = this.toolRegistry;
+      if (!registry) {
+        throw new ServiceUnavailableException(
+          "Reference docs were attached but the tool registry is not configured.",
+        );
+      }
+      const resolved = await resolveReferences({ attachments: referenceAttachments, registry });
+      if (resolved.missing.length > 0) {
+        // Phase 2: cycle protection. A sub-build is itself a tool-build
+        // run, and we DO NOT recurse — sub-builds reject attachments so
+        // an infinite "sub-build needs sub-sub-build" chain can't happen.
+        // We detect that by checking `body.parentBuildRunId` which the
+        // recursive call sets on its child requests. (Already extracted
+        // above as `parentBuildRunId` for the run-record link.)
+        if (parentBuildRunId) {
+          await this.runs.fail(
+            run.id,
+            `Sub-build refused: a sub-build cannot itself depend on another reader tool (would loop).`,
+          );
+          return { run: await this.runs.get(run.id) };
+        }
+        await this.spawnReaderSubBuildsAndWait({
+          parentRun: run,
+          parentBody: body,
+          missing: resolved.missing,
+          texts: resolved.texts,
+        });
+        return { run: await this.runs.get(run.id) };
+      }
+      referenceDocs = resolved.texts.map((doc) => ({
+        filename: doc.filename,
+        mimeType: doc.mimeType,
+        content: doc.content,
+      }));
+    }
+
+    void this.executeRun(run.id, task, [], {
+      toolBuildContext: {
+        name,
+        description,
+        qaCriteria,
+        secretHandle,
+        existingToolName,
+        bugContext,
+        referenceDocs,
+      },
+    });
+
+    return { run: await this.runs.get(run.id) };
+  }
+
+  /**
+   * Phase 14: list of tool-build runs. Filters the global run list by
+   * channel="tool-build". Cheap because the runs table is already
+   * indexed by channel.
+   */
+  /**
+   * Phase 2: Reader sub-builds.
+   *
+   * The parent build attached one or more reference docs in a MIME
+   * type we can't decode in-process. We auto-spawn a tool-build run
+   * for each missing reader, mark the parent as `waiting_tool_rework`
+   * with structured payload describing what it's blocked on, and
+   * return — when the readers finish, `onToolRegisteredForCouncil`
+   * spots the matching capabilities and re-creates the parent build.
+   *
+   * Cycle protection: each sub-build's body carries
+   * `parentBuildRunId` so a sub-build that itself tries to attach
+   * references gets rejected immediately at the createAndStartToolBuild
+   * boundary.
+   */
+  private async spawnReaderSubBuildsAndWait(args: {
+    parentRun: AgentRunRecord;
+    parentBody: Record<string, unknown>;
+    missing: Array<{ filename: string; mimeType: string; capability: string; reason: string }>;
+    texts: Array<{ filename: string; mimeType: string; content: string }>;
+  }): Promise<void> {
+    const { parentRun, parentBody, missing } = args;
+    const subBuildRunIds: string[] = [];
+    for (const entry of missing) {
+      // Stable derived tool name so we don't spawn 5 copies of
+      // `file.application_pdf.read` when the same MIME comes up
+      // multiple times across reference batches.
+      const safeMime = entry.mimeType.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+      const subBuildName = `file.${safeMime}.read`;
+      const subBuildBody = {
+        name: subBuildName,
+        description:
+          `Read content from a base64-encoded ${entry.mimeType} file. ` +
+          `Input is {filename: string, mimeType: string, contentBase64: string}. ` +
+          `Output must be {ok: true, content: <plain text extracted from the file>} ` +
+          `or {ok: false, content: <human-readable error message>} on failure. ` +
+          `Use Node built-ins or zod only — no other npm packages are guaranteed to resolve.`,
+        qaCriteria: [
+          "input has filename, mimeType, contentBase64 fields",
+          `mimeType equals "${entry.mimeType}"`,
+          "returns ok=true with content being a non-empty string when given a valid file",
+          "returns ok=false with a descriptive content string when given an invalid file",
+        ],
+        // Tells `findReaderTool` what this reader can read.
+        requiredCapabilities: [entry.capability],
+        // Cycle marker: child cannot itself spawn further sub-builds.
+        parentBuildRunId: parentRun.id,
+      };
+
+      const subRun = await this.createAndStartToolBuild(subBuildBody);
+      if (subRun.run) {
+        subBuildRunIds.push(subRun.run.id);
+      }
+    }
+
+    // Snapshot the parent's POST body on the run so we can replay it
+    // when the readers finish. Stripping `parentBuildRunId` defensively
+    // even though createAndStartToolBuild already ignores it on
+    // resume — keeps the replay body clean.
+    const blockedEvent = {
+      spanId: `tool-build-waiting-${parentRun.id}`,
+      timestamp: new Date().toISOString(),
+      type: "tool-build-waiting-for-reader" as const,
+      actor: "coordinator",
+      activity: "coordination" as const,
+      status: "started" as const,
+      title: `Waiting on ${missing.length} reader tool(s)`,
+      detail: `Blocked on capabilities: ${missing.map((m) => m.capability).join(", ")}.`,
+      startedAt: new Date().toISOString(),
+      payload: {
+        missingCapabilities: missing.map((m) => ({
+          capability: m.capability,
+          filename: m.filename,
+          mimeType: m.mimeType,
+        })),
+        subBuildRunIds,
+        // The replay body — minus the parent marker (so the next
+        // createAndStartToolBuild call goes through the normal path).
+        replayBody: { ...parentBody, parentBuildRunId: undefined },
+      },
+    } as unknown as AgentEvent;
+    await this.runs.appendEvent(parentRun.id, blockedEvent);
+    await this.runs.markWaitingForToolRework(
+      parentRun.id,
+      `Waiting on ${missing.length} reader tool(s): ${missing
+        .map((m) => `${m.capability} (${m.filename})`)
+        .join(", ")}.`,
+    );
+  }
+
+  /**
+   * Adapter callback: a council just registered a new tool with
+   * `capabilities`. Walk the list of waiting tool-build parent runs
+   * and re-issue any whose blocked-on capabilities are now all
+   * satisfied by the in-process tool registry. Best-effort — a
+   * failure here must not retroactively fail the registration.
+   */
+  async onToolRegisteredForCouncil(
+    _toolName: string,
+    capabilities: readonly string[],
+  ): Promise<void> {
+    if (!this.toolRegistry) return;
+    const waiting = (await this.runs.list()).filter(
+      (run) => run.channel === "tool-build" && run.status === "waiting_tool_rework",
+    );
+    for (const parent of waiting) {
+      const blockedEvent = (parent.events ?? [])
+        .filter((event) => event.type === "tool-build-waiting-for-reader")
+        .at(-1);
+      if (!blockedEvent) continue;
+      const payload = (blockedEvent.payload ?? {}) as {
+        missingCapabilities?: Array<{ capability: string; filename: string; mimeType: string }>;
+        replayBody?: Record<string, unknown>;
+      };
+      const blockedOn = payload.missingCapabilities ?? [];
+      if (blockedOn.length === 0) continue;
+      // Quick filter: does this registration even mention one of our
+      // blocked-on capabilities?
+      if (!blockedOn.some((b) => capabilities.includes(b.capability) || capabilities.includes("reads:*"))) {
+        continue;
+      }
+      // Strong check: is every capability now resolvable in-registry?
+      const stillMissing = blockedOn.filter(
+        (b) =>
+          !this.toolRegistry!.list().some(
+            (tool) => tool.capabilities?.includes(b.capability) || tool.capabilities?.includes("reads:*"),
+          ),
+      );
+      if (stillMissing.length > 0) continue;
+      // All resolvers exist → resume by replaying the original body
+      // as a fresh tool-build run. Mark the parent done with a
+      // pointer to its successor so the UI can navigate the chain.
+      const replayBody = payload.replayBody ?? {};
+      try {
+        await this.runs.resumeFromToolRework(
+          parent.id,
+          "All reader tools registered — replaying original build.",
+        );
+        const successor = await this.createAndStartToolBuild(replayBody);
+        const successorId = successor.run?.id;
+        await this.runs.appendEvent(parent.id, {
+          spanId: `tool-build-resumed-${parent.id}`,
+          timestamp: new Date().toISOString(),
+          type: "tool-build-waiting-for-reader",
+          actor: "coordinator",
+          activity: "coordination",
+          status: "completed",
+          title: "Reader tools ready — build replayed",
+          detail: successorId ? `Replayed as run ${successorId}` : "Replayed as a fresh build run.",
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          payload: { successorRunId: successorId },
+        } as unknown as AgentEvent);
+        // Move parent into a terminal state so it doesn't show as
+        // running. The successor carries the actual work.
+        await this.runs.complete(parent.id, {
+          finalAnswer: successorId
+            ? `Reader tools became available; build replayed as run ${successorId}.`
+            : `Reader tools became available; build replayed.`,
+          artifacts: [],
+        } as never);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to auto-resume waiting council run ${parent.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  async listToolBuildRuns(): Promise<AgentRunRecord[]> {
+    const all = await this.runs.list();
+    return all.filter((entry) => entry.channel === "tool-build");
+  }
+
   async getArtifact(runId: string, artifactId: string) {
     if (!this.artifacts) {
       throw new ServiceUnavailableException("Artifact store is not configured");
@@ -523,6 +918,35 @@ export class RunsService implements OnApplicationBootstrap {
     if (!stored) throw new NotFoundException("Artifact not found");
     const buffer = stored.content ?? (stored.path ? await readFile(stored.path) : Buffer.alloc(0));
     return { stored, buffer };
+  }
+
+  /**
+   * Phase 13 follow-up: delete a single artifact (metadata + underlying
+   * object). Idempotent — returns 404 only when nothing matched the
+   * (runId, artifactId) tuple. Audited so the timeline shows who removed
+   * which file.
+   */
+  async deleteArtifact(
+    runId: string,
+    artifactId: string,
+  ): Promise<{ deleted: true; id: string; runId: string }> {
+    if (!this.artifacts) {
+      throw new ServiceUnavailableException("Artifact store is not configured");
+    }
+    const deleted = await this.artifacts.delete(runId, artifactId);
+    if (!deleted) throw new NotFoundException("Artifact not found");
+    await this.audit.record({
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "artifact.deleted",
+      targetType: "artifact",
+      targetId: artifactId,
+      runId,
+      status: "success",
+      summary: `Artifact deleted: ${artifactId} (run ${runId})`,
+    });
+    return { deleted: true, id: artifactId, runId };
   }
 
   async resolveContext(
@@ -677,6 +1101,42 @@ export class RunsService implements OnApplicationBootstrap {
     return artifacts;
   }
 
+  /**
+   * Phase 13 follow-up: build a stable dedup cache key for the
+   * idempotent submission window (`createAndStart`). Trims the task and
+   * tolerates undefined thread / requester ids so single-shot anonymous
+   * fixtures still benefit from the dedup window.
+   */
+  private dedupKeyFor(threadId: string | undefined, requesterUserId: string | undefined, task: string): string {
+    return `${threadId ?? "-"}::${requesterUserId ?? "-"}::${task.trim()}`;
+  }
+
+  /**
+   * Drop entries whose `expiresAt` is in the past. Called once per
+   * `createAndStart` so the cache stays bounded even on a long-running
+   * process; the work is O(N) on the cache size which is bounded by
+   * `submissions per DEDUP_WINDOW_MS`.
+   */
+  private gcDedupCache(now: number): void {
+    for (const [key, entry] of this.recentSubmissions) {
+      if (entry.expiresAt <= now) this.recentSubmissions.delete(key);
+    }
+  }
+
+  /**
+   * Test hook: lets unit tests inspect dedup cache state and simulate
+   * different points in time without exposing the Map directly.
+   */
+  __testing_dedup__() {
+    return {
+      cache: this.recentSubmissions,
+      key: (threadId: string | undefined, requesterUserId: string | undefined, task: string) =>
+        this.dedupKeyFor(threadId, requesterUserId, task),
+      gc: (now: number) => this.gcDedupCache(now),
+      windowMs: DEDUP_WINDOW_MS,
+    };
+  }
+
   private requesterError(input: {
     requesterUserId?: string;
     channel?: string;
@@ -744,6 +1204,15 @@ export class RunsService implements OnApplicationBootstrap {
        * re-run.
        */
       resumeFrom?: import("../../../agents/runResumption.js").RunResumptionState;
+      /**
+       * Phase 14: when present, the agent dispatches to the tool-build
+       * council pipeline (see UniversalAgent.runToolBuildCouncil)
+       * instead of the standard classify→plan→delegate flow. The
+       * adapter is wired by Nest DI (CouncilToolAdapter) and reaches
+       * the model tier settings, metadata store, file system, and
+       * the manual-run path for QA.
+       */
+      toolBuildContext?: import("../../../agents/toolBuildCouncil.js").ToolBuildContext;
     } = {},
   ): Promise<void> {
     await this.runs.markRunning(id);
@@ -763,19 +1232,62 @@ export class RunsService implements OnApplicationBootstrap {
       summary: `Run started: ${task.slice(0, 160)}`,
     });
 
+    // One AbortController per run, owned by RunsService. Tripped by
+    // `cancel()`; cleared in the finally block below regardless of
+    // outcome. The agent passes this signal into LlmClient.complete
+    // and checks it between council phases.
+    const runAbort = new AbortController();
+    this.runAbortControllers.set(id, runAbort);
+
     try {
       const [groupProfile, requesterUser] = await Promise.all([
         this.groupProfiles?.get().catch(() => undefined) ?? Promise.resolve(undefined),
         run?.requesterUserId ? this.users.get(run.requesterUserId).catch(() => undefined) : Promise.resolve(undefined),
       ]);
+      // Phase 14: build the council adapter on demand when this run is
+      // a tool-build run. All deps optional → only fire if the
+      // operator wired every store + ToolsService through DI.
+      const councilAdapter =
+        context.toolBuildContext &&
+        this.codingCouncil &&
+        this.modelTierSettings &&
+        this.toolMetadata &&
+        this.toolsService
+          ? new CouncilToolAdapter({
+              instanceId: run?.instanceId ?? "instance-local",
+              codingCouncilStore: this.codingCouncil,
+              modelTierSettings: this.modelTierSettings,
+              metadataStore: this.toolMetadata,
+              reloadGeneratedTools: this.reloadGeneratedTools,
+              runToolManually: (name, body) => this.toolsService!.runToolManually(name, body),
+              getRegisteredTool: (name) => {
+                const t = this.toolRegistry?.get(name);
+                if (!t) return undefined;
+                return {
+                  inputSchema: t.inputSchema,
+                  outputSchema: t.outputSchema,
+                  examples: t.examples,
+                  requiredSecretHandles: t.requiredSecretHandles,
+                };
+              },
+              onToolRegistered: (toolName, capabilities) =>
+                this.onToolRegisteredForCouncil(toolName, capabilities),
+              // Forwarded down to the agent so the rework prompts can
+              // include the current source and changeSummary can diff.
+            })
+          : undefined;
+
       const result = await this.agent.run(task, {
         inputArtifacts,
         threadContext: context.threadContext,
         instanceContext: { groupProfile, requesterUser },
         resumeFrom: context.resumeFrom,
+        toolBuildContext: context.toolBuildContext,
+        toolBuildCouncil: councilAdapter,
         workLedgerStore: this.workLedger,
         evidenceLedgerStore: this.evidenceLedger,
         runRetrospectiveStore: this.retrospectives,
+        signal: runAbort.signal,
         runId: id,
         instanceId: run?.instanceId ?? "group-local",
         requesterUserId: run?.requesterUserId ?? "user-admin",
@@ -1051,6 +1563,13 @@ export class RunsService implements OnApplicationBootstrap {
         summary: `Run failed: ${message.slice(0, 200)}`,
         payload: { error: message },
       });
+    } finally {
+      // Always release the controller — if the operator cancels mid-run
+      // we already cleared it in cancel(); if the run finished naturally
+      // we clear it here. Leaving stale entries would slowly leak
+      // controllers + abort-signal subscriptions.
+      const existing = this.runAbortControllers.get(id);
+      if (existing === runAbort) this.runAbortControllers.delete(id);
     }
   }
 

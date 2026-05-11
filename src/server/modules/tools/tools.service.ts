@@ -71,6 +71,90 @@ export class ToolsService {
     );
   }
 
+  /**
+   * Phase 13 follow-up: manual tool invocation from the UI / curl.
+   * Lets the operator paste an input payload, click "Run", and see
+   * the exact `ToolResult` the runtime would hand back to an agent.
+   * Useful for:
+   *   1. Smoke-testing a freshly-built / freshly-rebuilt tool service
+   *      without having to craft a whole agent run.
+   *   2. Verifying that a tool version actually works before promoting
+   *      it.
+   *   3. Reproducing an agent-observed failure with a known-good
+   *      input.
+   *
+   * Runs synchronously, returns whatever the tool returned (or the
+   * structured failure). Audits the invocation so the timeline shows
+   * who tried what.
+   */
+  async runToolManually(
+    name: string,
+    body: unknown,
+    actor: { actorId: string } = { actorId: "user-admin" },
+  ): Promise<{
+    tool: { name: string; version: string };
+    result: { ok: boolean; content: string; data?: unknown };
+    durationMs: number;
+  }> {
+    if (!this.registry) throw new ServiceUnavailableException("Tool registry is not configured");
+    const tool = this.registry.get(name);
+    if (!tool) throw new NotFoundException(`Tool not registered: ${name}`);
+
+    const input = isRecord(body) && isRecord((body as Record<string, unknown>).input)
+      ? ((body as Record<string, unknown>).input as Record<string, unknown>)
+      : isRecord(body)
+        ? (body as Record<string, unknown>)
+        : {};
+
+    const startedAt = Date.now();
+    let result: { ok: boolean; content: string; data?: unknown };
+    try {
+      result = await tool.run(input, {
+        toolName: tool.name,
+        now: new Date(),
+        caller: "manual-ui",
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      result = { ok: false, content: `Manual tool invocation threw: ${detail}` };
+    }
+    const durationMs = Date.now() - startedAt;
+
+    await this.audit.record({
+      instanceId: "instance-local",
+      actorId: actor.actorId,
+      actorType: "user",
+      action: "tool.manual_run",
+      targetType: "tool",
+      targetId: tool.name,
+      status: result.ok ? "success" : "failure",
+      summary: `Manual tool run: ${tool.name} (${result.ok ? "ok" : "failed"}, ${durationMs}ms)`,
+      metadata: {
+        inputKeys: Object.keys(input),
+        contentPreview: (result.content ?? "").slice(0, 200),
+      },
+    });
+
+    // Phase 13 follow-up: HttpToolAdapter rehydrates artifact
+    // `contentBase64` → Node `Buffer` in `result.data` so downstream
+    // helpers (saveArtifact, etc.) get usable binary. But the
+    // /api/tools/:name/run response is plain JSON, where Buffer serializes
+    // to `{ type: "Buffer", data: [...] }` and the UI sees an object
+    // instead of file bytes. Re-serialize Buffer back to `contentBase64`
+    // here so the Manual Run panel can render a Download link.
+    const wireResult = {
+      ok: result.ok,
+      content: typeof result.content === "string" ? result.content : "",
+      data: serializeBuffersForWire(result.data),
+    };
+
+    return {
+      tool: { name: tool.name, version: tool.version ?? "unknown" },
+      result: wireResult,
+      durationMs,
+    };
+  }
+
   async reloadGenerated(): Promise<{ tools: ToolModuleMetadata[] }> {
     if (!this.reload) {
       throw new ServiceUnavailableException("Generated tool reload is not configured");
@@ -511,4 +595,31 @@ export class ToolsService {
     }
     return issues;
   }
+}
+
+/**
+ * Phase 13 follow-up: walk a tool result and re-encode any Node `Buffer`
+ * we find back into the wire-friendly `contentBase64` shape (with the
+ * sibling `content` key removed). HttpToolAdapter rehydrates docker
+ * services' base64 payloads into Buffers so the in-process saveArtifact
+ * path gets binary; for the Manual Run JSON response we need to reverse
+ * that so the UI's artifact detector sees a usable file. Pure function;
+ * cycle-safe via the `seen` set.
+ */
+function serializeBuffersForWire(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
+  if (value === null || value === undefined) return value;
+  if (Buffer.isBuffer(value)) return { contentBase64: value.toString("base64") };
+  if (typeof value !== "object") return value;
+  if (seen.has(value as object)) return undefined;
+  seen.add(value as object);
+  if (Array.isArray(value)) return value.map((item) => serializeBuffersForWire(item, seen));
+  const out: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "content" && Buffer.isBuffer(nested)) {
+      out.contentBase64 = (nested as Buffer).toString("base64");
+      continue;
+    }
+    out[key] = serializeBuffersForWire(nested, seen);
+  }
+  return out;
 }

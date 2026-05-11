@@ -240,7 +240,9 @@ function SpanNode({ data }: NodeProps<Node<SpanNodeData>>) {
         {node.title}
       </p>
       <p className="mt-0.5 truncate font-mono text-[10px] text-app-text-muted">{node.actor}</p>
-      {typeof node.durationMs === "number" ? (
+      {node.status === "started" ? (
+        <p className="mt-0.5 text-[10px] text-app-info">running…</p>
+      ) : typeof node.durationMs === "number" ? (
         <p className="mt-0.5 text-[10px] text-app-text-muted">
           {formatDuration(node.durationMs)}
         </p>

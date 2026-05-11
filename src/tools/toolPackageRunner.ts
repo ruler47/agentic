@@ -6,8 +6,9 @@ import { resolve, relative, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { Tool, ToolExecutionContext, ToolHealth, ToolResult, ToolServiceContext, ToolServiceHandle } from "./tool.js";
-import { ToolModuleMetadata } from "./toolMetadataStore.js";
+import { ToolMetadataStore, ToolModuleMetadata } from "./toolMetadataStore.js";
 import { ToolPackageReferenceType } from "./toolPackage.js";
+import type { ToolRegistry } from "./registry.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1417,4 +1418,67 @@ function isHttpUrl(value: string | undefined): value is string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Phase 13 follow-up: thin dispatcher that walks the metadata
+ * store and asks each runner whether it can load the recorded
+ * package descriptor. Used to live in
+ * src/tools/generatedToolLoader.ts; now co-located with the
+ * runners themselves so there is one obvious home for "given a
+ * registered generated module, get a runtime Tool out of it".
+ */
+export type GeneratedToolLoadResult = {
+  name: string;
+  loaded: boolean;
+  detail: string;
+};
+
+export async function loadGeneratedTools(
+  registry: ToolRegistry,
+  metadataStore: ToolMetadataStore,
+  projectRoot = process.cwd(),
+  runners: ToolPackageRunner[] = [
+    new LocalPathToolPackageRunner(),
+    new SourceBundleHttpProcessToolPackageRunner(),
+    new SourceBundleToolPackageRunner(),
+    new ExternalHttpToolPackageRunner(),
+    new OciImageToolPackageRunner(),
+  ],
+): Promise<GeneratedToolLoadResult[]> {
+  const modules = (await metadataStore.list()).filter((item) => item.source === "generated");
+  const results: GeneratedToolLoadResult[] = [];
+  for (const module of modules) {
+    const runner = runners.find((candidate) => candidate.canLoad(module));
+    if (!runner) {
+      const packageType = module.packageManifest?.package.type ?? "legacy-local-path";
+      results.push({
+        name: module.name,
+        loaded: false,
+        detail: `No generated-tool runner is available for ${packageType} package references yet.`,
+      });
+      continue;
+    }
+    try {
+      const result = await runner.load(module, projectRoot);
+      if (result.health) await metadataStore.updateHealth(module.name, result.health);
+      if (!result.loaded) {
+        results.push({ name: module.name, loaded: false, detail: result.detail });
+        continue;
+      }
+      if (!result.tool) {
+        const detail = `Runner ${runner.type} reported success without returning a Tool.`;
+        await metadataStore.updateHealth(module.name, { ok: false, detail });
+        results.push({ name: module.name, loaded: false, detail });
+        continue;
+      }
+      registry.register(result.tool);
+      results.push({ name: module.name, loaded: true, detail: result.detail });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await metadataStore.updateHealth(module.name, { ok: false, detail });
+      results.push({ name: module.name, loaded: false, detail });
+    }
+  }
+  return results;
 }

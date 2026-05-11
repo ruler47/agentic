@@ -961,6 +961,22 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       create index if not exists run_retrospectives_status_idx
       on run_retrospectives(status, created_at desc);
     `);
+
+    // Phase 14: coding council settings. Tool-build runs spin up a
+    // council of LLMs from this tier (brainstorm → vote → implement →
+    // review → revise → QA → repair). A single-row table keyed by
+    // instance so the loop parameters stay editable per deployment.
+    await pool.query(`
+      create table if not exists coding_council_config (
+        instance_id text primary key,
+        tier text not null default 'L' check (tier in ('S', 'M', 'L', 'XL')),
+        max_revision_attempts integer not null default 3 check (max_revision_attempts >= 1 and max_revision_attempts <= 10),
+        max_qa_repair_attempts integer not null default 5 check (max_qa_repair_attempts >= 1 and max_qa_repair_attempts <= 10),
+        qa_timeout_ms integer not null default 30000 check (qa_timeout_ms >= 1000 and qa_timeout_ms <= 600000),
+        brainstorm_system_prompt text,
+        updated_at timestamptz not null
+      );
+    `);
   } finally {
     await pool.end();
   }

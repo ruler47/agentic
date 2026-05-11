@@ -1,273 +1,144 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
+import { Link } from "react-router-dom";
 
-import {
-  useToolBuildRequests,
-  useToolInvestigations,
-  useToolReworkWaits,
-} from "@/api/queries";
+import { useToolBuildRuns, useCreateToolBuildRun } from "@/api/toolBuildRuns";
 import { useTools } from "@/api/tools";
-import {
-  TOOL_BUILD_STATUSES,
-  describeBuildStatus,
-  useCreateToolBuildRequest,
-} from "@/api/toolBuilds";
-import { BuildCard } from "@/features/tool-builds/BuildCard";
-import { InvestigationCard } from "@/features/tool-builds/InvestigationCard";
-import { WaitCard } from "@/features/tool-builds/WaitCard";
-import type { ToolInvestigationRecord, ToolReworkWaitRecord } from "@/api/types";
+import { RunStatusBadge } from "@/components/StatusBadge";
+import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
+import type { AgentRunRecord, ToolModuleMetadata } from "@/api/types";
 
-const DEFAULT_QA_CRITERIA = [
-  "The generated tool must be TypeScript, reusable outside this specific request, documented, and registered only after QA passes.",
-  "Validate input/output schemas and reject unsafe or incomplete inputs with structured failures.",
-  "Add focused automated tests for success, invalid input, and provider/tool failure paths.",
-  "Run a manual smoke check that proves the tool can satisfy the requested capability.",
-  "Do not leak credentials into prompts, logs, generated source, tests, traces, memory, or artifacts.",
+const SAMPLE_QA_CRITERIA = [
+  "returns ok=true on a valid input",
+  "content matches the requested transformation",
+  "rejects missing required fields with a descriptive error string",
 ].join("\n");
 
+/**
+ * Phase 14 / Phase E: Tool Builds page rewritten around the council
+ * pipeline. The legacy queue (tool-build-requests + Build queue grid +
+ * Investigations + Waits) is gone — every new tool goes through the
+ * council via POST /api/tool-build-runs and is fully observable in
+ * Trace Lab.
+ *
+ * The page now answers exactly three questions:
+ *   - What does the operator need to fill in to start a new tool?
+ *   - Which tools were built recently, and how did each run go?
+ *   - Where do I jump in to see the brainstorm/vote/review/QA trail?
+ *
+ * Each council run row links straight into Trace Lab so the operator
+ * never has to navigate Runs → search for the right id.
+ */
 export function ToolBuildsPage() {
-  const builds = useToolBuildRequests();
-  const investigations = useToolInvestigations();
-  const waits = useToolReworkWaits();
+  const runs = useToolBuildRuns();
   const tools = useTools();
+  const runList = runs.data ?? [];
+  const toolList = tools.data ?? [];
 
-  const installedToolNames = useMemo(
-    () => new Set((tools.data ?? []).map((tool) => tool.name)),
-    [tools.data],
-  );
-
-  const investigationList = investigations.data ?? [];
-  const buildList = builds.data ?? [];
-  const waitList = waits.data ?? [];
-
-  const openInvestigations = investigationList.filter(
-    (item) => item.status === "open" || item.status === "triaged",
-  );
-  const linkedInvestigations = investigationList.filter(
-    (item) => item.status === "linked_to_build",
-  );
-  const openWaits = waitList.filter(
-    (wait) =>
-      wait.status !== "resumed" && wait.status !== "cancelled" && wait.status !== "failed",
-  );
-  const closedWaits = waitList.filter(
-    (wait) =>
-      wait.status === "resumed" || wait.status === "cancelled" || wait.status === "failed",
-  );
-
-  const waitsByBuildId = useMemo(() => {
-    const map = new Map<string, typeof waitList>();
-    for (const wait of waitList) {
-      if (!wait.buildRequestId) continue;
-      const existing = map.get(wait.buildRequestId);
-      if (existing) existing.push(wait);
-      else map.set(wait.buildRequestId, [wait]);
-    }
-    return map;
-  }, [waitList]);
-
-  const waitsByInvestigationId = useMemo(() => {
-    const map = new Map<string, typeof waitList>();
-    for (const wait of waitList) {
-      if (!wait.investigationId) continue;
-      const existing = map.get(wait.investigationId);
-      if (existing) existing.push(wait);
-      else map.set(wait.investigationId, [wait]);
-    }
-    return map;
-  }, [waitList]);
+  const installed = new Map<string, ToolModuleMetadata>();
+  for (const tool of toolList) installed.set(tool.name, tool);
 
   return (
     <section className="flex flex-col gap-4">
       <header className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
-        <div className="flex items-baseline justify-between">
+        <div className="flex items-baseline justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold">Tool Builds</h2>
             <p className="mt-1 text-xs text-app-text-muted">
-              Investigations preserve failure context. Promote them to a build request, then
-              register the new version. Waiting runs resume only after the operator marks
-              them ready for retry.
+              Build a new tool with the coding council: peer LLMs brainstorm a proposal,
+              vote on the best one, draft code, review and revise it, then run QA against
+              acceptance criteria — all in one pipeline. Every step shows up live in Trace Lab.
             </p>
           </div>
           <div className="flex flex-wrap gap-2 text-[11px] text-app-text-muted">
             <span className="rounded-full bg-app-surface-2 px-2 py-0.5">
-              {investigationList.length} investigations
+              {runList.length} council runs
             </span>
             <span className="rounded-full bg-app-surface-2 px-2 py-0.5">
-              {buildList.length} build requests
-            </span>
-            <span
-              className={
-                openWaits.length > 0
-                  ? "rounded-full bg-app-warning-soft px-2 py-0.5 text-app-warning"
-                  : "rounded-full bg-app-surface-2 px-2 py-0.5"
-              }
-            >
-              {openWaits.length} active waits
+              {toolList.length} tools registered
             </span>
           </div>
         </div>
       </header>
 
-      <NewToolBuildRequest defaultQaCriteria={DEFAULT_QA_CRITERIA} />
+      <NewCouncilBuild defaultQaCriteria={SAMPLE_QA_CRITERIA} />
 
-      <ToolInvestigationsPanel
-        title="Open Tool Investigations"
-        emptyText="No open investigations. Open Trace Lab and click 'Create tool request / bug' on a span to start one."
-        investigations={openInvestigations}
-        installedToolNames={installedToolNames}
-        waitsByInvestigationId={waitsByInvestigationId}
-      />
-
-      {linkedInvestigations.length > 0 ? (
-        <ToolInvestigationsPanel
-          title="Linked to Tool Builds"
-          emptyText=""
-          investigations={linkedInvestigations}
-          installedToolNames={installedToolNames}
-          waitsByInvestigationId={waitsByInvestigationId}
-        />
-      ) : null}
-
-      {openWaits.length > 0 ? (
-        <section className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
-          <h3 className="text-sm font-semibold">Active rework waits</h3>
-          <p className="mt-1 text-xs text-app-text-muted">
-            Each card represents a run paused for tool upgrade. Once promoted, click <em>Mark
-            ready for retry</em> to close the wait and let the operator re-issue the task.
-          </p>
-          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {openWaits.map((wait) => (
-              <WaitCard key={wait.id} wait={wait} />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      <section className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
-        <h3 className="text-sm font-semibold">Build queue</h3>
-        <p className="mt-1 text-xs text-app-text-muted">
-          The background worker claims requested cards automatically. Use <em>Run builder</em> as
-          a manual fallback.
-        </p>
-        <div className="mt-3 grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
-          {TOOL_BUILD_STATUSES.map((status) => {
-            const items = buildList.filter((request) => request.status === status);
-            return (
-              <article
-                key={status}
-                className="flex min-h-[160px] flex-col gap-2 rounded-md border border-app-border bg-app-surface-2 p-3"
-              >
-                <header className="flex items-baseline justify-between">
-                  <h4 className="text-xs font-semibold uppercase tracking-wider">
-                    {status.replace(/_/g, " ")}
-                  </h4>
-                  <span className="text-[11px] text-app-text-muted">{items.length}</span>
-                </header>
-                <p className="text-[11px] text-app-text-muted">
-                  {describeBuildStatus(status)}
-                </p>
-                {items.length === 0 ? (
-                  <p className="text-[11px] text-app-text-muted/70">No requests</p>
-                ) : (
-                  <div className="flex flex-col gap-2">
-                    {items.map((request) => (
-                      <BuildCard
-                        key={request.id}
-                        request={request}
-                        linkedWaits={waitsByBuildId.get(request.id) ?? []}
-                      />
-                    ))}
-                  </div>
-                )}
-              </article>
-            );
-          })}
-        </div>
-      </section>
-
-      {closedWaits.length > 0 ? (
-        <section className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
-          <h3 className="text-sm font-semibold">Closed waits</h3>
-          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {closedWaits.slice(0, 12).map((wait) => (
-              <WaitCard key={wait.id} wait={wait} />
-            ))}
-          </div>
-        </section>
-      ) : null}
+      <RecentCouncilRuns runs={runList} installed={installed} isLoading={runs.isLoading} />
     </section>
   );
 }
 
-function ToolInvestigationsPanel({
-  title,
-  emptyText,
-  investigations,
-  installedToolNames,
-  waitsByInvestigationId,
-}: {
-  title: string;
-  emptyText: string;
-  investigations: ToolInvestigationRecord[];
-  installedToolNames: Set<string>;
-  waitsByInvestigationId: Map<string, ToolReworkWaitRecord[]>;
-}) {
-  return (
-    <section className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
-      <h3 className="text-sm font-semibold">{title}</h3>
-      {investigations.length === 0 ? (
-        <p className="mt-1 text-xs text-app-text-muted">{emptyText}</p>
-      ) : (
-        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {investigations.map((investigation) => (
-            <InvestigationCard
-              key={investigation.id}
-              investigation={investigation}
-              linkedWaits={waitsByInvestigationId.get(investigation.id) ?? []}
-              installedToolNames={installedToolNames}
-            />
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
+type PendingReference = {
+  filename: string;
+  mimeType: string;
+  size: number;
+  contentBase64: string;
+};
 
-function NewToolBuildRequest({ defaultQaCriteria }: { defaultQaCriteria: string }) {
-  const create = useCreateToolBuildRequest();
+const REFERENCE_FILE_CAP_MB = 5;
+
+function NewCouncilBuild({ defaultQaCriteria }: { defaultQaCriteria: string }) {
+  const create = useCreateToolBuildRun();
   const [open, setOpen] = useState(false);
-  const [displayName, setDisplayName] = useState("");
-  const [reason, setReason] = useState("");
-  const [credentialNotes, setCredentialNotes] = useState("");
-  const [startupMode, setStartupMode] = useState("on-demand");
-  const [qaCriteria, setQaCriteria] = useState("");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [qaCriteriaText, setQaCriteriaText] = useState("");
+  const [secretHandle, setSecretHandle] = useState("");
+  const [references, setReferences] = useState<PendingReference[]>([]);
+  const [referenceError, setReferenceError] = useState<string | undefined>();
+
+  const onFilesPicked = async (files: FileList | null) => {
+    setReferenceError(undefined);
+    if (!files) return;
+    const next: PendingReference[] = [];
+    for (const file of Array.from(files)) {
+      if (file.size > REFERENCE_FILE_CAP_MB * 1024 * 1024) {
+        setReferenceError(`${file.name}: exceeds ${REFERENCE_FILE_CAP_MB} MB cap.`);
+        return;
+      }
+      const buffer = await file.arrayBuffer();
+      next.push({
+        filename: file.name,
+        mimeType: file.type || guessMimeFromName(file.name),
+        size: file.size,
+        contentBase64: arrayBufferToBase64(buffer),
+      });
+    }
+    setReferences((prev) => [...prev, ...next]);
+  };
+
+  const removeReference = (filename: string) => {
+    setReferences((prev) => prev.filter((ref) => ref.filename !== filename));
+  };
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     if (create.isPending) return;
-    const trimmedQa = qaCriteria
-      .split(/\n|,/)
-      .map((item) => item.trim())
+    const qaCriteria = qaCriteriaText
+      .split(/\n/)
+      .map((line) => line.trim())
       .filter(Boolean);
     create.mutate(
       {
-        // `capability` is intentionally omitted; the server infers it from
-        // displayName + reason via `inferToolBuildCapability`.
-        displayName: displayName.trim() || undefined,
-        reason: reason.trim(),
-        credentialNotes: credentialNotes.trim() || undefined,
-        startupMode: ["on-demand", "always-on", "ephemeral"].includes(startupMode)
-          ? (startupMode as "on-demand" | "always-on" | "ephemeral")
+        name: name.trim(),
+        description: description.trim(),
+        qaCriteria: qaCriteria.length > 0 ? qaCriteria : undefined,
+        secretHandle: secretHandle.trim() || undefined,
+        references: references.length > 0
+          ? references.map((ref) => ({
+              filename: ref.filename,
+              mimeType: ref.mimeType,
+              contentBase64: ref.contentBase64,
+            }))
           : undefined,
-        qaCriteria: trimmedQa.length > 0 ? trimmedQa : undefined,
       },
       {
         onSuccess: () => {
-          setDisplayName("");
-          setReason("");
-          setCredentialNotes("");
-          setStartupMode("on-demand");
-          setQaCriteria("");
+          setName("");
+          setDescription("");
+          setQaCriteriaText("");
+          setSecretHandle("");
+          setReferences([]);
+          setReferenceError(undefined);
           setOpen(false);
         },
       },
@@ -278,10 +149,10 @@ function NewToolBuildRequest({ defaultQaCriteria }: { defaultQaCriteria: string 
     <section className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
       <header className="flex items-baseline justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold">Request a Tool</h3>
+          <h3 className="text-sm font-semibold">Start a new council build</h3>
           <p className="mt-1 text-xs text-app-text-muted">
-            Describe what the tool should do. The builder generates the system name and
-            schemas; secrets stay behind handles.
+            Submitting kicks the brainstorm → vote → implement → review → revise → QA
+            pipeline immediately. Watch progress in the run row below or in Trace Lab.
           </p>
         </div>
         <button
@@ -289,66 +160,102 @@ function NewToolBuildRequest({ defaultQaCriteria }: { defaultQaCriteria: string 
           onClick={() => setOpen((prev) => !prev)}
           className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1 text-xs"
         >
-          {open ? "Close form" : "Open request form"}
+          {open ? "Close form" : "Open form"}
         </button>
       </header>
       {open ? (
         <form onSubmit={submit} className="mt-3 grid gap-3 text-xs">
           <label className="flex flex-col gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-app-text-muted">Tool name</span>
+            <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
+              Tool name (canonical, e.g. <code>weather.openmeteo</code>)
+            </span>
             <input
               required
-              value={displayName}
-              onChange={(event) => setDisplayName(event.target.value)}
-              placeholder="Wallet Risk Lookup"
-              className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-sm outline-none focus:border-app-accent/60"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="weather.openmeteo"
+              className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-sm outline-none focus:border-app-accent/60 font-mono"
             />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
-              Description, docs, expected behavior
+              Description — what should the tool do?
             </span>
             <textarea
               required
               rows={4}
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-              placeholder="What should it do, where are the docs, inputs/outputs, when should the agent use it?"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="Return the hourly weather forecast for a given city using the open-meteo public API. No auth required."
               className="resize-y rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-sm outline-none focus:border-app-accent/60"
             />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-app-text-muted">Run mode</span>
-            <select
-              value={startupMode}
-              onChange={(event) => setStartupMode(event.target.value)}
-              className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-sm"
-            >
-              <option value="on-demand">On demand</option>
-              <option value="always-on">Always running (service / listener)</option>
-              <option value="ephemeral">Ephemeral (short-lived job)</option>
-            </select>
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
-              Credentials (optional, will be redacted)
+              QA acceptance criteria (one per line)
             </span>
             <textarea
-              rows={2}
-              value={credentialNotes}
-              onChange={(event) => setCredentialNotes(event.target.value)}
-              placeholder="API key, bot token, secret reference; the builder converts these to scoped secret handles."
+              rows={4}
+              value={qaCriteriaText}
+              onChange={(event) => setQaCriteriaText(event.target.value)}
+              placeholder={defaultQaCriteria}
               className="resize-y rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-sm outline-none focus:border-app-accent/60"
             />
           </label>
+          <fieldset className="flex flex-col gap-2 rounded-md border border-app-border bg-app-surface-2 p-3">
+            <legend className="text-[10px] uppercase tracking-wider text-app-text-muted">
+              Reference docs (OpenAPI, README, PDF, YAML, …)
+            </legend>
+            <p className="text-[11px] text-app-text-muted">
+              The council reads these before brainstorming. Text-like files (md / yaml /
+              json / openapi / txt) are read in-process. Binary files (PDF, etc.) require
+              a registered tool with capability <code>reads:&lt;mime&gt;</code> — if missing,
+              the run halts with a clear message and you build the reader first.
+              Cap: {REFERENCE_FILE_CAP_MB} MB per file.
+            </p>
+            <input
+              type="file"
+              multiple
+              onChange={(event) => void onFilesPicked(event.target.files)}
+              className="text-[11px] file:mr-3 file:rounded-md file:border file:border-app-border file:bg-app-surface file:px-3 file:py-1 file:text-[11px] file:text-app-text"
+            />
+            {references.length > 0 ? (
+              <ul className="flex flex-col gap-1 text-[11px]">
+                {references.map((ref) => (
+                  <li
+                    key={ref.filename}
+                    className="flex items-center justify-between gap-2 rounded border border-app-border bg-app-surface px-2 py-1"
+                  >
+                    <span className="min-w-0 truncate font-mono">
+                      {ref.filename}
+                      <span className="ml-2 text-app-text-muted">
+                        {formatFileSize(ref.size)} · {ref.mimeType || "unknown"}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeReference(ref.filename)}
+                      className="rounded text-app-text-muted hover:text-app-danger"
+                    >
+                      remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {referenceError ? (
+              <p className="text-[11px] text-app-danger">{referenceError}</p>
+            ) : null}
+          </fieldset>
           <label className="flex flex-col gap-1">
-            <span className="text-[10px] uppercase tracking-wider text-app-text-muted">QA criteria</span>
-            <textarea
-              rows={5}
-              value={qaCriteria}
-              onChange={(event) => setQaCriteria(event.target.value)}
-              placeholder={defaultQaCriteria}
-              className="resize-y rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-sm outline-none focus:border-app-accent/60"
+            <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
+              Secret handle (optional — the tool reads this at runtime)
+            </span>
+            <input
+              value={secretHandle}
+              onChange={(event) => setSecretHandle(event.target.value)}
+              placeholder="weather.openmeteo.api_key"
+              className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-sm outline-none focus:border-app-accent/60 font-mono"
             />
           </label>
           {create.isError ? (
@@ -364,14 +271,139 @@ function NewToolBuildRequest({ defaultQaCriteria }: { defaultQaCriteria: string 
             </button>
             <button
               type="submit"
-              disabled={create.isPending || !displayName.trim() || !reason.trim()}
+              disabled={create.isPending || !name.trim() || !description.trim()}
               className="rounded-md bg-app-accent px-3 py-1.5 text-xs font-semibold text-app-bg disabled:opacity-50"
             >
-              {create.isPending ? "Creating…" : "Create build request"}
+              {create.isPending ? "Starting…" : "Start council build"}
             </button>
           </div>
         </form>
       ) : null}
     </section>
   );
+}
+
+function RecentCouncilRuns({
+  runs,
+  installed,
+  isLoading,
+}: {
+  runs: AgentRunRecord[];
+  installed: Map<string, ToolModuleMetadata>;
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <section className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4 text-sm text-app-text-muted">
+        Loading…
+      </section>
+    );
+  }
+  if (runs.length === 0) {
+    return (
+      <section className="rounded-[var(--radius-card)] border border-dashed border-app-border bg-app-surface p-6 text-sm text-app-text-muted">
+        No council runs yet. Open the form above to start one.
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-[var(--radius-card)] border border-app-border bg-app-surface">
+      <header className="border-b border-app-border px-4 py-3">
+        <h3 className="text-sm font-semibold">Recent council runs</h3>
+        <p className="mt-0.5 text-[11px] text-app-text-muted">
+          Newest first. Click a row to open the full trace (brainstorm proposals, votes,
+          drafted code, reviews, QA attempts).
+        </p>
+      </header>
+      <ul className="divide-y divide-app-border">
+        {runs.map((run) => {
+          const toolName = extractToolName(run);
+          const tool = toolName ? installed.get(toolName) : undefined;
+          return (
+            <li key={run.id}>
+              <Link
+                to={`/trace/${run.id}`}
+                className="grid grid-cols-[minmax(0,1.5fr)_auto_auto_auto_auto] items-center gap-3 px-4 py-2.5 text-sm hover:bg-app-surface-2"
+              >
+                <span className="min-w-0 truncate">
+                  <span className="font-mono">{toolName ?? run.id}</span>
+                  {tool ? (
+                    <span className="ml-2 text-[10px] text-app-text-muted">
+                      → v{tool.version} ({tool.status})
+                    </span>
+                  ) : null}
+                  <span className="ml-2 text-[11px] text-app-text-muted">
+                    {truncate(run.task, 100)}
+                  </span>
+                </span>
+                <RunStatusBadge status={run.status} />
+                <span className="font-mono text-[11px] text-app-text-muted">
+                  {formatDuration(runDurationMs(run))}
+                </span>
+                <span className="text-[11px] text-app-text-muted">
+                  {(run.events ?? []).length} events
+                </span>
+                <span className="text-[11px] text-app-text-muted">
+                  {formatRelative(run.createdAt)}
+                </span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/** Pull the canonical tool name out of the council run's task string.
+ *  The runs.service writes the task as
+ *  `Council build for <name>: <description>` so we can reliably
+ *  parse the name back out for the row label.
+ */
+function extractToolName(run: AgentRunRecord): string | undefined {
+  const match = /^Council build for ([^:]+):/.exec(run.task ?? "");
+  return match ? match[1].trim() : undefined;
+}
+
+/** Convert ArrayBuffer to base64 without blowing the call stack on
+ *  large files — `String.fromCharCode(...arr)` overflows past ~100 kB. */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + chunkSize, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+/** Best-effort MIME guess from the file extension when the browser
+ *  doesn't supply one (which happens for .yaml / .openapi / .md). */
+function guessMimeFromName(filename: string): string {
+  const ext = filename.toLowerCase().split(".").pop() ?? "";
+  switch (ext) {
+    case "yaml":
+    case "yml":
+      return "application/yaml";
+    case "json":
+      return "application/json";
+    case "md":
+    case "markdown":
+      return "text/markdown";
+    case "txt":
+      return "text/plain";
+    case "openapi":
+      return "application/openapi+yaml";
+    case "pdf":
+      return "application/pdf";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

@@ -235,7 +235,19 @@ export type AgentEventType =
   | "work-ledger-reused"
   | "work-ledger-waiting-existing"
   | "evidence-ledger-recorded"
-  | "run-retrospective-proposed";
+  | "run-retrospective-proposed"
+  // Phase 14: tool-build council events.
+  | "tool-build-brainstorm-proposal"
+  | "tool-build-vote-cast"
+  | "tool-build-council-winner-selected"
+  | "tool-build-code-drafted"
+  | "tool-build-code-review-cast"
+  | "tool-build-code-revised"
+  | "tool-build-qa-attempt"
+  | "tool-build-code-repaired"
+  | "tool-build-registered"
+  // Phase 14 / Phase 2: parent build halted on a missing reader tool.
+  | "tool-build-waiting-for-reader";
 
 export type AgentActivity =
   | "coordination"

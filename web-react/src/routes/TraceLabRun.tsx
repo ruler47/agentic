@@ -109,6 +109,20 @@ export function TraceLabRunPage() {
             <span>{run.data.events?.length ?? 0} events · {allNodes.length} spans</span>
             <span>{formatRelative(run.data.updatedAt)}</span>
           </div>
+          {/* Phase 2 visibility: if this run was spawned by another
+              council run (e.g., a reader sub-build), make the parent
+              one click away so the operator can pop back up. */}
+          {run.data.parentRunId ? (
+            <p className="mt-1 text-[11px] text-app-text-muted">
+              ↑ Parent run:{" "}
+              <Link
+                to={`/trace/${run.data.parentRunId}`}
+                className="font-mono text-app-accent hover:underline"
+              >
+                {run.data.parentRunId}
+              </Link>
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-0.5 rounded-md border border-app-border bg-app-surface-2 p-0.5">

@@ -153,6 +153,15 @@ type RunOptions = {
   workLedgerStore?: WorkLedgerStore;
   evidenceLedgerStore?: EvidenceLedgerStore;
   runRetrospectiveStore?: RunRetrospectiveStore;
+  /**
+   * Phase 14: when present, the agent dispatches to the tool-build
+   * council pipeline (`runToolBuildCouncil`) instead of the standard
+   * classify→plan→delegate flow. `toolBuildCouncil` carries the
+   * injected helpers (model resolution, registration, QA runner) that
+   * the council needs but the agent itself shouldn't own.
+   */
+  toolBuildContext?: import("./toolBuildCouncil.js").ToolBuildContext;
+  toolBuildCouncil?: ToolBuildCouncilAdapter;
   now?: Date;
   timeZone?: string;
   /**
@@ -167,6 +176,14 @@ type RunOptions = {
    * evidence rather than calling the tools again.
    */
   resumeFrom?: import("./runResumption.js").RunResumptionState;
+  /**
+   * When the operator cancels a run via POST /api/runs/:id/cancel, the
+   * server aborts this signal. The agent (and the council loop in
+   * particular) checks `signal.aborted` between LLM calls and passes
+   * the signal to `LlmClient.complete` so in-flight HTTP requests
+   * unblock immediately instead of letting the model finish.
+   */
+  signal?: AbortSignal;
 };
 
 type BaseToolExecutionContext = Partial<Omit<ToolExecutionContext, "toolName" | "now">>;
@@ -208,6 +225,70 @@ const promptBudget = {
   learningWorkerOutputChars: 10_000,
 };
 
+/**
+ * Phase 14: collaborators the tool-build council needs from outside
+ * the agent class (we keep the agent slim — no direct dependencies on
+ * stores or tool registries). The RunsService wires these in for
+ * production; tests supply stubs.
+ */
+export type ToolBuildCouncilAdapter = {
+  resolveConfig: () => Promise<{
+    tier: import("../settings/codingCouncilStore.js").CodingCouncilConfig["tier"];
+    maxRevisionAttempts: number;
+    maxQaRepairAttempts: number;
+    qaTimeoutMs: number;
+    brainstormSystemPrompt?: string;
+  }>;
+  /** Return the list of model ids registered for the given tier. */
+  resolveCouncilModels: (tier: string) => Promise<string[]>;
+  /**
+   * Register / re-register the freshly-generated tool source bundle and
+   * return its tool name + active version. Called once after the
+   * implement step and again after each repair iteration.
+   */
+  registerToolFromFiles: (
+    toolName: string,
+    files: ReadonlyArray<{ path: string; content: string }>,
+    metadata: {
+      description: string;
+      version?: string;
+      secretHandle?: string;
+      /** QA-synthesized sample input, persisted as a metadata example. */
+      sampleInput?: Record<string, unknown>;
+      /** Extra capability tags the registered tool must declare. */
+      requiredCapabilities?: string[];
+    },
+  ) => Promise<{ toolName: string; version: string }>;
+  /**
+   * Replace the `changeSummary` on an already-registered version. The
+   * council synthesizes this after the QA/repair loop ends because the
+   * "what changed" line wants to describe the final state, not the
+   * initial draft. Best-effort: caller should not fail the run if the
+   * update can't reach the metadata store.
+   */
+  updateChangeSummary?: (toolName: string, version: string, changeSummary: string) => Promise<void>;
+  /**
+   * Replace the canonical `description` for the active version. The
+   * council regenerates this from the FINAL source after every build
+   * / rework so other agents see an accurate shape-aware description
+   * when discovering tools. The operator's form input is only the
+   * initial hint; the LLM-written description is authoritative.
+   */
+  updateDescription?: (toolName: string, version: string, description: string) => Promise<void>;
+  /** Invoke the registered tool with a QA-synthesized input. */
+  runToolForQa: (toolName: string, input: Record<string, unknown>) => Promise<{
+    ok: boolean;
+    content: string;
+    data?: unknown;
+  }>;
+  /**
+   * Read the active version's Tool body source so the council can use
+   * it as a rework starting point AND as the "previous code" baseline
+   * the changeSummary synthesizer diffs against.
+   */
+  readCurrentToolSource?: (toolName: string) => Promise<string | undefined>;
+};
+
 export class UniversalAgent {
   /**
    * Per-run RuntimeLedgerCoordinator instances keyed by `runId`. Stored on the agent
@@ -228,6 +309,28 @@ export class UniversalAgent {
    * smokes that bypass classification).
    */
   private readonly runScopedIntents = new Map<string, string[]>();
+
+  /**
+   * Phase 13 follow-up: per-run thread artifacts (carried over from
+   * `options.threadContext.relevantArtifacts`). Lets `createScreenshotArtifact`
+   * reuse an existing PNG screenshot from a prior turn instead of triggering
+   * yet another `tool-missing: input-missing-source-url` worker iteration
+   * when the user simply asks "send me a screenshot of that".
+   */
+  private readonly runScopedThreadArtifacts = new Map<string, AgentArtifact[]>();
+
+  /**
+   * Phase 13 follow-up (TB-005b): per-run user-driven tool policy
+   * extracted by `decideAgentStrategy`. Discovery helpers consult it
+   * to drop denied tools and promote preferred ones in
+   * `findByCapability` results, so a user instruction like
+   * "use web.duckduckgo, don't use web.search" actually steers tool
+   * selection inside the worker loop.
+   */
+  private readonly runScopedToolPolicy = new Map<
+    string,
+    { denied: readonly string[]; preferred: readonly string[] }
+  >();
 
   /**
    * Phase 13: optional callback envelope source. When set, each
@@ -323,11 +426,1004 @@ export class UniversalAgent {
       if (runId) {
         this.runScopedLedgers.delete(runId);
         this.runScopedIntents.delete(runId);
+        this.runScopedThreadArtifacts.delete(runId);
+        this.runScopedToolPolicy.delete(runId);
       }
     }
   }
 
+  /**
+   * Phase 14: tool-build council pipeline. Treats the run as a
+   * brainstorm → vote → implement → review → revise → QA → repair
+   * loop. All side-effectful work (model listing, file write,
+   * registration, QA invocation) goes through the injected
+   * `ToolBuildCouncilAdapter` so the agent stays slim.
+   *
+   * Every step emits a normal `AgentEvent` so the run timeline UI
+   * works without changes. Returns an `AgentRunResult` with the
+   * registered tool name + version in `finalAnswer` and the source
+   * files as artifacts.
+   */
+  private async runToolBuildCouncil(
+    context: import("./toolBuildCouncil.js").ToolBuildContext,
+    adapter: ToolBuildCouncilAdapter,
+    options: RunOptions,
+  ): Promise<AgentRunResult> {
+    const emit = createEmitter(options.onEvent);
+    const runSpanId = createSpanId("run");
+    const runStartedAt = options.now ?? new Date();
+    try {
+      return await this.runToolBuildCouncilInner(context, adapter, options, emit, runSpanId, runStartedAt);
+    } catch (error) {
+      // Close out the root span as `failed` so the Trace view doesn't
+      // keep it ticking forever while RunsService records the run as
+      // failed. Re-throw so the outer catch handles the actual error.
+      await emit({
+        spanId: runSpanId,
+        type: "run-started",
+        actor: "coordinator",
+        activity: "coordination",
+        status: "failed",
+        title: "Tool-build council run",
+        detail: error instanceof Error ? error.message : String(error),
+        startedAt: runStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(runStartedAt),
+        payload: { kind: "tool_build_council", toolBuildContext: context, error: error instanceof Error ? error.message : String(error) },
+      }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async runToolBuildCouncilInner(
+    context: import("./toolBuildCouncil.js").ToolBuildContext,
+    adapter: ToolBuildCouncilAdapter,
+    options: RunOptions,
+    emit: ReturnType<typeof createEmitter>,
+    runSpanId: string,
+    runStartedAt: Date,
+  ): Promise<AgentRunResult> {
+
+    await emit({
+      spanId: runSpanId,
+      type: "run-started",
+      actor: "coordinator",
+      activity: "coordination",
+      status: "started",
+      title: "Tool-build council run",
+      detail: `Building tool: ${context.name}`,
+      startedAt: runStartedAt.toISOString(),
+      payload: { kind: "tool_build_council", toolBuildContext: context },
+    });
+
+    const config = await adapter.resolveConfig();
+    const councilModels = await adapter.resolveCouncilModels(config.tier);
+
+    // On rework, pull the active version's source so brainstorm /
+    // implement / changeSummary prompts all see "here is the current
+    // implementation, edit it" instead of "here's an empty canvas".
+    // Without this the model rebuilt the tool from scratch on every
+    // rework and silently lost prior fixes.
+    let previousToolSource: string | undefined;
+    if (context.existingToolName && adapter.readCurrentToolSource) {
+      try {
+        previousToolSource = await adapter.readCurrentToolSource(context.existingToolName);
+      } catch {
+        previousToolSource = undefined;
+      }
+    }
+    // Mutate the context so every prompt builder sees it without a
+    // separate threading parameter. Safe to mutate — `context` here
+    // is a per-run object created by RunsService.
+    if (previousToolSource) {
+      context = { ...context, existingToolSource: previousToolSource };
+    }
+    if (councilModels.length < 2) {
+      throw new Error(
+        `Coding council requires at least 2 models in tier ${config.tier}; got ${councilModels.length}.`,
+      );
+    }
+
+    const {
+      brainstormPrompt,
+      votePrompt,
+      implementPrompt,
+      reviewPrompt,
+      revisePrompt,
+      qaOraclePrompt,
+      repairPrompt,
+      pickCouncilWinner,
+    } = await import("./toolBuildCouncil.js");
+
+    // Parent-tracking: every council event chains to the previous one
+    // (or to the root) so the Trace Graph can draw the call edges. We
+    // keep three rolling anchors:
+    //   - winnerSpanId           → parent of code-drafted
+    //   - currentCodeSpanId      → parent of reviews / revises / QA
+    //   - lastQaSpanId           → parent of repair
+    // and reassign them as the council moves through its phases.
+
+    // Helper used between phases to bail out as soon as the operator
+    // cancels the run. Each LLM call also gets the same signal so an
+    // in-flight HTTP request to the model unblocks immediately.
+    const ensureNotCancelled = () => {
+      if (options.signal?.aborted) {
+        throw new Error("Tool-build council run cancelled by operator");
+      }
+    };
+
+    // ── Step 1: BRAINSTORM ────────────────────────────────────────────
+    ensureNotCancelled();
+    const proposals = await Promise.all(
+      councilModels.map(async (modelId) => {
+        // Build the prompt BEFORE emitting `started` so the in-progress
+        // card already has Input visible — the operator doesn't have
+        // to wait for the LLM to finish to see what was sent.
+        const spanId = createSpanId("council-proposal");
+        const startedAtDate = new Date();
+        const startedAt = startedAtDate.toISOString();
+        const messages = brainstormPrompt(context, councilModels.length, config.brainstormSystemPrompt);
+        const promptText = messagesToPromptText(messages);
+        await emit({
+          spanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-brainstorm-proposal",
+          actor: modelId,
+          activity: "llm",
+          status: "started",
+          title: `Brainstorming proposal with ${modelId}`,
+          startedAt,
+          payload: { modelId, prompt: promptText },
+        });
+        const text = await this.llm.complete(messages, { model: modelId, signal: options.signal });
+        const parsed = parseProposalTail(text);
+        await emit({
+          spanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-brainstorm-proposal",
+          actor: modelId,
+          activity: "llm",
+          status: "completed",
+          title: `Council proposal from ${modelId}`,
+          startedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(startedAtDate),
+          payload: {
+            modelId,
+            content: text,
+            packageList: parsed.packages,
+            externalDependencies: parsed.externalDependencies,
+            prompt: promptText,
+            output: text,
+          },
+        });
+        return {
+          modelId,
+          content: text,
+          packageList: parsed.packages,
+          externalDependencies: parsed.externalDependencies,
+        };
+      }),
+    );
+
+    // ── Step 2: VOTE ─────────────────────────────────────────────────
+    ensureNotCancelled();
+    const ballots = await Promise.all(
+      councilModels.map(async (voterId) => {
+        const spanId = createSpanId("council-vote-cast");
+        const startedAtDate = new Date();
+        const startedAt = startedAtDate.toISOString();
+        const messages = votePrompt(context, proposals);
+        const promptText = messagesToPromptText(messages);
+        await emit({
+          spanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-vote-cast",
+          actor: voterId,
+          activity: "llm",
+          status: "started",
+          title: `Voting with ${voterId}`,
+          startedAt,
+          payload: { voterModelId: voterId, prompt: promptText },
+        });
+        const text = await this.llm.complete(messages, { model: voterId, signal: options.signal });
+        const ranking = parseRankingJson(text, proposals.length);
+        await emit({
+          spanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-vote-cast",
+          actor: voterId,
+          activity: "llm",
+          status: "completed",
+          title: `Vote from ${voterId}`,
+          startedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(startedAtDate),
+          payload: {
+            voterModelId: voterId,
+            ranking,
+            prompt: promptText,
+            output: text,
+          },
+        });
+        return { voterModelId: voterId, ranking };
+      }),
+    );
+
+    let winner = pickCouncilWinner(proposals, ballots);
+    let winnerSpanId = createSpanId("council-winner");
+    await emit({
+      spanId: winnerSpanId,
+      parentSpanId: runSpanId,
+      type: "tool-build-council-winner-selected",
+      actor: "coordinator",
+      activity: "coordination",
+      status: "completed",
+      title: `Winner: ${winner.winnerModelId}`,
+      detail: `Tie-break: ${winner.tieBrokenBy}`,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: 0,
+      payload: winner,
+    });
+
+    // ── Step 3: IMPLEMENT ────────────────────────────────────────────
+    // Try the winner first; on transient LLM failure (empty content,
+    // context overflow, model not loaded) fall back to the next-best
+    // proposal by Borda score and keep going. The winner is reassigned
+    // so subsequent steps (review, revise, repair) target the model
+    // that actually produced the code.
+    let codeText: string;
+    let files: ReadonlyArray<{ path: string; content: string }>;
+    const rankedAlternatives = proposals
+      .map((p, i) => ({ p, i }))
+      .filter((entry) => entry.p.modelId !== winner.winnerModelId);
+    const implementCandidates = [winner, ...rankedAlternatives.map((entry) => ({
+      ...winner,
+      winnerIndex: entry.i,
+      winnerModelId: entry.p.modelId,
+      proposal: entry.p,
+    }))];
+    // Pre-allocate the implement span so we can emit a `started` event
+    // before the (possibly long-running) LLM call. The final code-drafted
+    // emit below reuses this same spanId so the Trace Graph shows one
+    // implement node transitioning from blue → green.
+    let currentCodeSpanId = createSpanId("council-implement");
+    const implementStartedAtDate = new Date();
+    const implementStartedAt = implementStartedAtDate.toISOString();
+    const implementPromptPreview = messagesToPromptText(implementPrompt(context, winner.proposal));
+    await emit({
+      spanId: currentCodeSpanId,
+      parentSpanId: winnerSpanId,
+      type: "tool-build-code-drafted",
+      actor: winner.winnerModelId,
+      activity: "llm",
+      status: "started",
+      title: `Drafting code with ${winner.winnerModelId}`,
+      startedAt: implementStartedAt,
+      payload: { modelId: winner.winnerModelId, prompt: implementPromptPreview },
+    });
+
+    let implementError: unknown;
+    let lastImplementPromptText = "";
+    for (let candidateIdx = 0; candidateIdx < implementCandidates.length; candidateIdx += 1) {
+      ensureNotCancelled();
+      const candidate = implementCandidates[candidateIdx]!;
+      try {
+        const implementMessages = implementPrompt(context, candidate.proposal);
+        lastImplementPromptText = messagesToPromptText(implementMessages);
+        codeText = await this.llm.complete(implementMessages, {
+          model: candidate.winnerModelId,
+          signal: options.signal,
+        });
+        const parsed = parseFilesJson(codeText);
+        if (parsed.length === 0) throw new Error("Implement step returned no parsable files.");
+        files = parsed;
+        if (candidate.winnerModelId !== winner.winnerModelId) {
+          const fallbackSpanId = createSpanId("council-winner-fallback");
+          await emit({
+            spanId: fallbackSpanId,
+            parentSpanId: winnerSpanId,
+            type: "tool-build-council-winner-selected",
+            actor: "coordinator",
+            activity: "coordination",
+            status: "completed",
+            title: `Implement re-assigned to ${candidate.winnerModelId} (next-best by Borda)`,
+            detail:
+              `Original winner ${winner.winnerModelId} could not produce code ` +
+              `(LLM returned empty / failed twice). Falling back to next-best ` +
+              `proposal by Borda score and continuing the pipeline.`,
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            durationMs: 0,
+            payload: { ...candidate, fallbackFrom: winner.winnerModelId },
+          });
+          winner = candidate;
+          winnerSpanId = fallbackSpanId;
+        }
+        implementError = undefined;
+        break;
+      } catch (error) {
+        implementError = error;
+      }
+    }
+    if (implementError !== undefined) throw implementError;
+    files = files!;
+    codeText = codeText!;
+    await emit({
+      spanId: currentCodeSpanId,
+      parentSpanId: winnerSpanId,
+      type: "tool-build-code-drafted",
+      actor: winner.winnerModelId,
+      activity: "llm",
+      status: "completed",
+      title: `Code drafted by ${winner.winnerModelId}`,
+      startedAt: implementStartedAt,
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(implementStartedAtDate),
+      payload: { files, raw: codeText, prompt: lastImplementPromptText, output: codeText },
+    });
+
+    // ── Step 4-5: REVIEW + REVISE ────────────────────────────────────
+    // Reviews are best-effort per peer model. If a reviewer LLM dies
+    // (empty content, timeout, etc.) we skip that voter and continue
+    // with whoever responded. If ALL reviewers fail we treat the code
+    // as unreviewed and break the loop — the QA stage still gates
+    // whether the tool is usable.
+    const reviewerIds = councilModels.filter((id) => id !== winner.winnerModelId);
+    for (let attempt = 0; attempt < config.maxRevisionAttempts; attempt += 1) {
+      ensureNotCancelled();
+      const codeAnchor = currentCodeSpanId;
+      const reviews = (
+        await Promise.all(
+          reviewerIds.map(async (reviewerId) => {
+            // Status semantic: `completed` means the reviewer agent did
+            // its job (returned a verdict — pass OR needs_revision).
+            // `failed` is reserved for the agent itself breaking (LLM
+            // empty / timeout / aborted). The verdict lives in payload
+            // + title so the operator sees "Review: needs_revision" as
+            // a green node — that's the reviewer succeeding at finding
+            // real problems, not failing.
+            const spanId = createSpanId("council-review");
+            const startedAtDate = new Date();
+            const startedAt = startedAtDate.toISOString();
+            const messages = reviewPrompt(context, winner.proposal, formatFilesForPrompt(files));
+            const promptText = messagesToPromptText(messages);
+            await emit({
+              spanId,
+              parentSpanId: codeAnchor,
+              type: "tool-build-code-review-cast",
+              actor: reviewerId,
+              activity: "llm",
+              status: "started",
+              title: `Reviewing code with ${reviewerId}`,
+              startedAt,
+              payload: { reviewerModelId: reviewerId, prompt: promptText },
+            });
+            try {
+              const text = await this.llm.complete(messages, { model: reviewerId, signal: options.signal });
+              const verdict = parseReviewVerdict(text);
+              await emit({
+                spanId,
+                parentSpanId: codeAnchor,
+                type: "tool-build-code-review-cast",
+                actor: reviewerId,
+                activity: "llm",
+                status: "completed",
+                title: `Review from ${reviewerId}: ${verdict.verdict}`,
+                startedAt,
+                completedAt: new Date().toISOString(),
+                durationMs: elapsedMs(startedAtDate),
+                payload: {
+                  reviewerModelId: reviewerId,
+                  ...verdict,
+                  prompt: promptText,
+                  output: text,
+                },
+              });
+              return verdict;
+            } catch (error) {
+              await emit({
+                spanId,
+                parentSpanId: codeAnchor,
+                type: "tool-build-code-review-cast",
+                actor: reviewerId,
+                activity: "llm",
+                status: "failed",
+                title: `Reviewer ${reviewerId} broke (skipped)`,
+                detail: error instanceof Error ? error.message : String(error),
+                startedAt,
+                completedAt: new Date().toISOString(),
+                durationMs: elapsedMs(startedAtDate),
+                payload: {
+                  reviewerModelId: reviewerId,
+                  skipped: true,
+                  prompt: promptText,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              });
+              return undefined;
+            }
+          }),
+        )
+      ).filter((entry): entry is { verdict: "pass" | "needs_revision"; findings: string[] } => Boolean(entry));
+      if (reviews.length === 0) break; // no usable reviewers — proceed to QA
+      if (reviews.every((r) => r.verdict === "pass")) break;
+      const findings = reviews.flatMap((r) => r.findings);
+      if (attempt + 1 >= config.maxRevisionAttempts) break;
+      const reviseSpanId = createSpanId("council-revise");
+      const reviseStartedAtDate = new Date();
+      const reviseStartedAt = reviseStartedAtDate.toISOString();
+      const reviseMessages = revisePrompt(context, winner.proposal, formatFilesForPrompt(files), findings);
+      const revisePromptText = messagesToPromptText(reviseMessages);
+      await emit({
+        spanId: reviseSpanId,
+        parentSpanId: codeAnchor,
+        type: "tool-build-code-revised",
+        actor: winner.winnerModelId,
+        activity: "llm",
+        status: "started",
+        title: `Revising code (attempt ${attempt + 1}) with ${winner.winnerModelId}`,
+        startedAt: reviseStartedAt,
+        payload: { attempt: attempt + 1, prompt: revisePromptText },
+      });
+      try {
+        codeText = await this.llm.complete(reviseMessages, { model: winner.winnerModelId, signal: options.signal });
+        const parsed = parseFilesJson(codeText);
+        if (parsed.length > 0) files = parsed;
+      } catch (error) {
+        // Revise call failed — keep current code, proceed to QA so the
+        // run still terminates instead of hard-crashing.
+        await emit({
+          spanId: reviseSpanId,
+          parentSpanId: codeAnchor,
+          type: "tool-build-code-revised",
+          actor: winner.winnerModelId,
+          activity: "llm",
+          status: "failed",
+          title: `Revise attempt ${attempt + 1} broke`,
+          detail: error instanceof Error ? error.message : String(error),
+          startedAt: reviseStartedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(reviseStartedAtDate),
+          payload: {
+            attempt: attempt + 1,
+            skipped: true,
+            prompt: revisePromptText,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
+        break;
+      }
+      await emit({
+        spanId: reviseSpanId,
+        parentSpanId: codeAnchor,
+        type: "tool-build-code-revised",
+        actor: winner.winnerModelId,
+        activity: "llm",
+        status: "completed",
+        title: `Code revised (attempt ${attempt + 1})`,
+        startedAt: reviseStartedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(reviseStartedAtDate),
+        payload: {
+          attempt: attempt + 1,
+          files,
+          findings,
+          prompt: revisePromptText,
+          output: codeText,
+        },
+      });
+      currentCodeSpanId = reviseSpanId;
+    }
+
+    // ── Step 5.5: QA INPUT SYNTHESIS ─────────────────────────────────
+    // We synthesize the QA input BEFORE registering so we can pass it
+    // through to the adapter — that lets `registerGenerated` persist
+    // the sample as a tool example. Manual Run on the Tools page then
+    // pre-fills the JSON input field with this sample instead of `{}`,
+    // so the operator can hit Run immediately without guessing the
+    // tool's input shape.
+    const { synthesizeQaInputPrompt } = await import("./toolBuildCouncil.js");
+    const toolBodyExcerpt = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
+    let qaInput: Record<string, unknown> = synthesizeQaInput(context);
+    const qaInputSpanId = createSpanId("council-qa-input");
+    const qaInputStartedAtDate = new Date();
+    const qaInputStartedAt = qaInputStartedAtDate.toISOString();
+    const qaInputMessages = synthesizeQaInputPrompt(context, toolBodyExcerpt);
+    const qaInputPromptText = messagesToPromptText(qaInputMessages);
+    await emit({
+      spanId: qaInputSpanId,
+      parentSpanId: currentCodeSpanId,
+      type: "tool-build-qa-attempt",
+      actor: "qa-input-synthesizer",
+      activity: "llm",
+      status: "started",
+      title: "Synthesizing QA tool input from schema",
+      startedAt: qaInputStartedAt,
+      payload: { prompt: qaInputPromptText },
+    });
+    try {
+      const qaInputText = await this.llm.complete(qaInputMessages, {
+        modelTier: "S",
+        signal: options.signal,
+      });
+      const parsed = extractFirstJson<Record<string, unknown>>(qaInputText);
+      if (parsed && typeof parsed === "object") qaInput = parsed;
+      await emit({
+        spanId: qaInputSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-qa-attempt",
+        actor: "qa-input-synthesizer",
+        activity: "llm",
+        status: "completed",
+        title: "QA tool input synthesized",
+        startedAt: qaInputStartedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(qaInputStartedAtDate),
+        payload: {
+          prompt: qaInputPromptText,
+          output: qaInputText,
+          qaInput,
+        },
+      });
+    } catch (error) {
+      await emit({
+        spanId: qaInputSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-qa-attempt",
+        actor: "qa-input-synthesizer",
+        activity: "llm",
+        status: "failed",
+        title: "QA input synthesizer broke — falling back to stub",
+        detail: error instanceof Error ? error.message : String(error),
+        startedAt: qaInputStartedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(qaInputStartedAtDate),
+        payload: { prompt: qaInputPromptText, error: error instanceof Error ? error.message : String(error), qaInput },
+      });
+    }
+
+    // ── Step 6: REGISTER ─────────────────────────────────────────────
+    // Pass the just-synthesized sample input to the adapter so it
+    // persists as a metadata example — the Tools-page Manual Run form
+    // pre-fills it.
+    let registered = await adapter.registerToolFromFiles(context.name, files, {
+      description: context.description,
+      secretHandle: context.secretHandle,
+      sampleInput: qaInput,
+      requiredCapabilities: context.requiredCapabilities,
+    });
+
+    // ── Step 7-8: QA + REPAIR ────────────────────────────────────────
+    // Status semantic in this section:
+    //   `completed` = the agent for this step (tool / oracle / repair
+    //     model) finished its task and produced a result. The result
+    //     itself may be a failing verdict — that is still a success for
+    //     the agent (e.g. oracle correctly caught that the tool returned
+    //     ok=false). The verdict lives in payload + title.
+    //   `failed` = the agent itself broke (LLM exception, tool runtime
+    //     crashed, cancellation) and no useful result came back.
+
+    let qaPassed = false;
+    for (let attempt = 0; attempt < config.maxQaRepairAttempts; attempt += 1) {
+      ensureNotCancelled();
+      // Tool call span: visible separately from the oracle so the
+      // operator can see whether the tool actually ran (`completed`,
+      // ok=true/false) or crashed at startup (`failed`).
+      const toolCallSpanId = createSpanId("council-qa-tool-call");
+      const toolCallStartedAtDate = new Date();
+      const toolCallStartedAt = toolCallStartedAtDate.toISOString();
+      await emit({
+        spanId: toolCallSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-qa-attempt",
+        actor: registered.toolName,
+        activity: "tool",
+        status: "started",
+        title: `Calling ${registered.toolName} for QA attempt ${attempt + 1}`,
+        startedAt: toolCallStartedAt,
+        payload: { attempt: attempt + 1, qaInput },
+      });
+      const output = await adapter.runToolForQa(registered.toolName, qaInput);
+      await emit({
+        spanId: toolCallSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-qa-attempt",
+        actor: registered.toolName,
+        activity: "tool",
+        // Status mirrors `output.ok`: a tool returning `ok: false`
+        // IS the tool failing at its job — runtime crash, invalid
+        // input, missing module, etc. — and the operator wants the
+        // node to flash red so it's obvious where the build broke.
+        // The reviewer/oracle exception remains the only path that
+        // produces `failed` for a different reason (the judge itself
+        // breaking) and that's handled on the qa-oracle span below.
+        status: output.ok ? "completed" : "failed",
+        title: `${registered.toolName} returned ok=${output.ok}`,
+        startedAt: toolCallStartedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(toolCallStartedAtDate),
+        payload: { attempt: attempt + 1, qaInput, output },
+      });
+
+      // Oracle span: judges whether the tool output meets the
+      // acceptance criteria. Status reflects the oracle's success at
+      // producing a verdict — the verdict (passed / failed) is in the
+      // title + payload so the user sees both signals.
+      const qaSpanId = createSpanId("council-qa");
+      const qaStartedAtDate = new Date();
+      const qaStartedAt = qaStartedAtDate.toISOString();
+      const qaMessages = qaOraclePrompt(context, output);
+      const qaPromptText = messagesToPromptText(qaMessages);
+      await emit({
+        spanId: qaSpanId,
+        parentSpanId: toolCallSpanId,
+        type: "tool-build-qa-attempt",
+        actor: "qa-oracle",
+        activity: "llm",
+        status: "started",
+        title: `QA oracle judging attempt ${attempt + 1}`,
+        startedAt: qaStartedAt,
+        payload: { attempt: attempt + 1, qaInput, output, prompt: qaPromptText },
+      });
+      let oracle: { verdict: "passed" | "failed"; failures: string[] };
+      let qaOracleText = "";
+      try {
+        qaOracleText = await this.llm.complete(qaMessages, { modelTier: "M", signal: options.signal });
+        oracle = parseQaOracle(qaOracleText);
+      } catch (error) {
+        await emit({
+          spanId: qaSpanId,
+          parentSpanId: toolCallSpanId,
+          type: "tool-build-qa-attempt",
+          actor: "qa-oracle",
+          activity: "llm",
+          status: "failed",
+          title: `QA oracle broke on attempt ${attempt + 1}`,
+          detail: error instanceof Error ? error.message : String(error),
+          startedAt: qaStartedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(qaStartedAtDate),
+          payload: {
+            attempt: attempt + 1,
+            qaInput,
+            output,
+            oracleFailed: true,
+            prompt: qaPromptText,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
+        break;
+      }
+      await emit({
+        spanId: qaSpanId,
+        parentSpanId: toolCallSpanId,
+        type: "tool-build-qa-attempt",
+        actor: "qa-oracle",
+        activity: "llm",
+        // Oracle returned a verdict → it did its job. `completed`
+        // regardless of pass/fail; the verdict lives in title + payload.
+        status: "completed",
+        title: `QA attempt ${attempt + 1}: ${oracle.verdict}`,
+        startedAt: qaStartedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(qaStartedAtDate),
+        payload: {
+          attempt: attempt + 1,
+          qaInput,
+          output,
+          ...oracle,
+          prompt: qaPromptText,
+          oracleOutput: qaOracleText,
+        },
+      });
+      if (oracle.verdict === "passed") {
+        qaPassed = true;
+        break;
+      }
+      if (attempt + 1 >= config.maxQaRepairAttempts) break;
+
+      const repairSpanId = createSpanId("council-repair");
+      const repairStartedAtDate = new Date();
+      const repairStartedAt = repairStartedAtDate.toISOString();
+      // Pass the actual tool output (`output`) into the repair prompt
+      // so the model sees the literal runtime error (stack trace,
+      // missing-module, SyntaxError) instead of just the oracle's
+      // summary. Without this the loop has historically wedged on
+      // import-of-non-existent-symbol bugs because the oracle only
+      // saw ok=false.
+      const repairMessages = repairPrompt(
+        context,
+        winner.proposal,
+        formatFilesForPrompt(files),
+        oracle.failures,
+        output,
+      );
+      const repairPromptText = messagesToPromptText(repairMessages);
+      await emit({
+        spanId: repairSpanId,
+        parentSpanId: qaSpanId,
+        type: "tool-build-code-repaired",
+        actor: winner.winnerModelId,
+        activity: "llm",
+        status: "started",
+        title: `Repairing code (attempt ${attempt + 1}) with ${winner.winnerModelId}`,
+        startedAt: repairStartedAt,
+        payload: { attempt: attempt + 1, failures: oracle.failures, prompt: repairPromptText },
+      });
+      try {
+        codeText = await this.llm.complete(repairMessages, { model: winner.winnerModelId, signal: options.signal });
+        const parsed = parseFilesJson(codeText);
+        if (parsed.length === 0) throw new Error("Repair step returned no parsable files.");
+        files = parsed;
+        registered = await adapter.registerToolFromFiles(context.name, files, {
+          description: context.description,
+          secretHandle: context.secretHandle,
+          sampleInput: qaInput,
+        });
+        await emit({
+          spanId: repairSpanId,
+          parentSpanId: qaSpanId,
+          type: "tool-build-code-repaired",
+          actor: winner.winnerModelId,
+          activity: "llm",
+          status: "completed",
+          title: `Code repaired (attempt ${attempt + 1})`,
+          startedAt: repairStartedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(repairStartedAtDate),
+          payload: {
+            attempt: attempt + 1,
+            files,
+            failures: oracle.failures,
+            prompt: repairPromptText,
+            output: codeText,
+          },
+        });
+        currentCodeSpanId = repairSpanId;
+      } catch (error) {
+        await emit({
+          spanId: repairSpanId,
+          parentSpanId: qaSpanId,
+          type: "tool-build-code-repaired",
+          actor: winner.winnerModelId,
+          activity: "llm",
+          status: "failed",
+          title: `Repair attempt ${attempt + 1} broke`,
+          detail: error instanceof Error ? error.message : String(error),
+          startedAt: repairStartedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(repairStartedAtDate),
+          payload: {
+            attempt: attempt + 1,
+            skipped: true,
+            prompt: repairPromptText,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
+        break;
+      }
+    }
+
+    // ── Step 8.5: CHANGE SUMMARY ─────────────────────────────────────
+    // Synthesize a 1-2 sentence changelog entry so the Tools-page
+    // version history is actually useful instead of every row reading
+    // "Council-built version X". Best-effort: if the synth fails we
+    // keep the default summary the adapter wrote at register time.
+    const { changeSummaryPrompt } = await import("./toolBuildCouncil.js");
+    let changeSummary = "";
+    const changeSummarySpanId = createSpanId("council-change-summary");
+    const changeSummaryStartedAt = new Date();
+    try {
+      const summaryToolBody = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
+      const repairFailures = collectRepairFailuresFromEvents(options.onEvent);
+      const summaryMessages = changeSummaryPrompt({
+        context,
+        toolBodyExcerpt: summaryToolBody,
+        previousToolSource,
+        repairFailures,
+        qaPassed,
+        isRework: Boolean(context.existingToolName),
+      });
+      await emit({
+        spanId: changeSummarySpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "change-summary-synthesizer",
+        activity: "llm",
+        status: "started",
+        title: "Synthesizing change summary",
+        startedAt: changeSummaryStartedAt.toISOString(),
+        payload: { prompt: messagesToPromptText(summaryMessages) },
+      });
+      const summaryRaw = await this.llm.complete(summaryMessages, {
+        modelTier: "S",
+        signal: options.signal,
+      });
+      changeSummary = sanitizeChangeSummary(summaryRaw);
+      if (changeSummary && adapter.updateChangeSummary) {
+        await adapter.updateChangeSummary(registered.toolName, registered.version, changeSummary);
+      }
+      await emit({
+        spanId: changeSummarySpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "change-summary-synthesizer",
+        activity: "llm",
+        status: "completed",
+        title: "Change summary synthesized",
+        startedAt: changeSummaryStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(changeSummaryStartedAt),
+        payload: {
+          prompt: messagesToPromptText(summaryMessages),
+          output: summaryRaw,
+          changeSummary,
+        },
+      });
+    } catch (error) {
+      await emit({
+        spanId: changeSummarySpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "change-summary-synthesizer",
+        activity: "llm",
+        status: "failed",
+        title: "Change summary synthesis failed — keeping default",
+        detail: error instanceof Error ? error.message : String(error),
+        startedAt: changeSummaryStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(changeSummaryStartedAt),
+        payload: { error: error instanceof Error ? error.message : String(error) },
+      });
+    }
+
+    // ── Step 8.7: DESCRIPTION ────────────────────────────────────────
+    // Synthesize the canonical tool description from the FINAL source.
+    // Every other agent reads metadata.description when discovering
+    // tools — leaving the operator's hint in there means downstream
+    // agents see stale shape information after every rework. The
+    // description LLM call follows changeSummary so they share the
+    // same body excerpt.
+    const { descriptionPrompt } = await import("./toolBuildCouncil.js");
+    const descSpanId = createSpanId("council-description");
+    const descStartedAt = new Date();
+    try {
+      const descBody = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
+      const descMessages = descriptionPrompt({ context, toolBodyExcerpt: descBody });
+      await emit({
+        spanId: descSpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "description-synthesizer",
+        activity: "llm",
+        status: "started",
+        title: "Synthesizing canonical description",
+        startedAt: descStartedAt.toISOString(),
+        payload: { prompt: messagesToPromptText(descMessages) },
+      });
+      const descRaw = await this.llm.complete(descMessages, {
+        modelTier: "S",
+        signal: options.signal,
+      });
+      const description = sanitizeChangeSummary(descRaw);
+      if (description && adapter.updateDescription) {
+        await adapter.updateDescription(registered.toolName, registered.version, description);
+      }
+      await emit({
+        spanId: descSpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "description-synthesizer",
+        activity: "llm",
+        status: "completed",
+        title: "Description synthesized",
+        startedAt: descStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(descStartedAt),
+        payload: {
+          prompt: messagesToPromptText(descMessages),
+          output: descRaw,
+          description,
+        },
+      });
+    } catch (error) {
+      await emit({
+        spanId: descSpanId,
+        parentSpanId: runSpanId,
+        type: "tool-build-registered",
+        actor: "description-synthesizer",
+        activity: "llm",
+        status: "failed",
+        title: "Description synthesis failed — keeping operator hint",
+        detail: error instanceof Error ? error.message : String(error),
+        startedAt: descStartedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(descStartedAt),
+        payload: { error: error instanceof Error ? error.message : String(error) },
+      });
+    }
+
+    // ── Step 9: FINALIZE ─────────────────────────────────────────────
+    await emit({
+      spanId: createSpanId("council-registered"),
+      parentSpanId: runSpanId,
+      type: "tool-build-registered",
+      actor: "coordinator",
+      activity: "coordination",
+      status: qaPassed ? "completed" : "failed",
+      title: qaPassed
+        ? `Tool registered: ${registered.toolName} v${registered.version}`
+        : `Tool registered (QA failed after ${config.maxQaRepairAttempts} attempts)`,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(runStartedAt),
+      payload: {
+        ...registered,
+        qaPassed,
+        councilSize: councilModels.length,
+        winner: winner.winnerModelId,
+        changeSummary,
+      },
+    });
+
+    // Close out the root coordinator span. Without this the Trace view
+    // shows the council run as `started` (with a live ticking timer)
+    // even after RunsService has already marked the run as `completed`
+    // in the database. Re-emitting with the same spanId is an in-place
+    // status update via buildTraceNodes' last-event-wins merge.
+    await emit({
+      spanId: runSpanId,
+      type: "run-started",
+      actor: "coordinator",
+      activity: "coordination",
+      status: qaPassed ? "completed" : "failed",
+      title: "Tool-build council run",
+      detail: qaPassed
+        ? `Built ${registered.toolName} v${registered.version} (winner: ${winner.winnerModelId}); QA passed.`
+        : `Built ${registered.toolName} v${registered.version}; QA never passed after ${config.maxQaRepairAttempts} repair attempts.`,
+      startedAt: runStartedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: elapsedMs(runStartedAt),
+      payload: { kind: "tool_build_council", toolBuildContext: context, qaPassed },
+    });
+
+    const finalAnswer = qaPassed
+      ? `Tool **${registered.toolName}** v${registered.version} built by council (winner: ${winner.winnerModelId}). QA passed.`
+      : `Tool **${registered.toolName}** v${registered.version} registered, but QA still fails after ${config.maxQaRepairAttempts} repair attempts. Inspect logs.`;
+
+    return {
+      finalAnswer,
+      complexity: {
+        mode: "direct",
+        domains: ["tool-build"],
+        riskLevel: "medium",
+        sensitivity: "normal",
+      } as never,
+      subtasks: [],
+      workerResults: [],
+      reviews: [],
+      artifacts: [],
+    };
+  }
+
+  /**
+   * Phase 13 follow-up (TB-005b): expose the run-scoped user tool
+   * policy so deep helpers can pass it to `findByCapability`.
+   */
+  private getToolPolicy(runId: string | undefined) {
+    return runId ? this.runScopedToolPolicy.get(runId) : undefined;
+  }
+
   async run(task: string, options: RunOptions = {}): Promise<AgentRunResult> {
+    // Phase 14: tool-build runs are routed to the council pipeline. The
+    // adapter must be present too — without it the agent can't reach
+    // the coding-council config / tool registrar / QA runner.
+    if (options.toolBuildContext && options.toolBuildCouncil) {
+      return this.runToolBuildCouncil(options.toolBuildContext, options.toolBuildCouncil, options);
+    }
+
     const emit = createEmitter(options.onEvent);
     const runSpanId = createSpanId("run");
     const memorySpanId = createSpanId("memory");
@@ -338,6 +1434,13 @@ export class UniversalAgent {
     // (CLI smokes, fixtures, recursive in-memory invocations) so deep
     // helpers can still find run-scoped state via `toolExecutionContext.runId`.
     const effectiveRunId = options.runId ?? runSpanId;
+    // Phase 13 follow-up: stash thread artifacts keyed by runId so deep
+    // helpers (createScreenshotArtifact) can pick a reusable existing
+    // screenshot without having to thread the array through every layer.
+    const threadArtifacts = options.threadContext?.relevantArtifacts ?? [];
+    if (threadArtifacts.length > 0) {
+      this.runScopedThreadArtifacts.set(effectiveRunId, threadArtifacts);
+    }
     const toolExecutionContext = buildToolExecutionContext({
       ...options,
       runId: effectiveRunId,
@@ -490,6 +1593,18 @@ export class UniversalAgent {
       hasWorkLedger: Boolean(ledger),
       pendingToolImprovements: pendingToolImprovements.length,
     });
+    // Phase 13 follow-up (TB-005b): stash the user-driven tool policy so
+    // deep `findByCapability` callsites in the worker loop respect
+    // "use X / don't use Y" intent extracted from the task body.
+    if (
+      strategy.toolPolicy.deniedToolNames.length > 0 ||
+      strategy.toolPolicy.preferredToolNames.length > 0
+    ) {
+      this.runScopedToolPolicy.set(effectiveRunId, {
+        denied: strategy.toolPolicy.deniedToolNames,
+        preferred: strategy.toolPolicy.preferredToolNames,
+      });
+    }
     const strategySpanId = createSpanId("agent-strategy");
     await emit({
       spanId: strategySpanId,
@@ -1185,7 +2300,7 @@ export class UniversalAgent {
     const promptMemories = compactMemoriesForPrompt(memories);
     const output = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
-      { role: "user", content: planPrompt(promptTask, complexity, promptMemories) },
+      { role: "user", content: planPrompt(promptTask, complexity, promptMemories, this.tools.list()) },
     ], { modelTier });
 
     return extractJson<PlanResponse>(output).subtasks;
@@ -1362,7 +2477,7 @@ export class UniversalAgent {
       );
 
       output = await this.llm.complete([
-        { role: "system", content: workerSystemPrompt(subtask, compactMemoriesForPrompt(memories)) },
+        { role: "system", content: workerSystemPrompt(subtask, compactMemoriesForPrompt(memories), this.tools.list()) },
         {
           role: "user",
           content: buildWorkerUserPrompt(originalTask, collectedEvidence.text, dependencyContext, revisionInstructions),
@@ -1426,7 +2541,7 @@ export class UniversalAgent {
       dependencyContextSnapshot: dependencyContext,
     };
     const selfCheckStartedAt = new Date();
-    const selfCheck = buildWorkerSelfCheck(workerResult, selfCheckStartedAt);
+    const selfCheck = buildWorkerSelfCheck(workerResult, selfCheckStartedAt, this.tools.list());
     await emit({
       spanId: createSpanId(`self-check-${subtask.id}`),
       parentSpanId: spanId,
@@ -1489,7 +2604,13 @@ export class UniversalAgent {
   ): Promise<CollectedToolEvidence> {
     const evidence: string[] = [];
     const artifacts: AgentArtifact[] = [];
-    const webSearch = this.tools.get("web.search");
+    // Phase 13 follow-up (TB-005a/b): user-driven tool policy applies
+    // here. `findByCapability("web-search", policy)` returns the
+    // built-in `web.search` first if present, but a user instruction
+    // like "use web.duckduckgo, don't use web.search" deletes the
+    // built-in and promotes the user's preferred tool to [0].
+    const webSearchPolicy = this.getToolPolicy(toolExecutionContext?.runId);
+    const webSearch = this.tools.findByCapability("web-search", webSearchPolicy)[0];
     const toolNeedText = `${originalTask}\n${subtask.title}\n${subtask.role}\n${subtask.prompt}\n${subtask.expectedOutput}\n${subtask.reviewCriteria.join("\n")}`;
 
     if (webSearch && shouldCollectWebSearch(subtask, toolNeedText, dependencyContext)) {
@@ -2063,7 +3184,14 @@ export class UniversalAgent {
         parentSpanId,
         toolExecutionContext,
         metadata: { role: subtask.role, declaredToolName: toolName },
-        reuseCompletedOutput: false,
+        // Phase 13 follow-up: when a sibling subtask in the same run already
+        // exercised this exact (tool, capability, input) tuple, the ledger
+        // returns `reuse_completed` with the previous `outputSummary`. For
+        // browser.operate that summary is the formatted evidence + artifact
+        // ids — so reusing it is strictly better than re-driving Chromium
+        // through the same navigation. Was `false`; flipping to `true`
+        // saves the `duplicatedWork` flagged by retrospective.
+        reuseCompletedOutput: true,
         recordLedgerOutcome: tool.name !== "browser.operate",
       });
       const { result, spanId, claim } = operation;
@@ -2135,7 +3263,11 @@ export class UniversalAgent {
         }
       }
 
-      if (tool.name === "browser.operate" && claim) {
+      if (tool.name === "browser.operate" && claim && !operation.reused) {
+        // Phase 13 follow-up: skip the manual ledger.markCompleted /
+        // markFailed dance when this claim was satisfied by a reused
+        // prior result — the original entry is already terminal, and
+        // the reused branch carries no fresh `result.data` to QA.
         const ledger = this.resolveLedgerFromContext(toolExecutionContext);
         if (!result.ok) {
           await ledger?.markFailed(claim.item.id, limitText(result.content, 600));
@@ -2468,6 +3600,42 @@ export class UniversalAgent {
   ): Promise<AgentArtifact | undefined> {
     const screenshotIntents = this.resolveTaskIntents(context, toolExecutionContext?.runId);
     const screenshotPatterns = await this.resolveEvidencePatterns(screenshotIntents);
+
+    // Phase 13 follow-up: when the user asks for "a screenshot proof" of
+    // information already established earlier in the same conversation
+    // thread, the prior turn typically saved one or more PNG artifacts.
+    // Reusing them is strictly better than spawning yet another browser
+    // navigation (no extra time, no extra LLM tokens, no risk of a
+    // different page state). Only when none of the thread artifacts look
+    // like a usable screenshot do we fall through to the original
+    // capture-or-skip path.
+    const threadArtifacts = toolExecutionContext?.runId
+      ? this.runScopedThreadArtifacts.get(toolExecutionContext.runId) ?? []
+      : [];
+    const reusable = pickReusableThreadScreenshot(threadArtifacts, context, screenshotIntents);
+    if (reusable) {
+      await emit({
+        spanId: createSpanId("screenshot-thread-reuse"),
+        parentSpanId,
+        type: "artifact-created",
+        actor: "screenshot-artifact",
+        activity: "tool",
+        status: "completed",
+        title: "Screenshot proof reused from thread",
+        detail:
+          `Reused existing thread artifact ${reusable.id} (${reusable.filename ?? "<unnamed>"}) ` +
+          "instead of capturing a new screenshot. The capture tool was not invoked.",
+        payload: {
+          capability: "browser-screenshot",
+          reused: true,
+          artifactId: reusable.id,
+          filename: reusable.filename,
+          intents: screenshotIntents,
+        },
+      });
+      return reusable;
+    }
+
     const url = selectBestUrlForArtifact(context, screenshotIntents, screenshotPatterns);
     if (!url) {
       // Phase 12 follow-up: this is a MISSING INPUT, not a missing capability.
@@ -3631,7 +4799,7 @@ export class UniversalAgent {
     let review: ReviewResult;
     try {
       const output = await this.llm.complete([
-        { role: "system", content: reviewerSystemPrompt(compactWorkerResultForPrompt(workerResult, promptBudget.reviewWorkerOutputChars)) },
+        { role: "system", content: reviewerSystemPrompt(compactWorkerResultForPrompt(workerResult, promptBudget.reviewWorkerOutputChars), this.tools.list()) },
         { role: "user", content: "Review the worker result now." },
       ], { modelTier });
       review = extractJson<ReviewResult>(output);
@@ -3858,7 +5026,16 @@ function normalizeSubtask(subtask: Subtask): Subtask {
     subtask.expectedOutput,
     ...(subtask.reviewCriteria ?? []),
   ].join("\n");
-  const requiredTools = new Set((subtask.requiredTools ?? []).map((tool) => tool.trim()).filter(Boolean));
+  // Phase 13 follow-up: defensive against LLM-emitted plans that put a
+  // `null` entry into requiredTools — `.trim()` on null crashes the
+  // entire review path with "Cannot read properties of null (reading
+  // 'trim')". Filter to strings first.
+  const requiredTools = new Set(
+    (subtask.requiredTools ?? [])
+      .filter((tool): tool is string => typeof tool === "string")
+      .map((tool) => tool.trim())
+      .filter(Boolean),
+  );
   const requiredArtifacts = [...(subtask.requiredArtifacts ?? [])];
 
   if (shouldUseWebSearch(text)) {
@@ -3982,9 +5159,13 @@ function buildWorkerUserPrompt(
  * reasons like missing artifacts, weak browser evidence, etc.).
  */
 function parseForbiddenTokensFromReviewNotes(notes: string): string[] {
-  const match = notes.match(/specifics that are NOT in tool evidence or the task:\s*([^\n.]+)\./i);
+  // Phase 13 follow-up: a reviewer LLM that returned `notes: null` would
+  // crash here. Coerce to empty string instead so the parser harmlessly
+  // returns [].
+  const safeNotes = typeof notes === "string" ? notes : "";
+  const match = safeNotes.match(/specifics that are NOT in tool evidence or the task:\s*([^\n.]+)\./i);
   if (!match) return [];
-  return match[1]
+  return (match[1] ?? "")
     .split(",")
     .map((token) => token.trim())
     .filter((token) => token.length > 0)
@@ -4183,11 +5364,44 @@ function appendThreadContext(
     listContext("Open questions", threadContext.openQuestions),
     formatThreadArtifacts(threadContext.relevantArtifacts),
     listContext("Relevant artifact IDs", threadContext.relevantArtifactIds),
+    formatScreenshotReuseDirective(task, threadContext.relevantArtifacts),
   ].filter(Boolean);
 
   return `${task}
 
 ${lines.join("\n")}`;
+}
+
+/**
+ * Phase 13 follow-up: when the user asks "send me a screenshot proof"
+ * (in any language) of something the prior turn already produced, the
+ * planner used to invent a `get-live-screenshot` subtask anyway —
+ * driving Chromium through an unrelated capture and then tripping a
+ * tool-missing failure path. The thread artifacts directive in
+ * `formatThreadArtifacts` was too soft to override that habit, so this
+ * helper surfaces a sharper, screenshot-specific instruction whenever
+ * the task asks for a screenshot AND the thread already carries PNG
+ * artifacts. Returns `undefined` when the case doesn't apply, so the
+ * directive is silent for the common path.
+ */
+function formatScreenshotReuseDirective(
+  task: string,
+  artifacts: AgentArtifact[] | undefined,
+): string | undefined {
+  if (!artifacts || artifacts.length === 0) return undefined;
+  if (!asksForScreenshot(task) && !/proof|доказательств|пруф|подтвержд/i.test(task)) return undefined;
+  const pngs = artifacts.filter(
+    (artifact) => artifact.mimeType === "image/png" || artifact.filename?.toLowerCase().endsWith(".png"),
+  );
+  if (pngs.length === 0) return undefined;
+
+  const idList = pngs.map((p) => `${p.id} (${p.filename ?? "unnamed"})`).join("; ");
+  return [
+    "Screenshot reuse directive:",
+    `The current request asks for a screenshot / proof, AND the conversation thread already contains ${pngs.length} reusable PNG artifact(s): ${idList}.`,
+    "Do NOT plan a fresh `get-live-screenshot`, `capture-bitcoin-page`, or any other browser-driven capture subtask.",
+    "Instead plan ONE attach-and-respond subtask that references the existing artifact id(s) by URL and finishes the turn. The synthesizer is responsible for the final markdown.",
+  ].join("\n");
 }
 
 function appendInstanceContext(
@@ -4403,9 +5617,20 @@ function getApprovedArtifacts(results: ReviewedWorkerResult[]): AgentArtifact[] 
  * screenshots / files that were actually captured even when every worker
  * went `needs_revision`. The `getApprovedArtifacts` set remains the
  * source of truth for what synthesis is allowed to cite as proof.
+ *
+ * Phase 13 follow-up: walk **every attempt** of each subtask, not just
+ * the latest revised `workerResult`. Without this, an initial worker
+ * that captured 3 PNG screenshots followed by a `needs_revision` review
+ * and a stripped revision (zero new artifacts) would lose all 3
+ * screenshots from `run-completed` / `thread.artifact_ids`. That, in
+ * turn, breaks every downstream feature that relies on thread artifact
+ * carry-over (Bug A reuse, follow-up "send a screenshot" requests).
  */
 function getAllWorkerArtifacts(results: ReviewedWorkerResult[]): AgentArtifact[] {
-  return results.flatMap((result) => result.workerResult.artifacts ?? []);
+  return results.flatMap((result) => {
+    const attempts = result.attempts && result.attempts.length > 0 ? result.attempts : [result.workerResult];
+    return attempts.flatMap((attempt) => attempt.artifacts ?? []);
+  });
 }
 
 function asksForScreenshot(task: string): boolean {
@@ -4953,6 +6178,52 @@ function selectBestUrlForArtifact(
   geoAnchors: string[] = [],
 ): string | undefined {
   return selectBestUrlsForArtifact(text, 1, intents, extraPatterns, geoAnchors)[0];
+}
+
+/**
+ * Phase 13 follow-up: pick a thread-scoped artifact that already satisfies a
+ * "send me a screenshot proof" request without re-capturing. Selection rules:
+ *
+ *   1. Only PNG artifacts (mimeType `image/png` or `.png` filename) qualify.
+ *   2. Prefer artifacts whose filename overlaps with task/intent tokens —
+ *      e.g. asking for "цена биткоина / proof" matches a thread artifact
+ *      named `discovery-2-coingecko-com-…-bitcoin-screenshot.png`.
+ *   3. If nothing matches by token, fall back to the most recent screenshot
+ *      in the array (thread artifacts are appended chronologically by the
+ *      runtime, so the last entry is freshest).
+ *   4. Returns `undefined` when there is no PNG to reuse, so callers fall
+ *      through to the original capture path.
+ */
+function pickReusableThreadScreenshot(
+  threadArtifacts: readonly AgentArtifact[],
+  context: string,
+  intents: readonly string[],
+): AgentArtifact | undefined {
+  const screenshots = threadArtifacts.filter((artifact) => {
+    if (artifact.mimeType === "image/png") return true;
+    return Boolean(artifact.filename?.toLowerCase().endsWith(".png"));
+  });
+  if (screenshots.length === 0) return undefined;
+
+  const tokens = new Set<string>();
+  for (const intent of intents) {
+    for (const part of intent.toLowerCase().split(/[\s\-_/]+/)) {
+      if (part.length >= 4) tokens.add(part);
+    }
+  }
+  for (const part of context.toLowerCase().split(/[^a-z0-9а-яё]+/i)) {
+    if (part.length >= 4) tokens.add(part);
+  }
+
+  for (const artifact of screenshots) {
+    const fname = (artifact.filename ?? "").toLowerCase();
+    if (!fname) continue;
+    for (const token of tokens) {
+      if (fname.includes(token)) return artifact;
+    }
+  }
+
+  return screenshots[screenshots.length - 1];
 }
 
 function selectBestUrlsForArtifact(
@@ -5619,9 +6890,23 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
   }
 
   // Specific currency amounts.
-  for (const match of (output ?? "").matchAll(/(?:[$€£¥])\s?\d{2,5}(?:[.,]\d{1,3})?/g)) {
+  // Phase 13 follow-up: broaden to capture amounts with thousands
+  // separators ("$79,581", "€68.819,05") and arbitrarily long decimal
+  // tails ("€68 819,0591"). Numerical grounding below tolerates the
+  // differences between worker output ("$79,581") and CSV evidence
+  // ("79581.42") via normalize+compare instead of literal substring.
+  // Single, non-alternation regex so `\d+` is greedy across the whole
+  // amount — earlier alternation form picked `$249` out of `$2499`.
+  const currencyRe = /(?:[$€£¥])\s?\d+(?:[\s.,]\d{3})*(?:[.,]\d{1,4})?/g;
+  for (const match of (output ?? "").matchAll(currencyRe)) {
     candidates.add(match[0].replace(/\s/g, ""));
   }
+
+  // Phase 13 follow-up: pre-extract every numeric value from the
+  // evidence corpus once so the per-token currency check below stays
+  // O(candidates × evidence-numbers). Without this we'd re-scan the
+  // (potentially large) corpus for every token.
+  const evidenceNumbers = extractNumericValuesFromEvidence(evidenceCorpus);
 
   const ungrounded: string[] = [];
   for (const token of candidates) {
@@ -5685,9 +6970,121 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
       }
     }
     if (groundedBySubPhrase) continue;
+    // Phase 13 follow-up: numerical grounding for currency amounts.
+    // Workers (and synthesizers) round / shorten / re-format numbers
+    // that ARE in evidence — "$79,581" written by synth vs
+    // "79581.42" in a market.timeseries CSV evidence row, "€68 819,0591"
+    // vs "68819.0591", "$81" rounded from "$81,234.56". Substring match
+    // can't bridge those formats. Numerical match (tolerant ±1%) can.
+    if (isCurrencyAmountGroundedNumerically(token, evidenceNumbers)) continue;
     ungrounded.push(token);
   }
   return ungrounded;
+}
+
+/**
+ * Phase 13 follow-up: pull every numeric value out of the evidence
+ * corpus, returning a deduped sorted array. Handles:
+ *   - "79581.42" → 79581.42
+ *   - "79,581.42" → 79581.42 (English thousands separator)
+ *   - "79.581,42" → 79581.42 (European thousands separator)
+ *   - "68 819,0591" → 68819.0591 (space thousands separator)
+ *   - "$79,581" → 79581
+ * Used by the ungrounded-specifics gate to compare numerical
+ * representations of currency amounts independent of formatting.
+ */
+function extractNumericValuesFromEvidence(evidenceCorpus: string): number[] {
+  const found = new Set<number>();
+  // Match runs of digits with optional thousands/decimal separators.
+  // Allow both `,` and `.` as separators in either role; we resolve the
+  // ambiguity by inspecting the trailing group length (1-2 digits → decimal).
+  const numRe = /\d{1,3}(?:[\s.,]\d{3})+(?:[.,]\d{1,4})?|\d+(?:[.,]\d{1,4})?/g;
+  for (const match of evidenceCorpus.matchAll(numRe)) {
+    const raw = match[0];
+    const value = parseFlexibleNumber(raw);
+    if (value !== undefined && value > 0) found.add(value);
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+/**
+ * Phase 13 follow-up: parse a number string that may use English
+ * (`,` thousands, `.` decimal) or European (`.` thousands, `,` decimal)
+ * conventions, optionally with spaces as thousands separators and any
+ * leading currency symbol. Returns `undefined` for unparseable input.
+ *
+ * Disambiguation rules (in order):
+ *   1. No separators → straight Number().
+ *   2. Multiple separators of the same kind (`1,000,000`, `1.000.000`)
+ *      → all separators are thousands.
+ *   3. Multiple separators of different kinds (`79,581.42`,
+ *      `79.581,42`) → last is decimal, earlier ones are thousands.
+ *   4. Single separator with 3 trailing digits (`1,000`) → ambiguous,
+ *      default to thousands (most common English/Russian usage).
+ *   5. Single separator with 1-2 or 4+ trailing digits (`79.42`,
+ *      `68819,0591`) → decimal.
+ */
+function parseFlexibleNumber(raw: string): number | undefined {
+  const cleaned = raw.replace(/[$€£¥\s]/g, "");
+  if (!/\d/.test(cleaned)) return undefined;
+  const dotCount = (cleaned.match(/\./g) ?? []).length;
+  const commaCount = (cleaned.match(/,/g) ?? []).length;
+  const totalSeps = dotCount + commaCount;
+
+  if (totalSeps === 0) {
+    const direct = Number(cleaned);
+    return Number.isFinite(direct) ? direct : undefined;
+  }
+
+  const lastSep = Math.max(cleaned.lastIndexOf("."), cleaned.lastIndexOf(","));
+  const trailing = cleaned.length - lastSep - 1;
+
+  let intPart = "";
+  let decPart = "";
+
+  if (totalSeps > 1) {
+    const allSepsAreSame = dotCount === 0 || commaCount === 0;
+    if (allSepsAreSame) {
+      // All thousands separators (`1,000,000` or `1.000.000`).
+      intPart = cleaned.replace(/[.,]/g, "");
+    } else {
+      // Mixed → last separator is decimal.
+      intPart = cleaned.slice(0, lastSep).replace(/[.,]/g, "");
+      decPart = cleaned.slice(lastSep + 1);
+    }
+  } else if (trailing === 3) {
+    // Single separator with 3 trailing digits → likely thousands.
+    intPart = cleaned.replace(/[.,]/g, "");
+  } else {
+    // Single separator with 1-2 or 4+ trailing digits → decimal.
+    intPart = cleaned.slice(0, lastSep).replace(/[.,]/g, "");
+    decPart = cleaned.slice(lastSep + 1);
+  }
+
+  const numeric = decPart ? Number(`${intPart}.${decPart}`) : Number(intPart);
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+/**
+ * Phase 13 follow-up: a currency token like "$79,581" is grounded if
+ * the evidence corpus contains a numeric value within ±1% of its
+ * normalized magnitude. Tolerates rounding ("$81,000" vs "81234.56"
+ * → 0.4% off, accepted) but rejects fabrications ("$50" vs evidence
+ * showing only "79581.42" → ~37% off, rejected). Returns false for
+ * non-currency tokens so the caller falls through to its other
+ * grounding paths.
+ */
+function isCurrencyAmountGroundedNumerically(token: string, evidenceNumbers: number[]): boolean {
+  if (!/^[$€£¥]/.test(token.trim())) return false;
+  const value = parseFlexibleNumber(token);
+  if (value === undefined || value <= 0) return false;
+  const tolerance = Math.max(value * 0.01, 0.5); // 1%, but at least 0.5 absolute (handles tiny amounts)
+  for (const evidenceValue of evidenceNumbers) {
+    if (Math.abs(evidenceValue - value) <= tolerance) return true;
+    // Worker may shorten "$79,581" → "$81" (thousand-rounded). Try value*1000.
+    if (Math.abs(evidenceValue - value * 1000) <= Math.max(value * 1000 * 0.01, 0.5)) return true;
+  }
+  return false;
 }
 
 /**
@@ -6058,4 +7455,189 @@ export const __testing__ = {
   isShallowLandingUrl,
   isLowValueProofUrl,
   userExplicitlyAskedForUrl,
+  pickReusableThreadScreenshot,
+  parseFlexibleNumber,
+  extractNumericValuesFromEvidence,
+  isCurrencyAmountGroundedNumerically,
+  formatScreenshotReuseDirective,
+  parseProposalTail,
+  parseRankingJson,
+  parseFilesJson,
+  parseReviewVerdict,
+  parseQaOracle,
+  formatFilesForPrompt,
 };
+
+// ──────────────────────────────────────────────────────────────────────
+// Phase 14 — small parsing helpers for the council pipeline.
+// The LLM output for each step is structured (single-JSON ending lines),
+// but real models sometimes wrap JSON in backticks or prepend prose. These
+// helpers tolerate the common deviations and fall back to safe defaults
+// when the model output is gibberish, so a single bad responder can't
+// crash the entire council run.
+// ──────────────────────────────────────────────────────────────────────
+
+function parseProposalTail(raw: string): { packages: string[]; externalDependencies: string[] } {
+  // Look for the last JSON object in the text, which the prompt instructed
+  // the model to emit on the final line.
+  const match = raw.match(/\{[^{}]*"packages"[^{}]*\}/);
+  if (!match) return { packages: [], externalDependencies: [] };
+  try {
+    const obj = JSON.parse(match[0]) as { packages?: unknown; externalDependencies?: unknown };
+    const packages = Array.isArray(obj.packages)
+      ? obj.packages.filter((v): v is string => typeof v === "string")
+      : [];
+    const externalDependencies = Array.isArray(obj.externalDependencies)
+      ? obj.externalDependencies.filter((v): v is string => typeof v === "string")
+      : [];
+    return { packages, externalDependencies };
+  } catch {
+    return { packages: [], externalDependencies: [] };
+  }
+}
+
+function parseRankingJson(raw: string, proposalCount: number): number[] {
+  const obj = extractFirstJson<{ ranking?: unknown }>(raw);
+  const ranking = Array.isArray(obj?.ranking)
+    ? obj.ranking.filter((v): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) < proposalCount)
+    : [];
+  // Deduplicate while preserving order.
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const idx of ranking) {
+    if (seen.has(idx)) continue;
+    seen.add(idx);
+    out.push(idx);
+  }
+  return out;
+}
+
+function parseFilesJson(raw: string): Array<{ path: string; content: string }> {
+  const obj = extractFirstJson<{ files?: unknown }>(raw);
+  if (!obj || !Array.isArray(obj.files)) return [];
+  const out: Array<{ path: string; content: string }> = [];
+  for (const entry of obj.files) {
+    if (!entry || typeof entry !== "object") continue;
+    const path = (entry as { path?: unknown }).path;
+    const content = (entry as { content?: unknown }).content;
+    if (typeof path === "string" && typeof content === "string") {
+      out.push({ path, content });
+    }
+  }
+  return out;
+}
+
+function parseReviewVerdict(raw: string): { verdict: "pass" | "needs_revision"; findings: string[] } {
+  const obj = extractFirstJson<{ verdict?: unknown; findings?: unknown }>(raw);
+  const verdict = obj?.verdict === "pass" ? "pass" : "needs_revision";
+  const findings = Array.isArray(obj?.findings)
+    ? (obj.findings as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  return { verdict, findings };
+}
+
+function parseQaOracle(raw: string): { verdict: "passed" | "failed"; failures: string[] } {
+  const obj = extractFirstJson<{ verdict?: unknown; failures?: unknown }>(raw);
+  const verdict = obj?.verdict === "passed" ? "passed" : "failed";
+  const failures = Array.isArray(obj?.failures)
+    ? (obj.failures as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  return { verdict, failures };
+}
+
+function extractFirstJson<T>(raw: string): T | undefined {
+  if (!raw) return undefined;
+  // Strip triple-backtick fences the model often wraps JSON in.
+  const stripped = raw.replace(/```(?:json)?\s*([\s\S]*?)```/g, "$1").trim();
+  const start = stripped.indexOf("{");
+  if (start < 0) return undefined;
+  // Find the matching closing brace by depth, ignoring those inside strings.
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < stripped.length; i += 1) {
+    const ch = stripped[i]!;
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(stripped.slice(start, i + 1)) as T;
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function formatFilesForPrompt(files: ReadonlyArray<{ path: string; content: string }>): string {
+  if (files.length === 0) return "(no files)";
+  return files
+    .map((file) => `// ===== ${file.path} =====\n${file.content}`)
+    .join("\n\n");
+}
+
+/**
+ * Pull repair-failure strings out of the in-process event stream so
+ * the change-summary synthesizer can describe what was being fixed.
+ * We don't actually re-read from a store — the run already emitted
+ * qa-attempt events with payload.failures. The synthesizer reads
+ * them via a closure-captured array on the emitter (best effort).
+ *
+ * Implementation note: we don't have access to the sink's internal
+ * state here so we return [] for now. The synthesizer prompt still
+ * gets the bugContext for reworks, which covers the "what changed"
+ * case where it matters most. A follow-up could thread an event
+ * buffer through.
+ */
+function collectRepairFailuresFromEvents(_sink: unknown): string[] {
+  return [];
+}
+
+/**
+ * Trim and sanitize the LLM's free-form summary into something safe
+ * to render on the Tools page. The LLM occasionally wraps the line
+ * in quotes / code fences / "Summary:" prefixes; strip those.
+ */
+function sanitizeChangeSummary(raw: string): string {
+  if (!raw) return "";
+  let trimmed = raw.trim();
+  // Strip leading "Summary:", "Changelog:" etc.
+  trimmed = trimmed.replace(/^(?:summary|changelog|changes?)\s*[:\-]\s*/i, "");
+  // Strip surrounding code fences.
+  trimmed = trimmed.replace(/^```[a-z]*\s*|\s*```$/g, "");
+  // Strip surrounding single/double/back quotes.
+  if (/^["'`].*["'`]$/.test(trimmed)) trimmed = trimmed.slice(1, -1);
+  // Cap to ~280 chars to be safe.
+  if (trimmed.length > 280) trimmed = `${trimmed.slice(0, 277)}…`;
+  return trimmed.trim();
+}
+
+function messagesToPromptText(messages: ReadonlyArray<{ role: string; content: string }>): string {
+  // Joins the system + user messages we send to the LLM into a single
+  // human-readable string. Used to attach the actual prompt to each
+  // council event payload so the Trace inspector can show "what did
+  // this model see?" alongside its response.
+  return messages.map((m) => `[${m.role}]\n${m.content}`).join("\n\n");
+}
+
+function synthesizeQaInput(context: import("./toolBuildCouncil.js").ToolBuildContext): Record<string, unknown> {
+  // Lightweight stub: use the first qaCriterion as the input task, falling
+  // back to the description. The real QA oracle reads the actual tool
+  // output, so the input only has to be "plausible enough" to exercise the
+  // tool.
+  const firstCriterion = context.qaCriteria[0] ?? context.description;
+  return { task: firstCriterion, query: firstCriterion };
+}

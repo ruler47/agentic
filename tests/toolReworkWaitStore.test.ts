@@ -29,6 +29,10 @@ test("InMemoryToolReworkWaitStore creates, lists, and updates waits", async () =
   const byInvestigation = await store.listByInvestigation("inv-1");
   assert.equal(byInvestigation.length, 1);
 
+  // Sleep > 1ms so Date.now()-based `updatedAt` advances on fast CPUs.
+  // In docker this happened so quickly that the second timestamp was
+  // identical to the first and the assertion below tripped.
+  await new Promise((resolve) => setTimeout(resolve, 5));
   const promoted = await store.update(wait.id, {
     status: "promoted",
     promotedVersion: "1.1.0",

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { useRuns } from "@/api/runs";
+import { useDeleteArtifact, useRuns } from "@/api/runs";
 import { flattenArtifactsFromRuns } from "@/api/conversations";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
@@ -85,6 +85,18 @@ export function ArtifactsPage() {
 function ArtifactCard({ artifact, run }: { artifact: AgentArtifact; run: AgentRunRecord }) {
   const isImage = artifact.mimeType?.startsWith("image/");
   const sizeKb = Math.max(0, Math.round((artifact.sizeBytes ?? 0) / 1024));
+  const deleteArtifact = useDeleteArtifact();
+  const onDelete = () => {
+    if (deleteArtifact.isPending) return;
+    if (
+      !window.confirm(
+        `Delete artifact "${artifact.filename}"?\n\nThis removes the metadata row AND the underlying file from the object store. This action cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    deleteArtifact.mutate({ runId: run.id, artifactId: artifact.id });
+  };
   return (
     <article className="flex flex-col gap-2 rounded-[var(--radius-card)] border border-app-border bg-app-surface p-3 text-xs">
       <div className="flex items-baseline justify-between gap-2">
@@ -140,7 +152,19 @@ function ArtifactCard({ artifact, run }: { artifact: AgentArtifact; run: AgentRu
         >
           Trace
         </Link>
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={deleteArtifact.isPending}
+          className="ml-auto rounded-md border border-app-danger/40 bg-app-danger-soft px-2.5 py-1 text-[11px] text-app-danger hover:border-app-danger/60 disabled:opacity-50"
+          title="Delete this artifact (metadata + underlying object). Cannot be undone."
+        >
+          {deleteArtifact.isPending ? "Deleting…" : "Delete"}
+        </button>
       </div>
+      {deleteArtifact.isError ? (
+        <p className="text-[11px] text-app-danger">Delete failed: {deleteArtifact.error.message}</p>
+      ) : null}
     </article>
   );
 }

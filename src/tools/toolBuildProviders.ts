@@ -895,7 +895,7 @@ export class GenericApiToolBuildProvider implements ToolBuildProvider {
       displayName: request.displayName ?? request.contract.displayName,
       capabilities: [capability, "api-http-json", "http-api-call"],
       inputSchema: genericApiInputSchema(),
-      outputSchema: genericApiOutputSchema(),
+      outputSchema: genericApiOutputSchema(request.requiredOutputs),
       requiredSecretHandles: allowedSecretHandles,
       docsMarkdown: genericApiDocsMarkdown(capability, allowedSecretHandles, preset),
       files: [
@@ -1005,7 +1005,21 @@ export class DocumentArtifactToolBuildProvider implements ToolBuildProvider {
       (request.requiredOutputs ?? []).join(" "),
     ].join(" ");
 
-    return /\b(pdf|document|report|docx|markdown|html)\b|pdf[-.\s]?generation|document[-.\s]?generation|report[-.\s]?generation/i.test(text);
+    // Phase 13 follow-up: previously matched `\b(pdf|document|report|docx|
+    // markdown|html)\b` which fired on ANY request whose taskSummary mentioned
+    // an HTML URL (e.g. https://html.duckduckgo.com/html/...) and stole
+    // search/API requests intended for GenericApi. The new pattern requires
+    // a document-shape verb (generate/render/build/export/create + document
+    // noun) or a clear file-format keyword (pdf, docx) — bare "html" or
+    // "markdown" inside a URL or prose is no longer enough to claim the
+    // request.
+    return (
+      /\b(pdf|docx)\b/i.test(text) ||
+      /(pdf|document|report|docx)[-.\s]?generation/i.test(text) ||
+      /\b(generate|render|build|export|create|produce)\s+(?:a\s+|an\s+|the\s+)?(document|report|pdf|docx|markdown\s+document|html\s+document)\b/i.test(
+        text,
+      )
+    );
   }
 
   build(request: ToolBuildRequest): ToolBuildProviderOutput {
@@ -1278,7 +1292,29 @@ function genericApiInputSchema(): ToolSchema {
   };
 }
 
-function genericApiOutputSchema(): ToolSchema {
+function genericApiOutputSchema(extraOutputs: readonly string[] = []): ToolSchema {
+  // Phase 13 follow-up (TB-004): the deterministic reviewer now checks
+  // that every name in `request.requiredOutputs[]` appears in the
+  // generated outputSchema. GenericApi has a fixed surface
+  // (status, url, method, json, text, ...); when the requester asked
+  // for additional output names like `results`, surface them here so
+  // the reviewer's coverage check passes. Extra keys are typed as
+  // unknown — the runtime tool source must populate them itself.
+  const dataProperties: Record<string, unknown> = {
+    status: { type: "number" },
+    url: { type: "string" },
+    method: { type: "string" },
+    provider: { type: "string" },
+    score: {},
+    sources: {},
+    json: {},
+    text: { type: "string" },
+  };
+  for (const name of extraOutputs) {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed in dataProperties) continue;
+    dataProperties[trimmed] = {};
+  }
   return {
     type: "object",
     properties: {
@@ -1286,16 +1322,7 @@ function genericApiOutputSchema(): ToolSchema {
       content: { type: "string" },
       data: {
         type: "object",
-        properties: {
-          status: { type: "number" },
-          url: { type: "string" },
-          method: { type: "string" },
-          provider: { type: "string" },
-          score: {},
-          sources: {},
-          json: {},
-          text: { type: "string" },
-        },
+        properties: dataProperties,
       },
     },
     required: ["ok", "content"],

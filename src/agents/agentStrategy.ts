@@ -8,7 +8,11 @@ export type AgentStrategyKind =
   | "tool_use"
   | "tool_build_or_rework"
   | "ledger_reuse_or_wait"
-  | "council";
+  | "council"
+  // Phase 14: the run was created from the Tool Builds form. The agent
+  // dispatches to a multi-model council (brainstorm → vote → implement
+  // → review → revise → QA → repair) instead of the normal delegate-DAG.
+  | "tool_build_council";
 
 export type AgentStrategyAction =
   | "answer_directly"
@@ -51,6 +55,18 @@ export type AgentStrategyDecision = {
     mayRequestRework: boolean;
     matchedToolNames: string[];
     missingCapabilityHints: string[];
+    /**
+     * Phase 13 follow-up: tool names the user explicitly asked NOT to use
+     * ("don't use web.search", "не используй X"). Workers / discovery
+     * helpers must skip these even when capability matches.
+     */
+    deniedToolNames: string[];
+    /**
+     * Phase 13 follow-up: tool names the user explicitly asked to PREFER
+     * ("use web.duckduckgo", "используй X"). Discovery helpers should
+     * promote these to the front of capability-match candidate lists.
+     */
+    preferredToolNames: string[];
   };
   council?: {
     reason: string;
@@ -157,6 +173,8 @@ export function decideAgentStrategy(input: AgentStrategyInput): AgentStrategyDec
       mayRequestRework: missingCapabilityHints.length > 0 || matchedTools.length > 0,
       matchedToolNames: matchedTools.map((tool) => tool.name),
       missingCapabilityHints,
+      deniedToolNames: extractUserToolMentions(input.task, "deny", input.tools ?? []),
+      preferredToolNames: extractUserToolMentions(input.task, "prefer", input.tools ?? []),
     },
     council: councilRecommended
       ? {
@@ -298,4 +316,63 @@ function isReusableExternalWork(text: string, matchedTools: Tool[]): boolean {
 
 function normalizeText(text: string): string {
   return text.toLowerCase().replace(/ё/g, "е");
+}
+
+/**
+ * Phase 13 follow-up (TB-005b): pull explicit user-driven tool
+ * preferences out of the task body, returning the list of tool names
+ * the user asked to deny or prefer. Detection is deterministic and
+ * language-agnostic enough for the common phrasings we see (English
+ * "don't use X / use X / use only X", Russian "не используй X /
+ * используй X").
+ *
+ * The match is grounded against the actually-registered tool names
+ * (`tools`) so a mention of a non-existent tool can't poison the
+ * policy. Names with `.` are matched as whole tokens (so "web.search"
+ * won't accidentally pick up "web.searches" or general prose).
+ *
+ * Worker / discovery helpers consult these lists to drop denied tools
+ * from candidate selection and promote preferred ones to the front of
+ * `findByCapability` results.
+ */
+export function extractUserToolMentions(
+  task: string,
+  mode: "deny" | "prefer",
+  tools: readonly Tool[],
+): string[] {
+  if (!task || tools.length === 0) return [];
+  const lower = task.toLowerCase();
+  const denyVerbs = /(?:don[''’]?t\s+use|never\s+use|do\s+not\s+use|без\s+использования|не\s+используй|не\s+вызывай|skip\s+using)/i;
+  const preferVerbs = /(?:use\s+(?:only\s+)?|via\s+|through\s+|with\s+|using\s+|используй\s+(?:только\s+)?|через\s+|с\s+помощью)/i;
+
+  // The prefer-verb pattern would otherwise pick up the "use" inside
+  // "don't use X" when scanning for preferences. Erase deny-spans
+  // before searching for prefer-spans so they don't bleed into each
+  // other.
+  const searchText =
+    mode === "prefer"
+      ? lower.replace(new RegExp(`${denyVerbs.source}[^\\n]{0,80}`, "gi"), " ")
+      : lower;
+  const verbs = mode === "deny" ? denyVerbs : preferVerbs;
+
+  const found = new Set<string>();
+  for (const tool of tools) {
+    const name = tool.name.toLowerCase();
+    const re = new RegExp(`${verbs.source}[^\\w]{0,3}([\\w.-]+)`, "gi");
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(searchText)) !== null) {
+      const captured = (match[1] ?? "").toLowerCase();
+      if (!captured) continue;
+      if (captured === name || captured.startsWith(`${name} `) || captured.startsWith(`${name}.`)) {
+        found.add(tool.name);
+        continue;
+      }
+      if (captured.replace(/^[`"']+|[`"']+$/g, "") === name) found.add(tool.name);
+    }
+    // Direct occurrence within ~40 chars after the verb (handles "use the
+    // web.duckduckgo tool", "via the web.duckduckgo wrapper").
+    const directRe = new RegExp(`${verbs.source}[^\\n]{0,40}\\b${name.replace(/\./g, "\\.")}\\b`, "i");
+    if (directRe.test(searchText)) found.add(tool.name);
+  }
+  return [...found];
 }

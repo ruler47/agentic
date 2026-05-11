@@ -17,6 +17,10 @@ import { PostgresModelTierSettingsStore } from "../../settings/postgresModelTier
 import { InMemoryModelProviderStore } from "../../settings/modelProviderStore.js";
 import { PostgresModelProviderStore } from "../../settings/postgresModelProviderStore.js";
 import { InMemoryToolRuntimeSettingsStore } from "../../settings/toolRuntimeSettings.js";
+import {
+  InMemoryCodingCouncilStore,
+  PostgresCodingCouncilStore,
+} from "../../settings/codingCouncilStore.js";
 import { PostgresToolRuntimeSettingsStore } from "../../settings/postgresToolRuntimeSettings.js";
 import { SkillMemory } from "../../memory/skillMemory.js";
 import { PostgresSkillMemory } from "../../memory/postgresSkillMemory.js";
@@ -54,10 +58,11 @@ import { LlmClient, readLlmConfigFromEnv } from "../../llm/client.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { FileReadTool, FileWriteTool } from "../../tools/fileTools.js";
 import { WebSearchTool } from "../../tools/webSearchTool.js";
-import { TelegramBotServiceTool } from "../../tools/telegramBotServiceTool.js";
-import { ChartGenerateTool } from "../../tools/chartGenerateTool.js";
-import { MarketTimeseriesTool } from "../../tools/marketTimeseriesTool.js";
-import { BrowserOperateTool } from "../../tools/browserOperateTool.js";
+// Phase 13 follow-up: the in-process tool classes have been
+// removed in favour of dockerized tool services. The runtime
+// always wires the HttpToolAdapter / BrowserOperateHttpTool
+// instances below so every browser.operate / chart.generate /
+// market.timeseries / telegram.bot call goes to a container.
 import { BrowserOperateHttpTool } from "../../tools/browserOperateHttpTool.js";
 import { HttpToolAdapter } from "../../tools/httpToolAdapter.js";
 import { createScopedToolDbClient } from "../../tools/toolScopedDb.js";
@@ -94,6 +99,7 @@ import {
   TOOL_CALLBACK_TOKEN_ISSUER,
   TOOL_REWORK_WAIT_STORE,
   TOOL_RUNTIME_SETTINGS,
+  CODING_COUNCIL_STORE,
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_LOG_STORE,
   TOOL_SERVICE_STATUS_STORE,
@@ -177,6 +183,14 @@ const providers: Provider[] = [
     inject: [PG_POOL],
     useFactory: (pool: PgPool | undefined) =>
       pool ? new PostgresToolRuntimeSettingsStore(pool) : new InMemoryToolRuntimeSettingsStore(),
+  },
+  {
+    // Phase 14: coding council settings (which tier acts as the
+    // tool-build council + loop limits).
+    provide: CODING_COUNCIL_STORE,
+    inject: [PG_POOL],
+    useFactory: (pool: PgPool | undefined) =>
+      pool ? new PostgresCodingCouncilStore(pool) : new InMemoryCodingCouncilStore(),
   },
   {
     provide: TOOL_METADATA_STORE,
@@ -270,64 +284,94 @@ const providers: Provider[] = [
   // OnModuleInit hooks.
   {
     provide: TOOL_REGISTRY,
-    inject: [TOOL_METADATA_STORE, PG_POOL, SECRET_HANDLE_STORE, TOOL_RUNTIME_SETTINGS],
+    inject: [TOOL_METADATA_STORE, PG_POOL, SECRET_HANDLE_STORE, TOOL_RUNTIME_SETTINGS, APP_ENV],
     useFactory: async (
       metadata: ToolMetadataStore | undefined,
       pool: PgPool | undefined,
       secrets: SecretHandleStore | undefined,
       runtimeSettings: { resolve(toolName: string, key: string): Promise<string | undefined> } | undefined,
+      env: import("../config/env.js").AppEnv,
     ) => {
       const registry = new ToolRegistry();
+      // The hard-coded built-ins (web.search, file.read/write, chart.generate,
+      // market.timeseries, telegram.bot, browser.operate) skip registration
+      // when BUILTIN_TOOLS=disabled — operators running a "pure council"
+      // registry want only the council-built tools visible. The metadata
+      // rows for previously-synced built-ins are cleaned up below via the
+      // explicit DELETE in db/migrate.ts (one-shot, idempotent).
+      if (env.builtinToolsEnabled) {
       registry.register(new WebSearchTool());
-      // Phase 13: feature-flag select between in-process tools and
-      // their dockerized counterparts. Default = in-process so
-      // existing setups keep working until the operator opts in.
-      if ((process.env.TELEGRAM_BOT_RUNNER ?? "").toLowerCase() === "docker") {
-        registry.register(new HttpToolAdapter({
-          name: "telegram.bot",
-          version: "1.0.0",
-          description: "Receives Telegram bot messages and bridges them to generic Agentic inbound/outbox APIs.",
-          capabilities: ["messaging-channel", "telegram-bridge", "background-service"],
-          startupMode: "always-on",
-        }));
-      } else {
-        registry.register(new TelegramBotServiceTool());
-      }
+      // Phase 13: every built-in tool is now backed by a dockerized
+      // tool service. The runtime forwards each call to the matching
+      // container via HttpToolAdapter / BrowserOperateHttpTool — see
+      // docker-compose.yml `*_RUNNER=docker` env vars.
+      registry.register(new HttpToolAdapter({
+        name: "telegram.bot",
+        version: "1.0.0",
+        description: "Receives Telegram bot messages and bridges them to generic Agentic inbound/outbox APIs.",
+        capabilities: ["messaging-channel", "telegram-bridge", "background-service"],
+        startupMode: "always-on",
+        // Always-on bridge driven by the runtime's inbound/outbox APIs;
+        // /run is a noop so the schema is intentionally empty.
+        inputSchema: { type: "object", properties: {} },
+        outputSchema: { type: "object", properties: { ok: { type: "boolean" }, content: { type: "string" } } },
+      }));
       registry.register(new FileReadTool());
       registry.register(new FileWriteTool());
-      if ((process.env.CHART_GENERATE_RUNNER ?? "").toLowerCase() === "docker") {
-        registry.register(new HttpToolAdapter({
-          name: "chart.generate",
-          version: "1.0.0",
-          description: "Generates an SVG line-chart artifact from time-series text or JSON.",
-          capabilities: ["chart-generation", "artifact-generation", "data-visualization"],
-          startupMode: "on-demand",
-        }));
-      } else {
-        registry.register(new ChartGenerateTool());
-      }
-      if ((process.env.MARKET_TIMESERIES_RUNNER ?? "").toLowerCase() === "docker") {
-        registry.register(new HttpToolAdapter({
-          name: "market.timeseries",
-          version: "1.0.0",
-          description: "Fetches structured crypto market time-series data and returns a CSV artifact.",
-          capabilities: ["market-timeseries", "crypto-timeseries", "structured-market-data"],
-          startupMode: "on-demand",
-        }));
-      } else {
-        registry.register(new MarketTimeseriesTool());
-      }
-      // Phase 13: select between in-process Playwright and the
-      // dockerized browser-operate-service container based on env.
-      // BROWSER_OPERATE_RUNNER=docker forwards every browser.operate
-      // call to http://browser-operate:8080 (compose service name).
-      // Anything else keeps the legacy in-process tool, so existing
-      // setups without the docker service keep working untouched.
-      if ((process.env.BROWSER_OPERATE_RUNNER ?? "").toLowerCase() === "docker") {
-        registry.register(new BrowserOperateHttpTool());
-      } else {
-        registry.register(new BrowserOperateTool());
-      }
+      registry.register(new HttpToolAdapter({
+        name: "chart.generate",
+        version: "1.0.0",
+        description: "Generates an SVG line-chart artifact from time-series text or JSON.",
+        capabilities: ["chart-generation", "artifact-generation", "data-visualization"],
+        startupMode: "on-demand",
+        // Mirrors the docker chart-generate-service /describe schema.
+        inputSchema: {
+          type: "object",
+          properties: {
+            task: { type: "string", minLength: 1 },
+            text: { type: "string", minLength: 1 },
+            title: { type: "string" },
+            filename: { type: "string" },
+          },
+          required: ["task", "text"],
+        },
+        outputSchema: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+            content: { type: "string" },
+            data: { type: "object", properties: { artifact: { type: "object" }, points: { type: "number" } } },
+          },
+          required: ["ok", "content"],
+        },
+      }));
+      registry.register(new HttpToolAdapter({
+        name: "market.timeseries",
+        version: "1.0.0",
+        description: "Fetches structured crypto market time-series data and returns a CSV artifact.",
+        capabilities: ["market-timeseries", "crypto-timeseries", "structured-market-data"],
+        startupMode: "on-demand",
+        inputSchema: {
+          type: "object",
+          properties: {
+            symbol: { type: "string", minLength: 1 },
+            vsCurrency: { type: "string", default: "usd" },
+            days: { type: "number", minimum: 1, maximum: 3650, default: 30 },
+          },
+          required: ["symbol"],
+        },
+        outputSchema: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+            content: { type: "string" },
+            data: { type: "object" },
+          },
+          required: ["ok", "content"],
+        },
+      }));
+      registry.register(new BrowserOperateHttpTool());
+      } // end if (env.builtinToolsEnabled)
       if (metadata) {
         await metadata.syncBuiltins(registry.list());
         registry.setUsageReporter((event) =>

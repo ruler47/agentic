@@ -22,8 +22,10 @@ import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import { InMemoryToolMigrationStore } from "../src/tools/toolMigrationStore.js";
 import { InMemoryToolPromotionStore } from "../src/tools/toolPromotionStore.js";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { loadGeneratedTools } from "../src/tools/generatedToolLoader.js";
-import { SourceBundleHttpProcessToolPackageRunner } from "../src/tools/toolPackageRunner.js";
+import {
+  loadGeneratedTools,
+  SourceBundleHttpProcessToolPackageRunner,
+} from "../src/tools/toolPackageRunner.js";
 import { validateAndBuildToolPackageWorkspace } from "../src/tools/toolPackageWorkspaceQa.js";
 import { ToolPackageWorkspaceStore } from "../src/tools/toolPackageWorkspaceStore.js";
 

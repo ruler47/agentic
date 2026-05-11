@@ -63,7 +63,17 @@ Notes on "geoAnchors":
 `.trim();
 }
 
-export function planPrompt(task: string, complexity: TaskComplexity, memories: SkillMemoryEntry[]): string {
+export function planPrompt(
+  task: string,
+  complexity: TaskComplexity,
+  memories: SkillMemoryEntry[],
+  tools: ReadonlyArray<{
+    name: string;
+    version?: string;
+    description: string;
+    capabilities?: readonly string[];
+  }> = [],
+): string {
   return `
 Create a delegation plan for this task.
 
@@ -72,6 +82,8 @@ ${task}
 
 Complexity:
 ${JSON.stringify(complexity, null, 2)}
+
+${toolCatalogBlock(tools)}
 
 Relevant shared skill memory:
 ${formatMemories(memories)}
@@ -86,11 +98,9 @@ Rules:
 - If a review/test subtask is part of the plan, it must depend on the implementation or artifact-producing subtask it reviews.
 - If the user requests a chart, screenshot, image, PDF, dataset, source file, or other file, include an artifact-producing subtask whose expected output is the actual artifact requirement, not just code or instructions.
 - For every subtask, declare the machine-readable tools and artifacts it requires.
-- Use "requiredTools" for capabilities like "web-search", "browser-screenshot", "chart-generation", "file-read", "file-write", or "pdf-generation".
-- Use "browser-operate" when a task needs interactive browser actions such as navigation, cookie handling, clicks, typing, form filling, waiting, DOM text extraction, or screenshots after interaction.
-- If a discovery subtask must identify candidates, profiles, providers, companies, or listings from directories/search-result pages, include "browser-operate" in that same discovery subtask instead of deferring browser extraction to a downstream verification subtask.
-- Use "requiredArtifacts" when the worker must produce a real file. Do not hide artifact requirements in prose only.
-- A screenshot proof must declare requiredArtifacts with kind "screenshot" and capability "browser-screenshot".
+- requiredTools / requiredArtifacts MUST reference capabilities that are actually present in the registry above. If no registered tool advertises a needed capability (e.g. no \`browser-screenshot\` provider), DO NOT add a requirement that no tool can satisfy — instead, write the subtask so the worker reports the gap as a missing-tool signal (the runtime will then trigger a council build for that capability).
+- Common capability tags worth checking against the registry: \`web-search\`, \`browser-screenshot\`, \`chart-generation\`, \`file-read\`, \`file-write\`, \`pdf-generation\`, \`browser-operate\`. The actual registry may have a subset, a superset, or different names — read the catalog above.
+- Use "requiredArtifacts" when the worker must produce a real file. Do not hide artifact requirements in prose only. If a screenshot proof is required, declare requiredArtifacts with kind "screenshot" and the EXACT capability tag from a registered tool (read the catalog).
 - When a deterministic tool can be called before the worker thinks, include "toolInputs" keyed by the exact tool name. For "browser.operate", provide a generic command list, never site-specific code.
 - For public search/result sites, prefer direct route/result/source URLs when they are known or can be inferred safely. Do not plan brittle form automation against generic homepages unless the task truly requires interaction.
 - Dependent analysis, synthesis, and review subtasks should use upstream worker outputs and artifacts. Do not add new web-search or screenshot requirements to those subtasks unless they must collect new external evidence.
@@ -133,10 +143,53 @@ Return only JSON:
 `.trim();
 }
 
-export function workerSystemPrompt(subtask: Subtask, memories: SkillMemoryEntry[]): string {
+/**
+ * Phase 14 follow-up: render the live tool registry as a prompt block
+ * so every agent (worker, reviewer, classifier) knows what tools are
+ * currently registered — without relying on hard-coded tool names.
+ * Each entry shows name + version + description + capabilities; the
+ * description is the LLM-synthesized one (kept fresh on every rework),
+ * not the operator's form input. Empty registry collapses to a single
+ * "(no tools registered)" line so prompts never break.
+ */
+export function toolCatalogBlock(
+  tools: ReadonlyArray<{
+    name: string;
+    version?: string;
+    description: string;
+    capabilities?: readonly string[];
+  }>,
+): string {
+  if (!tools || tools.length === 0) {
+    return "Available tools: (none registered)";
+  }
+  const lines = tools.map((tool) => {
+    const caps = (tool.capabilities ?? []).filter((c) => c !== tool.name).join(", ");
+    return [
+      `- ${tool.name}${tool.version ? ` (v${tool.version})` : ""} — ${tool.description}`,
+      caps ? `  Capabilities: ${caps}` : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+  return `Available tools (registry — discover capability by description, not by hard-coded name):\n${lines.join("\n")}`;
+}
+
+export function workerSystemPrompt(
+  subtask: Subtask,
+  memories: SkillMemoryEntry[],
+  tools: ReadonlyArray<{
+    name: string;
+    version?: string;
+    description: string;
+    capabilities?: readonly string[];
+  }> = [],
+): string {
   return `
 You are a focused worker agent.
 You are responsible for exactly one subtask and should not solve unrelated parts.
+
+${toolCatalogBlock(tools)}
 
 Subtask:
 ${JSON.stringify(subtask, null, 2)}
@@ -168,11 +221,21 @@ Rules:
 `.trim();
 }
 
-export function reviewerSystemPrompt(workerResult: WorkerResult): string {
+export function reviewerSystemPrompt(
+  workerResult: WorkerResult,
+  tools: ReadonlyArray<{
+    name: string;
+    version?: string;
+    description: string;
+    capabilities?: readonly string[];
+  }> = [],
+): string {
   return `
 You are a reviewer agent.
 Review this worker output against the subtask and criteria.
 Be strict about unsupported claims, missing steps, contradictions, and unclear assumptions.
+
+${toolCatalogBlock(tools)}
 
 CROSS-CHECK SPECIFICS AGAINST EVIDENCE.
 The worker's "toolEvidence" array contains the verbatim text the runtime extracted from web search results and browser pages. Before passing the worker output, scan its claims for any of:

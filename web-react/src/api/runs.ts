@@ -58,6 +58,26 @@ export function useCreateRun() {
   });
 }
 
+/**
+ * Phase 13 follow-up: delete a single artifact (metadata + object).
+ * Invalidates the runs query so the Artifacts page re-fetches and the
+ * card disappears.
+ */
+export function useDeleteArtifact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runId, artifactId }: { runId: string; artifactId: string }) =>
+      apiFetch<{ deleted: boolean; id: string; runId: string }>(
+        `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+    },
+  });
+}
+
 export function useCancelRun() {
   const queryClient = useQueryClient();
   return useMutation({

@@ -53,8 +53,41 @@ export class ToolRegistry {
     return this.tools.delete(name);
   }
 
-  findByCapability(capability: string): Tool[] {
-    return this.list().filter((tool) => tool.capabilities.includes(capability));
+  /**
+   * Phase 13 follow-up: capability lookup with prefix support. A request for
+   * `web-search` returns:
+   *   1. Tools whose capabilities array contains literal `web-search` (the
+   *      built-in `web.search`).
+   *   2. Tools whose capabilities contain a `<capability>-*` extension —
+   *      e.g. user-built `web.duckduckgo` declares `web-search-duckduckgo`,
+   *      so the agent now sees it as a valid `web-search` candidate
+   *      without having to know the exact extension.
+   * Exact matches come first to preserve historical behaviour; prefix
+   * matches are appended in registration order. Caller code that picks
+   * `[0]` keeps getting the literal-match tool when one exists.
+   *
+   * `policy` lets the runtime apply user-driven preferences (TB-005b):
+   *   - `denied`: tool names the user asked NOT to use ("don't use X").
+   *     They are filtered out of the result entirely.
+   *   - `preferred`: tool names the user asked to use first ("use X").
+   *     Promoted to the front of the list, in the order specified.
+   */
+  findByCapability(
+    capability: string,
+    policy?: { denied?: readonly string[]; preferred?: readonly string[] },
+  ): Tool[] {
+    const exact: Tool[] = [];
+    const prefixed: Tool[] = [];
+    for (const tool of this.list()) {
+      if (tool.capabilities.includes(capability)) {
+        exact.push(tool);
+        continue;
+      }
+      if (tool.capabilities.some((entry) => entry.startsWith(`${capability}-`))) {
+        prefixed.push(tool);
+      }
+    }
+    return applyToolPolicy([...exact, ...prefixed], policy);
   }
 
   /**
@@ -117,4 +150,41 @@ export class ToolRegistry {
       );
     }
   }
+}
+
+/**
+ * Phase 13 follow-up (TB-005b): apply a user-driven tool policy to a
+ * candidate list. Filters out denied tools, then re-orders surviving
+ * tools so user-preferred ones come first (in the order the user
+ * named them). Stable for the rest. Pure function for unit testing.
+ */
+function applyToolPolicy(
+  tools: Tool[],
+  policy?: { denied?: readonly string[]; preferred?: readonly string[] },
+): Tool[] {
+  if (!policy || ((policy.denied?.length ?? 0) === 0 && (policy.preferred?.length ?? 0) === 0)) {
+    return tools;
+  }
+  const deniedSet = new Set(policy.denied ?? []);
+  const survivors = tools.filter((tool) => !deniedSet.has(tool.name));
+  const preferred = policy.preferred ?? [];
+  if (preferred.length === 0) return survivors;
+  const preferredOrder = new Map(preferred.map((name, index) => [name, index]));
+  // Stable sort: preferred tools first in their declared order, then
+  // the rest in original registration order.
+  return survivors
+    .map((tool, index) => ({
+      tool,
+      preferredIndex: preferredOrder.has(tool.name) ? preferredOrder.get(tool.name)! : -1,
+      originalIndex: index,
+    }))
+    .sort((a, b) => {
+      if (a.preferredIndex !== -1 && b.preferredIndex === -1) return -1;
+      if (a.preferredIndex === -1 && b.preferredIndex !== -1) return 1;
+      if (a.preferredIndex !== -1 && b.preferredIndex !== -1) {
+        return a.preferredIndex - b.preferredIndex;
+      }
+      return a.originalIndex - b.originalIndex;
+    })
+    .map((entry) => entry.tool);
 }

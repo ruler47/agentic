@@ -12,5 +12,12 @@ dist/
 !/tools/chart-generate-service/
 !/tools/market-timeseries-service/
 !/tools/telegram-bot-service/
+# Phase 13 follow-up: stub directories that mirror in-process built-ins so
+# the `tools/` filesystem layout matches the live tool registry. README-only
+# marker dirs — actual implementations live under src/tools/.
+!/tools/web.search/
+!/tools/file.read/
+!/tools/file.write/
+!/tools/channel.telegram.bot/
 workspace/*
 !workspace/.gitkeep
