@@ -967,7 +967,34 @@ Models:
 - API-key secret handles;
 - attempts and escalation policy.
 
-Tool Builds:
+Settings → Coding Council (Phase 14):
+
+- picks which model tier acts as the tool-build council (default `L`);
+- council members come from `model_tier_settings.<tier>.models` — add or remove
+  models on the Models page, the council list updates automatically;
+- `maxRevisionAttempts` caps the brainstorm-review-revise loop;
+- `maxQaRepairAttempts` caps the QA-repair loop;
+- `qaTimeoutMs` caps an individual QA run;
+- optional `brainstormSystemPrompt` overrides the built-in instruction for the
+  first step (use only when the default leaves quality on the table).
+- Save is disabled when the chosen tier has fewer than 2 models — single-voter
+  councils make brainstorm + vote degenerate.
+
+Tool Builds (Phase 14, replacing the legacy "Build queue"):
+
+- a single form: tool name + description + optional secret handle + QA criteria
+  (prefilled examples, editable);
+- submit opens a new "tool-build" run — visible in the same Runs surface plus
+  the dedicated `/tool-builds` list grouped by status;
+- the same form drives rework / bugfix requests (set `existingToolName` +
+  `bugContext`);
+- the run timeline shows every step (brainstorm proposals, votes, code drafts,
+  reviews, revisions, QA attempts, repairs, final register).
+- Legacy panels (queue counter, manual builder/QA/registrar status cards,
+  Tool Investigations promotion shortcut) are kept until Phase G of Phase 14
+  retires them.
+
+Tool Builds (legacy panels still rendered until Phase G):
 
 - missing capability requests;
 - API-docs onboarding and always-on integration requests;

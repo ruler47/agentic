@@ -2198,3 +2198,86 @@ Anchor points for whoever picks this up cold:
 - `src/memory/skillMemory.ts` - target store for memory-backed evidence patterns.
 - `src/tools/registry.ts` - target location for the new `evidencePatterns` field on
   `ToolContract`.
+
+
+## Phase 13: Tools-As-Services
+
+Status: **shipped (Slices A-G + follow-ups)**. The Phase 13 cleanup converted the
+built-in tools that need heavy runtime (browser automation, chart rendering, market
+data, telegram polling) from in-process classes into dockerized HTTP services. The
+runtime now talks to them through `HttpToolAdapter` / `BrowserOperateHttpTool`
+instead of importing their implementation.
+
+Shipping summary:
+
+- **Phase A** (36bc096): tool-service HTTP contract + callback API + JWT-style
+  tokens + SDK skeleton in `tools/sdk/`.
+- **Phase B** (7f4d749): `browser.operate` extracted as the first dockerized tool
+  service. New `tools/browser-operate-service/` build context.
+- **Phase C** (732123c): `chart.generate`, `market.timeseries`, `telegram.bot`
+  follow the same pattern. `HttpToolAdapter` becomes the generic transport.
+- **Phase D** (43f586b): `dockerToolPackageManifest` factory + scaffold so the
+  tool-builder agent can produce service-shaped packages from the start.
+- **Phase E** (e4a223f): per-tool stats + package manifest export endpoints.
+- **Phase F** (dd4023f): structured improvement spec carried on
+  `tool_build_request` (symptom, expectedBehavior, failureExamples, acceptanceTest).
+- **Phase G** (deffdd1): deprecation header on `generatedToolLoader` + docs.
+- **Migrations #1-5** (4011809 → 919b925 → 0af80a8 → a7b9879): activate
+  `*_RUNNER=docker` for all four built-ins; port telegram long-poll loop into
+  the dockerized service; drop the in-process tool classes (kept only the data
+  types + type guards the runtime still reads); collapse the legacy generated
+  loader into `toolPackageRunner.ts`.
+
+Bug-fix follow-ups (run-level, see git log for details): thread artifact reuse
+(`A`), POST `/api/runs` dedup window (`B`), `/api/threads/:id` alias (`C`), browser
+cross-subtask dedup (`E`), revised-attempt artifact preservation (`F`), numerical
+currency grounding in synthesis guard (`G`), screenshot-reuse planner directive
+(`H`), null-defense in review path. Plus tool-builder issues TB-001 (over-broad
+DocumentArtifact regex), TB-002 (provider order), TB-004 (outputs coverage), TB-005
+(user-driven tool policy `denied`/`preferred` + capability prefix matching).
+
+The Manual Run panel on the Tools page lets the operator hit any registered tool
+with a hand-crafted JSON input and download the resulting artifacts. The Artifacts
+page lets the operator delete artifacts (metadata + underlying object).
+
+
+## Phase 14: Tool-Build Council
+
+Status: **in flight**. The legacy tool-build pipeline (six provider classes,
+deterministic reviewers, LLM reviewer, background worker, "Build queue" UI) is
+being replaced by a multi-model council driven from inside `UniversalAgent`. See
+`docs/architecture/tool-build-council.md` for the full design.
+
+Why: the legacy chain mis-matched providers (TB-001/002), produced generic HTTP
+wrappers without domain inputs (TB-003/006), and required a separate UI concept
+("build queue") that doesn't match how tools should actually be built. The new
+flow treats tool creation as another mode of the agent: brainstorm → vote →
+implement → review → revise → QA → repair, with every step a normal run event.
+
+Principles:
+1. Only three primary entities: `Agent`, `Tool`, `LLM`. Tool-build is a mode of
+   `UniversalAgent.run`, not a new orchestrator class.
+2. The council is the list of models in `model_tier_settings.<codingTier>.models`
+   (operator just picks which tier; defaults to L).
+3. Side-by-side build: new path lands first, legacy stays compiling, deletion is
+   the last phase only after live smoke passes.
+
+Slices:
+
+- **Phase A** (0d40351, 1008460): `coding_council_config` table + Postgres /
+  in-memory store + `GET/PUT /api/settings/coding-council` + Settings UI
+  section. Defaults: tier=L, maxRevisionAttempts=3, maxQaRepairAttempts=5,
+  qaTimeoutMs=30000.
+- **Phase B** (pending): pure helpers — Borda counting math, brainstorm / vote /
+  implement / review / revise / repair prompt builders. Unit-only.
+- **Phase C** (pending): `UniversalAgent.runToolBuildCouncil` method +
+  `decideAgentStrategy` hook (`primary: "tool_build_council"` when
+  `options.toolBuildContext` present). End-to-end integration test with a FakeLlm.
+- **Phase D** (pending): `POST /api/tool-build-runs` (create + list) wiring the
+  context into RunsService.executeRun.
+- **Phase E** (pending): rewrite the ToolBuilds page (form with prefilled QA
+  criteria, list of all tool-build runs) + new ToolBuildRun.tsx page showing
+  the council timeline.
+- **Phase F** (pending): live smoke with at least two L-tier models loaded.
+- **Phase G** (pending): delete the legacy provider chain, workflow, worker,
+  workspace QA, and "build queue" endpoints once F passes.

@@ -587,7 +587,50 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 
 ## Architecture Notes
 
-Request flow:
+### Three primary entities
+
+The platform has exactly three first-class things and every feature is a
+composition of them:
+
+1. **Agent** — `UniversalAgent` (`src/agents/universalAgent.ts`). The single
+   coordinator. Different modes (delegation, council, tool-build) are activated
+   through `decideAgentStrategy` and reflected in `AgentStrategyDecision.primary`,
+   not by spawning separate classes.
+2. **Tool** — anything in the registry. Built-in, generated, dockerized HTTP
+   service, or source-bundle — they are all called the same way: `registry.execute`.
+3. **LLM** — `LlmClient.complete(messages, { modelTier? | model? })`. Tier
+   resolution comes from `model_tier_settings`; `model` overrides tier mapping.
+
+If a feature can't be expressed as a combination of the three, the design is
+probably wrong.
+
+### Tools-as-services (Phase 13)
+
+The four runtime-heavy built-ins live in `tools/<name>-service/` as docker
+projects and are registered with `HttpToolAdapter` / `BrowserOperateHttpTool`.
+In-process tools (`web.search`, `file.read`, `file.write`,
+`channel.telegram.bot`) have README-only stub directories in `tools/` so the
+filesystem layout mirrors the live tool registry 1:1.
+
+The `tools/` directory contains exactly the tools that show up at `/api/tools`
+(plus `sdk/`, which is a shared TypeScript library, and `web-react/`, the UI
+sources — neither is a tool).
+
+### Tool-build council (Phase 14, in flight)
+
+Tool creation, rework, and bugfix requests run through `UniversalAgent` in
+"tool_build_council" strategy mode. The flow is brainstorm → vote → implement
+→ review → revise → QA → repair, with the council = every model in
+`model_tier_settings.<codingTier>.models`. Settings live in
+`coding_council_config`. See `docs/architecture/tool-build-council.md`.
+
+The legacy build chain (`ToolBuildProvider` subclasses, `ToolBuildWorkflow`,
+`ToolBuildWorker`, deterministic/LLM reviewer suite, "Build queue" UI) is
+being removed in Phase G of Phase 14 once the council flow proves on live.
+
+### Request flow
+
+
 
 ```text
 User task

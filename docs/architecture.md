@@ -385,12 +385,18 @@ preview cards for image artifacts.
 
 ### Tool Builder Flow
 
+> **Status (Phase 14, in flight):** The provider-chain + background worker flow
+> documented below is being replaced by a multi-model council that runs inside
+> `UniversalAgent`. The legacy chain stays compiling until the council ships
+> end-to-end (Phase G of Phase 14 drops it). New design lives in
+> `docs/architecture/tool-build-council.md` and `docs/roadmap.md` § "Phase 14".
+
 When a required capability is missing, the runtime can create a Tool Build Request.
 When an existing capability is insufficient, the runtime can create a Tool Rework Request
 for a new version of the same tool. Rework must not silently overwrite the old version:
 the new module version needs its own changelog, tests, QA report, and promotion decision.
 
-The current provider-backed flow:
+The current provider-backed flow (legacy):
 
 ```text
 missing capability
