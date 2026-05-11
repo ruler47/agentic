@@ -273,6 +273,12 @@ export type ToolBuildCouncilAdapter = {
     content: string;
     data?: unknown;
   }>;
+  /**
+   * Read the active version's Tool body source so the council can use
+   * it as a rework starting point AND as the "previous code" baseline
+   * the changeSummary synthesizer diffs against.
+   */
+  readCurrentToolSource?: (toolName: string) => Promise<string | undefined>;
 };
 
 export class UniversalAgent {
@@ -484,6 +490,26 @@ export class UniversalAgent {
 
     const config = await adapter.resolveConfig();
     const councilModels = await adapter.resolveCouncilModels(config.tier);
+
+    // On rework, pull the active version's source so brainstorm /
+    // implement / changeSummary prompts all see "here is the current
+    // implementation, edit it" instead of "here's an empty canvas".
+    // Without this the model rebuilt the tool from scratch on every
+    // rework and silently lost prior fixes.
+    let previousToolSource: string | undefined;
+    if (context.existingToolName && adapter.readCurrentToolSource) {
+      try {
+        previousToolSource = await adapter.readCurrentToolSource(context.existingToolName);
+      } catch {
+        previousToolSource = undefined;
+      }
+    }
+    // Mutate the context so every prompt builder sees it without a
+    // separate threading parameter. Safe to mutate — `context` here
+    // is a per-run object created by RunsService.
+    if (previousToolSource) {
+      context = { ...context, existingToolSource: previousToolSource };
+    }
     if (councilModels.length < 2) {
       throw new Error(
         `Coding council requires at least 2 models in tier ${config.tier}; got ${councilModels.length}.`,
@@ -1187,6 +1213,7 @@ export class UniversalAgent {
       const summaryMessages = changeSummaryPrompt({
         context,
         toolBodyExcerpt: summaryToolBody,
+        previousToolSource,
         repairFailures,
         qaPassed,
         isRework: Boolean(context.existingToolName),

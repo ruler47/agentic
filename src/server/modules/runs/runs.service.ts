@@ -1272,6 +1272,8 @@ export class RunsService implements OnApplicationBootstrap {
               },
               onToolRegistered: (toolName, capabilities) =>
                 this.onToolRegisteredForCouncil(toolName, capabilities),
+              // Forwarded down to the agent so the rework prompts can
+              // include the current source and changeSummary can diff.
             })
           : undefined;
 

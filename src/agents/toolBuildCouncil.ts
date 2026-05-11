@@ -49,6 +49,15 @@ export type ToolBuildContext = {
   existingToolName?: string;
   bugContext?: string;
   /**
+   * On rework, the FULL source of the currently-active version of the
+   * tool the operator is changing. Threaded into the brainstorm,
+   * implement, and changeSummary prompts so the council edits this
+   * source instead of regenerating the whole tool from scratch — that
+   * was losing prior fixes every time the operator requested a
+   * follow-up tweak.
+   */
+  existingToolSource?: string;
+  /**
    * Capability tags the registered tool MUST advertise (besides the
    * default `<name> + council-built` set). Used by the auto-spawned
    * reader-tool sub-builds — the parent build searches the registry
@@ -316,6 +325,17 @@ export function brainstormPrompt(
       ? `Rework target — existing tool: ${context.existingToolName}`
       : undefined,
     context.bugContext ? `Bug / change context:\n${context.bugContext}` : undefined,
+    context.existingToolSource
+      ? [
+          "Current implementation (DO NOT rewrite from scratch — modify only what the",
+          "bug context calls for; preserve every other behaviour):",
+          "```ts",
+          context.existingToolSource.length > 8000
+            ? `${context.existingToolSource.slice(0, 8000)}\n…[truncated ${context.existingToolSource.length - 8000} chars]`
+            : context.existingToolSource,
+          "```",
+        ].join("\n")
+      : undefined,
     "",
     `This is one of ${councilSize} peer proposals.`,
     "",
@@ -398,9 +418,24 @@ export function implementPrompt(
     context.secretHandle ? `Secret handle available: ${context.secretHandle}` : undefined,
     formatReferenceDocsBlock(context.referenceDocs),
     context.existingToolName
-      ? `Rework target: ${context.existingToolName} (start from this tool, do not duplicate state).`
+      ? `Rework target: ${context.existingToolName} (start from the current source below).`
       : undefined,
     context.bugContext ? `Bug to fix:\n${context.bugContext}` : undefined,
+    context.existingToolSource
+      ? [
+          "CURRENT IMPLEMENTATION — your starting point. Apply the bug context as a",
+          "MINIMAL edit on top of this code. Preserve every behaviour that the bug",
+          "context does not explicitly call out for change (input fields, output",
+          "structure, validation rules, secret handling, helper functions, etc.).",
+          "If a previous version added a feature (e.g., 'reverse the output'),",
+          "keep it unless the bug context says otherwise.",
+          "```ts",
+          context.existingToolSource.length > 12000
+            ? `${context.existingToolSource.slice(0, 12000)}\n…[truncated ${context.existingToolSource.length - 12000} chars]`
+            : context.existingToolSource,
+          "```",
+        ].join("\n")
+      : undefined,
     "",
     "Winning proposal (your own):",
     winner.content.trim(),
@@ -589,11 +624,13 @@ export function synthesizeQaInputPrompt(
 export function changeSummaryPrompt(args: {
   context: ToolBuildContext;
   toolBodyExcerpt: string;
+  /** Previous version's source — for reworks, used to compute the real diff. */
+  previousToolSource?: string;
   repairFailures: string[];
   qaPassed: boolean;
   isRework: boolean;
 }): Message[] {
-  const { context, toolBodyExcerpt, repairFailures, qaPassed, isRework } = args;
+  const { context, toolBodyExcerpt, previousToolSource, repairFailures, qaPassed, isRework } = args;
   const user = [
     `Tool name: ${context.name}`,
     `Description: ${context.description}`,
@@ -603,23 +640,50 @@ export function changeSummaryPrompt(args: {
       : undefined,
     !qaPassed ? "Note: this build did NOT pass QA after all repair attempts." : undefined,
     "",
-    "Tool body (current source):",
-    toolBodyExcerpt.slice(0, 4000),
+    isRework && previousToolSource
+      ? [
+          "PREVIOUS VERSION (what the tool used to do):",
+          "```ts",
+          previousToolSource.slice(0, 3000),
+          previousToolSource.length > 3000 ? `…[truncated ${previousToolSource.length - 3000} chars]` : "",
+          "```",
+          "",
+          "NEW VERSION (what it does now):",
+        ].join("\n")
+      : "Tool body (current source):",
+    "```ts",
+    toolBodyExcerpt.slice(0, 3000),
+    toolBodyExcerpt.length > 3000 ? `…[truncated ${toolBodyExcerpt.length - 3000} chars]` : "",
+    "```",
     "",
-    "Produce a SINGLE 1-2 sentence changelog entry for this version, in English.",
-    "Style examples:",
     isRework
-      ? '  - "Added precipitation_probability handling on /hourly; added a 5s timeout retry on upstream 5xx."'
-      : '  - "Initial release: fetches hourly weather forecast for a city via the open-meteo public API."',
-    isRework
-      ? '  - "Fixed validation crash when text was empty; now returns ok=false with a descriptive content message."'
-      : '  - "Initial release: echoes user-provided text back as content, rejecting empty payloads."',
+      ? [
+          "Produce a SINGLE 1-2 sentence changelog entry describing exactly WHAT CHANGED",
+          "between the previous and new version. Focus on the diff, not on what the tool",
+          "does in general. If the bug context introduced a new behaviour, name it; if",
+          "the previous version's behaviour was preserved on top, mention that too.",
+          "",
+          "Style examples for reworks (notice each one points at a SPECIFIC change):",
+          '  - "Added character count to output on a new line; reverse-output behaviour from v1.0.24 preserved."',
+          '  - "Now returns ok=false on empty input instead of crashing; output formatting unchanged."',
+          '  - "Switched validation from regex to zod schema; output is identical."',
+        ].join("\n")
+      : [
+          "Produce a SINGLE 1-2 sentence changelog entry describing what this tool does.",
+          "",
+          "Style examples for initial releases:",
+          '  - "Initial release: fetches hourly weather forecast for a city via the open-meteo public API."',
+          '  - "Initial release: echoes user-provided text back as content, rejecting empty payloads."',
+        ].join("\n"),
     "",
     "Constraints:",
     "  - Write in plain English (NOT Russian, NOT another language).",
-    "  - 1-2 sentences total, max ~25 words.",
+    "  - 1-2 sentences total, max ~30 words.",
     "  - Do NOT wrap in quotes, JSON, backticks, or any envelope — emit raw prose.",
     "  - Do NOT mention the version number or `council-built` — those are in metadata already.",
+    isRework
+      ? "  - The summary MUST describe a delta. If you can't identify any actual change, say so: 'No functional change; refactored for clarity.'"
+      : undefined,
     !qaPassed ? "  - Prefix the sentence with `(QA failed)` so the operator notices." : undefined,
   ]
     .filter(Boolean)
@@ -629,7 +693,8 @@ export function changeSummaryPrompt(args: {
       role: "system",
       content:
         "You write tight, factual one-line changelog entries for a tool registry. " +
-        "Always English, always under 25 words, always plain prose.",
+        "Always English, always under 30 words, always plain prose. " +
+        "For reworks, ALWAYS describe the diff between previous and new — not just what the tool does.",
     },
     { role: "user", content: user },
   ];

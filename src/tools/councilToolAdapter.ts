@@ -231,6 +231,25 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     });
   }
 
+  /**
+   * Read the active version's Tool body from disk so the council can
+   * apply a rework as an EDIT on top of the existing code instead of
+   * regenerating from scratch (which has been silently dropping prior
+   * fixes across rework chains).
+   */
+  async readCurrentToolSource(toolName: string): Promise<string | undefined> {
+    const existing = (await this.deps.metadataStore.list()).find((m) => m.name === toolName);
+    if (!existing) return undefined;
+    const sanitized = sanitizeName(toolName);
+    const candidatePath = join(this.toolsRoot, sanitized, existing.version, "src", "tools", "generated", `${sanitized}Tool.ts`);
+    try {
+      const { readFile } = await import("node:fs/promises");
+      return await readFile(candidatePath, "utf8");
+    } catch {
+      return undefined;
+    }
+  }
+
   async runToolForQa(
     toolName: string,
     input: Record<string, unknown>,
