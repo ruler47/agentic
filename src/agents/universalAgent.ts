@@ -475,18 +475,35 @@ export class UniversalAgent {
     ensureNotCancelled();
     const proposals = await Promise.all(
       councilModels.map(async (modelId) => {
+        // Emit `started` first so the Trace Graph shows the node as
+        // in-flight while LM Studio is still streaming. The completed
+        // event below reuses the same spanId — buildTraceNodes merges
+        // them, with the final status overriding the started one.
+        const spanId = createSpanId("council-proposal");
+        const startedAt = new Date().toISOString();
+        await emit({
+          spanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-brainstorm-proposal",
+          actor: modelId,
+          activity: "llm",
+          status: "started",
+          title: `Brainstorming proposal with ${modelId}`,
+          startedAt,
+          payload: { modelId },
+        });
         const messages = brainstormPrompt(context, councilModels.length, config.brainstormSystemPrompt);
         const text = await this.llm.complete(messages, { model: modelId, signal: options.signal });
         const parsed = parseProposalTail(text);
         await emit({
-          spanId: createSpanId("council-proposal"),
+          spanId,
           parentSpanId: runSpanId,
           type: "tool-build-brainstorm-proposal",
           actor: modelId,
           activity: "llm",
           status: "completed",
           title: `Council proposal from ${modelId}`,
-          startedAt: new Date().toISOString(),
+          startedAt,
           completedAt: new Date().toISOString(),
           durationMs: 0,
           // `prompt` captures what the LLM saw so the Trace inspector can
@@ -513,18 +530,31 @@ export class UniversalAgent {
     ensureNotCancelled();
     const ballots = await Promise.all(
       councilModels.map(async (voterId) => {
+        const spanId = createSpanId("council-vote-cast");
+        const startedAt = new Date().toISOString();
+        await emit({
+          spanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-vote-cast",
+          actor: voterId,
+          activity: "llm",
+          status: "started",
+          title: `Voting with ${voterId}`,
+          startedAt,
+          payload: { voterModelId: voterId },
+        });
         const messages = votePrompt(context, proposals);
         const text = await this.llm.complete(messages, { model: voterId, signal: options.signal });
         const ranking = parseRankingJson(text, proposals.length);
         await emit({
-          spanId: createSpanId("council-vote-cast"),
+          spanId,
           parentSpanId: runSpanId,
           type: "tool-build-vote-cast",
           actor: voterId,
           activity: "llm",
           status: "completed",
           title: `Vote from ${voterId}`,
-          startedAt: new Date().toISOString(),
+          startedAt,
           completedAt: new Date().toISOString(),
           durationMs: 0,
           payload: {
@@ -572,6 +602,23 @@ export class UniversalAgent {
       winnerModelId: entry.p.modelId,
       proposal: entry.p,
     }))];
+    // Pre-allocate the implement span so we can emit a `started` event
+    // before the (possibly long-running) LLM call. The final code-drafted
+    // emit below reuses this same spanId so the Trace Graph shows one
+    // implement node transitioning from blue → green.
+    let currentCodeSpanId = createSpanId("council-implement");
+    await emit({
+      spanId: currentCodeSpanId,
+      parentSpanId: winnerSpanId,
+      type: "tool-build-code-drafted",
+      actor: winner.winnerModelId,
+      activity: "llm",
+      status: "started",
+      title: `Drafting code with ${winner.winnerModelId}`,
+      startedAt: new Date().toISOString(),
+      payload: { modelId: winner.winnerModelId },
+    });
+
     let implementError: unknown;
     let lastImplementPromptText = "";
     for (let candidateIdx = 0; candidateIdx < implementCandidates.length; candidateIdx += 1) {
@@ -618,7 +665,6 @@ export class UniversalAgent {
     if (implementError !== undefined) throw implementError;
     files = files!;
     codeText = codeText!;
-    let currentCodeSpanId = createSpanId("council-implement");
     await emit({
       spanId: currentCodeSpanId,
       parentSpanId: winnerSpanId,
@@ -646,20 +692,40 @@ export class UniversalAgent {
       const reviews = (
         await Promise.all(
           reviewerIds.map(async (reviewerId) => {
+            // Status semantic: `completed` means the reviewer agent did
+            // its job (returned a verdict — pass OR needs_revision).
+            // `failed` is reserved for the agent itself breaking (LLM
+            // empty / timeout / aborted). The verdict lives in payload
+            // + title so the operator sees "Review: needs_revision" as
+            // a green node — that's the reviewer succeeding at finding
+            // real problems, not failing.
+            const spanId = createSpanId("council-review");
+            const startedAt = new Date().toISOString();
+            await emit({
+              spanId,
+              parentSpanId: codeAnchor,
+              type: "tool-build-code-review-cast",
+              actor: reviewerId,
+              activity: "llm",
+              status: "started",
+              title: `Reviewing code with ${reviewerId}`,
+              startedAt,
+              payload: { reviewerModelId: reviewerId },
+            });
             const messages = reviewPrompt(context, winner.proposal, formatFilesForPrompt(files));
             const promptText = messagesToPromptText(messages);
             try {
               const text = await this.llm.complete(messages, { model: reviewerId, signal: options.signal });
               const verdict = parseReviewVerdict(text);
               await emit({
-                spanId: createSpanId("council-review"),
+                spanId,
                 parentSpanId: codeAnchor,
                 type: "tool-build-code-review-cast",
                 actor: reviewerId,
                 activity: "llm",
-                status: verdict.verdict === "pass" ? "completed" : "failed",
+                status: "completed",
                 title: `Review from ${reviewerId}: ${verdict.verdict}`,
-                startedAt: new Date().toISOString(),
+                startedAt,
                 completedAt: new Date().toISOString(),
                 durationMs: 0,
                 payload: {
@@ -672,15 +738,15 @@ export class UniversalAgent {
               return verdict;
             } catch (error) {
               await emit({
-                spanId: createSpanId("council-review-skip"),
+                spanId,
                 parentSpanId: codeAnchor,
                 type: "tool-build-code-review-cast",
                 actor: reviewerId,
                 activity: "llm",
                 status: "failed",
-                title: `Reviewer ${reviewerId} skipped`,
+                title: `Reviewer ${reviewerId} broke (skipped)`,
                 detail: error instanceof Error ? error.message : String(error),
-                startedAt: new Date().toISOString(),
+                startedAt,
                 completedAt: new Date().toISOString(),
                 durationMs: 0,
                 payload: {
@@ -699,6 +765,19 @@ export class UniversalAgent {
       if (reviews.every((r) => r.verdict === "pass")) break;
       const findings = reviews.flatMap((r) => r.findings);
       if (attempt + 1 >= config.maxRevisionAttempts) break;
+      const reviseSpanId = createSpanId("council-revise");
+      const reviseStartedAt = new Date().toISOString();
+      await emit({
+        spanId: reviseSpanId,
+        parentSpanId: codeAnchor,
+        type: "tool-build-code-revised",
+        actor: winner.winnerModelId,
+        activity: "llm",
+        status: "started",
+        title: `Revising code (attempt ${attempt + 1}) with ${winner.winnerModelId}`,
+        startedAt: reviseStartedAt,
+        payload: { attempt: attempt + 1 },
+      });
       const reviseMessages = revisePrompt(context, winner.proposal, formatFilesForPrompt(files), findings);
       const revisePromptText = messagesToPromptText(reviseMessages);
       try {
@@ -709,15 +788,15 @@ export class UniversalAgent {
         // Revise call failed — keep current code, proceed to QA so the
         // run still terminates instead of hard-crashing.
         await emit({
-          spanId: createSpanId("council-revise-skip"),
+          spanId: reviseSpanId,
           parentSpanId: codeAnchor,
           type: "tool-build-code-revised",
           actor: winner.winnerModelId,
           activity: "llm",
           status: "failed",
-          title: `Revise attempt ${attempt + 1} failed`,
+          title: `Revise attempt ${attempt + 1} broke`,
           detail: error instanceof Error ? error.message : String(error),
-          startedAt: new Date().toISOString(),
+          startedAt: reviseStartedAt,
           completedAt: new Date().toISOString(),
           durationMs: 0,
           payload: {
@@ -729,7 +808,6 @@ export class UniversalAgent {
         });
         break;
       }
-      const reviseSpanId = createSpanId("council-revise");
       await emit({
         spanId: reviseSpanId,
         parentSpanId: codeAnchor,
@@ -738,7 +816,7 @@ export class UniversalAgent {
         activity: "llm",
         status: "completed",
         title: `Code revised (attempt ${attempt + 1})`,
-        startedAt: new Date().toISOString(),
+        startedAt: reviseStartedAt,
         completedAt: new Date().toISOString(),
         durationMs: 0,
         payload: {
@@ -759,16 +837,130 @@ export class UniversalAgent {
     });
 
     // ── Step 7-8: QA + REPAIR ────────────────────────────────────────
-    // Both the QA oracle call and the repair call are wrapped: a
-    // transient LLM failure shouldn't kill an otherwise registered
-    // tool — break out of the loop and surface a non-passed status.
+    // Status semantic in this section:
+    //   `completed` = the agent for this step (tool / oracle / repair
+    //     model) finished its task and produced a result. The result
+    //     itself may be a failing verdict — that is still a success for
+    //     the agent (e.g. oracle correctly caught that the tool returned
+    //     ok=false). The verdict lives in payload + title.
+    //   `failed` = the agent itself broke (LLM exception, tool runtime
+    //     crashed, cancellation) and no useful result came back.
+    //
+    // Sample-input synthesis: the legacy `synthesizeQaInput` returned
+    // `{task, query}` which almost never matched a tool's declared
+    // inputSchema — the tool would throw on the missing field, then
+    // QA judged the error message instead of the tool's actual output.
+    // Ask a fast model to read the tool body and produce a JSON input
+    // that matches the schema. Falls back to the legacy stub if the
+    // synthesis step itself breaks.
+    const { synthesizeQaInputPrompt } = await import("./toolBuildCouncil.js");
+    const toolBodyExcerpt = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
+    let qaInput: Record<string, unknown> = synthesizeQaInput(context);
+    const qaInputSpanId = createSpanId("council-qa-input");
+    const qaInputStartedAt = new Date().toISOString();
+    await emit({
+      spanId: qaInputSpanId,
+      parentSpanId: currentCodeSpanId,
+      type: "tool-build-qa-attempt",
+      actor: "qa-input-synthesizer",
+      activity: "llm",
+      status: "started",
+      title: "Synthesizing QA tool input from schema",
+      startedAt: qaInputStartedAt,
+    });
+    try {
+      const qaInputMessages = synthesizeQaInputPrompt(context, toolBodyExcerpt);
+      const qaInputText = await this.llm.complete(qaInputMessages, {
+        modelTier: "S",
+        signal: options.signal,
+      });
+      const parsed = extractFirstJson<Record<string, unknown>>(qaInputText);
+      if (parsed && typeof parsed === "object") qaInput = parsed;
+      await emit({
+        spanId: qaInputSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-qa-attempt",
+        actor: "qa-input-synthesizer",
+        activity: "llm",
+        status: "completed",
+        title: "QA tool input synthesized",
+        startedAt: qaInputStartedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: 0,
+        payload: {
+          prompt: messagesToPromptText(qaInputMessages),
+          output: qaInputText,
+          qaInput,
+        },
+      });
+    } catch (error) {
+      await emit({
+        spanId: qaInputSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-qa-attempt",
+        actor: "qa-input-synthesizer",
+        activity: "llm",
+        status: "failed",
+        title: "QA input synthesizer broke — falling back to stub",
+        detail: error instanceof Error ? error.message : String(error),
+        startedAt: qaInputStartedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: 0,
+        payload: { error: error instanceof Error ? error.message : String(error), qaInput },
+      });
+    }
+
     let qaPassed = false;
     for (let attempt = 0; attempt < config.maxQaRepairAttempts; attempt += 1) {
       ensureNotCancelled();
-      const qaInput = synthesizeQaInput(context);
+      // Tool call span: visible separately from the oracle so the
+      // operator can see whether the tool actually ran (`completed`,
+      // ok=true/false) or crashed at startup (`failed`).
+      const toolCallSpanId = createSpanId("council-qa-tool-call");
+      const toolCallStartedAt = new Date().toISOString();
+      await emit({
+        spanId: toolCallSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-qa-attempt",
+        actor: registered.toolName,
+        activity: "tool",
+        status: "started",
+        title: `Calling ${registered.toolName} for QA attempt ${attempt + 1}`,
+        startedAt: toolCallStartedAt,
+        payload: { attempt: attempt + 1, qaInput },
+      });
       const output = await adapter.runToolForQa(registered.toolName, qaInput);
-      let oracle: { verdict: "passed" | "failed"; failures: string[] };
+      await emit({
+        spanId: toolCallSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-qa-attempt",
+        actor: registered.toolName,
+        activity: "tool",
+        status: output.ok ? "completed" : "failed",
+        title: `${registered.toolName} returned ok=${output.ok}`,
+        startedAt: toolCallStartedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: 0,
+        payload: { attempt: attempt + 1, qaInput, output },
+      });
+
+      // Oracle span: judges whether the tool output meets the
+      // acceptance criteria. Status reflects the oracle's success at
+      // producing a verdict — the verdict (passed / failed) is in the
+      // title + payload so the user sees both signals.
       const qaSpanId = createSpanId("council-qa");
+      const qaStartedAt = new Date().toISOString();
+      await emit({
+        spanId: qaSpanId,
+        parentSpanId: toolCallSpanId,
+        type: "tool-build-qa-attempt",
+        actor: "qa-oracle",
+        activity: "llm",
+        status: "started",
+        title: `QA oracle judging attempt ${attempt + 1}`,
+        startedAt: qaStartedAt,
+      });
+      let oracle: { verdict: "passed" | "failed"; failures: string[] };
       const qaMessages = qaOraclePrompt(context, output);
       const qaPromptText = messagesToPromptText(qaMessages);
       let qaOracleText = "";
@@ -778,14 +970,14 @@ export class UniversalAgent {
       } catch (error) {
         await emit({
           spanId: qaSpanId,
-          parentSpanId: currentCodeSpanId,
+          parentSpanId: toolCallSpanId,
           type: "tool-build-qa-attempt",
           actor: "qa-oracle",
           activity: "llm",
           status: "failed",
-          title: `QA attempt ${attempt + 1} oracle failed`,
+          title: `QA oracle broke on attempt ${attempt + 1}`,
           detail: error instanceof Error ? error.message : String(error),
-          startedAt: new Date().toISOString(),
+          startedAt: qaStartedAt,
           completedAt: new Date().toISOString(),
           durationMs: 0,
           payload: {
@@ -801,13 +993,15 @@ export class UniversalAgent {
       }
       await emit({
         spanId: qaSpanId,
-        parentSpanId: currentCodeSpanId,
+        parentSpanId: toolCallSpanId,
         type: "tool-build-qa-attempt",
         actor: "qa-oracle",
         activity: "llm",
-        status: oracle.verdict === "passed" ? "completed" : "failed",
+        // Oracle returned a verdict → it did its job. `completed`
+        // regardless of pass/fail; the verdict lives in title + payload.
+        status: "completed",
         title: `QA attempt ${attempt + 1}: ${oracle.verdict}`,
-        startedAt: new Date().toISOString(),
+        startedAt: qaStartedAt,
         completedAt: new Date().toISOString(),
         durationMs: 0,
         payload: {
@@ -824,6 +1018,20 @@ export class UniversalAgent {
         break;
       }
       if (attempt + 1 >= config.maxQaRepairAttempts) break;
+
+      const repairSpanId = createSpanId("council-repair");
+      const repairStartedAt = new Date().toISOString();
+      await emit({
+        spanId: repairSpanId,
+        parentSpanId: qaSpanId,
+        type: "tool-build-code-repaired",
+        actor: winner.winnerModelId,
+        activity: "llm",
+        status: "started",
+        title: `Repairing code (attempt ${attempt + 1}) with ${winner.winnerModelId}`,
+        startedAt: repairStartedAt,
+        payload: { attempt: attempt + 1, failures: oracle.failures },
+      });
       const repairMessages = repairPrompt(context, winner.proposal, formatFilesForPrompt(files), oracle.failures);
       const repairPromptText = messagesToPromptText(repairMessages);
       try {
@@ -835,7 +1043,6 @@ export class UniversalAgent {
           description: context.description,
           secretHandle: context.secretHandle,
         });
-        const repairSpanId = createSpanId("council-repair");
         await emit({
           spanId: repairSpanId,
           parentSpanId: qaSpanId,
@@ -844,7 +1051,7 @@ export class UniversalAgent {
           activity: "llm",
           status: "completed",
           title: `Code repaired (attempt ${attempt + 1})`,
-          startedAt: new Date().toISOString(),
+          startedAt: repairStartedAt,
           completedAt: new Date().toISOString(),
           durationMs: 0,
           payload: {
@@ -858,15 +1065,15 @@ export class UniversalAgent {
         currentCodeSpanId = repairSpanId;
       } catch (error) {
         await emit({
-          spanId: createSpanId("council-repair-skip"),
+          spanId: repairSpanId,
           parentSpanId: qaSpanId,
           type: "tool-build-code-repaired",
           actor: winner.winnerModelId,
           activity: "llm",
           status: "failed",
-          title: `Repair attempt ${attempt + 1} failed`,
+          title: `Repair attempt ${attempt + 1} broke`,
           detail: error instanceof Error ? error.message : String(error),
-          startedAt: new Date().toISOString(),
+          startedAt: repairStartedAt,
           completedAt: new Date().toISOString(),
           durationMs: 0,
           payload: {

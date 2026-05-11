@@ -33,12 +33,13 @@ function scriptedCouncil() {
   const registered: Array<{ toolName: string; version: string; fileCount: number }> = [];
 
   // Council has 2 models → after vote, 1 winner + 1 reviewer. Expected
-  // LLM call sequence (7 total):
+  // LLM call sequence (8 total):
   //   0,1: brainstorm (a, b)
   //   2,3: vote      (a, b)
   //   4:   implement (winner = council-b)
   //   5:   review    (council-a)  → pass
-  //   6:   QA oracle              → passed
+  //   6:   QA-input synthesizer (NEW — reads tool body, emits realistic input)
+  //   7:   QA oracle              → passed
   const llm = new ScriptedLlm(({ model, index }) => {
     if (index < 2) {
       return [
@@ -75,6 +76,11 @@ function scriptedCouncil() {
       return `{"verdict":"pass","findings":[]}`;
     }
     if (index === 6) {
+      // QA-input synthesizer: read the tool body and produce a JSON
+      // input matching its schema.
+      return `{"text":"hello"}`;
+    }
+    if (index === 7) {
       return `{"verdict":"passed","failures":[]}`;
     }
     throw new Error(`Unexpected extra LLM call at index ${index}`);
@@ -129,24 +135,58 @@ test("runToolBuildCouncil orchestrates brainstorm → vote → implement → rev
     },
   );
 
-  // Sequence of event types we expect:
-  const eventTypes = events.map((event) => event.type);
-  assert.deepEqual(
-    eventTypes,
-    [
-      "run-started",
-      "tool-build-brainstorm-proposal",
-      "tool-build-brainstorm-proposal",
-      "tool-build-vote-cast",
-      "tool-build-vote-cast",
-      "tool-build-council-winner-selected",
-      "tool-build-code-drafted",
-      "tool-build-code-review-cast",
-      "tool-build-qa-attempt",
-      "tool-build-registered",
-    ],
-    `unexpected event sequence: ${JSON.stringify(eventTypes, null, 2)}`,
+  // Each LLM-driven step now emits BOTH a `started` event (so the Trace
+  // Graph can show in-flight work) and a `completed`/`failed` event with
+  // the same spanId. The strict-sequence check we used to do is now
+  // brittle — instead, assert the key milestone types appear at least
+  // once, and at least once with a non-`started` status (so we know the
+  // step actually completed, not just kicked off).
+  // `run-started` is the root coordinator event — by design it stays
+  // in status=started throughout the run (no separate `run-finished`
+  // event in this pipeline). Every OTHER milestone type must have at
+  // least one event with status != "started" so we know the step
+  // actually reached a terminal state.
+  const allTypes = new Set(events.map((event) => event.type));
+  assert.ok(allTypes.has("run-started"), "expected a run-started event");
+  const completedTypes = new Set(
+    events.filter((event) => event.status !== "started").map((event) => event.type),
   );
+  for (const required of [
+    "tool-build-brainstorm-proposal",
+    "tool-build-vote-cast",
+    "tool-build-council-winner-selected",
+    "tool-build-code-drafted",
+    "tool-build-code-review-cast",
+    "tool-build-qa-attempt",
+    "tool-build-registered",
+  ] as const) {
+    assert.ok(
+      completedTypes.has(required),
+      `expected at least one non-started event of type ${required}; got types ${[...completedTypes].join(", ")}`,
+    );
+  }
+
+  // Started/completed pairing: every spanId that has a `started` event
+  // must also have a non-`started` event (the step must reach a
+  // terminal state in the trace). Exception: the run-started coordinator
+  // span intentionally stays "started" — there is no run-finished event.
+  const runStartedSpans = new Set(
+    events.filter((event) => event.type === "run-started").map((event) => event.spanId),
+  );
+  const startedSpans = new Set(
+    events
+      .filter((event) => event.status === "started" && !runStartedSpans.has(event.spanId))
+      .map((event) => event.spanId),
+  );
+  const completedSpans = new Set(
+    events.filter((event) => event.status !== "started").map((event) => event.spanId),
+  );
+  for (const spanId of startedSpans) {
+    assert.ok(
+      completedSpans.has(spanId),
+      `span ${spanId} emitted "started" but never reached a terminal status`,
+    );
+  }
 
   // Winner should be model "council-b" because both voters ranked it #1.
   const winnerEvent = events.find((event) => event.type === "tool-build-council-winner-selected");

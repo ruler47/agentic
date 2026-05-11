@@ -435,6 +435,44 @@ export function qaOraclePrompt(
   ];
 }
 
+/**
+ * Synthesize a realistic test input for QA. The legacy stub returned
+ * `{ task, query }` which almost never matched a tool's declared
+ * inputSchema — most tools then threw at runtime and QA judged the
+ * resulting error message, not the tool's actual behaviour. This
+ * prompt asks a fast model to read the tool body and produce a JSON
+ * input that exercises the main path.
+ */
+export function synthesizeQaInputPrompt(
+  context: ToolBuildContext,
+  toolBodyExcerpt: string,
+): Message[] {
+  const user = [
+    `Tool name: ${context.name}`,
+    `Description: ${context.description}`,
+    context.qaCriteria.length > 0
+      ? `Acceptance criteria:\n${context.qaCriteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
+      : undefined,
+    "",
+    "Tool source (focus on the `inputSchema` and the `run(input, …)` signature):",
+    toolBodyExcerpt.slice(0, 4000),
+    "",
+    "Produce a JSON input object that:",
+    "  1. Matches the declared inputSchema — include every required field with a plausible value.",
+    "  2. Lets the QA oracle judge whether the acceptance criteria are met.",
+    "  3. Stays compact (a single short call, no huge strings).",
+    "",
+    "Reply with a SINGLE JSON object only — no commentary, no backticks.",
+    'Example shape: {"text":"hello world"}',
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return [
+    { role: "system", content: "You produce realistic JSON test inputs for autonomous-agent tools." },
+    { role: "user", content: user },
+  ];
+}
+
 export function repairPrompt(
   context: ToolBuildContext,
   winner: CouncilProposal,
