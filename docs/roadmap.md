@@ -2300,3 +2300,126 @@ Slices:
       pruning).
 - **Phase G** (pending): delete the legacy provider chain, workflow, worker,
   workspace QA, and "build queue" endpoints once F passes.
+
+## Phase 16: Tool-Build Council Robustness
+
+Status: **In progress.** Surfaced from real failing runs:
+`run_1778526527329_lour2zbm` (web.duckduckgo.search, "Tool not registered"),
+`run_1778526527354_9vyn7xg0` (screenshot.url, same),
+`run_1778537976034_gyr3a62p` (screenshot.url rework, "QA failed after 5 repair
+attempts" yet UI label is "completed").
+
+The Phase 14 council pipeline ships but has six independent defects that
+emerged once we ran four parallel rebuilds and a rework against the same
+tool. None of them block the design — each is local, testable, and
+revertible.
+
+### Defects
+
+1. **Race on `reloadGeneratedTools`** — the provider in
+   `src/server/workers/runtime-workers.module.ts:98` holds a *shared
+   mutable* `loadedNames: Set<string>` across calls. Concurrent reloads
+   (one council finishes while another is mid-build) unregister
+   everything, then race to add their own results back. Net effect:
+   tools that were registered fine get evicted mid-flight.
+2. **No fallback when new version fails to load.**
+   `promoteReplacement` (`src/tools/toolMetadataStore.ts:225,267`)
+   flips the active version to the new one with `status: "disabled"`
+   immediately. If `loadGeneratedTools` then fails to import the new
+   bundle (TS error, missing dep, file write incomplete), the loader
+   silently marks it unhealthy and the registry has neither the old
+   nor the new version of the tool. QA call ⇒ `Tool not registered`.
+3. **Disk / DB drift.** DB rows exist for versions whose
+   `tools/<name>/<version>/` directory was never written or got pruned
+   later. `loadGeneratedTools` returns `loaded: false` without a loud
+   error; `updateHealth` writes `ok: false` but the operator only sees
+   "Tool not registered" downstream.
+4. **Repair attempt counter is inconsistent with "broke".** The run
+   trace shows one `tool-build-code-repaired` event with
+   `status: failed` ("Repair attempt 1 broke: Repair step returned no
+   parsable files") but the final summary reads "QA failed after 5
+   repair attempts". Either the counter advances on broken repairs
+   (and the rest of the events are missing from the trace) or it does
+   not (and the message lies). Pick one.
+5. **`tool-build-registered` with `status: failed`.** Same event type
+   covers "registered successfully" and "registered without passing
+   QA". Trace UI renders both with the same green-tinted label until
+   the operator hovers. Should be two distinct types
+   (`tool-build-registered` / `tool-build-registration-aborted`).
+6. **Run status `completed` even when QA never passed.** The rework
+   run finishes with `Built screenshot.url v1.0.1; QA never passed
+   after 5 repair attempts.` and yet the Runs page chips it as
+   `completed`. The terminal status of a tool-build run should be
+   `failed` whenever the final outcome is `QA failed after N
+   attempts`.
+
+### Slices (each independently revertible)
+
+- **Slice A — atomic reload (defect #1).**
+  `src/server/workers/runtime-workers.module.ts`.
+  Replace the shared closure with a single async-mutex-guarded
+  function that builds the new in-memory set first, then atomically
+  swaps registry entries. No "unregister all, then reload" window.
+  Tests: parallel-call test that interleaves two `reloadGeneratedTools()`
+  calls against an in-memory `ToolRegistry` + `ToolMetadataStore` and
+  asserts every tool ends up registered exactly once.
+
+- **Slice B — registry resilience (defect #2 + #3).**
+  `src/tools/councilToolAdapter.ts`, `src/tools/toolPackageRunner.ts`.
+  After `promoteReplacement` + `reloadGeneratedTools`, the adapter
+  checks `deps.getRegisteredTool(toolName)`; if undefined, roll back
+  the promotion (re-activate the prior version) and surface a
+  *loud* error so QA never runs against a missing tool. Loaders
+  must also verify the on-disk module file is readable before
+  returning `loaded: true`. Tests: adapter integration test where
+  the package runner is stubbed to fail; assert prior version stays
+  active and the run fails fast at the registration step (not at QA).
+
+- **Slice C — registered-event split (defect #5).**
+  `src/types.ts`, `src/agents/universalAgent.ts`, web-react Trace
+  Graph color mapping. Introduce
+  `tool-build-registration-aborted` for the "registered but QA never
+  passed" path; reserve `tool-build-registered` for the green
+  success path. Tests: trace-emit unit assertions on both branches.
+
+- **Slice D — run terminal status (defect #6).**
+  `src/agents/universalAgent.ts` (the place that decides the final
+  run-level status for tool-build runs) + RunsService completion
+  path. If `qaPassed === false` at the end of the loop, run
+  finishes as `failed`, even when "all artefacts were produced".
+  Tests: integration test that drives the council to a "5 repair
+  attempts exhausted" state and asserts `run.status === "failed"`.
+
+- **Slice E — repair attempt counter (defect #4).**
+  `src/agents/universalAgent.ts` repair loop. Either always count
+  broken-repair as an attempt and emit five trace events, or stop
+  the loop when repair breaks (no point retrying if the model can't
+  emit parsable files). Recommended: count + emit, so the trace is
+  honest. Tests: assert event count matches the configured
+  `maxQaRepairAttempts` when every repair returns no parsable
+  files.
+
+- **Slice F — operational follow-ups (no code).**
+  - Fix the macOS Docker bind mount: it currently resolves to the
+    Claude session worktree (`/Users/.../.claude/worktrees/...`)
+    rather than the canonical checkout. Tracked under operator
+    docs, not under runtime code.
+  - Decide whether `google/gemma-4-26b-a4b` should stay in the
+    default council tier — it routinely emits empty output and
+    forces Borda fallback, costing ~80 s per run. Either drop
+    retries from 2 to 1, demote the model, or remove it from the
+    default tier.
+
+### Validation set
+
+After each slice, the same three runs are re-triggered through the
+council:
+
+- Fresh build for a new tool name (no DB row exists yet).
+- Rebuild for an existing tool (`screenshot.url`, two versions on
+  disk).
+- Rework with a free-form instruction
+  (`screenshot.url` → "use Playwright instead of thum.io").
+
+Acceptance per slice ships when none of the three regress and the
+specific defect the slice targets stops reproducing.

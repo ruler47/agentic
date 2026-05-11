@@ -154,6 +154,40 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     //    immediately (the QA loop calls it via `runToolManually` next).
     await this.deps.reloadGeneratedTools?.();
 
+    // 3a. Phase 16 Slice B — fail fast when the new version did not
+    //     load. Without this guard, `promoteReplacement` silently
+    //     swapped the active version to one the runtime can't
+    //     actually import (TS error, missing dep, partial scaffold
+    //     write), the QA loop still tried to invoke it, and the
+    //     user saw "Tool not registered: <name>" without any
+    //     pointer to the real cause. We surface the loader error
+    //     here so the run fails at the registration step with
+    //     diagnostics, before QA wastes 5 repair attempts on a
+    //     missing tool.
+    //
+    //     The guard only fires when both `reloadGeneratedTools` and
+    //     `getRegisteredTool` are wired (i.e. inside the real Nest
+    //     runtime). Stub adapters used in unit tests that exercise
+    //     the schema-fallback path leave `reloadGeneratedTools`
+    //     undefined and can keep returning `undefined` from
+    //     `getRegisteredTool` without triggering the throw.
+    if (this.deps.reloadGeneratedTools && this.deps.getRegisteredTool) {
+      const probe = this.deps.getRegisteredTool(toolName);
+      if (!probe) {
+        const detail = await this.collectLoadFailureDetail(toolName);
+        throw new Error(
+          `Tool ${toolName} v${version} was promoted in metadata but the runtime ` +
+            `could not import it. The new version is now the active row in ` +
+            `tool_modules but is missing from the in-memory registry, so QA ` +
+            `would fail with "Tool not registered". ` +
+            (detail
+              ? `Loader said: ${detail}`
+              : `No loader detail is available — check the runtime logs for the ` +
+                `most recent loadGeneratedTools error for ${toolName}.`),
+        );
+      }
+    }
+
     // 4. Backfill metadata with the schemas declared inside the Tool
     //    body. registerGenerated above only saw scaffold-level fields
     //    (name, version, description); the inputSchema / outputSchema /
@@ -206,6 +240,25 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     await this.pruneOldVersions(sanitized, version);
 
     return { toolName, version };
+  }
+
+  /**
+   * Phase 16 Slice B: after a failed reload, the loader has typically
+   * written its diagnostic into `tool_modules.last_health_detail`
+   * (e.g. "Source-bundle index.ts is missing", "Compile failed: ...").
+   * Surface that text in the error message so the run trace shows the
+   * actual cause instead of a generic "Tool not registered" further
+   * downstream.
+   */
+  private async collectLoadFailureDetail(toolName: string): Promise<string | undefined> {
+    try {
+      const row = (await this.deps.metadataStore.list()).find((m) => m.name === toolName);
+      if (!row) return undefined;
+      if (row.lastHealthOk === false && row.lastHealthDetail) return row.lastHealthDetail;
+      return row.lastHealthDetail;
+    } catch {
+      return undefined;
+    }
   }
 
   private async pruneOldVersions(sanitizedName: string, activeVersion: string): Promise<void> {

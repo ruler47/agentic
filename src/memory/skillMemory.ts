@@ -132,6 +132,68 @@ export class SkillMemory implements SkillMemoryStore {
   }
 }
 
+/**
+ * Phase 15 Slice A (started here because Phase 16 tests need it):
+ * ephemeral skill-memory store backed by a Map. No disk I/O, no
+ * `memory/skills.json` writes, no `mkdir`. The point is to give
+ * tests and CLI standalone mode a backend that does not touch the
+ * repo working tree.
+ *
+ * Search semantics mirror the lexical path in `SkillMemory` so a
+ * test exercising `agent.run()` against this store returns the
+ * same hits as against the JSON one for typical token-matching
+ * queries. Semantic / embedding search lives in
+ * `PostgresSkillMemory` and is not reproduced here — when callers
+ * need it they must pick the Postgres backend.
+ */
+export class InMemorySkillMemory implements SkillMemoryStore {
+  private readonly entries: SkillMemoryEntry[] = [];
+
+  async list(options: MemoryListOptions = {}): Promise<SkillMemoryEntry[]> {
+    return applyMemoryListOptions(this.entries.map((entry) => ({ ...entry })), options);
+  }
+
+  async search(query: string, limit = 5, options: MemoryListOptions = {}): Promise<SkillMemoryEntry[]> {
+    const normalizedQuery = tokenize(query);
+    const candidates = applyMemoryVisibility(
+      await this.list({ ...options, status: options.status ?? "accepted", limit: undefined }),
+      options,
+    );
+    return candidates
+      .map((entry) => ({ entry, match: matchEntry(entry, normalizedQuery) }))
+      .filter(({ match }) => match.score > 0)
+      .sort((a, b) => b.match.score - a.match.score)
+      .slice(0, limit)
+      .map(({ entry, match }) => attachMemoryMatch(entry, match));
+  }
+
+  async add(entry: Omit<SkillMemoryEntry, "id" | "createdAt">): Promise<SkillMemoryEntry> {
+    const now = new Date().toISOString();
+    const stored = normalizeEntry({
+      ...entry,
+      id: createId(entry.title),
+      createdAt: now,
+      updatedAt: now,
+    });
+    this.entries.push(stored);
+    return { ...stored };
+  }
+
+  async update(id: string, update: MemoryUpdateInput): Promise<SkillMemoryEntry> {
+    const index = this.entries.findIndex((entry) => entry.id === id);
+    if (index < 0) throw new Error(`Memory ${id} was not found`);
+    const updated = normalizeEntry({
+      ...this.entries[index],
+      ...update,
+      tags: update.tags ? [...update.tags] : this.entries[index]!.tags,
+      evidence: update.evidence ? [...update.evidence] : this.entries[index]!.evidence,
+      updatedAt: new Date().toISOString(),
+    });
+    this.entries[index] = updated;
+    return { ...updated };
+  }
+}
+
 function tokenize(text: string): Set<string> {
   return new Set(
     text
