@@ -2880,3 +2880,94 @@ What's still open after that:
   vLLM / llama.cpp variants may not — gate behind a config flag and
   fall back to the prompt-only mode when the server rejects the
   request.
+
+
+## Phase 22: Robust QA — cross-LLM repair + always-on research
+
+Status: **Slices A + B shipped.** Slice C planned.
+
+The screenshot.url council run `run_1778597878583_42xra50c` exposed
+two interacting weaknesses. Gemma drafted code that did
+
+```ts
+const stealth = StealthPlugin();
+browser = await puppeteerExtra.launch({ plugins: [stealth] });
+```
+
+`puppeteer-extra` silently ignores the `plugins:` option — the
+correct API is `puppeteer.use(stealth)` BEFORE launch. Without an
+active stealth plugin Twitch.tv served an effectively blank page,
+the QA oracle saw 3 507-byte screenshots, and 5 repair attempts by
+Gemma each reproduced the same wrong API call. The reviewer
+(Qwen) couldn't catch it either — TypeScript accepted the literal,
+no documentation lookup was wired up, and Qwen never owned the
+repair so its model weights never got a chance.
+
+### Slice A — Cross-LLM repair fallback after N failures (shipped)
+
+`src/agents/universalAgent.ts`. The QA-repair loop now tracks
+`failedRepairsByCurrentModel` per current model. After 2
+consecutive failed repair attempts by the same LLM, the next
+repair is routed to the next-best Borda candidate. A
+`tool-build-council-winner-selected` switch event is emitted with
+`payload.reason = "consecutive_repair_failures"` so the Trace
+Inspector shows operators that the second model is now in play.
+With `maxQaRepairAttempts=5`, two-model councils get a 2+2 split
+(Gemma 2 repairs → Qwen 2 repairs) before aborting. Single-model
+councils (rare; council requires ≥2 proposers in a tier) keep the
+pre-Phase-22 behaviour via the `repairIdx + 1 < candidates.length`
+guard.
+
+Regression: `tests/universalAgentToolBuildCouncilRepairFallback.test.ts`.
+
+### Slice B — Research delegation on by default (shipped)
+
+`src/agents/universalAgent.ts`. The Phase 17 research delegation
+used to be opt-in (`COUNCIL_RESEARCH_ENABLED=enabled`). It is now
+on unless the operator sets `COUNCIL_RESEARCH_ENABLED=disabled`.
+Cost when unused: one extra system message per LLM call. Cost
+when used: one sub-agent run with full tool access (typically a
+web.search via the registry). The LLM ignores the affordance
+when it's confident — no penalty.
+
+`src/agents/toolBuildCouncil.ts` (`repairPrompt`). The repair
+prompt now explicitly nudges the model to emit a
+`<request_research>` block FIRST when the QA failure suggests
+library/API misuse (wrong plugin init, wrong option name, removed
+since training cutoff). This is the only way to break a wedged
+repair loop where the model is confidently-wrong about an API.
+
+### Slice C — Batch / multi-URL QA input (planned)
+
+`src/agents/toolBuildCouncil.ts` (`synthesizeQaInputPrompt`). The
+synthesizer today produces a single JSON object. When `qaCriteria`
+mentions "test on N sites/cases/examples" the synthesizer should
+produce a batch of N inputs and the QA loop should call the tool
+N times, presenting the oracle with the full batch verdict. This
+unlocks "10 sites including twitch.tv" criteria as runtime-
+validatable instead of release-smoke-only.
+
+Implementation sketch:
+- Extend the synthesizer prompt to detect cardinality cues and
+  optionally emit `{"batch":[obj1, obj2, ...]}`.
+- In the QA loop, if `batch` is present, call the tool per entry
+  and collect the outputs.
+- The oracle receives a batch verdict: pass iff every per-call
+  output satisfies the criterion. Per-call failure ids feed
+  the repair prompt so the model knows which inputs broke.
+
+### Risks
+
+- Slice A: by default a 2+2 split means Gemma gets ONE failed
+  repair before its second attempt; if Gemma's first repair was
+  actually fine but flaky-tool-output failed QA, we still rotate.
+  Acceptable — the next model is held to the same standard.
+- Slice B: research sub-agents are slow (~30-60 s each). If a
+  model gets enthusiastic and emits research requests on every
+  call, council time inflates by N×30 s. `maxRequests=3` per call
+  caps the worst case; if it becomes a problem, drop to 1 for
+  repair-phase only.
+- Slice C: batch tool calls multiply the QA budget. A 10-site
+  batch with 5 repair attempts = 50 tool calls. Cap the batch
+  cardinality at 5-8 by default and let operators bump it
+  explicitly when they know the tool is fast.

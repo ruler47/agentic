@@ -535,8 +535,17 @@ export class UniversalAgent {
     // `researchDisabled` on the parent run (set when THIS run was
     // itself spawned as a research sub-run) hard-disables the
     // feature to prevent recursive sub-spawning.
+    // Phase 22 Slice B: research delegation is ON by default. It used
+    // to be opt-in via `COUNCIL_RESEARCH_ENABLED=enabled`, but most
+    // QA-loop failures we see are "the LLM confidently used a wrong
+    // library API" (e.g. puppeteer-extra `plugins:[stealth]` vs the
+    // correct `puppeteer.use(stealth)`). Giving every council step the
+    // affordance to look up current docs costs ~1 extra system message
+    // when unused and one sub-agent run when used; the LLM ignores it
+    // when it's confident. Operators who want to disable can set
+    // `COUNCIL_RESEARCH_ENABLED=disabled` explicitly.
     const researchFeatureEnabled =
-      process.env.COUNCIL_RESEARCH_ENABLED === "enabled" && !options.researchDisabled;
+      process.env.COUNCIL_RESEARCH_ENABLED !== "disabled" && !options.researchDisabled;
     const councilResearchDelegate: import("./researchDelegate.js").ResearchDelegate | undefined =
       researchFeatureEnabled
         ? async (question, signal) =>
@@ -1198,6 +1207,32 @@ export class UniversalAgent {
     // count and surface it in every downstream message.
     let attemptsRun = 0;
     let repairBrokenEarly = false;
+    // Phase 22 Slice A — cross-LLM repair fallback. When a single LLM
+    // can't fix QA after N consecutive failed repairs, switch to the
+    // next-best Borda candidate. Different model weights routinely
+    // catch API-misuse bugs the original author is blind to (e.g. a
+    // model that "knows" `puppeteer-extra.launch({plugins:[stealth]})`
+    // works because its training data is older — only another model
+    // notices the correct API is `puppeteer.use(stealth)` BEFORE
+    // launch). The threshold is intentionally low (2) because each
+    // repair costs ~90 s of LLM time and the operator wants forward
+    // progress, not 5 attempts of the same bug.
+    const repairModelCandidates: string[] = [];
+    {
+      const seen = new Set<string>();
+      for (const id of [
+        winner.winnerModelId,
+        ...rankedAlternatives.map((entry) => entry.p.modelId),
+      ]) {
+        if (id && !seen.has(id)) {
+          seen.add(id);
+          repairModelCandidates.push(id);
+        }
+      }
+    }
+    let repairCandidateIdx = 0;
+    let failedRepairsByCurrentModel = 0;
+    const REPAIR_FAIL_THRESHOLD = 2;
     for (let attempt = 0; attempt < config.maxQaRepairAttempts; attempt += 1) {
       ensureNotCancelled();
       // Tool call span: visible separately from the oracle so the
@@ -1322,6 +1357,50 @@ export class UniversalAgent {
       }
       if (attempt + 1 >= config.maxQaRepairAttempts) break;
 
+      // Phase 22 Slice A — decide which model to use for THIS repair.
+      // attempt === 0 carries the implement winner; subsequent
+      // attempts count consecutive failed repairs by the current
+      // repair model and rotate to the next Borda candidate when the
+      // threshold is hit. The implement-phase failure itself does NOT
+      // count toward the streak — that's already the implement loop's
+      // problem and the new winner already absorbed it via implement
+      // fallback (see line ~870). Here we only blame the model that
+      // emitted the LAST code edit visible to QA.
+      if (attempt >= 1) failedRepairsByCurrentModel += 1;
+      if (
+        failedRepairsByCurrentModel >= REPAIR_FAIL_THRESHOLD &&
+        repairCandidateIdx + 1 < repairModelCandidates.length
+      ) {
+        const switchedFrom = repairModelCandidates[repairCandidateIdx]!;
+        repairCandidateIdx += 1;
+        const switchedTo = repairModelCandidates[repairCandidateIdx]!;
+        failedRepairsByCurrentModel = 0;
+        const switchSpanId = createSpanId("council-repair-model-switched");
+        await emit({
+          spanId: switchSpanId,
+          parentSpanId: qaSpanId,
+          type: "tool-build-council-winner-selected",
+          actor: "coordinator",
+          activity: "coordination",
+          status: "completed",
+          title: `Repair re-assigned to ${switchedTo} after ${REPAIR_FAIL_THRESHOLD} failed repairs by ${switchedFrom}`,
+          detail:
+            `When the same model can't make QA pass after ${REPAIR_FAIL_THRESHOLD} consecutive repair attempts, the next-best Borda candidate takes over. ` +
+            `Different model weights often catch API-misuse bugs the original author can't see.`,
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: 0,
+          payload: {
+            switchedFrom,
+            switchedTo,
+            reason: "consecutive_repair_failures",
+            threshold: REPAIR_FAIL_THRESHOLD,
+            attempt: attempt + 1,
+          },
+        });
+      }
+      const currentRepairModel = repairModelCandidates[repairCandidateIdx]!;
+
       const repairSpanId = createSpanId("council-repair");
       const repairStartedAtDate = new Date();
       const repairStartedAt = repairStartedAtDate.toISOString();
@@ -1343,16 +1422,16 @@ export class UniversalAgent {
         spanId: repairSpanId,
         parentSpanId: qaSpanId,
         type: "tool-build-code-repaired",
-        actor: winner.winnerModelId,
+        actor: currentRepairModel,
         activity: "llm",
         status: "started",
-        title: `Repairing code (attempt ${attempt + 1}) with ${winner.winnerModelId}`,
+        title: `Repairing code (attempt ${attempt + 1}) with ${currentRepairModel}`,
         startedAt: repairStartedAt,
-        payload: { attempt: attempt + 1, failures: oracle.failures, prompt: repairPromptText },
+        payload: { attempt: attempt + 1, failures: oracle.failures, prompt: repairPromptText, modelId: currentRepairModel },
       });
       try {
         codeText = await runLLMWithResearch(this.llm, repairMessages, councilResearchDelegate, {
-          model: winner.winnerModelId,
+          model: currentRepairModel,
           signal: options.signal,
           onResearch: (event) => emitResearchEvent("repair", repairSpanId, event),
         });
@@ -1368,7 +1447,7 @@ export class UniversalAgent {
           spanId: repairSpanId,
           parentSpanId: qaSpanId,
           type: "tool-build-code-repaired",
-          actor: winner.winnerModelId,
+          actor: currentRepairModel,
           activity: "llm",
           status: "completed",
           title: `Code repaired (attempt ${attempt + 1})`,
@@ -1381,6 +1460,7 @@ export class UniversalAgent {
             failures: oracle.failures,
             prompt: repairPromptText,
             output: codeText,
+            modelId: currentRepairModel,
           },
         });
         currentCodeSpanId = repairSpanId;
@@ -1389,7 +1469,7 @@ export class UniversalAgent {
           spanId: repairSpanId,
           parentSpanId: qaSpanId,
           type: "tool-build-code-repaired",
-          actor: winner.winnerModelId,
+          actor: currentRepairModel,
           activity: "llm",
           status: "failed",
           title: `Repair attempt ${attempt + 1} broke`,

@@ -818,6 +818,22 @@ export function repairPrompt(
     ...qaFailures.map((f) => `  - ${f}`),
     "",
     "Apply targeted fixes that make every criterion pass without breaking the others.",
+    "",
+    // Phase 22 Slice B — explicit research-trigger hint. The most
+    // common QA loop wedge is "the LLM keeps reapplying the same
+    // wrong library call because its training data was a year out
+    // of date". The repair prompt now nudges the model to verify
+    // its API assumptions via the research delegate (if available
+    // it's already documented in the appended system block) BEFORE
+    // it writes another fix. We don't force it — high-confidence
+    // models that genuinely know the right API skip the research
+    // hop with no penalty.
+    "Before you edit, check whether the QA failure suggests you misused a third-party",
+    "library or API (wrong plugin init, wrong option name, missing await, removed since",
+    "your training cutoff). If so AND a `Research (optional)` block was appended below,",
+    "EMIT a `<request_research>` block with the question first — pulling current docs",
+    "is much cheaper than burning another QA attempt on the same wrong assumption.",
+    "",
     "Emit the FULL revised tool body (same single file at the same path), wrapped",
     `in the same JSON envelope: {"files":[{"path","content"}]}. Do not re-emit`,
     "scaffolding (index.ts, runtime/server.ts, package.json, etc). Do not change",
