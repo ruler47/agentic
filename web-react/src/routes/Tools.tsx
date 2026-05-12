@@ -20,6 +20,10 @@ import { useCreateToolBuildRun } from "@/api/toolBuildRuns";
 import { useToolServiceAction, useToolServices } from "@/api/toolServices";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
+import {
+  collectArtifacts as collectArtifactsFromResult,
+  type ManualRunArtifact as ManualRunArtifactType,
+} from "@/features/tools/artifactSniff";
 import type { ToolModuleMetadata, ToolServiceStatus } from "@/api/types";
 
 export function ToolsPage() {
@@ -647,7 +651,19 @@ function ManualRunPanel({ tool }: { tool: ToolModuleMetadata }) {
 
 function ManualRunResultDisplay({ response }: { response: ManualToolRunResponse }) {
   const { result, durationMs, tool } = response;
-  const artifacts = useMemo(() => collectArtifacts(result.data), [result.data]);
+  // Phase 16 Slice H: scan BOTH `result.data` (where binary payloads
+  // like screenshot.url's `imageBase64` live) AND `result.content`
+  // (where text payloads like chart.svg's SVG markup live). Wrap
+  // them in a synthetic object so the recursive walker treats the
+  // content key as a hinting parent key for sniffing.
+  const artifacts = useMemo(
+    () =>
+      collectArtifactsFromResult({
+        content: result.content,
+        data: result.data,
+      }),
+    [result.content, result.data],
+  );
   return (
     <div className="mt-1 rounded border border-app-border bg-app-surface p-2 text-[11px]">
       <p className="flex flex-wrap items-center gap-2">
@@ -683,52 +699,14 @@ function ManualRunResultDisplay({ response }: { response: ManualToolRunResponse 
 }
 
 /**
- * Phase 13 follow-up: artifact-shaped payload extracted from a manual
- * tool-run response. Tools return their files under a few different
- * keys (`data.artifact`, `data.screenshots[]`, `data.artifacts[]`, …),
- * with either inline string content or base64. `collectArtifacts`
- * recursively walks the response and surfaces every artifact-shaped
- * object so the UI can render one download button per file.
+ * Phase 13 follow-up + Phase 16 Slice H: artifact-shaped payload
+ * extracted from a manual tool-run response. The actual recursive
+ * walk and MIME sniffing live in
+ * `@/features/tools/artifactSniff` so they can be unit-tested
+ * standalone — the type alias is kept here for the in-file UI
+ * components.
  */
-type ManualRunArtifact = {
-  filename: string;
-  mimeType: string;
-  content?: string;
-  contentBase64?: string;
-  description?: string;
-};
-
-function collectArtifacts(value: unknown): ManualRunArtifact[] {
-  const out: ManualRunArtifact[] = [];
-  const seen = new Set<unknown>();
-  const visit = (node: unknown): void => {
-    if (!node || typeof node !== "object" || seen.has(node)) return;
-    seen.add(node);
-    if (Array.isArray(node)) {
-      for (const entry of node) visit(entry);
-      return;
-    }
-    const candidate = node as Record<string, unknown>;
-    const filename = typeof candidate.filename === "string" ? candidate.filename : undefined;
-    const mimeType = typeof candidate.mimeType === "string" ? candidate.mimeType : undefined;
-    const inlineContent =
-      typeof candidate.content === "string" ? (candidate.content as string) : undefined;
-    const base64 =
-      typeof candidate.contentBase64 === "string" ? (candidate.contentBase64 as string) : undefined;
-    if (filename && mimeType && (inlineContent !== undefined || base64 !== undefined)) {
-      out.push({
-        filename,
-        mimeType,
-        content: inlineContent,
-        contentBase64: base64,
-        description: typeof candidate.description === "string" ? (candidate.description as string) : undefined,
-      });
-    }
-    for (const child of Object.values(candidate)) visit(child);
-  };
-  visit(value);
-  return out;
-}
+type ManualRunArtifact = ManualRunArtifactType;
 
 function ArtifactDownloadRow({ artifact }: { artifact: ManualRunArtifact }) {
   const href = useMemo(() => {
