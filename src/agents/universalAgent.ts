@@ -276,6 +276,17 @@ export type ToolBuildCouncilAdapter = {
     previousVersion: string | undefined,
   ) => Promise<void>;
   /**
+   * Phase 16 Slice G: flip the just-registered version's metadata
+   * status from "disabled" to "available" once QA has actually
+   * passed. The Tools page reads `status` directly from
+   * `tool_modules`, so without this step the UI shows
+   * green-runtime-but-red-status for every successfully built tool.
+   * Best-effort: failures are logged but do not fail the run, since
+   * the in-memory registry already has the tool by the time we get
+   * here.
+   */
+  markActive?: (toolName: string, version: string) => Promise<void>;
+  /**
    * Replace the `changeSummary` on an already-registered version. The
    * council synthesizes this after the QA/repair loop ends because the
    * "what changed" line wants to describe the final state, not the
@@ -1271,6 +1282,21 @@ export class UniversalAgent {
       } catch (error) {
         // Already logged inside rollbackRegistration; do not let a
         // secondary failure mask the QA outcome.
+        void error;
+      }
+    }
+
+    // Phase 16 Slice G: flip the just-built version's status from
+    // "disabled" (the initial post-promoteReplacement state) to
+    // "available" so the Tools page shows the tool as healthy and
+    // matches the in-memory registry state. Only runs on the happy
+    // path — failure paths went through rollback above.
+    if (qaPassed && adapter.markActive) {
+      try {
+        await adapter.markActive(registered.toolName, registered.version);
+      } catch (error) {
+        // The adapter logs its own warning. Don't fail the run for
+        // a metadata-label discrepancy.
         void error;
       }
     }

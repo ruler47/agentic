@@ -264,6 +264,30 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
    * event and the operator's incident is "QA failed", not "rollback
    * crashed".
    */
+  /**
+   * Phase 16 Slice G: promote the just-registered version's
+   * metadata status from "disabled" (the initial state after
+   * `promoteReplacement` / `registerGenerated`) to "available" so
+   * the Tools page chip matches reality. Called by the council
+   * pipeline only after QA passes — never on failure paths, which
+   * are handled by `rollbackRegistration` instead.
+   *
+   * Best-effort: a failed metadata write is logged but does not
+   * abort the run. The in-memory registry already has the tool, so
+   * the operator's runtime experience is unaffected; only the UI
+   * label is.
+   */
+  async markActive(toolName: string, version: string): Promise<void> {
+    try {
+      await this.deps.metadataStore.markAvailable(toolName, version);
+    } catch (error) {
+      console.warn(
+        `Council markActive for ${toolName}@${version} failed: ${error instanceof Error ? error.message : String(error)}. ` +
+          `The tool runs fine but the Tools-page status chip may stay 'disabled' until the next reload.`,
+      );
+    }
+  }
+
   async rollbackRegistration(toolName: string, previousVersion: string | undefined): Promise<void> {
     try {
       if (previousVersion) {
@@ -311,10 +335,38 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     const versions = dirents
       .filter((entry) => /^\d+\.\d+\.\d+$/.test(entry))
       .sort((a, b) => compareSemver(b, a)); // newest first
-    // Keep the active version + the next KEEP_VERSIONS-1 newest (so
-    // rolling forward never deletes the running version even if its
-    // semver is mid-pack for some reason).
-    const kept = new Set<string>([activeVersion]);
+
+    // Phase 16 Slice F follow-up: protect any version the metadata
+    // store still tracks for this tool. Without this guard, repeated
+    // failed reworks would push the original known-working version
+    // off the end of the KEEP_VERSIONS=5 window (rework #6 promoted
+    // v1.0.7, prune kept 1.0.3-1.0.7, the working v1.0.2 disk dir
+    // was deleted — so when Slice F rolled the active row back to
+    // v1.0.2 the loader could not find it and the registry stayed
+    // pointing at the broken v1.0.7). Anything still recorded in
+    // tool_module_versions is a potential rollback target and must
+    // survive the prune.
+    const dbKnownVersions = new Set<string>();
+    try {
+      const original = await this.deps.metadataStore.list();
+      const fromActiveRow = original.find(
+        (m) => sanitizeName(m.name) === sanitizedName,
+      );
+      if (fromActiveRow) {
+        const summaries = await this.deps.metadataStore.listVersions(fromActiveRow.name);
+        for (const summary of summaries) dbKnownVersions.add(summary.version);
+      }
+    } catch {
+      // If the metadata store can't enumerate versions, fall back to
+      // the activeVersion-only protection rather than failing the
+      // prune entirely.
+    }
+
+    // Always keep the just-promoted active version; then layer on
+    // every DB-tracked version (protects rollback targets); then
+    // top up with on-disk newest versions until we hit
+    // KEEP_VERSIONS or run out.
+    const kept = new Set<string>([activeVersion, ...dbKnownVersions]);
     for (const v of versions) {
       if (kept.size >= KEEP_VERSIONS) break;
       kept.add(v);
