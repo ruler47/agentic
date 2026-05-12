@@ -2,13 +2,24 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "@/lib/fetch";
 import { queryKeys } from "@/api/queryKeys";
 import type {
-  ToolBuildRequest,
   ToolInvestigationContextBundle,
   ToolInvestigationRecord,
   ToolInvestigationSource,
   ToolInvestigationStatus,
   ToolReworkWaitRecord,
 } from "@/api/types";
+
+/**
+ * Phase G: the legacy `/api/tool-build-requests` endpoint and its
+ * `ToolBuildRequest` shape are gone. The `/promote` endpoint that
+ * used to return a `request: ToolBuildRequest` payload now returns
+ * 503 with a TODO(Phase 20) marker — the council pipeline owns
+ * tool builds end-to-end. This minimal stub lets the type-only
+ * import keep compiling on the off-chance a server with the legacy
+ * endpoint still responds with a shaped body (e.g. during a
+ * staged rollout); the client treats it as opaque.
+ */
+type LegacyToolBuildRequestStub = { id: string; status?: string };
 
 export type CreateInvestigationInput = {
   source: ToolInvestigationSource;
@@ -70,7 +81,7 @@ export type PromoteInvestigationInput = {
 
 export type PromoteInvestigationResponse = {
   investigation: ToolInvestigationRecord;
-  request: ToolBuildRequest;
+  request: LegacyToolBuildRequestStub;
   wait?: ToolReworkWaitRecord;
 };
 

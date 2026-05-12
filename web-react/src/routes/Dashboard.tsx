@@ -2,12 +2,7 @@ import { Link } from "react-router-dom";
 
 import { useHealth } from "@/api/health";
 import { selectActiveRuns, selectRecentRuns, useCreateRun, useRuns } from "@/api/runs";
-import {
-  useAuditEvents,
-  useGroupProfile,
-  useToolBuildRequests,
-  useToolReworkWaits,
-} from "@/api/queries";
+import { useAuditEvents, useGroupProfile, useToolReworkWaits } from "@/api/queries";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
 import { useState } from "react";
@@ -16,13 +11,11 @@ export function DashboardPage() {
   const health = useHealth();
   const groupProfile = useGroupProfile();
   const runs = useRuns();
-  const builds = useToolBuildRequests();
   const waits = useToolReworkWaits();
   const audit = useAuditEvents(20);
 
   const active = selectActiveRuns(runs.data);
   const recent = selectRecentRuns(runs.data, 6);
-  const openBuilds = (builds.data ?? []).filter((request) => request.status !== "registered");
   const openWaits = (waits.data ?? []).filter(
     (wait) => wait.status !== "resumed" && wait.status !== "cancelled" && wait.status !== "failed",
   );
@@ -31,16 +24,11 @@ export function DashboardPage() {
     <div className="flex flex-col gap-5">
       <ComposerCard />
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         <StatTile
           label="Active runs"
           value={active.length}
           helper={runs.isLoading ? "Loading…" : `${runs.data?.length ?? 0} total`}
-        />
-        <StatTile
-          label="Open tool builds"
-          value={openBuilds.length}
-          helper={`${builds.data?.length ?? 0} in queue`}
         />
         <StatTile
           label="Tool rework waits"

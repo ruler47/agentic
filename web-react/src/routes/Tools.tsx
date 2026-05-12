@@ -22,10 +22,7 @@ import { useCreateToolBuildRun } from "@/api/toolBuildRuns";
 import { useToolServiceAction, useToolServices } from "@/api/toolServices";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
-import {
-  collectArtifacts as collectArtifactsFromResult,
-  type ManualRunArtifact as ManualRunArtifactType,
-} from "@/features/tools/artifactSniff";
+import { collectArtifacts as collectArtifactsFromResult } from "@/features/tools/artifactSniff";
 import { ArtifactDownloadRow } from "@/features/tools/ArtifactDownloadRow";
 import type { ToolModuleMetadata, ToolServiceStatus } from "@/api/types";
 
@@ -700,16 +697,6 @@ function ManualRunResultDisplay({ response }: { response: ManualToolRunResponse 
     </div>
   );
 }
-
-/**
- * Phase 13 follow-up + Phase 16 Slice H: artifact-shaped payload
- * extracted from a manual tool-run response. The actual recursive
- * walk and MIME sniffing live in
- * `@/features/tools/artifactSniff` so they can be unit-tested
- * standalone — the type alias is kept here for the in-file UI
- * components.
- */
-type ManualRunArtifact = ManualRunArtifactType;
 
 // Phase G follow-up: ArtifactDownloadRow + formatBytes moved to
 // `@/features/tools/ArtifactDownloadRow.tsx` so the Trace Inspector

@@ -10,7 +10,6 @@ import type {
   AuditEventRecord,
   ConversationThreadRecord,
   GroupProfileUpdateInput,
-  ToolBuildRequest,
   ToolInvestigationRecord,
   ToolReworkWaitRecord,
 } from "@/api/types";
@@ -72,17 +71,6 @@ export function useConversations() {
         (data) => data.threads ?? [],
       ),
     refetchInterval: 10_000,
-  });
-}
-
-export function useToolBuildRequests() {
-  return useQuery({
-    queryKey: queryKeys.toolBuildRequests,
-    queryFn: () =>
-      apiFetch<{ requests: ToolBuildRequest[] }>("/api/tool-build-requests").then(
-        (data) => data.requests ?? [],
-      ),
-    refetchInterval: 5_000,
   });
 }
 
