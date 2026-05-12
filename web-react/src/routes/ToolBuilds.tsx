@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { useToolBuildRuns, useCreateToolBuildRun } from "@/api/toolBuildRuns";
+import { useCancelRun, useRestartRun, useResumeRun } from "@/api/runs";
 import { useTools } from "@/api/tools";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
@@ -312,47 +313,147 @@ function RecentCouncilRuns({
       <header className="border-b border-app-border px-4 py-3">
         <h3 className="text-sm font-semibold">Recent council runs</h3>
         <p className="mt-0.5 text-[11px] text-app-text-muted">
-          Newest first. Click a row to open the full trace (brainstorm proposals, votes,
-          drafted code, reviews, QA attempts).
+          Newest first. Click a row to open the full trace. Cancel/Resume/Restart
+          buttons appear when the run state allows it.
         </p>
       </header>
       <ul className="divide-y divide-app-border">
-        {runs.map((run) => {
-          const toolName = extractToolName(run);
-          const tool = toolName ? installed.get(toolName) : undefined;
-          return (
-            <li key={run.id}>
-              <Link
-                to={`/trace/${run.id}`}
-                className="grid grid-cols-[minmax(0,1.5fr)_auto_auto_auto_auto] items-center gap-3 px-4 py-2.5 text-sm hover:bg-app-surface-2"
-              >
-                <span className="min-w-0 truncate">
-                  <span className="font-mono">{toolName ?? run.id}</span>
-                  {tool ? (
-                    <span className="ml-2 text-[10px] text-app-text-muted">
-                      → v{tool.version} ({tool.status})
-                    </span>
-                  ) : null}
-                  <span className="ml-2 text-[11px] text-app-text-muted">
-                    {truncate(run.task, 100)}
-                  </span>
-                </span>
-                <RunStatusBadge status={run.status} />
-                <span className="font-mono text-[11px] text-app-text-muted">
-                  {formatDuration(runDurationMs(run))}
-                </span>
-                <span className="text-[11px] text-app-text-muted">
-                  {(run.events ?? []).length} events
-                </span>
-                <span className="text-[11px] text-app-text-muted">
-                  {formatRelative(run.createdAt)}
-                </span>
-              </Link>
-            </li>
-          );
-        })}
+        {runs.map((run) => (
+          <CouncilRunRow key={run.id} run={run} installed={installed} />
+        ))}
       </ul>
     </section>
+  );
+}
+
+/**
+ * Phase 19 Slice A: per-row Cancel / Restart / Resume controls.
+ *
+ *  - `running` / `queued`: Cancel button.
+ *  - `failed` / `cancelled`: Restart (fresh run from the same input) +
+ *    Resume (re-enter where the prior run left off — uses Phase 12
+ *    `resumeFrom` so brainstorm + completed phases are reused, the
+ *    failed step is replayed).
+ *  - `completed`: no buttons; the operator can still click Request
+ *    changes from the tool's Versions panel.
+ *
+ * Buttons are inside the row's <Link> so they need
+ * `event.preventDefault()` + `stopPropagation()` to avoid hijacking
+ * the trace-open navigation. The trace itself stays accessible via
+ * the rest of the row.
+ */
+function CouncilRunRow({
+  run,
+  installed,
+}: {
+  run: AgentRunRecord;
+  installed: Map<string, ToolModuleMetadata>;
+}) {
+  const toolName = extractToolName(run);
+  const tool = toolName ? installed.get(toolName) : undefined;
+  const cancel = useCancelRun();
+  const restart = useRestartRun();
+  const resume = useResumeRun();
+
+  const status = run.status;
+  const isLive = status === "running" || status === "queued" || status === "pending";
+  const isStuckOrDone = status === "failed" || status === "cancelled";
+  const anyPending = cancel.isPending || restart.isPending || resume.isPending;
+
+  return (
+    <li>
+      <Link
+        to={`/trace/${run.id}`}
+        className="grid grid-cols-[minmax(0,1.5fr)_auto_auto_auto_auto_auto] items-center gap-3 px-4 py-2.5 text-sm hover:bg-app-surface-2"
+      >
+        <span className="min-w-0 truncate">
+          <span className="font-mono">{toolName ?? run.id}</span>
+          {tool ? (
+            <span className="ml-2 text-[10px] text-app-text-muted">
+              → v{tool.version} ({tool.status})
+            </span>
+          ) : null}
+          <span className="ml-2 text-[11px] text-app-text-muted">
+            {truncate(run.task, 100)}
+          </span>
+        </span>
+        <RunStatusBadge status={run.status} />
+        <span className="font-mono text-[11px] text-app-text-muted">
+          {formatDuration(runDurationMs(run))}
+        </span>
+        <span className="text-[11px] text-app-text-muted">
+          {(run.events ?? []).length} events
+        </span>
+        <span className="text-[11px] text-app-text-muted">
+          {formatRelative(run.createdAt)}
+        </span>
+        <span
+          className="flex flex-wrap items-center gap-1"
+          // Stop the row-link from intercepting button clicks. Each
+          // button calls preventDefault on its own onClick but we
+          // also intercept at the wrapper for safety.
+          onClick={(event) => event.preventDefault()}
+        >
+          {isLive ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (window.confirm("Cancel this run? In-flight LLM calls will be aborted.")) {
+                  cancel.mutate({ id: run.id, reason: "Operator cancelled" });
+                }
+              }}
+              disabled={anyPending}
+              className="rounded-md border border-app-danger/40 bg-app-surface px-2 py-0.5 text-[11px] text-app-danger hover:border-app-danger disabled:opacity-50"
+            >
+              {cancel.isPending ? "…" : "Cancel"}
+            </button>
+          ) : null}
+          {isStuckOrDone ? (
+            <>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  resume.mutate(run.id);
+                }}
+                disabled={anyPending}
+                title="Re-run from where the prior run left off (reuses completed phases)"
+                className="rounded-md border border-app-accent/40 bg-app-surface px-2 py-0.5 text-[11px] text-app-accent hover:border-app-accent disabled:opacity-50"
+              >
+                {resume.isPending ? "…" : "Resume"}
+              </button>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (window.confirm("Restart from scratch? This starts a fresh run with the same input.")) {
+                    restart.mutate(run.id);
+                  }
+                }}
+                disabled={anyPending}
+                title="Start a fresh run from scratch with the same input"
+                className="rounded-md border border-app-border bg-app-surface px-2 py-0.5 text-[11px] hover:border-app-accent/40 disabled:opacity-50"
+              >
+                {restart.isPending ? "…" : "Restart"}
+              </button>
+            </>
+          ) : null}
+        </span>
+      </Link>
+      {cancel.isError ? (
+        <p className="px-4 pb-2 text-[11px] text-app-danger">{cancel.error.message}</p>
+      ) : null}
+      {resume.isError ? (
+        <p className="px-4 pb-2 text-[11px] text-app-danger">{resume.error.message}</p>
+      ) : null}
+      {restart.isError ? (
+        <p className="px-4 pb-2 text-[11px] text-app-danger">{restart.error.message}</p>
+      ) : null}
+    </li>
   );
 }
 
@@ -362,7 +463,9 @@ function RecentCouncilRuns({
  *  parse the name back out for the row label.
  */
 function extractToolName(run: AgentRunRecord): string | undefined {
-  const match = /^Council build for ([^:]+):/.exec(run.task ?? "");
+  // Phase 19 Slice A fix: also match `Council rework for X:` so rework
+  // rows show the tool name instead of falling back to the run id.
+  const match = /^Council (?:build|rework) for ([^:]+):/.exec(run.task ?? "");
   return match ? match[1].trim() : undefined;
 }
 
