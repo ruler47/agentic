@@ -12,6 +12,7 @@ import {
   useCreateRetryRunForWait,
   useResumeReworkWait,
 } from "@/api/reworkWaits";
+import { useCancelRun, useResumeRun } from "@/api/runs";
 import {
   canCreateRetryRun,
   retryRunLabel,
@@ -41,6 +42,7 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
   const callFrame = readCallFrame(node.payload);
   const selfCheck = readSelfCheck(node.payload);
   const memoryHits = readMemoryEntries(node.payload);
+  const stuckHelper = useStuckSpanHelper(runId, node);
   // Tool evidence is only meaningful for actual tool runs. For LLM /
   // coordination events the same `content` field carries the model's
   // reply and would mis-render here — we surface it through
@@ -75,6 +77,36 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
           </p>
         ) : null}
       </header>
+
+      {stuckHelper.shouldShow ? (
+        <div className="rounded-md border border-app-warn/40 bg-app-warn/10 p-2.5 text-[11px]">
+          <p className="font-semibold">This step has been in progress for {stuckHelper.elapsedLabel}.</p>
+          <p className="mt-0.5 text-app-text-muted">
+            If the LLM is unresponsive you can cancel the run and resume from the last completed
+            phase. Sub-research findings and other partial outputs collected inside this step
+            are preserved by the parent run's resume snapshot when possible.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Cancel this run and resume? The new run will re-enter from completed phases (council pipeline restarts the in-flight phase).`,
+                )
+              ) {
+                stuckHelper.onResumeFromHere();
+              }
+            }}
+            disabled={stuckHelper.isPending}
+            className="mt-2 rounded-md border border-app-warn/60 bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-warn disabled:opacity-50"
+          >
+            {stuckHelper.isPending ? "Cancelling…" : "Resume from here"}
+          </button>
+          {stuckHelper.error ? (
+            <p className="mt-1 text-app-danger">{stuckHelper.error}</p>
+          ) : null}
+        </div>
+      ) : null}
 
       <CouncilEventDetails node={node} />
 
@@ -384,6 +416,70 @@ function statusTone(status: string): "ok" | "running" | "danger" | "muted" {
  * the final durationMs (computed on the backend); this component only
  * fires while the work is in-flight.
  */
+/**
+ * Phase 19 Slice B: when a span has been "started" for longer than
+ * the stuck threshold, the operator sees a "Resume from here" affordance
+ * in the Inspector. The button:
+ *   1. Cancels the parent run (aborts in-flight LLM calls).
+ *   2. Triggers a Phase 12 resume on the parent — `extractCouncilContext`
+ *      re-threads the council toolBuildContext so the resumed run is
+ *      still a council pipeline run (Slice A fix). Completed phases
+ *      are reused via the resumeFrom snapshot.
+ *
+ * The TRUE "preserve in-flight sub-research findings AND re-fire just
+ * this LLM call" semantic would require surgical state injection into
+ * the council loop; that's a follow-up. For now the practical guarantee
+ * is "completed phases survive, the stuck phase re-runs from scratch".
+ */
+const STUCK_THRESHOLD_MS = 3 * 60 * 1000;
+
+function useStuckSpanHelper(
+  runId: string | undefined,
+  node: TraceNode,
+): {
+  shouldShow: boolean;
+  elapsedLabel: string;
+  isPending: boolean;
+  error: string | undefined;
+  onResumeFromHere: () => void;
+} {
+  const cancel = useCancelRun();
+  const resume = useResumeRun();
+  const [now, setNow] = useState(() => Date.now());
+  const isStarted = node.status === "started";
+  useEffect(() => {
+    if (!isStarted) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [isStarted]);
+  const startedMs = new Date(node.startedAt).getTime();
+  const elapsed = Number.isFinite(startedMs) ? Math.max(0, now - startedMs) : 0;
+  const shouldShow = Boolean(runId) && isStarted && elapsed >= STUCK_THRESHOLD_MS;
+  const onResumeFromHere = () => {
+    if (!runId) return;
+    cancel.mutate(
+      { id: runId, reason: "Operator resumed from a stuck span" },
+      {
+        onSuccess: () => {
+          resume.mutate(runId);
+        },
+      },
+    );
+  };
+  const error = cancel.isError
+    ? cancel.error.message
+    : resume.isError
+      ? resume.error.message
+      : undefined;
+  return {
+    shouldShow,
+    elapsedLabel: formatDuration(elapsed),
+    isPending: cancel.isPending || resume.isPending,
+    error,
+    onResumeFromHere,
+  };
+}
+
 function LiveDuration({ node }: { node: TraceNode }) {
   const isRunning = node.status === "started";
   const [now, setNow] = useState(() => Date.now());
