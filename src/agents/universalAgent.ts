@@ -56,13 +56,6 @@ import { inspectBrowserScreenshotEvidence } from "../artifacts/semanticArtifactQ
 import { isChartToolData } from "../tools/chartGenerateTool.js";
 import { isBrowserOperateData } from "../tools/browserOperateTool.js";
 import { isMarketTimeseriesData } from "../tools/marketTimeseriesTool.js";
-import { ToolBuildRequest, ToolBuildRequestInput } from "../tools/toolBuildRequestStore.js";
-import {
-  ToolImprovementCoordinator,
-  ToolImprovementRequest,
-  ToolImprovementResult,
-} from "../tools/toolImprovementCoordinator.js";
-import { ToolReworkWaitRecord } from "../runs/toolReworkWaitStore.js";
 import {
   EvidenceKind,
   EvidenceLedgerStore,
@@ -74,7 +67,6 @@ import { searchQueryWorkKey, toolCallWorkKey } from "../work-ledger/workKey.js";
 import { RuntimeLedgerCoordinator } from "../work-ledger/runtimeLedgerCoordinator.js";
 import { Tool, ToolExecutionContext, ToolInput, ToolResult } from "../tools/tool.js";
 
-type AgentImproveToolFn = (request: ToolImprovementRequest) => Promise<ToolImprovementResult>;
 import { extractJson } from "../utils/json.js";
 import {
   classifyPrompt,
@@ -148,8 +140,6 @@ type RunOptions = {
   allowSensitiveMemory?: boolean;
   allowPrivateMemory?: boolean;
   saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>;
-  requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>;
-  toolImprovementCoordinator?: ToolImprovementCoordinator;
   toolExecutionContext?: Partial<Omit<ToolExecutionContext, "toolName" | "now">>;
   workLedgerStore?: WorkLedgerStore;
   evidenceLedgerStore?: EvidenceLedgerStore;
@@ -903,6 +893,31 @@ export class UniversalAgent {
         break;
       } catch (error) {
         implementError = error;
+        // Phase G follow-up: emit a visible failure card for each
+        // implement attempt that didn't produce parsable files. Without
+        // this the trace just shows "Drafting with X" started for 80s
+        // and nothing else, so the operator can't see that gemma
+        // returned empty content twice and we fell back to qwen.
+        const attemptSpanId = createSpanId("council-implement-attempt-failed");
+        const detail = error instanceof Error ? error.message : String(error);
+        await emit({
+          spanId: attemptSpanId,
+          parentSpanId: currentCodeSpanId,
+          type: "tool-build-code-drafted",
+          actor: candidate.winnerModelId,
+          activity: "llm",
+          status: "failed",
+          title: `Implement attempt failed for ${candidate.winnerModelId}`,
+          detail,
+          startedAt: implementStartedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(implementStartedAtDate),
+          payload: {
+            modelId: candidate.winnerModelId,
+            prompt: lastImplementPromptText,
+            error: detail,
+          },
+        });
       }
     }
     if (implementError !== undefined) throw implementError;
@@ -1760,31 +1775,10 @@ export class UniversalAgent {
     if (ledger && options.runId) {
       this.runScopedLedgers.set(options.runId, ledger);
     }
-    const pendingToolImprovements: ToolReworkWaitRecord[] = [];
-    const improveTool: AgentImproveToolFn | undefined = options.toolImprovementCoordinator
-      ? async (request) => {
-          const result = await options.toolImprovementCoordinator!.requestImprovement({
-            ...request,
-            runId: request.runId ?? options.runId,
-          });
-          if (result.status === "waiting" && result.wait) {
-            pendingToolImprovements.push(result.wait);
-          }
-          return result;
-        }
-      : undefined;
-    const appendPendingImprovements = (answer: string): string => {
-      if (pendingToolImprovements.length === 0) return answer;
-      const lines = pendingToolImprovements.map((wait) =>
-        `- ${wait.id}: build ${wait.buildRequestId ?? "(unknown)"}, ` +
-          `tool ${wait.toolName ?? "(unknown)"} [status: ${wait.status}]`,
-      );
-      return `${answer}\n\n---\n` +
-        `Note: this run is waiting for tool improvements and cannot be fully retried yet. ` +
-        `Operator (or the future recursive retry engine in Phase 2) can mark these waits ready ` +
-        `for retry once the new tool versions are promoted.\n\n` +
-        `Pending tool rework waits:\n${lines.join("\n")}`;
-    };
+    // Phase G: legacy tool-build queue removed. The agent no longer
+    // routes mid-run tool improvements through a ToolImprovementCoordinator;
+    // council `/api/tool-build-runs` is the single tool-build surface now.
+    const appendPendingImprovements = (answer: string): string => answer;
 
     try {
     await emit({
@@ -1889,7 +1883,7 @@ export class UniversalAgent {
       memories,
       tools: this.tools.list(),
       hasWorkLedger: Boolean(ledger),
-      pendingToolImprovements: pendingToolImprovements.length,
+      pendingToolImprovements: 0,
     });
     // Phase 13 follow-up (TB-005b): stash the user-driven tool policy so
     // deep `findByCapability` callsites in the worker loop respect
@@ -1987,7 +1981,7 @@ export class UniversalAgent {
       strategy,
       rootInvocation,
       Boolean(ledger),
-      pendingToolImprovements.length,
+      0,
       recursiveLoopPlan,
     );
 
@@ -2058,8 +2052,6 @@ export class UniversalAgent {
                 emit,
                 rootInvocation.spanId,
                 options.saveArtifact,
-                options.requestToolBuild,
-                improveTool,
               );
               if (generatedArtifact) {
                 artifacts.push(generatedArtifact);
@@ -2156,8 +2148,6 @@ export class UniversalAgent {
           emit,
           runSpanId,
           options.saveArtifact,
-          options.requestToolBuild,
-          improveTool,
         );
         if (generatedArtifact) {
           artifacts.push(generatedArtifact);
@@ -2234,7 +2224,7 @@ export class UniversalAgent {
           rootInvocation,
           finalAnswer,
           artifacts,
-          artifacts.length + pendingToolImprovements.length,
+          artifacts.length,
           emit,
           synthesisSpanId,
         );
@@ -2321,8 +2311,6 @@ export class UniversalAgent {
       emit,
       planningSpanId,
       options.saveArtifact,
-      options.requestToolBuild,
-      improveTool,
       toolExecutionContext,
       options.resumeFrom,
     );
@@ -2341,8 +2329,6 @@ export class UniversalAgent {
       emit,
       runSpanId,
       options.saveArtifact,
-      options.requestToolBuild,
-      improveTool,
       toolExecutionContext,
     );
     if (generatedArtifact) {
@@ -2612,8 +2598,6 @@ export class UniversalAgent {
     emit: AgentEventEmitter,
     planningSpanId: string,
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
-    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
-    improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
     resumeFrom?: import("./runResumption.js").RunResumptionState,
   ): Promise<ReviewedWorkerResult[]> {
@@ -2697,8 +2681,6 @@ export class UniversalAgent {
             dependencySpanIds,
             dependencyArtifacts,
             saveArtifact,
-            requestToolBuild,
-            improveTool,
             toolExecutionContext,
           );
         }),
@@ -2725,8 +2707,6 @@ export class UniversalAgent {
     dependencyArtifacts: AgentArtifact[] = [],
     revisionInstructions?: string,
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
-    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
-    improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<WorkerResult> {
     const isRevision = Boolean(revisionInstructions);
@@ -2769,8 +2749,6 @@ export class UniversalAgent {
         dependencyContext,
         dependencyArtifacts,
         saveArtifact,
-        requestToolBuild,
-        improveTool,
         toolExecutionContext,
       );
 
@@ -2896,8 +2874,6 @@ export class UniversalAgent {
     dependencyContext?: string,
     dependencyArtifacts: AgentArtifact[] = [],
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
-    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
-    improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<CollectedToolEvidence> {
     const evidence: string[] = [];
@@ -2995,8 +2971,6 @@ export class UniversalAgent {
         parentSpanId,
         dependencyContext,
         saveArtifact,
-        requestToolBuild,
-        improveTool,
         toolExecutionContext,
       );
 
@@ -3643,8 +3617,6 @@ export class UniversalAgent {
     parentSpanId: string,
     dependencyContext?: string,
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
-    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
-    improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<AgentArtifact | undefined> {
     if (!saveArtifact) return undefined;
@@ -3655,8 +3627,6 @@ export class UniversalAgent {
         emit,
         parentSpanId,
         saveArtifact,
-        requestToolBuild,
-        improveTool,
         toolExecutionContext,
       );
     }
@@ -3674,8 +3644,6 @@ export class UniversalAgent {
         },
         emit,
         parentSpanId,
-        requestToolBuild,
-        improveTool,
       );
       if (!chartTool) return undefined;
 
@@ -3692,8 +3660,6 @@ export class UniversalAgent {
         "artifact:chart",
         "Chart artifact generated",
         toolExecutionContext,
-        requestToolBuild,
-        improveTool,
       );
     }
 
@@ -3708,8 +3674,6 @@ export class UniversalAgent {
       },
       emit,
       parentSpanId,
-      requestToolBuild,
-      improveTool,
     );
     const generatedTool = this.tools.findByCapability(requirement.capability)[0];
     if (!generatedTool) return undefined;
@@ -3732,8 +3696,6 @@ export class UniversalAgent {
       `artifact:${requirement.kind}`,
       `${capitalize(requirement.kind)} artifact generated`,
       toolExecutionContext,
-      requestToolBuild,
-      improveTool,
     );
   }
 
@@ -3748,8 +3710,6 @@ export class UniversalAgent {
     dependencySpanIds: string[] = [],
     dependencyArtifacts: AgentArtifact[] = [],
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
-    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
-    improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<ReviewedWorkerResult> {
     const workerResult = await this.runWorker(
@@ -3764,8 +3724,6 @@ export class UniversalAgent {
       dependencyArtifacts,
       undefined,
       saveArtifact,
-      requestToolBuild,
-      improveTool,
       toolExecutionContext,
     );
     const review = await this.review(
@@ -3792,8 +3750,6 @@ export class UniversalAgent {
       dependencyArtifacts,
       review.notes,
       saveArtifact,
-      requestToolBuild,
-      improveTool,
       toolExecutionContext,
     );
     const revisedReview = await this.review(
@@ -3818,8 +3774,6 @@ export class UniversalAgent {
     emit: AgentEventEmitter,
     parentSpanId: string,
     saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
-    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
-    improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<AgentArtifact | undefined> {
     if (!saveArtifact) return undefined;
@@ -3828,7 +3782,7 @@ export class UniversalAgent {
       if (workerResults.some((result) => result.artifacts?.some((artifact) => artifact.mimeType === "image/png"))) {
         return undefined;
       }
-      return this.createScreenshotArtifact(task, emit, parentSpanId, saveArtifact, requestToolBuild, improveTool, toolExecutionContext);
+      return this.createScreenshotArtifact(task, emit, parentSpanId, saveArtifact, toolExecutionContext);
     }
 
     if (!asksForChart(task)) return undefined;
@@ -3852,8 +3806,6 @@ export class UniversalAgent {
         },
         emit,
         parentSpanId,
-        requestToolBuild,
-        improveTool,
       );
       const generatedChartTool = this.tools.findByCapability("chart-generation")[0];
       if (!generatedChartTool) return undefined;
@@ -3863,8 +3815,6 @@ export class UniversalAgent {
         emit,
         parentSpanId,
         saveArtifact,
-        requestToolBuild,
-        improveTool,
         toolExecutionContext,
       );
     }
@@ -3882,8 +3832,6 @@ export class UniversalAgent {
       "artifact:chart",
       "Chart artifact generated",
       toolExecutionContext,
-      requestToolBuild,
-      improveTool,
     );
   }
 
@@ -3892,8 +3840,6 @@ export class UniversalAgent {
     emit: AgentEventEmitter,
     parentSpanId: string,
     saveArtifact: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
-    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
-    improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
   ): Promise<AgentArtifact | undefined> {
     const screenshotIntents = this.resolveTaskIntents(context, toolExecutionContext?.runId);
@@ -3983,8 +3929,6 @@ export class UniversalAgent {
       },
       emit,
       parentSpanId,
-      requestToolBuild,
-      improveTool,
     );
     if (!screenshotTool) return undefined;
 
@@ -4012,8 +3956,6 @@ export class UniversalAgent {
         "artifact:screenshot",
         "Screenshot artifact generated",
         toolExecutionContext,
-        requestToolBuild,
-        improveTool,
       );
     }
 
@@ -4035,18 +3977,22 @@ export class UniversalAgent {
       "artifact:screenshot",
       "Screenshot artifact generated",
       toolExecutionContext,
-      requestToolBuild,
-      improveTool,
     );
   }
 
   private async ensureToolCapability(
     capability: string,
-    buildRequest: ToolBuildRequestInput,
+    buildRequest: {
+      capability?: string;
+      reason: string;
+      sourceSpanId?: string;
+      taskSummary?: string;
+      requiredInputs?: string[];
+      requiredOutputs?: string[];
+      qaCriteria?: string[];
+    },
     emit: AgentEventEmitter,
     parentSpanId: string,
-    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
-    improveTool?: AgentImproveToolFn,
   ): Promise<Tool | undefined> {
     let tool = this.tools.findByCapability(capability)[0];
     if (!tool) {
@@ -4057,8 +4003,6 @@ export class UniversalAgent {
         },
         emit,
         parentSpanId,
-        requestToolBuild,
-        improveTool,
       );
       tool = this.tools.findByCapability(capability)[0];
     }
@@ -4274,8 +4218,6 @@ export class UniversalAgent {
     artifactActor: string,
     artifactTitle: string,
     toolExecutionContext?: BaseToolExecutionContext,
-    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
-    improveTool?: AgentImproveToolFn,
     reworkRetryKeys = new Set<string>(),
   ): Promise<AgentArtifact | undefined> {
     const spanId = createSpanId(`tool-${tool.name}`);
@@ -4352,7 +4294,7 @@ export class UniversalAgent {
           parentSpanId,
         );
       }
-      const buildRequest = await this.handleInsufficientToolCapability(
+      await this.handleInsufficientToolCapability(
         {
           tool,
           capability,
@@ -4364,30 +4306,7 @@ export class UniversalAgent {
         },
         emit,
         parentSpanId,
-        requestToolBuild,
-        improveTool,
       );
-      const replacementTool = this.findReworkedTool(tool, capability, reworkRetryKeys);
-      if (buildRequest && replacementTool) {
-        reworkRetryKeys.add(toolIdentity(tool));
-        return this.retryArtifactToolAfterRework(
-          replacementTool,
-          input,
-          capability,
-          detail,
-          emit,
-          parentSpanId,
-          saveArtifact,
-          isData,
-          toArtifact,
-          artifactActor,
-          artifactTitle,
-          toolExecutionContext,
-          requestToolBuild,
-          improveTool,
-          reworkRetryKeys,
-        );
-      }
       return undefined;
     }
 
@@ -4482,7 +4401,7 @@ export class UniversalAgent {
             parentSpanId,
           );
         }
-        const buildRequest = await this.handleInsufficientToolCapability(
+        await this.handleInsufficientToolCapability(
           {
             tool,
             capability,
@@ -4494,30 +4413,7 @@ export class UniversalAgent {
           },
           emit,
           artifactSpanId,
-          requestToolBuild,
-          improveTool,
         );
-        const replacementTool = this.findReworkedTool(tool, capability, reworkRetryKeys);
-        if (buildRequest && replacementTool) {
-          reworkRetryKeys.add(toolIdentity(tool));
-          return this.retryArtifactToolAfterRework(
-            replacementTool,
-            input,
-            capability,
-            detail,
-            emit,
-            parentSpanId,
-            saveArtifact,
-            isData,
-            toArtifact,
-            artifactActor,
-            artifactTitle,
-            toolExecutionContext,
-            requestToolBuild,
-            improveTool,
-            reworkRetryKeys,
-          );
-        }
         return undefined;
       }
       artifactInput = {
@@ -4698,72 +4594,19 @@ export class UniversalAgent {
       );
   }
 
-  private async retryArtifactToolAfterRework<TData>(
-    tool: Tool,
-    input: Record<string, unknown>,
-    capability: string,
-    detail: string,
-    emit: AgentEventEmitter,
-    parentSpanId: string,
-    saveArtifact: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>,
-    isData: (data: unknown) => data is TData,
-    toArtifact: (data: TData) => ArtifactCreateInput,
-    artifactActor: string,
-    artifactTitle: string,
-    toolExecutionContext: BaseToolExecutionContext | undefined,
-    requestToolBuild: ((request: ToolBuildRequestInput) => Promise<ToolBuildRequest>) | undefined,
-    improveTool: AgentImproveToolFn | undefined,
-    reworkRetryKeys: Set<string>,
-  ): Promise<AgentArtifact | undefined> {
-    const retryStartedAt = new Date();
-    await emit({
-      spanId: createSpanId(`tool-retry-${capability}`),
-      parentSpanId,
-      type: "tool-build-requested",
-      actor: "tool-builder",
-      activity: "tool",
-      status: "completed",
-      title: `Retrying with reworked tool: ${tool.name}`,
-      detail: `${tool.name}${tool.version ? `@${tool.version}` : ""}`,
-      startedAt: retryStartedAt.toISOString(),
-      completedAt: new Date().toISOString(),
-      durationMs: elapsedMs(retryStartedAt),
-      payload: { tool: tool.name, version: tool.version, capability },
-    });
-
-    return this.runArtifactTool(
-      tool,
-      input,
-      capability,
-      detail,
-      emit,
-      parentSpanId,
-      saveArtifact,
-      isData,
-      toArtifact,
-      artifactActor,
-      artifactTitle,
-      toolExecutionContext,
-      requestToolBuild,
-      improveTool,
-      reworkRetryKeys,
-    );
-  }
-
+  /**
+   * Phase G: legacy tool-build queue is gone. The agent no longer
+   * dispatches mid-run capability builds or insufficient-tool
+   * improvements — those are now exclusively council pipeline
+   * concerns (see `src/agents/toolBuildCouncil.ts`). We keep these
+   * stubs around the emit calls so the trace event types remain
+   * consistent for downstream consumers, but no build is requested.
+   */
   private async handleMissingToolCapability(
-    request: ToolBuildRequestInput,
+    request: { capability: string; reason: string; sourceSpanId?: string; taskSummary?: string; requiredInputs?: string[]; requiredOutputs?: string[]; qaCriteria?: string[] },
     emit: AgentEventEmitter,
     parentSpanId: string,
-    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
-    improveTool?: AgentImproveToolFn,
-  ): Promise<ToolBuildRequest | undefined> {
-    // Phase 12 follow-up: defensive guard. Each generated tool added to the
-    // registry over time can satisfy `findByCapability(...)`, so by the time
-    // we reach this method the capability is genuinely uncovered. But a
-    // race or legacy caller could still invoke us when a built-in tool DOES
-    // satisfy the capability. In that case do not create yet another
-    // generated tool (the registry already had ~42 redundant
-    // `generated.browser.screenshot.N` entries this fix removes).
+  ): Promise<undefined> {
     const alreadyCovered = this.tools.findByCapability(request.capability);
     if (alreadyCovered.length > 0) {
       const missingStartedAt = new Date();
@@ -4801,53 +4644,12 @@ export class UniversalAgent {
       durationMs: elapsedMs(missingStartedAt),
       payload: request,
     });
-
-    if (improveTool) {
-      const result = await this.dispatchAgentToolImprovement(
-        {
-          source: "agent_runtime",
-          spanId: request.sourceSpanId,
-          title: `Missing tool capability: ${request.capability}`,
-          contextBundle: {
-            taskPrompt: request.taskSummary,
-            outputSummary: request.reason,
-            error: `Tool capability ${request.capability} was missing in the registry.`,
-          },
-          buildRequestInput: request,
-        },
-        `tool-build-${request.capability}`,
-        `Tool build requested: ${request.capability}`,
-        emit,
-        parentSpanId,
-        improveTool,
-      );
-      if (result?.buildRequest) return result.buildRequest;
-    }
-
-    if (!requestToolBuild) return undefined;
-
-    const buildStartedAt = new Date();
-    const buildRequest = await requestToolBuild(request);
-    await emit({
-      spanId: createSpanId(`tool-build-${request.capability}`),
-      parentSpanId,
-      type: "tool-build-requested",
-      actor: "tool-builder",
-      activity: "tool",
-      status: "completed",
-      title: `Tool build requested: ${request.capability}`,
-      detail: `${buildRequest.contract.toolName}\n${buildRequest.contract.modulePath}\n${buildRequest.contract.testPath}`,
-      startedAt: buildStartedAt.toISOString(),
-      completedAt: new Date().toISOString(),
-      durationMs: elapsedMs(buildStartedAt),
-      payload: { request: buildRequest },
-    });
-
-    return buildRequest;
+    // TODO(Phase 20): route through council /api/tool-build-runs.
+    return undefined;
   }
 
   private async handleInsufficientToolCapability(
-    issue: {
+    _issue: {
       tool: Tool;
       capability: string;
       reason: string;
@@ -4856,166 +4658,11 @@ export class UniversalAgent {
       output: ToolResult;
       sourceSpanId: string;
     },
-    emit: AgentEventEmitter,
-    parentSpanId: string,
-    requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
-    improveTool?: AgentImproveToolFn,
-  ): Promise<ToolBuildRequest | undefined> {
-    if (!requestToolBuild && !improveTool) return undefined;
-
-    const startedAt = new Date();
-    const isGenerated = issue.tool.name.startsWith("generated.");
-    const request: ToolBuildRequestInput = {
-      capability: issue.capability,
-      displayName: `${issue.tool.displayName ?? issue.tool.name} improvement`,
-      reason: [
-        issue.reason,
-        `Current tool: ${issue.tool.name}${issue.tool.version ? `@${issue.tool.version}` : ""}.`,
-        `Task/tool context: ${issue.detail}`,
-        `Input summary: ${summarizeToolInput(issue.input)}`,
-        `Output summary: ${issue.output.content}`,
-      ].join("\n\n"),
-      sourceSpanId: issue.sourceSpanId,
-      taskSummary: issue.detail.slice(0, 1200),
-      desiredToolName: isGenerated ? issue.tool.name : undefined,
-      replacesToolName: isGenerated ? issue.tool.name : undefined,
-      replacesVersion: isGenerated && issue.tool.version ? issue.tool.version : undefined,
-      feedback: issue.reason,
-      requiredInputs: Object.keys(issue.input).slice(0, 8),
-      requiredOutputs: ["content", "data", "artifact"],
-      qaCriteria: [
-        "Reproduce the observed insufficient-tool behavior from the source span context.",
-        "Keep the tool reusable and capability-oriented; do not hard-code the original task.",
-        "Add tests for the previous failure plus a successful corrected behavior.",
-        "Register a new version only after QA and runtime activation pass.",
-      ],
-    };
-
-    if (improveTool) {
-      const result = await this.dispatchAgentToolImprovement(
-        {
-          source: "agent_runtime",
-          spanId: issue.sourceSpanId,
-          toolName: issue.tool.name,
-          toolVersion: issue.tool.version,
-          title: `Insufficient tool: ${issue.tool.name}`,
-          contextBundle: {
-            taskPrompt: issue.detail.slice(0, 1200),
-            inputSummary: summarizeToolInput(issue.input),
-            outputSummary: issue.output.content,
-            error: issue.reason,
-          },
-          buildRequestInput: request,
-        },
-        `tool-rework-${issue.capability}`,
-        `Tool rework requested: ${issue.tool.name}`,
-        emit,
-        parentSpanId,
-        improveTool,
-        { sourceTool: issue.tool.name, sourceToolVersion: issue.tool.version },
-      );
-      if (result?.buildRequest) return result.buildRequest;
-    }
-
-    if (!requestToolBuild) return undefined;
-    const buildRequest = await requestToolBuild(request);
-    await emit({
-      spanId: createSpanId(`tool-rework-${issue.capability}`),
-      parentSpanId,
-      type: "tool-build-requested",
-      actor: "tool-builder",
-      activity: "tool",
-      status: "completed",
-      title: `Tool rework requested: ${issue.tool.name}`,
-      detail: `${buildRequest.contract.toolName}\n${buildRequest.contract.modulePath}\n${buildRequest.contract.testPath}`,
-      startedAt: startedAt.toISOString(),
-      completedAt: new Date().toISOString(),
-      durationMs: elapsedMs(startedAt),
-      payload: { request: buildRequest, sourceTool: issue.tool.name, sourceToolVersion: issue.tool.version },
-    });
-
-    return buildRequest;
-  }
-
-  private async dispatchAgentToolImprovement(
-    request: ToolImprovementRequest,
-    buildSpanPrefix: string,
-    buildTitle: string,
-    emit: AgentEventEmitter,
-    parentSpanId: string,
-    improveTool: AgentImproveToolFn,
-    extraPayload: Record<string, unknown> = {},
-  ): Promise<ToolImprovementResult | undefined> {
-    const startedAt = new Date();
-    const result = await improveTool(request);
-    if (result.status === "failed_to_request") {
-      await emit({
-        spanId: createSpanId(`${buildSpanPrefix}-failed`),
-        parentSpanId,
-        type: "tool-build-requested",
-        actor: "tool-builder",
-        activity: "tool",
-        status: "failed",
-        title: `Tool improvement request failed: ${request.title ?? "unknown"}`,
-        detail: result.error ?? "Coordinator could not create the tool rework request.",
-        startedAt: startedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(startedAt),
-        payload: { errorCode: result.errorCode, error: result.error, ...extraPayload },
-      });
-      return result;
-    }
-
-    if (result.buildRequest) {
-      await emit({
-        spanId: createSpanId(buildSpanPrefix),
-        parentSpanId,
-        type: "tool-build-requested",
-        actor: "tool-builder",
-        activity: "tool",
-        status: "completed",
-        title: buildTitle,
-        detail: `${result.buildRequest.contract.toolName}\n${result.buildRequest.contract.modulePath}\n${result.buildRequest.contract.testPath}`,
-        startedAt: startedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(startedAt),
-        payload: {
-          request: result.buildRequest,
-          investigationId: result.investigation?.id,
-          waitId: result.wait?.id,
-          agentDriven: true,
-          ...extraPayload,
-        },
-      });
-    }
-
-    if (result.wait) {
-      const waitOpenedAt = new Date();
-      await emit({
-        spanId: createSpanId(`tool-rework-wait-${result.wait.id}`),
-        parentSpanId,
-        type: "tool-rework-wait-opened",
-        actor: "coordinator",
-        activity: "tool",
-        status: "completed",
-        title: `Tool rework wait opened: ${result.wait.id}`,
-        detail:
-          `Run ${result.wait.runId} is waiting for tool improvement triggered by investigation ` +
-          `${result.investigation?.id ?? "(unknown)"}; build ${result.buildRequest?.id ?? "(unknown)"}.`,
-        startedAt: waitOpenedAt.toISOString(),
-        completedAt: waitOpenedAt.toISOString(),
-        durationMs: 0,
-        payload: {
-          wait: result.wait,
-          investigationId: result.investigation?.id,
-          buildRequestId: result.buildRequest?.id,
-          agentDriven: true,
-          ...extraPayload,
-        },
-      });
-    }
-
-    return result;
+    _emit: AgentEventEmitter,
+    _parentSpanId: string,
+  ): Promise<undefined> {
+    // TODO(Phase 20): route through council /api/tool-build-runs.
+    return undefined;
   }
 
   private async review(

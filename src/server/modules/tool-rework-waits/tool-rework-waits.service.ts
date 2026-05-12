@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   Inject,
   Injectable,
   NotFoundException,
@@ -12,7 +11,6 @@ import {
   parseOptionalText,
   parseRequiredText,
 } from "../../common/parsers.js";
-import { ToolReworkCoordinatorService } from "../../common/services/tool-rework-coordinator.service.js";
 import {
   TOOL_REWORK_WAIT_STATUSES,
   type ToolReworkWaitCreateInput,
@@ -22,14 +20,19 @@ import {
   type ToolReworkWaitUpdateInput,
 } from "../../../runs/toolReworkWaitStore.js";
 import { TOOL_REWORK_WAIT_STORE } from "../../persistence/tokens.js";
-import { RunsService } from "../runs/runs.service.js";
 
+/**
+ * Phase G: with the legacy tool-build queue removed, this service is
+ * now a read-and-record layer over the underlying wait store. The
+ * `resume`, `retryRun`, and `autoRetry` flows used to be routed
+ * through the `ToolReworkCoordinator`; that machinery is gone.
+ * The waits remain visible in the UI; trigger/promotion flows will
+ * be re-wired via the council `/api/tool-build-runs` surface (Phase 20).
+ */
 @Injectable()
 export class ToolReworkWaitsService {
   constructor(
     @Inject(TOOL_REWORK_WAIT_STORE) private readonly store: ToolReworkWaitStore | undefined,
-    @Inject(ToolReworkCoordinatorService) private readonly rework: ToolReworkCoordinatorService,
-    @Inject(RunsService) private readonly runs: RunsService,
   ) {}
 
   async list(): Promise<ToolReworkWaitRecord[]> {
@@ -60,16 +63,10 @@ export class ToolReworkWaitsService {
       );
     }
     try {
-      const wait = await this.rework
-        .createImprovementCoordinator({ actorId: "user-admin", actorType: "user" })
-        .openWait(input);
-      if (!wait) throw new Error("Tool rework wait store is not configured");
-      return wait;
+      return await this.store.create(input);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid tool rework wait";
-      throw message.includes("was not found") || message.includes("does not match")
-        ? new BadRequestException(message)
-        : new BadRequestException(message);
+      throw new BadRequestException(message);
     }
   }
 
@@ -93,65 +90,25 @@ export class ToolReworkWaitsService {
     }
   }
 
-  async resume(id: string, rawBody: unknown) {
-    const body = isRecord(rawBody) ? rawBody : {};
-    try {
-      const wait = await this.rework.markReadyForRetry(
-        id,
-        {
-          reason: parseOptionalText(body.reason),
-          retryRunId: parseOptionalText(body.retryRunId),
-          retrySpanId: parseOptionalText(body.retrySpanId),
-        },
-        { actorId: "user-admin", actorType: "user" },
-      );
-      return { wait };
-    } catch (error) {
-      this.throwCoordinatorError(error, "Invalid tool rework resume request");
-    }
+  // TODO(Phase 20): re-wire via council /api/tool-build-runs.
+  async resume(_id: string, _rawBody: unknown) {
+    throw new ServiceUnavailableException(
+      "Tool rework resume is not wired to the council pipeline yet (Phase 20).",
+    );
   }
 
-  async retryRun(id: string, rawBody: unknown) {
-    const coordinator = this.rework.createRetryCoordinator({ actorId: "user-admin", actorType: "user" });
-    if (!coordinator) throw new ServiceUnavailableException("Tool rework retry coordinator is not available");
-    const body = isRecord(rawBody) ? rawBody : {};
-    const result = await coordinator.createRetryRun(id, { reason: parseOptionalText(body.reason) });
-    if (result.status === "wait_not_found") throw new NotFoundException(result.error);
-    if (result.status !== "created" && result.status !== "already_exists") {
-      throw new ConflictException({ error: result.error, status: result.status });
-    }
-    if (result.status === "created" && result.retryRun) {
-      void this.runs.executeRun(result.retryRun.id, result.retryRun.task, [], {
-        threadId: result.retryRun.threadId,
-      });
-    }
-    return result;
+  // TODO(Phase 20): re-wire via council /api/tool-build-runs.
+  async retryRun(_id: string, _rawBody: unknown) {
+    throw new ServiceUnavailableException(
+      "Tool rework retry is not wired to the council pipeline yet (Phase 20).",
+    );
   }
 
-  async autoRetry(id: string) {
-    const coordinator = this.rework.createAutoRetryCoordinator({
-      actorId: "auto-retry-orchestrator",
-      actorType: "agent",
-    });
-    if (!coordinator) throw new ServiceUnavailableException("Tool rework auto-retry coordinator is not available");
-    const result = await coordinator.tryAutoRetry(id);
-    if (result.status === "wait_not_found") throw new NotFoundException(result.reason);
-    if (result.status !== "created" && result.status !== "already_exists" && result.status !== "disabled") {
-      throw new ConflictException({ error: result.reason, status: result.status, policy: result.policy });
-    }
-    if (result.status === "created" && result.retryRun) {
-      void this.runs.executeRun(result.retryRun.id, result.retryRun.task, [], {
-        threadId: result.retryRun.threadId,
-      });
-    }
-    return result;
-  }
-
-  private throwCoordinatorError(error: unknown, fallback: string): never {
-    const message = error instanceof Error ? error.message : fallback;
-    if (message.includes("was not found")) throw new NotFoundException(message);
-    if (message.includes("not promoted yet")) throw new ConflictException(message);
-    throw new BadRequestException(message);
+  // TODO(Phase 20): re-wire via council /api/tool-build-runs.
+  async autoRetry(_id: string) {
+    throw new ServiceUnavailableException(
+      "Tool rework auto-retry is not wired to the council pipeline yet (Phase 20).",
+    );
   }
 
   private parseCreate(value: unknown): ToolReworkWaitCreateInput {

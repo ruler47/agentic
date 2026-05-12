@@ -107,6 +107,82 @@ test("LlmClient retries same-tier models then escalates when configured", async 
   }
 });
 
+test("LlmClient surfaces finish_reason on empty content and stops after one explicit-model attempt", async () => {
+  // Phase G follow-up: when the council addresses a specific model
+  // (e.g. gemma-4-26b-a4b) and the model returns empty content with
+  // finish_reason="length" (context overflow), the client must:
+  //   1. call the model exactly ONCE (no duplicate-retry — the
+  //      council owns Borda cross-model fallback);
+  //   2. include the finish_reason in the error string so the
+  //      operator sees overflow vs. refusal in the trace.
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+
+  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    calls.push(body.model);
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "" }, finish_reason: "length" }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  try {
+    const client = new LlmClient({
+      baseUrl: "http://llm.local/v1",
+      model: "fallback",
+      temperature: 0.2,
+      tierModels: {},
+      tierModelCandidates: {},
+    });
+
+    await assert.rejects(
+      () =>
+        client.complete([{ role: "user", content: "hello" }], {
+          model: "gemma-4-26b-a4b",
+        }),
+      /gemma-4-26b-a4b: empty assistant content \(finish_reason=length\)/,
+    );
+
+    assert.deepEqual(calls, ["gemma-4-26b-a4b"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("LlmClient treats whitespace-only assistant content as empty", async () => {
+  // Phase G follow-up: gemma occasionally returns "\n\n" on context
+  // overflow. The legacy falsy-check (`!content`) let that through,
+  // then `content.trim()` returned "" and a downstream JSON parser
+  // crashed with a confusing error. Now the whitespace-only output
+  // is bucketed into the same "empty assistant content" error path.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({ choices: [{ message: { content: "\n\n  \t" } }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+
+  try {
+    const client = new LlmClient({
+      baseUrl: "http://llm.local/v1",
+      model: "fallback",
+      temperature: 0.2,
+      tierModels: {},
+      tierModelCandidates: {},
+    });
+
+    await assert.rejects(
+      () => client.complete([{ role: "user", content: "hi" }]),
+      /fallback: empty assistant content/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("LlmClient preserves string error bodies from OpenAI-compatible servers", async () => {
   const originalFetch = globalThis.fetch;
 

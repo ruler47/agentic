@@ -2749,3 +2749,134 @@ available  (loader does not downgrade)
 | Tests | Slice B updates the 7 toolPackageRunner tests; nothing else asserts on `status`. |
 | UI looks busier with one more badge | Keep the colour palette minimal — `loaded` is a softer green-yellow, `available` is solid green. |
 
+
+## Phase 20: Auto-Improvement Migration to Council
+
+Status: **Planned. Required follow-up to Phase G.**
+
+Phase G deletes the legacy tool-build queue (`toolBuildProviders`,
+`toolBuildWorkflow`, `toolBuildWorker`, `toolBuildRequestStore`,
++ provider implementations). The two systems that depended on it for
+**autonomous self-healing** lose their backend in the process:
+
+- **`ToolImprovementCoordinator`** — agent calls `improveTool(name,
+  reason)` mid-run when a worker tool returns persistent failures.
+  Today this creates a `tool_build_request` row + an investigation
+  ticket; the legacy queue picks it up.
+- **`ToolReworkAutoRetryCoordinator`** — when a tool rework
+  (improvement) finishes, the original run that triggered it is
+  auto-resumed.
+
+After Phase G these flows are **gone**. The operator can still build
+tools manually through the council UI, but the runtime cannot fix a
+broken tool by itself.
+
+### Goal
+
+Re-wire `ToolImprovementCoordinator` + `ToolReworkAutoRetryCoordinator`
+to drive **council runs** (`/api/tool-build-runs`) instead of legacy
+queue rows. Single pipeline, both manual + autonomous paths converge
+on it.
+
+### Slices
+
+- **Slice A — `ToolImprovementCoordinator.requestImprovement` migrates
+  to council.** Instead of `toolBuildRequestStore.create(...)`, it
+  POSTs to `tool-build-runs` with `existingToolName` + a generated
+  `bugContext` describing the failure observed in the parent run.
+  The agent's worker no longer waits for a "queued" state — it
+  returns a `waiting_tool_rework` signal pointing at the council run.
+
+- **Slice B — `ToolReworkAutoRetryCoordinator.notifyBuildRegistered`
+  hooks the council `tool-build-registered` event.** When the
+  council finishes with `qaPassed === true` and the rebuilt tool
+  matches a pending wait, the parent run auto-resumes (Phase 19
+  Slice A resume path). When the council aborts via `registration-aborted`,
+  the wait is marked failed with the operator-visible reason from
+  the trace.
+
+- **Slice C — drop `tool_build_requests` table and store entirely.**
+  Migration removes the legacy table; investigations link to council
+  run ids instead.
+
+- **Slice D — investigation UI updates.** The Tool Investigations
+  page links to the council run's Trace Lab page rather than the
+  retired build-request page.
+
+### Risks
+
+- Council runs are slower than the legacy queue (council is multi-LLM
+  brainstorm + vote; queue picked the first available provider).
+  Auto-improvement latency grows from ~30s to ~3min. Mitigation: a
+  fast-path `councilSize === 1` mode that skips brainstorm/vote when
+  the trigger is an autonomous improvement — picks the default coding
+  model and goes straight to implement.
+- Migration order matters: Slice A before Phase G's removal of
+  `toolBuildRequestStore`, otherwise improvement requests fail with
+  "store not configured" before they're rerouted.
+
+
+## Phase 21: Implement-phase prompt budgeting & JSON-mode
+
+Status: **Planned. Follow-up to Phase G empty-content debugging.**
+
+Phase G shipped three surgical fixes in `src/llm/client.ts`:
+
+- single-attempt for explicit-model calls (was `[m, m]`; council owns
+  cross-model fallback via Borda, the duplicate added ~40 s per
+  gemma-empty without recovery value);
+- `finish_reason` surfaced in the empty-content error string so the
+  trace shows `(finish_reason=length)` for overflow vs `(finish_reason=stop)`
+  for refusal — one-glance diagnosis;
+- whitespace-only output is treated as empty (was `!content`, now
+  `!content?.trim()`) — gemma sometimes returns `"\n\n"` on overflow
+  and the falsy-check let it slip through to a confusing downstream
+  parser error.
+
+Plus the Q4 council-side emit at `universalAgent.ts:894-921`: each
+implement-attempt failure now produces a `tool-build-code-drafted`
+span with status `failed` carrying `payload.prompt` and the error
+detail, so empty-Gemma is now visible in Trace Lab.
+
+What's still open after that:
+
+- **Slice A — total-prompt budgeting.** The implement prompt stacks
+  existing source (≤12 kchars), each reference doc (≤12 kchars,
+  unbounded fan-out), proposal, constraints, and the optional
+  research block. With two refs a rework prompt hits ~36 kchars
+  before the proposal, easily overflowing gemma's ~8 k context.
+  Compute char-length once and either (a) short-circuit gemma when
+  the prompt exceeds a tier-specific threshold and jump to the next
+  Borda candidate without an LLM call, or (b) shrink the reference
+  docs proportionally so the total fits.
+
+- **Slice B — JSON-mode for implement.** The implement prompt asks
+  for `{ "files": [...] }` and parses with a brittle JSON sniffer.
+  LM Studio supports `response_format: { type: "json_object" }` on
+  most models; passing it would (1) make gemma-style "no commentary"
+  redundant (the server enforces JSON-only), (2) bump success rate
+  on quantised models, (3) let us drop the `parseFilesJson` fallback
+  ladder.
+
+- **Slice C — model role config.** Phase 16 Slice F notes that
+  gemma is reliable as a brainstorm proposer but flaky as an
+  implementer. Add a per-phase `disallowedModels` config so an
+  operator can ban a model from implement/repair without removing
+  it from the council entirely.
+
+- **Slice D — per-retry visibility (optional).** The Q4 emit fires
+  once per implement-candidate, not once per inner LLM retry. With
+  Slice A above the inner retry is now a single call, so this is
+  cosmetic; skip unless an operator complains.
+
+### Risks
+
+- Slice A's char-threshold is model-dependent. A wrong value either
+  skips a perfectly viable gemma call (false positive) or lets a
+  prompt through that still overflows (false negative). Mitigation:
+  log every short-circuit decision with the actual prompt size so
+  the threshold can be tuned from telemetry rather than guesswork.
+- Slice B's JSON-mode is server-dependent. LM Studio supports it but
+  vLLM / llama.cpp variants may not — gate behind a config flag and
+  fall back to the prompt-only mode when the server rejects the
+  request.

@@ -27,8 +27,6 @@ import { PostgresSkillMemory } from "../../memory/postgresSkillMemory.js";
 import { createTextEmbeddingProviderFromEnv } from "../../memory/textEmbedding.js";
 import { InMemoryToolMetadataStore } from "../../tools/toolMetadataStore.js";
 import { PostgresToolMetadataStore } from "../../tools/postgresToolMetadataStore.js";
-import { InMemoryToolBuildRequestStore } from "../../tools/toolBuildRequestStore.js";
-import { PostgresToolBuildRequestStore } from "../../tools/postgresToolBuildRequestStore.js";
 import { InMemoryToolInvestigationStore } from "../../tools/toolInvestigationStore.js";
 import { PostgresToolInvestigationStore } from "../../tools/postgresToolInvestigationStore.js";
 import { InMemoryToolReworkWaitStore } from "../../runs/toolReworkWaitStore.js";
@@ -90,7 +88,6 @@ import {
   SKILL_MEMORY,
   TEXT_EMBEDDING_PROVIDER,
   TOOL_BUILD_MIGRATION_QA_POOL,
-  TOOL_BUILD_REQUEST_STORE,
   TOOL_INVESTIGATION_STORE,
   TOOL_METADATA_STORE,
   TOOL_MIGRATION_STORE,
@@ -197,12 +194,6 @@ const providers: Provider[] = [
     inject: [PG_POOL],
     useFactory: (pool: PgPool | undefined) =>
       pool ? new PostgresToolMetadataStore(pool) : new InMemoryToolMetadataStore(),
-  },
-  {
-    provide: TOOL_BUILD_REQUEST_STORE,
-    inject: [PG_POOL],
-    useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresToolBuildRequestStore(pool) : new InMemoryToolBuildRequestStore(),
   },
   {
     provide: TOOL_INVESTIGATION_STORE,

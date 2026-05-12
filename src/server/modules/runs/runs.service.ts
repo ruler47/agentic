@@ -35,8 +35,6 @@ import type {
   ArtifactUploadInput,
 } from "../../../types.js";
 import type { AuditEventInput } from "../../../audit/types.js";
-import type { ToolBuildRequestStore } from "../../../tools/toolBuildRequestStore.js";
-import type { ToolBuildWorkflow } from "../../../tools/toolBuildWorkflow.js";
 import type { ToolServiceSupervisor } from "../../../tools/toolServiceSupervisor.js";
 import type { ToolServiceEventStore } from "../../../tools/toolServiceEventStore.js";
 import type { SecretHandleStore } from "../../../secrets/secretHandleStore.js";
@@ -47,8 +45,6 @@ import type {
   WorkLedgerStore,
 } from "../../../work-ledger/types.js";
 import { AuditService } from "../../common/services/audit.service.js";
-import { ToolBuildInputFinalizerService } from "../../common/services/tool-build-input-finalizer.service.js";
-import { ToolReworkCoordinatorService } from "../../common/services/tool-rework-coordinator.service.js";
 import { ToolsService } from "../tools/tools.service.js";
 import { CouncilToolAdapter } from "../../../tools/councilToolAdapter.js";
 import {
@@ -68,8 +64,6 @@ import {
   RUN_STORE,
   RUN_RETROSPECTIVE_STORE,
   SECRET_HANDLE_STORE,
-  TOOL_BUILD_REQUEST_STORE,
-  TOOL_BUILD_WORKFLOW,
   TOOL_RUNTIME_SETTINGS,
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_SUPERVISOR,
@@ -171,8 +165,6 @@ export class RunsService implements OnApplicationBootstrap {
     @Inject(CONVERSATION_STORE) private readonly threads: ConversationThreadStore | undefined,
     @Inject(GROUP_PROFILE_STORE) private readonly groupProfiles: GroupProfileStore | undefined,
     @Inject(USER_STORE) private readonly users: UserStore,
-    @Inject(TOOL_BUILD_REQUEST_STORE) private readonly toolBuildRequests: ToolBuildRequestStore | undefined,
-    @Inject(TOOL_BUILD_WORKFLOW) private readonly toolBuildWorkflow: ToolBuildWorkflow | undefined,
     @Inject(RELOAD_GENERATED_TOOLS) private readonly reloadGeneratedTools: (() => Promise<void>) | undefined,
     @Inject(TOOL_SERVICE_SUPERVISOR) private readonly toolServiceSupervisor: ToolServiceSupervisor | undefined,
     @Inject(TOOL_SERVICE_EVENT_STORE) private readonly toolServiceEvents: ToolServiceEventStore | undefined,
@@ -182,8 +174,6 @@ export class RunsService implements OnApplicationBootstrap {
     @Inject(EVIDENCE_LEDGER_STORE) private readonly evidenceLedger: EvidenceLedgerStore | undefined,
     @Inject(RUN_RETROSPECTIVE_STORE) private readonly retrospectives: RunRetrospectiveStore | undefined,
     @Inject(AuditService) private readonly audit: AuditService,
-    @Inject(ToolBuildInputFinalizerService) private readonly finalizer: ToolBuildInputFinalizerService,
-    @Inject(ToolReworkCoordinatorService) private readonly rework: ToolReworkCoordinatorService,
     // Phase 14: deps for the council adapter. All optional so older
     // wiring (CLI, fixtures, deployments without coding-council config)
     // still constructs a working service.
@@ -1369,84 +1359,11 @@ export class RunsService implements OnApplicationBootstrap {
               return saved;
             }
           : undefined,
-        requestToolBuild: this.toolBuildRequests
-          ? async (request) => {
-              const finalized = await this.finalizer.finalize({ ...request, sourceRunId: id });
-              const buildRequest = await this.toolBuildRequests!.create(finalized);
-              await this.audit.record({
-                instanceId: run?.instanceId,
-                actorId: "coordinator",
-                actorType: "agent",
-                action: "tool_build.requested",
-                targetType: "tool_build_request",
-                targetId: buildRequest.id,
-                status: "pending",
-                runId: id,
-                threadId: run?.threadId,
-                requesterUserId: run?.requesterUserId,
-                channel: run?.channel,
-                summary: `Tool build requested for capability: ${buildRequest.capability}`,
-                metadata: sanitizeAuditMetadata({ capability: buildRequest.capability }),
-              });
-              if (!this.toolBuildWorkflow) return buildRequest;
-              const workflowResult = await this.toolBuildWorkflow.runOnce(buildRequest.id);
-              if (workflowResult.request.status === "registered") {
-                if (!workflowResult.activationReport) {
-                  await this.reloadGeneratedTools?.();
-                }
-                await this.audit.record({
-                  instanceId: run?.instanceId,
-                  actorId: "tool-registrar",
-                  actorType: "agent",
-                  action: "tool_build.registered",
-                  targetType: "tool",
-                  targetId:
-                    workflowResult.registeredToolName ??
-                    workflowResult.request.registeredToolName ??
-                    workflowResult.request.id,
-                  runId: id,
-                  threadId: run?.threadId,
-                  requesterUserId: run?.requesterUserId,
-                  channel: run?.channel,
-                  summary: `Tool build registered: ${workflowResult.registeredToolName ?? workflowResult.request.registeredToolName}`,
-                  metadata: sanitizeAuditMetadata({
-                    capability: workflowResult.request.capability,
-                    requestId: workflowResult.request.id,
-                  }),
-                });
-                await this.rework.notifyBuildRegistered(
-                  workflowResult.request.id,
-                  workflowResult.registeredToolName ?? workflowResult.request.registeredToolName,
-                  workflowResult.request.contract?.version,
-                  {
-                    actorId: "tool-registrar",
-                    actorType: "agent",
-                    instanceId: run?.instanceId,
-                    threadId: run?.threadId,
-                    requesterUserId: run?.requesterUserId,
-                    channel: run?.channel,
-                  },
-                  async (wait) => {
-                    await this.autoRetryPromotedWait(wait.id, run);
-                  },
-                );
-              }
-              return workflowResult.request;
-            }
-          : undefined,
-        toolImprovementCoordinator: this.rework.createImprovementCoordinator(
-          {
-            actorId: "coordinator",
-            actorType: "agent",
-            instanceId: run?.instanceId,
-            threadId: run?.threadId,
-            requesterUserId: run?.requesterUserId,
-            channel: run?.channel,
-          },
-          async (wait) => {
-            await this.autoRetryPromotedWait(wait.id, run);
-          },
-        ),
+        // Phase G: legacy tool-build queue removed. Tool-build/rework flows
+        // are now routed exclusively via the council pipeline.
+        // TODO(Phase 20): re-wire on-the-fly improvement via council
+        // /api/tool-build-runs once that surface gains an `improvement`
+        // entry point.
         toolExecutionContext: {
           resolveSecret: this.secrets?.resolve ? (handle) => this.secrets!.resolve!(handle) : undefined,
           resolveConfiguration: async (key, toolName) =>
@@ -1655,24 +1572,6 @@ export class RunsService implements OnApplicationBootstrap {
       // controllers + abort-signal subscriptions.
       const existing = this.runAbortControllers.get(id);
       if (existing === runAbort) this.runAbortControllers.delete(id);
-    }
-  }
-
-  private async autoRetryPromotedWait(waitId: string, run: AgentRunRecord | undefined): Promise<void> {
-    const auto = this.rework.createAutoRetryCoordinator({
-      actorId: "auto-retry-orchestrator",
-      actorType: "agent",
-      instanceId: run?.instanceId,
-      threadId: run?.threadId,
-      requesterUserId: run?.requesterUserId,
-      channel: run?.channel,
-    });
-    if (!auto) return;
-    const result = await auto.tryAutoRetry(waitId);
-    if (result.status === "created" && result.retryRun) {
-      void this.executeRun(result.retryRun.id, result.retryRun.task, [], {
-        threadId: result.retryRun.threadId,
-      });
     }
   }
 

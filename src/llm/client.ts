@@ -9,6 +9,15 @@ type ChatCompletionResponse = {
     message?: {
       content?: string;
     };
+    /**
+     * OpenAI-compatible servers (LM Studio, vLLM, llama.cpp) set this
+     * to "stop" | "length" | "content_filter" | …. When the model
+     * returns empty content the reason distinguishes context-window
+     * overflow ("length") from a refusal/early-stop ("stop") — we
+     * surface it in the error string so the operator can pick the
+     * right remediation (shrink prompt vs. reword) from the trace.
+     */
+    finish_reason?: string;
   }>;
   error?: unknown;
 };
@@ -33,12 +42,21 @@ export class LlmClient {
   ): Promise<string> {
     // Phase 14: explicit `model` override bypasses tier resolution so the
     // tool-build council can address each peer model directly. Falls
-    // through to tier-based attempts when omitted. We retry an explicit
-    // model once on empty content — LM Studio + large quantised models
-    // occasionally return an empty stream the first time the model is
-    // warmed up.
+    // through to tier-based attempts when omitted.
+    //
+    // Phase G follow-up: the council loop is the only caller that sets
+    // `options.model`, and it owns its own cross-model fallback via
+    // Borda alternates (see `runToolBuildCouncil` in
+    // `src/agents/universalAgent.ts`). Re-trying the SAME model with
+    // the SAME prompt here only doubled latency on context-window
+    // overflows — LM Studio returns 200-with-empty-content
+    // deterministically when `finish_reason="length"`, so the second
+    // call would have failed identically ~5 ms later. Dropping the
+    // duplicate attempt saves ~40 s per gemma-empty fallback without
+    // losing recovery: the council loop still tries the next Borda
+    // candidate.
     const attempts = options?.model
-      ? [options.model, options.model]
+      ? [options.model]
       : await this.modelAttemptsForTier(options?.modelTier);
     const errors: string[] = [];
 
@@ -69,8 +87,15 @@ export class LlmClient {
         }
 
         const content = data.choices?.[0]?.message?.content;
-        if (!content) {
-          errors.push(`${model}: empty assistant content`);
+        const finishReason = data.choices?.[0]?.finish_reason;
+        // Phase G follow-up: treat whitespace-only output as empty
+        // too. Gemma occasionally returns "\n\n" on context overflow
+        // which would otherwise pass through the falsy-check and hit
+        // a downstream JSON parser with an empty string (much worse
+        // error message than "empty assistant content").
+        if (!content?.trim()) {
+          const reasonNote = finishReason ? ` (finish_reason=${finishReason})` : "";
+          errors.push(`${model}: empty assistant content${reasonNote}`);
           continue;
         }
 

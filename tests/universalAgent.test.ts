@@ -7,13 +7,10 @@ import { UniversalAgent } from "../src/agents/universalAgent.js";
 import { LlmClient } from "../src/llm/client.js";
 import { SkillMemory } from "../src/memory/skillMemory.js";
 import { AgentArtifact, AgentEvent, ArtifactCreateInput, Message } from "../src/types.js";
-import { ToolBuildRequestInput } from "../src/tools/toolBuildRequestStore.js";
-import { InMemoryToolBuildRequestStore } from "../src/tools/toolBuildRequestStore.js";
 import { InMemoryToolInvestigationStore } from "../src/tools/toolInvestigationStore.js";
 import { InMemoryToolMetadataStore } from "../src/tools/toolMetadataStore.js";
 import { InMemoryToolReworkWaitStore } from "../src/runs/toolReworkWaitStore.js";
 import { InMemoryRunStore } from "../src/runs/inMemoryRunStore.js";
-import { ToolImprovementCoordinator } from "../src/tools/toolImprovementCoordinator.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { Tool } from "../src/tools/tool.js";
 import { InMemoryWorkLedgerStore } from "../src/work-ledger/workLedgerStore.js";
@@ -442,245 +439,8 @@ test("UniversalAgent plans council invocation contracts for high-risk broad task
   }
 });
 
-test("UniversalAgent records a tool build request when a required capability is missing", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
-  const memory = new SkillMemory(join(dir, "skills.json"));
-  const fakeLlm = new FakeLlm([
-    '{"mode":"direct","reason":"small artifact task","domains":["visualization"],"riskLevel":"low"}',
-    "I cannot attach a chart because the tool is missing.",
-    '{"shouldStore":false}',
-  ]);
-  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory);
-  const requestedBuilds: ToolBuildRequestInput[] = [];
-  const events: string[] = [];
 
-  try {
-    await agent.run('Построй график по данным {"history":[{"date":"2026-01-01","value":1},{"date":"2026-01-02","value":2}]}', {
-      saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
-        id: "artifact-1",
-        runId: "run-1",
-        kind: "output",
-        filename: artifact.filename,
-        mimeType: artifact.mimeType,
-        sizeBytes: 1,
-        url: "/artifact",
-        createdAt: new Date().toISOString(),
-      }),
-      requestToolBuild: async (request) => {
-        requestedBuilds.push(request);
-        return {
-          ...request,
-          id: "toolbuild-1",
-          status: "requested",
-          contract: {
-            toolName: "generated.chart.generation",
-            version: "1.0.0",
-            modulePath: "src/tools/generated/chart-generationTool.ts",
-            testPath: "tests/generated/chart-generationTool.test.ts",
-            capability: request.capability,
-            description: "Generated chart tool",
-            startupMode: "on-demand",
-            inputSchema: { type: "object", properties: {}, required: [] },
-            outputSchema: { type: "object", properties: {}, required: [] },
-            acceptanceCriteria: ["works"],
-            qaCriteria: ["tested"],
-            builderInstructions: ["build"],
-          },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-      },
-      onEvent: (event) => {
-        events.push(event.type);
-      },
-    });
 
-    assert.equal(requestedBuilds.length, 1);
-    assert.equal(requestedBuilds[0]?.capability, "chart-generation");
-    assert.ok(events.includes("tool-missing"));
-    assert.ok(events.includes("tool-build-requested"));
-    assert.equal(fakeLlm.callCount, 3);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("UniversalAgent requests a versioned tool rework when an existing generated artifact tool is insufficient", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
-  const memory = new SkillMemory(join(dir, "skills.json"));
-  const fakeLlm = new FakeLlm([
-    '{"mode":"direct","reason":"small artifact task","domains":["visualization"],"riskLevel":"low"}',
-    "I tried to attach a chart, but the current tool could not parse the data.",
-    '{"shouldStore":false}',
-  ]);
-  const registry = new ToolRegistry();
-  registry.register({
-    name: "generated.chart.generation",
-    version: "1.0.0",
-    description: "Generated chart tool with insufficient behavior.",
-    capabilities: ["chart-generation"],
-    async run() {
-      return { ok: false, content: "Could not parse arbitrary series data." };
-    },
-  });
-  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
-  const requestedBuilds: ToolBuildRequestInput[] = [];
-  const events: AgentEvent[] = [];
-
-  try {
-    await agent.run('Построй график по данным {"series":[{"x":"2026-01-01","y":1}]}', {
-      saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
-        id: "artifact-1",
-        runId: "run-1",
-        kind: "output",
-        filename: artifact.filename,
-        mimeType: artifact.mimeType,
-        sizeBytes: 1,
-        url: "/artifact",
-        createdAt: new Date().toISOString(),
-      }),
-      requestToolBuild: async (request) => {
-        requestedBuilds.push(request);
-        return {
-          ...request,
-          id: "toolbuild-rework-1",
-          status: "requested",
-          contract: {
-            toolName: request.desiredToolName ?? "generated.chart.generation",
-            version: "1.1.0",
-            modulePath: "src/tools/generated/chart-generation-v1-1-0Tool.ts",
-            testPath: "tests/generated/chart-generation-v1-1-0Tool.test.ts",
-            capability: request.capability,
-            description: "Generated chart tool rework",
-            startupMode: "on-demand",
-            inputSchema: { type: "object", properties: {}, required: [] },
-            outputSchema: { type: "object", properties: {}, required: [] },
-            acceptanceCriteria: ["works"],
-            qaCriteria: ["tested"],
-            builderInstructions: ["build"],
-            replacesVersion: request.replacesVersion,
-          },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-      },
-      onEvent: (event) => {
-        events.push(event);
-      },
-    });
-
-    assert.equal(requestedBuilds.length, 1);
-    assert.equal(requestedBuilds[0]?.capability, "chart-generation");
-    assert.equal(requestedBuilds[0]?.desiredToolName, "generated.chart.generation");
-    assert.equal(requestedBuilds[0]?.replacesToolName, "generated.chart.generation");
-    assert.equal(requestedBuilds[0]?.replacesVersion, "1.0.0");
-    assert.match(requestedBuilds[0]?.reason ?? "", /Could not parse arbitrary series data/);
-    assert.ok(events.some((event) => event.type === "tool-build-requested" && event.title.includes("Tool rework")));
-    assert.equal(fakeLlm.callCount, 3);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("UniversalAgent retries an artifact tool once when a reworked version is immediately available", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
-  const memory = new SkillMemory(join(dir, "skills.json"));
-  const fakeLlm = new FakeLlm([
-    '{"mode":"direct","reason":"small artifact task","domains":["visualization"],"riskLevel":"low"}',
-    "График приложен.",
-    '{"shouldStore":false}',
-  ]);
-  const registry = new ToolRegistry();
-  registry.register({
-    name: "generated.chart.generation",
-    version: "1.0.0",
-    description: "Generated chart tool with insufficient behavior.",
-    capabilities: ["chart-generation"],
-    async run() {
-      return { ok: false, content: "Could not parse arbitrary series data." };
-    },
-  });
-  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
-  const requestedBuilds: ToolBuildRequestInput[] = [];
-  const savedArtifacts: ArtifactCreateInput[] = [];
-  const events: AgentEvent[] = [];
-
-  try {
-    const result = await agent.run('Построй график по данным {"series":[{"x":"2026-01-01","y":1},{"x":"2026-01-02","y":3}]}', {
-      saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => {
-        savedArtifacts.push(artifact);
-        return {
-          id: `artifact-${savedArtifacts.length}`,
-          runId: "run-1",
-          kind: "output",
-          filename: artifact.filename,
-          mimeType: artifact.mimeType,
-          sizeBytes: Buffer.byteLength(artifact.content),
-          url: `/artifact-${savedArtifacts.length}`,
-          createdAt: new Date().toISOString(),
-        };
-      },
-      requestToolBuild: async (request) => {
-        requestedBuilds.push(request);
-        registry.register({
-          name: "generated.chart.generation",
-          version: "1.1.0",
-          description: "Generated chart tool with corrected behavior.",
-          capabilities: ["chart-generation"],
-          async run() {
-            return {
-              ok: true,
-              content: "Generated corrected chart.",
-              data: {
-                artifact: {
-                  filename: "corrected-chart.svg",
-                  mimeType: "image/svg+xml",
-                  content: "<svg><text>corrected</text></svg>",
-                },
-                points: 2,
-              },
-            };
-          },
-        });
-        return {
-          ...request,
-          id: "toolbuild-rework-1",
-          status: "registered",
-          contract: {
-            toolName: request.desiredToolName ?? "generated.chart.generation",
-            version: "1.1.0",
-            modulePath: "src/tools/generated/chart-generation-v1-1-0Tool.ts",
-            testPath: "tests/generated/chart-generation-v1-1-0Tool.test.ts",
-            capability: request.capability,
-            description: "Generated chart tool rework",
-            startupMode: "on-demand",
-            inputSchema: { type: "object", properties: {}, required: [] },
-            outputSchema: { type: "object", properties: {}, required: [] },
-            acceptanceCriteria: ["works"],
-            qaCriteria: ["tested"],
-            builderInstructions: ["build"],
-            replacesVersion: request.replacesVersion,
-          },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-      },
-      onEvent: (event) => {
-        events.push(event);
-      },
-    });
-
-    assert.equal(requestedBuilds.length, 1);
-    assert.equal(requestedBuilds[0]?.replacesVersion, "1.0.0");
-    assert.equal(savedArtifacts.length, 1);
-    assert.equal(savedArtifacts[0]?.filename, "corrected-chart.svg");
-    assert.equal(result.artifacts?.length, 1);
-    assert.ok(events.some((event) => event.title === "Retrying with reworked tool: generated.chart.generation"));
-    assert.equal(fakeLlm.callCount, 3);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
 
 test("UniversalAgent records external screenshot blockers without requesting tool rework", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
@@ -713,7 +473,6 @@ test("UniversalAgent records external screenshot blockers without requesting too
     },
   });
   const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
-  const requestedBuilds: ToolBuildRequestInput[] = [];
   const events: AgentEvent[] = [];
 
   try {
@@ -728,16 +487,11 @@ test("UniversalAgent records external screenshot blockers without requesting too
         url: "/artifact",
         createdAt: new Date().toISOString(),
       }),
-      requestToolBuild: async (request) => {
-        requestedBuilds.push(request);
-        throw new Error("external blockers should not create tool rework requests");
-      },
       onEvent: (event) => {
         events.push(event);
       },
     });
 
-    assert.equal(requestedBuilds.length, 0);
     assert.equal(result.artifacts?.length ?? 0, 0);
     assert.ok(events.some((event) => event.title === "External artifact blocker detected"));
     assert.ok(events.some((event) => event.status === "failed" && /semantic QA/.test(event.title)));
@@ -752,95 +506,6 @@ test("UniversalAgent records external screenshot blockers without requesting too
   }
 });
 
-test("UniversalAgent can use a newly built screenshot tool in the same run", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
-  const memory = new SkillMemory(join(dir, "skills.json"));
-  const fakeLlm = new FakeLlm([
-    '{"mode":"direct","reason":"small screenshot artifact task","domains":["browser"],"riskLevel":"low"}',
-    "Скриншот приложен.",
-    '{"shouldStore":false}',
-  ]);
-  const registry = new ToolRegistry();
-  const screenshotTool: Tool = {
-    name: "generated.browser.screenshot",
-    version: "1.0.0",
-    description: "Fake screenshot tool",
-    capabilities: ["browser-screenshot", "artifact-generation"],
-    startupMode: "on-demand",
-    async run() {
-      return {
-        ok: true,
-        content: "Captured screenshot.",
-        data: {
-          artifact: {
-            filename: "page-screenshot.png",
-            mimeType: "image/png",
-            contentBase64: usefulPngBuffer().toString("base64"),
-            description: "fake screenshot",
-          },
-        },
-      };
-    },
-  };
-  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
-  const savedArtifacts: ArtifactCreateInput[] = [];
-  const events: string[] = [];
-
-  try {
-    const result = await agent.run("Сделай скриншот https://example.com страницы", {
-      saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => {
-        savedArtifacts.push(artifact);
-        return {
-          id: "artifact-1",
-          runId: "run-1",
-          kind: "output",
-          filename: artifact.filename,
-          mimeType: artifact.mimeType,
-          sizeBytes: Buffer.isBuffer(artifact.content) ? artifact.content.byteLength : artifact.content.length,
-          url: "/screenshot",
-          createdAt: new Date().toISOString(),
-        };
-      },
-      requestToolBuild: async (request) => {
-        registry.register(screenshotTool);
-        return {
-          ...request,
-          id: "toolbuild-1",
-          status: "registered",
-          registeredToolName: screenshotTool.name,
-          contract: {
-            toolName: screenshotTool.name,
-            version: "1.0.0",
-            modulePath: "src/tools/generated/browser-screenshotTool.ts",
-            testPath: "tests/generated/browser-screenshotTool.test.ts",
-            capability: request.capability,
-            description: "Generated screenshot tool",
-            startupMode: "on-demand",
-            inputSchema: { type: "object", properties: {}, required: [] },
-            outputSchema: { type: "object", properties: {}, required: [] },
-            acceptanceCriteria: ["works"],
-            qaCriteria: ["tested"],
-            builderInstructions: ["build"],
-          },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-      },
-      onEvent: (event) => {
-        events.push(event.type);
-      },
-    });
-
-    assert.equal(savedArtifacts.length, 1);
-    assert.equal(savedArtifacts[0]?.filename, "page-screenshot.png");
-    assert.equal(savedArtifacts[0]?.mimeType, "image/png");
-    assert.ok(events.includes("tool-build-requested"));
-    assert.ok(events.includes("artifact-created"));
-    assert.match(result.finalAnswer, /\/screenshot/);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
 
 test("UniversalAgent executes required screenshot artifacts inside delegated subtasks", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
@@ -2813,113 +2478,6 @@ test("UniversalAgent rejects weak browser artifact evidence before synthesis", a
   }
 });
 
-test("UniversalAgent uses ToolImprovementCoordinator to open a rework wait when a generated artifact tool is insufficient", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "agentic-run-"));
-  const memory = new SkillMemory(join(dir, "skills.json"));
-  const fakeLlm = new FakeLlm([
-    '{"mode":"direct","reason":"small artifact task","domains":["visualization"],"riskLevel":"low"}',
-    "I tried to attach a chart, but the current tool could not parse the data.",
-    '{"shouldStore":false}',
-  ]);
-  const registry = new ToolRegistry();
-  registry.register({
-    name: "generated.chart.generation",
-    version: "1.0.0",
-    description: "Generated chart tool with insufficient behavior.",
-    capabilities: ["chart-generation"],
-    async run() {
-      return { ok: false, content: "Could not parse arbitrary series data." };
-    },
-  });
-  const toolMetadataStore = new InMemoryToolMetadataStore([
-    {
-      name: "generated.chart.generation",
-      version: "1.0.0",
-      description: "Generated chart tool with insufficient behavior.",
-      capabilities: ["chart-generation"],
-      startupMode: "on-demand",
-      requiredConfigurationKeys: [],
-      requiredSecretHandles: [],
-      examples: [],
-      successCount: 0,
-      failureCount: 0,
-      source: "generated",
-      status: "available",
-      updatedAt: new Date().toISOString(),
-    },
-  ]);
-  const runStore = new InMemoryRunStore();
-  const sourceRun = await runStore.create('Построй график по данным {"series":[{"x":"2026-01-01","y":1}]}');
-  const toolInvestigationStore = new InMemoryToolInvestigationStore();
-  const toolBuildRequestStore = new InMemoryToolBuildRequestStore();
-  const toolReworkWaitStore = new InMemoryToolReworkWaitStore();
-  const coordinator = new ToolImprovementCoordinator({
-    toolInvestigationStore,
-    toolBuildRequestStore,
-    toolReworkWaitStore,
-    toolMetadataStore,
-    runStore,
-  });
-
-  const agent = new UniversalAgent(fakeLlm as unknown as LlmClient, memory, registry);
-  const events: AgentEvent[] = [];
-
-  try {
-    const result = await agent.run('Построй график по данным {"series":[{"x":"2026-01-01","y":1}]}', {
-      runId: sourceRun.id,
-      saveArtifact: async (artifact: ArtifactCreateInput): Promise<AgentArtifact> => ({
-        id: "artifact-1",
-        runId: sourceRun.id,
-        kind: "output",
-        filename: artifact.filename,
-        mimeType: artifact.mimeType,
-        sizeBytes: 1,
-        url: "/artifact",
-        createdAt: new Date().toISOString(),
-      }),
-      toolImprovementCoordinator: coordinator,
-      onEvent: (event) => {
-        events.push(event);
-      },
-    });
-
-    const investigations = await toolInvestigationStore.list();
-    assert.equal(investigations.length, 1);
-    assert.equal(investigations[0]?.toolName, "generated.chart.generation");
-    assert.equal(investigations[0]?.runId, sourceRun.id);
-    assert.equal(investigations[0]?.status, "linked_to_build");
-
-    const builds = await toolBuildRequestStore.list();
-    assert.equal(builds.length, 1);
-    assert.equal(builds[0]?.replacesToolName, "generated.chart.generation");
-    assert.equal(builds[0]?.replacesVersion, "1.0.0");
-
-    const waits = await toolReworkWaitStore.list();
-    assert.equal(waits.length, 1);
-    assert.equal(waits[0]?.runId, sourceRun.id);
-    assert.equal(waits[0]?.status, "waiting");
-    assert.equal(waits[0]?.investigationId, investigations[0]!.id);
-    assert.equal(waits[0]?.buildRequestId, builds[0]!.id);
-
-    const stored = await runStore.get(sourceRun.id);
-    assert.equal(stored?.status, "waiting_tool_rework");
-
-    const waitOpenedEvents = events.filter((event) => event.type === "tool-rework-wait-opened");
-    assert.equal(waitOpenedEvents.length, 1, "agent emits exactly one tool-rework-wait-opened event");
-    assert.equal(
-      ((waitOpenedEvents[0]?.payload as { agentDriven?: boolean } | undefined)?.agentDriven),
-      true,
-    );
-
-    assert.match(result.finalAnswer, /Pending tool rework waits/);
-    assert.ok(
-      result.finalAnswer.includes(waits[0]!.id),
-      "final answer references the open wait id so the operator knows what is blocking",
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
 
 function makeWorkLedgerFakeLlmResponses(): string[] {
   return [

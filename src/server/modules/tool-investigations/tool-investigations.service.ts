@@ -10,10 +10,8 @@ import {
   parseOptionalStringArray,
   parseOptionalText,
   parseRequiredText,
-  sanitizeAuditMetadata,
   sanitizeObject,
 } from "../../common/parsers.js";
-import { ToolReworkCoordinatorService } from "../../common/services/tool-rework-coordinator.service.js";
 import {
   TOOL_INVESTIGATION_SOURCES,
   TOOL_INVESTIGATION_STATUSES,
@@ -31,7 +29,6 @@ import { TOOL_INVESTIGATION_STORE } from "../../persistence/tokens.js";
 export class ToolInvestigationsService {
   constructor(
     @Inject(TOOL_INVESTIGATION_STORE) private readonly store: ToolInvestigationStore | undefined,
-    @Inject(ToolReworkCoordinatorService) private readonly rework: ToolReworkCoordinatorService,
   ) {}
 
   async list(): Promise<ToolInvestigationRecord[]> {
@@ -83,27 +80,15 @@ export class ToolInvestigationsService {
     if (!this.store) throw new ServiceUnavailableException("Tool investigation store is not configured");
     const investigation = await this.store.get(id);
     if (!investigation) throw new NotFoundException("Tool investigation not found");
-    const override = this.parsePromoteOverride(rawBody);
-    const result = await this.rework.requestImprovement({
-      source: "investigation_promote",
-      investigationId: id,
-      operatorComment: override.operatorComment,
-      override,
-    });
-    if (result.status === "failed_to_request") {
-      throw new BadRequestException({
-        error: result.error ?? "Tool investigation promotion failed",
-        code: result.errorCode,
-      });
-    }
-    if (result.status === "unavailable") {
-      throw new ServiceUnavailableException(result.error ?? "Tool investigation promotion is not configured");
-    }
-    return {
-      investigation: result.investigation,
-      request: result.buildRequest,
-      wait: result.wait,
-    };
+    // Parse the override for the body-shape contract even though we
+    // no longer act on it — keeps the controller's 400 behavior intact.
+    this.parsePromoteOverride(rawBody);
+    // TODO(Phase 20): re-wire via council /api/tool-build-runs. The
+    // legacy tool-build queue used to auto-trigger an improvement run
+    // from a promoted investigation; that path is gone with Phase G.
+    throw new ServiceUnavailableException(
+      "Tool investigation promotion is not wired to the council pipeline yet (Phase 20).",
+    );
   }
 
   private parsePromoteOverride(value: unknown): {

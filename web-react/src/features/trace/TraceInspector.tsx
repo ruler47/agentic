@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { TraceNode } from "@/features/trace/buildTraceNodes";
 import { modelTierForNode } from "@/features/trace/buildTraceNodes";
@@ -13,6 +13,8 @@ import {
   useResumeReworkWait,
 } from "@/api/reworkWaits";
 import { useCancelRun, useResumeRun } from "@/api/runs";
+import { collectArtifacts as collectArtifactsFromPayload } from "@/features/tools/artifactSniff";
+import { ArtifactDownloadRow } from "@/features/tools/ArtifactDownloadRow";
 import {
   canCreateRetryRun,
   retryRunLabel,
@@ -592,6 +594,12 @@ function CouncilEventDetails({ node }: { node: TraceNode }) {
           </div>
         </Collapsible>
       ) : null}
+      {/* Phase G follow-up: any base64/SVG/HTML payload inside this
+          card's `output` or `data` gets a Download button — same
+          sniffer as the Manual Run page (Slice H). Useful for QA
+          tool calls that return `data.imageBase64`, council research
+          findings that include attachments, etc. */}
+      <CardArtifactDownloads node={node} />
       {/* Phase 2: child sub-build links — when a parent council run
           halted waiting for a reader tool, it spawned one or more
           sub-build runs. Render each as a clickable link into Trace
@@ -817,6 +825,32 @@ function inputOutputLabelsFor(node: TraceNode): { inputLabel: string; outputLabe
     return { inputLabel: "Input — repair prompt", outputLabel: "Output — repaired code" };
   }
   return { inputLabel: "Input", outputLabel: "Output" };
+}
+
+/**
+ * Phase G follow-up: detect file-shaped payloads inside a span's
+ * payload (council outputs frequently carry `data.imageBase64`,
+ * `<svg>` strings, `pdfBase64`, …) and render a Download row per
+ * artifact. Re-uses the same sniffer as the Tools-page Manual Run
+ * panel so the operator gets the same "click → save" affordance
+ * directly inside the Trace Inspector. Renders nothing when no
+ * artifacts were detected.
+ */
+function CardArtifactDownloads({ node }: { node: TraceNode }) {
+  const artifacts = useMemo(
+    () => collectArtifactsFromPayload(node.payload),
+    [node.payload],
+  );
+  if (artifacts.length === 0) return null;
+  return (
+    <Collapsible title={`Downloadable artifacts (${artifacts.length})`} defaultOpen>
+      <ul className="flex flex-col gap-1">
+        {artifacts.map((artifact, index) => (
+          <ArtifactDownloadRow key={`${artifact.filename}-${index}`} artifact={artifact} />
+        ))}
+      </ul>
+    </Collapsible>
+  );
 }
 
 function Collapsible({
