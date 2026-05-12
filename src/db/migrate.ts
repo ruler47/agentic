@@ -431,6 +431,22 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table tool_modules add column if not exists last_success_at timestamptz;`);
     await pool.query(`alter table tool_modules add column if not exists last_failure_at timestamptz;`);
 
+    // Phase 22 Slice D — Phase 18 introduced a 4-state lifecycle
+    // (disabled → loaded → available → failed) for tool versions
+    // but the original `tool_modules_status_check` constraint only
+    // accepted the legacy 3-state set (available, disabled, failed).
+    // Council runs that emitted `status = 'loaded'` after successful
+    // package-runner load failed with 23514 check_violation, leaving
+    // the new version row absent and QA tool calls silently falling
+    // back to whatever older version was already active. We drop the
+    // old constraint and re-add it with the full 4-state set.
+    await pool.query(
+      `alter table tool_modules drop constraint if exists tool_modules_status_check;`,
+    );
+    await pool.query(
+      `alter table tool_modules add constraint tool_modules_status_check check (status in ('available', 'disabled', 'failed', 'loaded'));`,
+    );
+
     await pool.query(`
       create table if not exists tool_runtime_settings (
         tool_name text not null,

@@ -1,28 +1,67 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { MockAgent, setGlobalDispatcher, getGlobalDispatcher } from "undici";
 import { LlmClient } from "../src/llm/client.js";
 import { InMemoryModelTierSettingsStore } from "../src/settings/modelTierSettings.js";
 
-test("LlmClient uses persisted model tier settings for requests", async () => {
-  const originalFetch = globalThis.fetch;
-  let requestedModel = "";
+// Phase 22 Slice D — the client uses undici's `fetch` (with a
+// long-tail timeout Agent) instead of Node's bundled global fetch,
+// so these tests intercept HTTP via undici's MockAgent rather than
+// monkey-patching `globalThis.fetch`. Both APIs are spec-compatible
+// but they're DIFFERENT undici versions, so mocking one doesn't
+// intercept the other.
 
-  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body));
-    requestedModel = body.model;
-    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+const BASE_URL = "http://llm.local";
+
+type ScriptedHandler = (init: { body: unknown }) => {
+  status: number;
+  body: unknown;
+};
+
+function withMockedLlm(handler: ScriptedHandler): {
+  cleanup: () => Promise<void>;
+  requestedModels: string[];
+} {
+  const previous = getGlobalDispatcher();
+  const mock = new MockAgent();
+  mock.disableNetConnect();
+  setGlobalDispatcher(mock);
+  const pool = mock.get(BASE_URL);
+  const requestedModels: string[] = [];
+  pool
+    .intercept({ path: "/v1/chat/completions", method: "POST" })
+    .reply((opts) => {
+      const body = JSON.parse(String(opts.body ?? "{}"));
+      requestedModels.push(body.model);
+      const out = handler({ body });
+      return {
+        statusCode: out.status,
+        data: JSON.stringify(out.body),
+        responseOptions: { headers: { "content-type": "application/json" } },
+      };
+    })
+    .persist();
+  return {
+    cleanup: async () => {
+      await mock.close();
+      setGlobalDispatcher(previous);
+    },
+    requestedModels,
   };
+}
 
+test("LlmClient uses persisted model tier settings for requests", async () => {
+  const mocked = withMockedLlm(() => ({
+    status: 200,
+    body: { choices: [{ message: { content: "ok" } }] },
+  }));
   try {
     const settings = new InMemoryModelTierSettingsStore([
       { tier: "M", models: ["medium-a", "medium-b"], maxAttempts: 2 },
     ]);
     const client = new LlmClient(
       {
-        baseUrl: "http://llm.local/v1",
+        baseUrl: `${BASE_URL}/v1`,
         model: "fallback",
         temperature: 0.2,
         tierModels: {},
@@ -36,33 +75,21 @@ test("LlmClient uses persisted model tier settings for requests", async () => {
     });
 
     assert.equal(result, "ok");
-    assert.equal(requestedModel, "medium-a");
+    assert.equal(mocked.requestedModels[0], "medium-a");
     assert.deepEqual(await client.modelsForTier("M"), ["medium-a", "medium-b"]);
   } finally {
-    globalThis.fetch = originalFetch;
+    await mocked.cleanup();
   }
 });
 
 test("LlmClient retries same-tier models then escalates when configured", async () => {
-  const originalFetch = globalThis.fetch;
-  const requestedModels: string[] = [];
-
-  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body));
-    requestedModels.push(body.model);
-
-    if (body.model !== "large-a") {
-      return new Response(JSON.stringify({ error: { message: "model failed" } }), {
-        status: 500,
-        headers: { "content-type": "application/json" },
-      });
+  const mocked = withMockedLlm(({ body }) => {
+    const model = (body as { model: string }).model;
+    if (model !== "large-a") {
+      return { status: 500, body: { error: { message: "model failed" } } };
     }
-
-    return new Response(JSON.stringify({ choices: [{ message: { content: "large ok" } }] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  };
+    return { status: 200, body: { choices: [{ message: { content: "large ok" } }] } };
+  });
 
   try {
     const settings = new InMemoryModelTierSettingsStore([
@@ -81,7 +108,7 @@ test("LlmClient retries same-tier models then escalates when configured", async 
     ]);
     const client = new LlmClient(
       {
-        baseUrl: "http://llm.local/v1",
+        baseUrl: `${BASE_URL}/v1`,
         model: "fallback",
         temperature: 0.2,
         tierModels: {},
@@ -95,7 +122,7 @@ test("LlmClient retries same-tier models then escalates when configured", async 
     });
 
     assert.equal(result, "large ok");
-    assert.deepEqual(requestedModels, [
+    assert.deepEqual(mocked.requestedModels, [
       "medium-a",
       "medium-a",
       "medium-b",
@@ -103,7 +130,7 @@ test("LlmClient retries same-tier models then escalates when configured", async 
       "large-a",
     ]);
   } finally {
-    globalThis.fetch = originalFetch;
+    await mocked.cleanup();
   }
 });
 
@@ -115,23 +142,14 @@ test("LlmClient surfaces finish_reason on empty content and stops after one expl
   //      council owns Borda cross-model fallback);
   //   2. include the finish_reason in the error string so the
   //      operator sees overflow vs. refusal in the trace.
-  const originalFetch = globalThis.fetch;
-  const calls: string[] = [];
-
-  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body));
-    calls.push(body.model);
-    return new Response(
-      JSON.stringify({
-        choices: [{ message: { content: "" }, finish_reason: "length" }],
-      }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    );
-  };
+  const mocked = withMockedLlm(() => ({
+    status: 200,
+    body: { choices: [{ message: { content: "" }, finish_reason: "length" }] },
+  }));
 
   try {
     const client = new LlmClient({
-      baseUrl: "http://llm.local/v1",
+      baseUrl: `${BASE_URL}/v1`,
       model: "fallback",
       temperature: 0.2,
       tierModels: {},
@@ -146,9 +164,9 @@ test("LlmClient surfaces finish_reason on empty content and stops after one expl
       /gemma-4-26b-a4b: empty assistant content \(finish_reason=length\)/,
     );
 
-    assert.deepEqual(calls, ["gemma-4-26b-a4b"]);
+    assert.deepEqual(mocked.requestedModels, ["gemma-4-26b-a4b"]);
   } finally {
-    globalThis.fetch = originalFetch;
+    await mocked.cleanup();
   }
 });
 
@@ -158,16 +176,14 @@ test("LlmClient treats whitespace-only assistant content as empty", async () => 
   // then `content.trim()` returned "" and a downstream JSON parser
   // crashed with a confusing error. Now the whitespace-only output
   // is bucketed into the same "empty assistant content" error path.
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () =>
-    new Response(
-      JSON.stringify({ choices: [{ message: { content: "\n\n  \t" } }] }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    );
+  const mocked = withMockedLlm(() => ({
+    status: 200,
+    body: { choices: [{ message: { content: "\n\n  \t" } }] },
+  }));
 
   try {
     const client = new LlmClient({
-      baseUrl: "http://llm.local/v1",
+      baseUrl: `${BASE_URL}/v1`,
       model: "fallback",
       temperature: 0.2,
       tierModels: {},
@@ -179,22 +195,19 @@ test("LlmClient treats whitespace-only assistant content as empty", async () => 
       /fallback: empty assistant content/,
     );
   } finally {
-    globalThis.fetch = originalFetch;
+    await mocked.cleanup();
   }
 });
 
 test("LlmClient preserves string error bodies from OpenAI-compatible servers", async () => {
-  const originalFetch = globalThis.fetch;
-
-  globalThis.fetch = async () =>
-    new Response(JSON.stringify({ error: "n_keep exceeds context length" }), {
-      status: 400,
-      headers: { "content-type": "application/json" },
-    });
+  const mocked = withMockedLlm(() => ({
+    status: 400,
+    body: { error: "n_keep exceeds context length" },
+  }));
 
   try {
     const client = new LlmClient({
-      baseUrl: "http://llm.local/v1",
+      baseUrl: `${BASE_URL}/v1`,
       model: "local-small-context",
       temperature: 0.2,
       tierModels: {},
@@ -206,6 +219,6 @@ test("LlmClient preserves string error bodies from OpenAI-compatible servers", a
       /local-small-context: n_keep exceeds context length/,
     );
   } finally {
-    globalThis.fetch = originalFetch;
+    await mocked.cleanup();
   }
 });

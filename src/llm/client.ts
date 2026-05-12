@@ -1,8 +1,39 @@
+import { Agent, fetch as undiciFetch, setGlobalDispatcher } from "undici";
+
 import { LlmConfig, Message, ModelTier } from "../types.js";
 import {
   ModelTierSettingsInput,
   ModelTierSettingsStore,
 } from "../settings/modelTierSettings.js";
+
+/**
+ * Phase 22 Slice D — long-tail LM Studio patience.
+ *
+ * Local LLMs (LM Studio + 26B-35B Q4 models on consumer GPUs) can
+ * genuinely think for 5-10 minutes on a single implement or repair
+ * call. Undici's default `headersTimeout = 5min` means a slow model
+ * gets killed with "fetch failed" exactly at the headers-wait
+ * boundary, even though the LLM is still working on the response.
+ *
+ * We bump both `headersTimeout` and `bodyTimeout` to 30 minutes via
+ * undici's global dispatcher — that way unit tests can swap in a
+ * MockAgent through the same `setGlobalDispatcher` API and intercept
+ * the request without our per-instance Agent stomping the mock.
+ * `connectTimeout` stays at the default since a slow DNS / TCP
+ * handshake is a real infra problem the operator should see fast.
+ *
+ * A later "is the LLM actually thinking or has it hung?" liveness
+ * probe (Phase 22 Slice E) would replace this fixed window with
+ * a stall-detection signal — for now 30 min is the conservative
+ * upper bound the operator asked for.
+ */
+const LLM_FETCH_TIMEOUT_MS = 30 * 60 * 1000;
+setGlobalDispatcher(
+  new Agent({
+    headersTimeout: LLM_FETCH_TIMEOUT_MS,
+    bodyTimeout: LLM_FETCH_TIMEOUT_MS,
+  }),
+);
 
 type ChatCompletionResponse = {
   choices?: Array<{
@@ -67,7 +98,12 @@ export class LlmClient {
         throw new Error("LLM request cancelled by caller");
       }
       try {
-        const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+        // Use the NPM-installed undici's fetch (not Node's bundled
+        // global fetch) so the long-tail timeout Agent we set at
+        // module load via `setGlobalDispatcher` actually intercepts
+        // these requests. Tests can swap the dispatcher to a
+        // MockAgent through the same API.
+        const response = await undiciFetch(`${this.config.baseUrl}/chat/completions`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
