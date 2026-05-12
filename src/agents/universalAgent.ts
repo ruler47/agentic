@@ -313,7 +313,7 @@ export type ToolBuildCouncilAdapter = {
    * it as a rework starting point AND as the "previous code" baseline
    * the changeSummary synthesizer diffs against.
    */
-  readCurrentToolSource?: (toolName: string) => Promise<string | undefined>;
+  readCurrentToolSource?: (toolName: string, version?: string) => Promise<string | undefined>;
 };
 
 export class UniversalAgent {
@@ -534,7 +534,15 @@ export class UniversalAgent {
     let previousToolSource: string | undefined;
     if (context.existingToolName && adapter.readCurrentToolSource) {
       try {
-        previousToolSource = await adapter.readCurrentToolSource(context.existingToolName);
+        // Phase 16 Slice I: when the operator pinned a specific
+        // version (via the per-row "Request changes" button), read
+        // THAT version's source as the rework starting point.
+        // Without it the adapter falls back to the active version,
+        // which is the legacy default.
+        previousToolSource = await adapter.readCurrentToolSource(
+          context.existingToolName,
+          context.existingToolVersion,
+        );
       } catch {
         previousToolSource = undefined;
       }

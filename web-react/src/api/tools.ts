@@ -164,6 +164,30 @@ export function useDeleteGeneratedTool() {
 }
 
 /**
+ * Phase 16 Slice I: delete ONE non-active version from a generated
+ * tool's history. The server refuses to delete the currently-active
+ * version (HTTP 400) — operator must activate something else first.
+ * Invalidates both the tools list (totals refresh) and the per-tool
+ * versions panel.
+ */
+export function useDeleteToolVersion() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, version }: { name: string; version: string }) =>
+      apiFetch<{ deleted: boolean; name: string; version: string }>(
+        `/api/tools/generated-modules/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tools });
+      void queryClient.invalidateQueries({
+        queryKey: ["tool-versions", variables.name],
+      });
+    },
+  });
+}
+
+/**
  * Phase 13 follow-up: manual tool invocation. POSTs an arbitrary input
  * payload to the registered tool and resolves with the exact
  * `ToolResult` it returned, so the operator can smoke-test a build

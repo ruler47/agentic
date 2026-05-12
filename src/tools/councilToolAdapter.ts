@@ -447,11 +447,18 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
    * regenerating from scratch (which has been silently dropping prior
    * fixes across rework chains).
    */
-  async readCurrentToolSource(toolName: string): Promise<string | undefined> {
-    const existing = (await this.deps.metadataStore.list()).find((m) => m.name === toolName);
-    if (!existing) return undefined;
+  async readCurrentToolSource(toolName: string, version?: string): Promise<string | undefined> {
     const sanitized = sanitizeName(toolName);
-    const candidatePath = join(this.toolsRoot, sanitized, existing.version, "src", "tools", "generated", `${sanitized}Tool.ts`);
+    // Phase 16 Slice I: when the caller pins a specific version,
+    // read THAT version's source from disk. Falls back to the
+    // currently-active version when version is undefined (legacy).
+    let resolvedVersion: string | undefined = version;
+    if (!resolvedVersion) {
+      const existing = (await this.deps.metadataStore.list()).find((m) => m.name === toolName);
+      if (!existing) return undefined;
+      resolvedVersion = existing.version;
+    }
+    const candidatePath = join(this.toolsRoot, sanitized, resolvedVersion, "src", "tools", "generated", `${sanitized}Tool.ts`);
     try {
       const { readFile } = await import("node:fs/promises");
       return await readFile(candidatePath, "utf8");

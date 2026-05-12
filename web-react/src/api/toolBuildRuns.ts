@@ -23,6 +23,13 @@ export type ToolBuildRunInput = {
   secretHandle?: string;
   /** When provided, the council reworks the existing tool instead of building fresh. */
   existingToolName?: string;
+  /**
+   * Phase 16 Slice I: optional version pin. The Tools-page per-version
+   * "Request changes" button forwards this so the council reads that
+   * specific source as the rework baseline instead of whichever is
+   * currently active.
+   */
+  existingToolVersion?: string;
   bugContext?: string;
   /**
    * Reference docs the council should read before brainstorming
