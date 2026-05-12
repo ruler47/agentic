@@ -21,7 +21,7 @@
  * unit-testable with scripted LLMs.
  */
 import type { LlmClient } from "../llm/client.js";
-import type { Message } from "../types.js";
+import type { Message, ModelTier } from "../types.js";
 
 export const RESEARCH_PROMPT_BLOCK = `
 ## Research (optional)
@@ -52,7 +52,7 @@ export type RunLLMWithResearchOptions = {
   /** Optional model id (forwarded to llm.complete). */
   model?: string;
   /** Optional model tier (forwarded to llm.complete). */
-  modelTier?: string;
+  modelTier?: ModelTier;
   /** Per-iteration callback so the caller can emit trace events. */
   onResearch?: (event: ResearchEvent) => void;
 };
