@@ -34,7 +34,16 @@ services:
       - "3000:3000"
     volumes:
       - ./workspace:/app/workspace
-      - ./tools:/app/tools
+      # Tool source-bundles live in <project-root>/tools and are bind-mounted
+      # so the council can write new ones on the host. The relative `./tools`
+      # path is RESOLVED RELATIVE TO THIS docker-compose.yml — i.e. it ALWAYS
+      # points at the canonical project checkout, even if `docker compose` is
+      # invoked from a sibling worktree (Claude Code session dir, etc.).
+      #
+      # Operators on alternate layouts can pin an absolute path via
+      # AGENTIC_TOOLS_DIR in `.env` (e.g. AGENTIC_TOOLS_DIR=/srv/agentic-tools)
+      # without touching this file.
+      - ${AGENTIC_TOOLS_DIR:-./tools}:/app/tools
     depends_on:
       postgres:
         condition: service_healthy
