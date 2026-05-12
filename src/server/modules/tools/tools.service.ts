@@ -485,6 +485,40 @@ export class ToolsService {
   }
 
   /**
+   * Phase 18 Slice D: operator-driven "Mark available". Lets an
+   * operator who has manually verified a version via Manual Run
+   * promote it from `loaded` → `available` without forcing a
+   * fresh council QA cycle. Audit-logged so the trail of who
+   * blessed what is preserved.
+   */
+  async markVersionAvailable(
+    name: string,
+    version: string,
+  ): Promise<{ name: string; version: string; status: "available" }> {
+    if (!this.metadata) {
+      throw new ServiceUnavailableException("Tool metadata store is not configured");
+    }
+    try {
+      await this.metadata.markAvailable(name, version);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : "Invalid mark-available request",
+      );
+    }
+    await this.audit.record({
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "tool.version_activated",
+      targetType: "tool",
+      targetId: `${name}@${version}`,
+      status: "success",
+      summary: `Operator marked ${name} v${version} as available (manual verification)`,
+    });
+    return { name, version, status: "available" };
+  }
+
+  /**
    * Phase 16 Slice I: drop a single non-active version from the
    * version history. The metadata store refuses to delete the
    * currently-active row, so a 400 here means "activate something

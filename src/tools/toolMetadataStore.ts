@@ -2,7 +2,28 @@ import { Tool, ToolExample, ToolHealth, ToolSchema, ToolStartupMode, ToolStorage
 import type { ToolPackageManifest } from "./toolPackage.js";
 
 export type ToolModuleSource = "builtin" | "generated";
-export type ToolModuleStatus = "available" | "disabled" | "failed";
+/**
+ * Phase 18: 4-state lifecycle for a tool module / version.
+ *
+ *   - `disabled` — initial state right after `registerGenerated` /
+ *     `promoteReplacement`. The row exists but the loader hasn't
+ *     run yet (or the operator deactivated it).
+ *   - `loaded` — the package runner imported the source bundle
+ *     successfully. The tool's code parses, the entrypoint is
+ *     present. This says nothing about runtime correctness — only
+ *     that the module can be imported. Set by `updateHealth(ok=true)`.
+ *   - `available` — a QA pass (council or explicit operator "Mark
+ *     available") confirmed the tool actually works. Set by
+ *     `markAvailable`. STRONGER than `loaded`.
+ *   - `failed` — a hard failure signal. Loader threw, council QA
+ *     gave up, or operator explicitly marked broken. Set by
+ *     `updateHealth(ok=false)` and Slice F rollback paths.
+ *
+ * Runtime treats `available` AND `loaded` as callable (the agent
+ * can invoke the tool). The UI distinguishes them so the operator
+ * knows which versions have been blessed.
+ */
+export type ToolModuleStatus = "available" | "loaded" | "disabled" | "failed";
 
 export type ToolModulePromotionEvidence = {
   status: "promoted";
@@ -179,9 +200,23 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
     const existing = this.modules.get(name);
     if (!existing) return;
 
+    // Phase 18: load-time health probe is a STATIC check ("entrypoint
+    // imports") — it does not say the tool actually works. Status
+    // semantics:
+    //   - ok=true  → upgrade `disabled` to `loaded`. Preserve
+    //                `available` (the row was already blessed via
+    //                `markAvailable`) — we never downgrade green.
+    //   - ok=false → hard failure, flip to `failed` regardless of
+    //                prior state. The operator needs to see it.
+    let nextStatus: ToolModuleStatus;
+    if (health.ok) {
+      nextStatus = existing.status === "available" ? "available" : "loaded";
+    } else {
+      nextStatus = "failed";
+    }
     this.modules.set(name, {
       ...existing,
-      status: health.ok ? "available" : "failed",
+      status: nextStatus,
       lastHealthOk: health.ok,
       lastHealthDetail: health.detail,
       updatedAt: new Date().toISOString(),

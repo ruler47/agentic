@@ -108,7 +108,9 @@ export function useRunToolHealthchecks() {
 export type ToolVersionSummary = {
   version: string;
   active: boolean;
-  status: "available" | "disabled" | "failed";
+  // Phase 18: 4-state lifecycle. `loaded` = source-bundle imports
+  // but no QA pass yet; `available` = QA blessed.
+  status: "available" | "loaded" | "disabled" | "failed";
   changeSummary?: string;
   successCount?: number;
   failureCount?: number;
@@ -159,6 +161,28 @@ export function useDeleteGeneratedTool() {
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.tools });
+    },
+  });
+}
+
+/**
+ * Phase 18 Slice D: operator "Mark available" — promote a version
+ * from `loaded` to `available` after manual verification, without
+ * a full council QA cycle.
+ */
+export function useMarkToolVersionAvailable() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, version }: { name: string; version: string }) =>
+      apiFetch<{ name: string; version: string; status: "available" }>(
+        `/api/tools/generated-modules/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}/mark-available`,
+        { method: "POST" },
+      ),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tools });
+      void queryClient.invalidateQueries({
+        queryKey: ["tool-versions", variables.name],
+      });
     },
   });
 }
