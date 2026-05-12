@@ -2640,3 +2640,112 @@ nudge.
 | Infinite recursion (sub-agent requests its own research) | Child run option `researchDisabled` short-circuits the loop |
 | Parser misses the marker → text returned as-is | Permissive regex; non-parsed reply is treated as a final answer. Operator sees in trace if a `<request_research>` block leaked through |
 | Cost explosion | `maxRequests = 3` hard cap per LLM call; opt-in env / config flag; trace shows every spawn so operator can tune |
+
+## Phase 18: Tool Version Lifecycle — 3 States
+
+Status: **Designed, not started.**
+
+The `tool_modules.status` column today is a 2-state union (`available` /
+`failed` / `disabled` is on the books but semantically just "not
+loaded") that two different code paths write to with different
+meanings:
+
+1. **Council `markAvailable`** (Phase 16 Slice G) — flips to
+   `available` after a fresh QA pass. This is the meaningful
+   "blessed" signal.
+2. **`updateHealth`** at load time (legacy) — flips to `available`
+   based purely on a static file-presence check by the package
+   runner (entrypoint compiles, package.json present). Says
+   nothing about whether the tool actually does its job at
+   runtime.
+
+Both write `available` to the same column, so the UI cannot
+distinguish "file exists" from "QA passed". This is how
+`screenshot.url v1.0.7` ended up labelled `available active`
+in the Tools UI even though every manual call returned `HTTP 400`
+— the loader was happy that the source bundle imported, status
+flipped to `available`, and nothing later set it back.
+
+### Goal
+
+Make the lifecycle explicit with three labelled states the UI can
+render distinctly:
+
+| Status | Meaning | Sources |
+|---|---|---|
+| `loaded` | Loader imported the source bundle successfully. Says nothing about runtime correctness. | `updateHealth(ok=true)` |
+| `available` | A QA pass (council or operator) has confirmed the tool actually works. | `markAvailable` |
+| `failed` | A hard signal that the tool is broken: load-time exception, runtime QA verdict failed, or operator marked broken. | `updateHealth(ok=false)`, Slice F rollback path |
+
+`disabled` remains as the **initial** state after
+`registerGenerated` / `promoteReplacement` — meaning "newly
+created, not yet probed".
+
+So the timeline of a happy-path build is:
+
+```
+disabled  (promoteReplacement)
+  ↓ loader imports
+loaded
+  ↓ council QA passes
+available
+```
+
+A failed-QA build:
+
+```
+disabled  (promoteReplacement)
+  ↓ loader imports
+loaded
+  ↓ council QA fails
+failed   (Slice F rollback also re-activates previous version)
+```
+
+A pre-existing tool reloaded at server start:
+
+```
+available (preserved from last run)
+  ↓ loader imports
+available  (loader does not downgrade)
+```
+
+### Slices
+
+- **Slice A — store schema.** Extend `ToolModuleStatus` union to
+  `"disabled" | "loaded" | "available" | "failed"`. Stays
+  string-backed in Postgres so no migration. InMemory store
+  pattern-matches the new value.
+
+- **Slice B — `updateHealth` no longer writes `"available"`.** It
+  writes `"loaded"` on success, `"failed"` on failure. The 7
+  existing tests in `tests/toolPackageRunner.test.ts` that assert
+  `status === "available"` after load are updated to assert
+  `status === "loaded"`. Council `markAvailable` is the ONLY
+  promote-to-available path.
+
+- **Slice C — Tools-page UI.** New badge tone for `loaded` (yellow
+  / neutral, "imports OK but not blessed"). `available` stays
+  green. `failed` red. `disabled` grey/inactive.
+
+- **Slice D — operator "Mark available" action.** Per-version
+  button in the Versions panel that calls `markAvailable` directly
+  for a row currently `loaded`. Lets operators bless a tool they
+  manually tested via Manual Run without forcing a fresh council
+  QA cycle. Audit-logged.
+
+- **Slice E — back-compat sweep.** Anywhere agent/registry code
+  checks `status === "available"` to decide whether to expose a
+  tool, the rule becomes `status === "available" || status === "loaded"`.
+  The runtime treats `loaded` as callable; the UI distinction is
+  presentation-only. (Open question: should the planner prefer
+  `available` over `loaded`? Probably yes — leave for a later
+  follow-up.)
+
+### Risks
+
+| Risk | Mitigation |
+|---|---|
+| Existing rows in production have `available` from updateHealth — they should not auto-downgrade to `loaded` on next reload | Slice B's revised `updateHealth` will, on `ok=true`, write `loaded` ONLY when current status is `disabled`. If current is already `available`, keep it. So a one-time pass through the loader won't strip prior blessings. |
+| Tests | Slice B updates the 7 toolPackageRunner tests; nothing else asserts on `status`. |
+| UI looks busier with one more badge | Keep the colour palette minimal — `loaded` is a softer green-yellow, `available` is solid green. |
+
