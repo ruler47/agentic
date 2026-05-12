@@ -30,6 +30,12 @@ services:
       # Pure-council registry: skip hard-coded built-ins. The only tools
       # visible to the agent are the ones the council has built itself.
       BUILTIN_TOOLS: disabled
+      # Phase 17: pass through the optional research-delegation flag.
+      # When set to `enabled`, council LLM calls (brainstorm /
+      # implement / repair) may emit <request_research> blocks that
+      # spawn a fresh UniversalAgent sub-run to fetch current facts.
+      # Defaults to unset (feature off).
+      COUNCIL_RESEARCH_ENABLED: ${COUNCIL_RESEARCH_ENABLED:-}
     ports:
       - "3000:3000"
     volumes:
