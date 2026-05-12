@@ -100,6 +100,14 @@ export type ToolMetadataStore = {
   registerGenerated(input: GeneratedToolModuleInput): Promise<ToolModuleMetadata>;
   promoteReplacement(input: GeneratedToolReplacementInput): Promise<ToolModuleMetadata>;
   activateVersion(name: string, version: string): Promise<ToolModuleMetadata>;
+  /**
+   * Phase 16 Slice G: flip a generated tool's status from "disabled"
+   * (its initial state after `registerGenerated`/`promoteReplacement`)
+   * to "available". Called by the council pipeline once QA has
+   * actually passed, so the Tools page no longer shows
+   * green-runtime-but-red-status mismatches. No-op for builtins.
+   */
+  markAvailable(name: string, version: string): Promise<void>;
   deleteGenerated(name: string): Promise<boolean>;
 };
 
@@ -282,6 +290,19 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       );
     }
     return { ...cloneModule(existing), versions: this.versionsFor(name, existing.version) };
+  }
+
+  async markAvailable(name: string, version: string): Promise<void> {
+    const existing = this.modules.get(name);
+    if (!existing) return;
+    if (existing.source === "builtin") return;
+    if (existing.version !== version) return;
+    const updated: ToolModuleMetadata = {
+      ...cloneModule(existing),
+      status: "available",
+      updatedAt: new Date().toISOString(),
+    };
+    this.modules.set(name, updated);
   }
 
   async deleteGenerated(name: string): Promise<boolean> {

@@ -264,6 +264,30 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
    * event and the operator's incident is "QA failed", not "rollback
    * crashed".
    */
+  /**
+   * Phase 16 Slice G: promote the just-registered version's
+   * metadata status from "disabled" (the initial state after
+   * `promoteReplacement` / `registerGenerated`) to "available" so
+   * the Tools page chip matches reality. Called by the council
+   * pipeline only after QA passes — never on failure paths, which
+   * are handled by `rollbackRegistration` instead.
+   *
+   * Best-effort: a failed metadata write is logged but does not
+   * abort the run. The in-memory registry already has the tool, so
+   * the operator's runtime experience is unaffected; only the UI
+   * label is.
+   */
+  async markActive(toolName: string, version: string): Promise<void> {
+    try {
+      await this.deps.metadataStore.markAvailable(toolName, version);
+    } catch (error) {
+      console.warn(
+        `Council markActive for ${toolName}@${version} failed: ${error instanceof Error ? error.message : String(error)}. ` +
+          `The tool runs fine but the Tools-page status chip may stay 'disabled' until the next reload.`,
+      );
+    }
+  }
+
   async rollbackRegistration(toolName: string, previousVersion: string | undefined): Promise<void> {
     try {
       if (previousVersion) {

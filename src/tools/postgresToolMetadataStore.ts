@@ -379,6 +379,31 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     }
   }
 
+  async markAvailable(name: string, version: string): Promise<void> {
+    // Phase 16 Slice G: flip the just-promoted version's status from
+    // "disabled" (its initial state) to "available" once the council
+    // has confirmed QA actually passed. We update both rows that
+    // describe the tool: `tool_modules` (the active-row mirror the
+    // Tools page reads) and `tool_module_versions` (the per-version
+    // ledger). No-ops if the named row is a builtin or if the
+    // version doesn't match — the operator's view is "always self
+    // consistent with what just got QA'd".
+    await this.pool.query(
+      `update tool_modules
+         set status = 'available',
+             updated_at = now()
+       where name = $1 and version = $2 and source = 'generated'`,
+      [name, version],
+    );
+    await this.pool.query(
+      `update tool_module_versions
+         set status = 'available',
+             updated_at = now()
+       where name = $1 and version = $2 and source = 'generated'`,
+      [name, version],
+    );
+  }
+
   async deleteGenerated(name: string): Promise<boolean> {
     await this.pool.query("begin");
     try {
