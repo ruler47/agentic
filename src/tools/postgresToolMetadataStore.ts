@@ -537,9 +537,17 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               examples = $18,
               package_manifest = $19,
               source = 'generated',
-              status = 'disabled',
-              last_health_ok = null,
-              last_health_detail = null,
+              -- Phase 17 follow-up: carry over the SELECTED version's
+              -- own status + health from tool_module_versions rather
+              -- than resetting to disabled+null. The legacy semantic
+              -- was "force a fresh probe on activate", but it made
+              -- roll-backs look broken: activating a known-good
+              -- v1.0.3 reset its status to "disabled" until QA ran
+              -- again, even though the version had already been
+              -- blessed.
+              status = $21,
+              last_health_ok = $22,
+              last_health_detail = $23,
               updated_at = $20
           where name = $1
           returning name, display_name, version, description, capabilities, startup_mode, input_schema,
@@ -570,6 +578,9 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           JSON.stringify(selectedRow.examples ?? []),
           selectedRow.package_manifest ? JSON.stringify(selectedRow.package_manifest) : null,
           new Date().toISOString(),
+          selectedRow.status,
+          selectedRow.last_health_ok,
+          selectedRow.last_health_detail,
         ],
       );
       await this.pool.query("update tool_module_versions set active = (version = $2) where name = $1", [name, version]);
