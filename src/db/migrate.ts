@@ -575,6 +575,23 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     `);
     await pool.query(`alter table tool_module_versions add column if not exists change_summary text;`);
     await pool.query(`alter table tool_module_versions add column if not exists promotion_evidence jsonb;`);
+
+    // Phase 22 Slice D follow-up — same 'loaded' bug as
+    // tool_modules_status_check above. Phase 18 introduced the
+    // per-version table with the same legacy 3-state CHECK, so a
+    // successful package load (status='loaded') tripped 23514 and
+    // was caught downstream into status='failed' with detail
+    // "violates check constraint tool_module_versions_status_check".
+    // That marked the newest version mid-pipeline as failed and
+    // left the user calling whatever older version was still
+    // active in tool_modules — explaining the "registered v1.0.4
+    // but Tools page still runs v1.0.3" mismatch.
+    await pool.query(
+      `alter table tool_module_versions drop constraint if exists tool_module_versions_status_check;`,
+    );
+    await pool.query(
+      `alter table tool_module_versions add constraint tool_module_versions_status_check check (status in ('available', 'disabled', 'failed', 'loaded'));`,
+    );
     await pool.query(`alter table tool_module_versions add column if not exists package_manifest jsonb;`);
 
     await pool.query(`

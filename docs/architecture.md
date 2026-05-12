@@ -385,67 +385,100 @@ preview cards for image artifacts.
 
 ### Tool Builder Flow
 
-> **Status (Phase 14, in flight):** The provider-chain + background worker flow
-> documented below is being replaced by a multi-model council that runs inside
-> `UniversalAgent`. The legacy chain stays compiling until the council ships
-> end-to-end (Phase G of Phase 14 drops it). New design lives in
-> `docs/architecture/tool-build-council.md` and `docs/roadmap.md` § "Phase 14".
+> **Status (post-Phase G):** The legacy provider-chain + background worker
+> queue is fully removed. All tool builds run through the multi-model
+> **council pipeline** inside `UniversalAgent`. The flow below is the
+> current production path; pre-Phase-G design notes live in git history.
 
-When a required capability is missing, the runtime can create a Tool Build Request.
-When an existing capability is insufficient, the runtime can create a Tool Rework Request
-for a new version of the same tool. Rework must not silently overwrite the old version:
-the new module version needs its own changelog, tests, QA report, and promotion decision.
+When a required capability is missing or an existing tool needs rework, the
+operator (or another agent) POSTs to `/api/tool-build-runs` with the tool
+name, description, `existingToolName` + `existingToolVersion` for reworks,
+free-form `bugContext`, and a list of runtime-validatable `qaCriteria`.
+The runtime spawns a `tool-build` channel run inside the agent and the
+council loop takes over.
 
-The current provider-backed flow (legacy):
+The council pipeline (Phase 14 → Phase 22):
 
 ```text
-missing capability
-  -> create Tool Build Request with TypeScript module contract
-  -> builder writes source and tests
-  -> QA runs targeted tests and build checks in an isolated workspace
-  -> code and behavior review gates inspect contract safety and QA evidence
-  -> optional LLM code/behavior reviewers inspect source previews and behavior evidence
-  -> registrar validates metadata and registers the generated module
-  -> activation runner reloads generated tools and records activation evidence
-  -> original run can use the new tool
+POST /api/tool-build-runs
+  → run-started (channel = tool-build)
+  ↓
+1. BRAINSTORM — N proposer models in parallel, each emits a proposal block
+   (architecture + risk + packages list). Phase 22 Slice B: each proposer
+   may emit `<request_research>` blocks that spawn a sub-agent run with
+   full tool access (web.search etc.) and re-prompt the model with the
+   findings. Default on (`COUNCIL_RESEARCH_ENABLED != "disabled"`).
+  ↓
+2. VOTE — every proposer ranks the proposals. Borda count picks the
+   winner. Tie-break: fewer declared externalDependencies, then proposer
+   model id.
+  ↓
+3. IMPLEMENT — winner model emits the tool body. On empty / context-overflow
+   (finish_reason=length), the loop falls back to the next-best Borda
+   candidate (cross-model implement fallback).
+  ↓
+4. REVIEW + REVISE — reviewer model judges pass / needs_revision. Up to
+   `maxRevisionAttempts` revise cycles by the winner model.
+  ↓
+5. REGISTER — councilToolAdapter overlays the model's tool body onto the
+   canonical source-bundle scaffold (index.ts + runtime/server.ts +
+   src/tools/tool.ts + package.json + tsconfig.json), writes to
+   `tools/<name>/<version>/`, runs `npm install` (Phase 22 Slice E:
+   per-tool dependency install when scaffold's package.json declares
+   any) then `npm run build`, then UPSERTs the metadata row in
+   `tool_modules` + `tool_module_versions`.
+   - Phase 22 Slice E: scaffold nukes stale dist+node_modules before
+     writing fresh source so a re-registered version cannot serve stale
+     compiled JS.
+   - Phase 22 Slice E: per-tool dependencies auto-extracted from the
+     tool body's `import` statements; tools no longer need to be
+     declared in the main agentic-app package.json.
+   - Phase 22 Slice E: registration failure (tsc / loader error) does
+     not abort the run; it is surfaced as a synthetic QA-attempt
+     failure carrying the error, which the repair loop sees and the
+     model can fix in the next iteration.
+  ↓
+6. QA + REPAIR — QA-input synthesizer drafts a JSON input matching the
+   tool's inputSchema. Tool runs via on-demand source-bundle HTTP
+   subprocess. QA-oracle judges the output against `qaCriteria`. On
+   failure: repair model edits the source, re-register, retry — up to
+   `maxQaRepairAttempts` (default 5).
+   - Phase 22 Slice A: after 2 consecutive failed repairs by the same
+     model, the next repair is routed to the next-best Borda candidate
+     (cross-model repair fallback). Emitted as a
+     `tool-build-council-winner-selected` switch event with
+     `payload.reason = "consecutive_repair_failures"`.
+   - Phase 22 Slice D: LLM client uses undici with 30-min headers /
+     body timeout so slow local models (LM Studio + 26 B-35 B Q4) are
+     not killed mid-thought.
+   - Phase 22 Slice E: source-bundle subprocess spawn errors are
+     caught and surfaced as runtime health failure instead of
+     crashing the main app.
+  ↓
+7. RUN finalises with `tool-build-registered` event carrying
+   `payload.version` + change summary + canonical description. Trace
+   Inspector exposes per-span artifact previews (image / svg / html /
+   pdf) via the shared `ArtifactDownloadRow` so the operator can
+   verify the actual tool output without leaving the UI.
 ```
 
-The guarded LLM-backed provider can build unknown/custom capability families after
-deterministic providers decline the request. It is still not trusted runtime code
-execution: the model may only return the requested TypeScript module path and test path,
-must keep credentials behind secret handles, and the output still goes through isolated
-generated-tool tests, isolated build, promotion tests, promotion build, deterministic
-code/behavior review gates, optional LLM review gates, metadata registration, and runtime
-reload. Disable this fallback with `TOOL_BUILD_LLM_PROVIDER=disabled` when an instance
-should only use deterministic providers. Enable `TOOL_BUILD_LLM_REVIEW=enabled` when the
-instance should add LLM code/behavior reviewers before promotion.
+The bundle's runtime exposes `GET /health` and `GET /version` (Phase 22
+Slice E) so `docker logs` + curl answer "which version is actually
+running" without DB or filesystem checks.
 
-Before the LLM fallback is prompted, the request is compiled into a **Tool Build
-Blueprint**. The blueprint is a provider-neutral contract extracted from the operator
-request, pasted docs, cURL examples, endpoint lines, credential notes, required
-inputs/outputs, and previous QA reports. It records documentation URLs/snippets,
-operations, request/response fields, fixtures, secret handles, raw credential candidates,
-runtime lifecycle, settings, and repair obligations. The prompt must follow this
-blueprint, and the parser rejects output that ignores documented operations, omits
-required secret handles, fails to cover any available fixture, leaks raw credential
-candidates, or forgets always-on lifecycle behavior. This is the first generic Tool
-Builder layer: still bounded by QA/review/promotion, but no longer a freeform “write me
-some code” fallback.
+The registry still has a portable package-manifest import/export layer.
+Generated tools expose `agentic.tool-package.v1` manifests through the
+API, and operators can import the same manifest shape back into the
+registry. Source-bundle packages run from the out-of-tree package
+workspace (this is what every council-built tool uses); external-HTTP,
+local-path, and OCI-image runners remain for legacy / specialised
+needs.
 
-The registry also has a portable package-manifest import/export layer. Generated tools
-can expose `agentic.tool-package.v1` manifests through the API, and operators can import
-the same manifest shape back into the registry. Local-path packages remain compatible
-with the compiled-module loader for legacy development; source-bundle packages can run
-from the out-of-tree package workspace, external HTTP packages proxy to their declared
-runtime URL, and OCI-image packages can be executed by the opt-in Docker runner when they
-expose the standard `/health` and `/run` contract. Production-grade supervision, resource
-limits, log redaction, and image build/publish flows remain roadmap work.
-
-The target flow also supports admin-provided API documentation and credentials. The agent
-should read the docs, propose a reusable TypeScript module contract, build tests, run QA,
-register the tool, and store credentials through secret handles rather than prompt text.
-This same flow should be used for API clients, bots, webhooks, artifact renderers,
-browser helpers, data acquisition modules, and any other capability family.
+The same flow handles admin-provided API documentation and credentials.
+The operator pastes docs into `bugContext` (or attaches a reference doc
+via the API), the council proposes a TypeScript module contract,
+implements + reviews + registers + QA-validates it, and stores
+credentials through `secretHandle` rather than raw prompt text.
 
 ### Async Tool Rework And Run Resume
 

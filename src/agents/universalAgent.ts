@@ -1170,12 +1170,50 @@ export class UniversalAgent {
     // Pass the just-synthesized sample input to the adapter so it
     // persists as a metadata example — the Tools-page Manual Run form
     // pre-fills it.
-    let registered = await adapter.registerToolFromFiles(context.name, files, {
-      description: context.description,
-      secretHandle: context.secretHandle,
-      sampleInput: qaInput,
-      requiredCapabilities: context.requiredCapabilities,
-    });
+    //
+    // Phase 22 Slice E — when registration fails (typical cause: the
+    // model emitted code that doesn't compile against the installed
+    // dependency versions, e.g. `ZodError.errors` after zod
+    // renamed it to `.issues`), we used to abort the whole run.
+    // That gave the operator a dead run with no repair attempts,
+    // and the model never got a chance to fix the type error.
+    // Now we catch the throw, emit a synthetic QA-attempt failure
+    // carrying the tsc / loader error, and fall through into the
+    // QA-repair loop. The loop will skip the tool call (we'll
+    // detect `registered === null` below and inject the tsc error
+    // as the QA failure context) and head straight into a repair
+    // cycle with the type errors visible to the model.
+    let registered: { toolName: string; version: string; previousVersion?: string } | null = null;
+    let initialRegistrationError: string | undefined;
+    try {
+      registered = await adapter.registerToolFromFiles(context.name, files, {
+        description: context.description,
+        secretHandle: context.secretHandle,
+        sampleInput: qaInput,
+        requiredCapabilities: context.requiredCapabilities,
+      });
+    } catch (error) {
+      initialRegistrationError = error instanceof Error ? error.message : String(error);
+      await emit({
+        spanId: createSpanId("council-register-failed"),
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-qa-attempt",
+        actor: "coordinator",
+        activity: "coordination",
+        status: "failed",
+        title: "Initial registration failed (tsc / loader error)",
+        detail: initialRegistrationError,
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: 0,
+        payload: { error: initialRegistrationError, registrationFailed: true },
+      });
+      // Fall through with a placeholder `registered` so the repair
+      // loop below can iterate. The first repair attempt will
+      // re-call adapter.registerToolFromFiles with the corrected
+      // source; if that one succeeds, the loop proceeds normally.
+      registered = { toolName: context.name, version: "pending", previousVersion: undefined };
+    }
 
     // Phase 16 Slice F: remember the previous active version on the
     // FIRST register call so we can roll back if every QA attempt
@@ -1252,7 +1290,22 @@ export class UniversalAgent {
         startedAt: toolCallStartedAt,
         payload: { attempt: attempt + 1, qaInput },
       });
-      const output = await adapter.runToolForQa(registered.toolName, qaInput);
+      // Phase 22 Slice E — if the INITIAL registration threw (tsc /
+      // loader error from the implement step), use the captured
+      // error as a synthetic tool failure on attempt 0 so the QA
+      // loop can route it into the repair model. Attempts > 0
+      // always go through `runToolForQa` because by then the
+      // previous repair iteration has re-registered the tool.
+      const output: { ok: boolean; content: string; data?: unknown } =
+        attempt === 0 && initialRegistrationError
+          ? {
+              ok: false,
+              content:
+                `Tool body failed to compile or load (tsc / loader error). Fix the ` +
+                `type or import errors and re-emit the corrected source. Loader said: ` +
+                initialRegistrationError,
+            }
+          : await adapter.runToolForQa(registered.toolName, qaInput);
       await emit({
         spanId: toolCallSpanId,
         parentSpanId: currentCodeSpanId,

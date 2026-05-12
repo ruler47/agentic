@@ -2971,3 +2971,195 @@ Implementation sketch:
   batch with 5 repair attempts = 50 tool calls. Cap the batch
   cardinality at 5-8 by default and let operators bump it
   explicitly when they know the tool is fast.
+
+
+### Slice D — 30-min LLM timeout + image preview + DB constraint
+
+Shipped (commit `df1becf`). Three independent issues stacked into
+one bug that made screenshot.url reworks impossible to debug:
+
+1. **LM Studio's slow LLM kills.** Undici default
+   `headersTimeout = 5min` killed slow models with "fetch failed"
+   exactly at the headers-wait boundary, even though the LLM was
+   still working. `src/llm/client.ts` now uses the npm-installed
+   undici `fetch` + `setGlobalDispatcher(new Agent({
+   headersTimeout: 30*60*1000, bodyTimeout: 30*60*1000 }))`.
+   Tests rewritten to swap `MockAgent` via the same API.
+
+2. **Phase 18 4-state lifecycle silent DB failure.**
+   `tool_modules.status_check` constraint was never updated past
+   the legacy 3-state set `(available, disabled, failed)`. When
+   council registered a new version with `status='loaded'`, the
+   UPSERT failed with 23514 check_violation, the new row never
+   persisted, and QA tool calls fell back to whatever older
+   active tool was in the registry. Same bug found and fixed in
+   `tool_module_versions.status_check` (Slice D follow-up).
+   `src/db/migrate.ts` now drops + re-creates both constraints
+   with the full 4-state set, idempotent on re-run.
+
+3. **No artifact preview in UI.** Operators had to base64-decode
+   payloads manually to inspect generated screenshots / PDFs / HTML.
+   `web-react/src/features/tools/ArtifactDownloadRow.tsx` got a
+   per-row **Preview** toggle for image / svg / html / pdf MIME
+   types. Inline `<img>` for raster, `<object>` for PDF,
+   sandboxed `<iframe>` for HTML. Used in both Tools Manual Run
+   and Trace Inspector card downloads.
+
+
+### Slice E — Per-tool dependency install + stale dist nuke + version-in-runtime
+
+Shipped (multiple commits, end-to-end through screenshot.url
+rework cycle).
+
+**Per-tool npm dependencies.** Council-built tools that import
+external packages (`puppeteer`, `axios`, …) used to fail with
+TS2307 "Cannot find module" at tsc time because the scaffold's
+package.json declared zero runtime dependencies and the runner
+only ran `npm run build`. Fix in three pieces:
+
+- `src/agents/councilScaffold.ts` — new
+  `extractToolBodyImports(toolBody)` parses `import` / `require`
+  statements, normalizes to npm package name (handles `@scope/pkg`,
+  `pkg/sub` → `pkg`), filters out `node:` builtins and relative
+  paths. `renderCouncilScaffold` accepts an optional
+  `dependencies` map and writes it into the bundle's
+  `package.json` under `dependencies`.
+- `src/tools/councilToolAdapter.ts` — after extracting the tool
+  body, auto-extracts imports and pins each to `"latest"`. Passes
+  the map through to the scaffold.
+- `src/tools/toolPackageRunner.ts` — `buildSourceBundlePackage`
+  detects `package.json.dependencies` non-empty and runs
+  `npm install --prefer-offline --no-audit --no-fund --no-progress`
+  inside the bundle dir BEFORE `npm run build`. `PUPPETEER_SKIP_DOWNLOAD`
+  is honoured so we don't re-download Chromium per rework (most
+  browser-tools should bring their own or share a system install).
+  When deps are empty, the legacy `linkRootNodeModulesIfAvailable`
+  path is preserved for tools that rely on shared root packages.
+
+**Stale dist nuke before re-write.** When a version dir already
+existed from a previous council attempt (collision after a
+partial-promotion rollback), the runner found a stale
+`dist/runtime/server.js` and skipped the build. The compiled JS
+no longer matched the freshly-written source, surfacing as
+ERR_MODULE_NOT_FOUND at runtime. `councilToolAdapter.ts` now
+explicitly `rm -rf dist && rm -rf node_modules` at the start of
+`registerToolFromFiles`. Best-effort — subsequent file writes /
+build will report a clearer error than the rm ever could.
+
+**Version visible at runtime.** The bundle's
+`runtime/server.ts` (`RUNTIME_SERVER` constant in
+`councilScaffold.ts`) now:
+- Emits `{ event: "tool-runtime-listening", tool, version, port }`
+  on startup so `docker logs` answers "which version is running"
+  without DB / filesystem checks.
+- Returns `{ ok, detail, tool, version }` on `GET /health`.
+- Exposes a tiny `GET /version` endpoint → `{ tool, version }`
+  for curl-style sanity checks where the operator does not need
+  the full health payload.
+
+**Registration failure routes into repair.** Previously, if the
+implement step emitted code that failed tsc, `registerToolFromFiles`
+threw and the whole run aborted with no repair attempts. The
+model never got a chance to fix the type error. `universalAgent.ts`
+now `try/catch`-es the initial registration; on failure it
+emits a `tool-build-qa-attempt` failed event carrying the tsc
+error and falls through to the QA-repair loop. The first repair
+attempt then re-registers the tool with corrected source.
+
+**Spawn error doesn't crash the main app.** The source-bundle
+HTTP runtime's `spawn(process.execPath, ...)` would emit an
+asynchronous `'error'` event when the node binary lookup
+transiently failed (ENOENT during container restart races).
+Without a listener, Node converted that into an uncaught
+exception → main agentic-app process died, all in-flight runs
+orphaned. `toolPackageRunner.ts:startSourceBundleHttpRuntime`
+now installs `child.once("error", …)` and surfaces it as a
+runtime health failure routed through the QA loop.
+
+**End-to-end validation:** screenshot.url rework
+`run_1778621639580_1idk9wib` proved per-tool npm install works
+(puppeteer installed in bundle, tsc compiled without errors
+when type errors were absent). The remaining failure path was
+Qwen drafting code with `ZodError.errors` instead of `.issues`
+— now routed into the repair loop via the new registration
+fallback. Phase 22 Slice D + E together make council runs
+debuggable end-to-end without the operator having to grep
+container logs for compile errors.
+
+
+## Phase 23: Token budget for council pipelines
+
+Status: **Planned. Driven by the implement-prompt → 95 k token
+observation during screenshot.url rework on 2026-05-13.**
+
+LM Studio's local 26 B - 35 B Q4 models routinely chew 50-100 k
+tokens on a single implement call once Phase 22's research
+delegation + reasoning chains accumulate. Operators have to bump
+LM Studio's context window to 250 k just to keep council runs
+unblocked. That's wasteful AND it leaves no headroom for larger
+tools (auth flows, multi-API integrations, full apps).
+
+The fix: stop sending unnecessary tokens.
+
+### Slice A — Prompt instrumentation
+
+Add `payload.promptTokenCount` (estimated via `tiktoken` or a
+char-÷-4 fallback) to every council event emit. Trace Inspector
+gets a "Tokens" badge per LLM span. Telemetry: aggregate average
+tokens per phase per model. Without this we are guessing about
+where the bloat lives.
+
+### Slice B — Reference-doc summarization tier
+
+`toolBuildCouncil.ts` formatReferenceDocsBlock currently
+truncates each ref doc to 12 000 chars verbatim. For long docs
+(API references, package READMEs) that's still 3 000+ tokens
+each, and most of it is irrelevant boilerplate. New helper:
+before injecting into the implement prompt, run each ref doc
+through an S-tier summarizer with the rework's `bugContext` as
+the focus, replacing the 12 k-char block with a ~800-char
+focused excerpt.
+
+### Slice C — Reasoning budget per phase
+
+LM Studio surfaces a `reasoning` parameter (`low` / `medium` /
+`high`) that bounds the model's internal `<think>` chain length.
+Brainstorm and vote benefit little from deep reasoning — set
+them to `low`. Implement / repair / review benefit a lot — keep
+them at `high`. Configured per phase in the council adapter's
+LLM call options. Estimated savings: 20-40 k tokens per
+implement call when Qwen / Gemma run with reduced reasoning.
+
+### Slice D — Research-findings cache per run
+
+Phase 22 Slice B's research-delegate currently re-queries on
+every repair iteration. If the model asks "what's the correct
+puppeteer-extra stealth init API?" three times across a run,
+the sub-agent runs three times and the findings get injected
+three times. Cache by `(runId, sha1(question))` so repeats
+return the prior findings (and skip the sub-agent run).
+
+### Slice E — Task splitting for big tools
+
+When a council brainstorm proposal estimates a tool body > 30 KB
+or the cumulative implement prompt > 50 k tokens, the
+coordinator should split the tool into 2-3 sub-tools with
+explicit interfaces between them, build each via its own
+council cycle, then register the umbrella tool that delegates
+to the sub-tools. This is the most invasive piece — needs a
+"split-design phase" before brainstorm, and a per-sub-tool QA
+loop. Defer until A-D are in place and we have telemetry
+showing where the real bottlenecks are.
+
+### Risks
+
+- Slice B's summarizer adds an extra S-tier call per ref doc
+  per implement → ~5-10 s overhead. Cache by `sha1(ref-doc) +
+  bugContext` so reworks of the same tool with the same
+  references hit the cache.
+- Slice C: reducing reasoning on implement might tip Gemma /
+  Qwen into shallower fixes for non-trivial bugs. Operators
+  should be able to override per-run via `runOptions.reasoning`.
+- Slice E: sub-tool registration order matters. The umbrella
+  tool's QA can only run after all sub-tools are registered AND
+  active. Build coordinator must serialise the cycle.

@@ -14,6 +14,7 @@ import type { ToolBuildCouncilAdapter } from "../agents/universalAgent.js";
 import {
   COUNCIL_TOOL_BODY_PATH,
   extractToolBody,
+  extractToolBodyImports,
   renderCouncilScaffold,
 } from "../agents/councilScaffold.js";
 
@@ -89,6 +90,27 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     const sanitized = sanitizeName(toolName);
     const baseDir = join(this.toolsRoot, sanitized, version);
 
+    // Phase 22 Slice E — when a version dir already exists from a
+    // previous council attempt (e.g. nextVersionFor collided after
+    // a partial-promotion rollback), nuke its `dist/` and
+    // `node_modules/` so the bundle runner's auto-build hook is
+    // forced to re-run tsc + npm install against the FRESH source
+    // we are about to write. Without this the runner found a stale
+    // dist/runtime/server.js, skipped the build, and started a
+    // process whose compiled imports did not match the source on
+    // disk (e.g. compiled `puppeteer-extra` while the new source
+    // imports plain `puppeteer`). That mismatch surfaced as
+    // ERR_MODULE_NOT_FOUND on the FIRST tool call — confusing
+    // because the QA loop "saw" puppeteer in package.json.
+    try {
+      await rm(join(baseDir, "dist"), { recursive: true, force: true });
+      await rm(join(baseDir, "node_modules"), { recursive: true, force: true });
+    } catch {
+      // Best effort — if the dir does not exist or can't be removed
+      // the subsequent file writes / build will surface a clearer
+      // error than this cleanup ever would.
+    }
+
     // 1. Extract the model's Tool body and overlay it onto the canonical
     //    source-bundle scaffold (index.ts, runtime/server.ts, package.json,
     //    tsconfig.json, src/tools/tool.ts). The model only writes ONE file:
@@ -102,11 +124,26 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
       );
     }
 
+    // Phase 22 Slice E — collect runtime npm dependencies the tool
+    // body actually imports (e.g. puppeteer, axios). Without this
+    // the scaffold's package.json declared zero runtime deps, the
+    // bundle runner's tsc build failed with TS2307 "Cannot find
+    // module 'puppeteer'", and the registration was silently
+    // marked `failed` while the older active version kept serving
+    // user calls. Auto-extracting from the body itself catches
+    // packages the model imported but forgot to declare in its
+    // `proposal.packages` block.
+    const importedPackages = extractToolBodyImports(toolBody);
+    const dependencies: Record<string, string> = {};
+    for (const pkg of importedPackages) {
+      dependencies[pkg] = "latest";
+    }
     const scaffold = renderCouncilScaffold({
       toolName,
       sanitizedName: sanitized,
       version,
       toolBody,
+      dependencies,
     });
     for (const file of scaffold) {
       const target = join(baseDir, sanitizeRelativePath(file.path));

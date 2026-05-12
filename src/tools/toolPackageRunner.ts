@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { symlink } from "node:fs/promises";
+import { readFile, symlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { execFile, spawn, ChildProcess } from "node:child_process";
 import { resolve, relative, isAbsolute, join } from "node:path";
@@ -691,7 +691,51 @@ async function buildSourceBundlePackage(
   }
 
   try {
-    await linkRootNodeModulesIfAvailable(projectRoot, packageDir);
+    // Phase 22 Slice E — install the tool's own runtime
+    // dependencies BEFORE we symlink the root node_modules.
+    // Council-built tools declare their imports (puppeteer, axios,
+    // …) in package.json.dependencies; without `npm install` the
+    // bundle's tsc build crashes with TS2307 "Cannot find module
+    // X". We use `--prefer-offline --no-audit --no-fund` so reruns
+    // hit the npm cache and runs stay fast (typical: <2 s for an
+    // already-cached package, 10-30 s for first install).
+    //
+    // The order matters: install FIRST so the tool gets its own
+    // node_modules, then symlink root only if still empty (some
+    // tools declare zero runtime deps and rely entirely on shared
+    // packages installed at the project root — for those the
+    // symlink is the only path).
+    const hasRuntimeDeps = await packageDeclaresRuntimeDependencies(packageDir);
+    if (hasRuntimeDeps) {
+      try {
+        await execFileAsync(
+          "npm",
+          ["install", "--prefer-offline", "--no-audit", "--no-fund", "--no-progress"],
+          {
+            cwd: packageDir,
+            timeout: sourceBundleBuildTimeoutMs(),
+            maxBuffer: 4 * 1024 * 1024,
+            env: {
+              ...process.env,
+              // Skip Chromium download in CI/QA — most tools that
+              // need a browser will set PUPPETEER_SKIP_DOWNLOAD or
+              // bring their own. If they don't, the runtime
+              // healthcheck will fail with a clear error the
+              // operator can read. Leaving the download on is a
+              // 300 MB-per-rework cost we don't want at QA time.
+              PUPPETEER_SKIP_DOWNLOAD: process.env.PUPPETEER_SKIP_DOWNLOAD ?? "true",
+            },
+          },
+        );
+      } catch (installError) {
+        return {
+          ok: false,
+          detail: `Source-bundle package ${ref} npm install failed: ${commandErrorDetail(installError)}`,
+        };
+      }
+    } else {
+      await linkRootNodeModulesIfAvailable(projectRoot, packageDir);
+    }
     const { stdout, stderr } = await execFileAsync("npm", ["run", "build"], {
       cwd: packageDir,
       timeout: sourceBundleBuildTimeoutMs(),
@@ -707,6 +751,17 @@ async function buildSourceBundlePackage(
       ok: false,
       detail: `Source-bundle package ${ref} build failed: ${commandErrorDetail(error)}`,
     };
+  }
+}
+
+async function packageDeclaresRuntimeDependencies(packageDir: string): Promise<boolean> {
+  try {
+    const pkgPath = join(packageDir, "package.json");
+    const text = await readFile(pkgPath, "utf8");
+    const parsed = JSON.parse(text) as { dependencies?: Record<string, unknown> };
+    return Boolean(parsed.dependencies && Object.keys(parsed.dependencies).length > 0);
+  } catch {
+    return false;
   }
 }
 
@@ -892,6 +947,25 @@ async function startSourceBundleHttpRuntime(
     env: { ...process.env, PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  // Phase 22 Slice E follow-up — `spawn()` emits an asynchronous
+  // 'error' event when the binary cannot be found / executed
+  // (ENOENT, EACCES, etc.). Without a listener Node converts that
+  // into an uncaught exception and CRASHES the whole agentic-app
+  // process — exactly what happened during a tool reload race
+  // when /app/tools/.../dist/runtime/server.js existed but the
+  // node binary lookup transiently failed. We capture the first
+  // error and surface it as a runtime health failure so the
+  // run aborts cleanly and the operator sees a usable detail.
+  let spawnError: Error | undefined;
+  child.once("error", (err) => {
+    spawnError = err;
+    logRuntimeOutput(
+      logger,
+      "warn",
+      "stderr",
+      Buffer.from(`Source-bundle HTTP runtime spawn failed: ${err.message}\n`),
+    );
+  });
   child.stdout?.on("data", (chunk) => {
     output.push(Buffer.from(chunk));
     logRuntimeOutput(logger, "info", "stdout", chunk);
@@ -902,6 +976,18 @@ async function startSourceBundleHttpRuntime(
   });
 
   const exitBeforeHealth = new Promise<ToolHealth>((resolveExit) => {
+    const finish = () => {
+      const processDetail = Buffer.concat(output).toString("utf8").trim();
+      const reason = spawnError
+        ? `spawn error: ${spawnError.message}`
+        : "exit";
+      resolveExit({
+        ok: false,
+        detail: processDetail
+          ? `Source-bundle HTTP runtime exited before healthcheck with ${reason}: ${processDetail}`
+          : `Source-bundle HTTP runtime exited before healthcheck with ${reason}.`,
+      });
+    };
     child.once("exit", (code, signal) => {
       const processDetail = Buffer.concat(output).toString("utf8").trim();
       const reason = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
@@ -912,6 +998,9 @@ async function startSourceBundleHttpRuntime(
           : `Source-bundle HTTP runtime exited before healthcheck with ${reason}.`,
       });
     });
+    // Also resolve on 'error' so a spawn-failure (binary missing,
+    // EACCES) doesn't dangle the await on exitBeforeHealth.
+    child.once("error", () => finish());
   });
   const health = await Promise.race([
     waitForHealthyRuntime(

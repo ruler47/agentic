@@ -791,6 +791,21 @@ Artifacts can also include durable `quality` metadata with compact QA checks, de
 reasons, warnings, and matched signals. The UI renders this as a small QA badge on
 artifact cards so operators can see why an output file was accepted.
 
+Phase 22 Slice D extended this to **inline preview** for file-shaped
+payloads detected inside any span's response (Tools-page Manual Run
+result panel and Trace Inspector card downloads share the same
+`ArtifactDownloadRow` component). Each row shows filename + MIME +
+size + Download button; when the MIME is previewable (`image/*`,
+`image/svg+xml`, `text/html`, `application/pdf`) a **Preview** toggle
+expands an inline viewer — `<img>` for raster, `<object>` for PDF,
+sandboxed `<iframe>` for HTML. Operators can verify the actual tool
+output without leaving the page or base64-decoding payloads in a
+terminal. The Trace Inspector reuses `collectArtifacts` from
+`@/features/tools/artifactSniff` to find these payloads anywhere
+under `payload.output` or `payload.data` (including base64-encoded
+binaries identified by magic prefix: PNG `iVBORw0K`, JPEG `/9j/`,
+PDF `JVBERi0`, ZIP `UEsDBB`, GIF `R0lGODl`, WebP `UklGR`).
+
 Reviewer hard-gates also validate typed artifact contracts before accepting worker
 results. A required dataset must look like data, a required source bundle must look like
 source/markup, and document/image/chart/screenshot requirements must match their expected

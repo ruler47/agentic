@@ -32,14 +32,27 @@ export function renderCouncilScaffold(options: {
   sanitizedName: string;
   version: string;
   toolBody: string;
+  /**
+   * Runtime npm packages the tool body imports — e.g. `puppeteer`,
+   * `playwright`, `axios`. Phase 22 Slice E: declared either by
+   * the council winner via `proposal.packages` or auto-extracted
+   * from `import` statements in `toolBody`. Written into the
+   * generated package.json so the bundle runner can `npm install`
+   * them into the tool's own node_modules without leaking deps
+   * into the main app image.
+   */
+  dependencies?: Record<string, string>;
 }): ScaffoldFile[] {
-  const { toolName, sanitizedName, version, toolBody } = options;
+  const { toolName, sanitizedName, version, toolBody, dependencies } = options;
   return [
     { path: COUNCIL_TOOL_BODY_PATH(sanitizedName), content: toolBody },
     { path: "index.ts", content: indexFile(sanitizedName) },
     { path: "runtime/server.ts", content: RUNTIME_SERVER },
     { path: "src/tools/tool.ts", content: TOOL_TYPES },
-    { path: "package.json", content: packageJsonFile(toolName, version) },
+    {
+      path: "package.json",
+      content: packageJsonFile(toolName, version, dependencies),
+    },
     { path: "tsconfig.json", content: TSCONFIG },
   ];
 }
@@ -48,8 +61,12 @@ function indexFile(sanitizedName: string): string {
   return `export { tool } from "./src/tools/generated/${sanitizedName}Tool.js";\n`;
 }
 
-function packageJsonFile(toolName: string, version: string): string {
-  const pkg = {
+function packageJsonFile(
+  toolName: string,
+  version: string,
+  dependencies?: Record<string, string>,
+): string {
+  const pkg: Record<string, unknown> = {
     name: toolName.replace(/[^a-zA-Z0-9_.-]/g, "-"),
     version,
     private: true,
@@ -63,7 +80,48 @@ function packageJsonFile(toolName: string, version: string): string {
       typescript: "^5.6.3",
     },
   };
+  if (dependencies && Object.keys(dependencies).length > 0) {
+    pkg.dependencies = dependencies;
+  }
   return `${JSON.stringify(pkg, null, 2)}\n`;
+}
+
+/**
+ * Extract bare-specifier imports from a tool body so the scaffold
+ * can declare them as dependencies.
+ *
+ * Handles all three import forms TypeScript/JS emit:
+ *   - `import x from "pkg"`
+ *   - `import { y } from "pkg"`
+ *   - `import "pkg"` (side-effect import)
+ *   - `import * as z from "pkg"`
+ *   - `const x = require("pkg")`
+ *
+ * Returns the resolved npm package name (e.g. `@scope/pkg/sub` →
+ * `@scope/pkg`, `pkg/lib/foo` → `pkg`), filtered to bare specifiers
+ * (no relative `./`, no `node:` builtins). Returns a stable
+ * (alphabetically sorted) array so reruns are deterministic.
+ */
+export function extractToolBodyImports(toolBody: string): string[] {
+  const found = new Set<string>();
+  // ES import statements: `import ... from "pkg"` OR `import "pkg"`
+  const importRegex = /import\s+(?:[\w*{}\s,]+\s+from\s+)?["']([^"']+)["']/g;
+  // CommonJS-style require, just in case the LLM emitted any.
+  const requireRegex = /require\(\s*["']([^"']+)["']\s*\)/g;
+  for (const regex of [importRegex, requireRegex]) {
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(toolBody)) !== null) {
+      const specifier = match[1]!;
+      if (!specifier) continue;
+      if (specifier.startsWith(".") || specifier.startsWith("/")) continue;
+      if (specifier.startsWith("node:")) continue;
+      // Drop subpath: `pkg/lib/foo` → `pkg`. `@scope/pkg/sub` → `@scope/pkg`.
+      const parts = specifier.split("/");
+      const pkg = specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
+      if (pkg) found.add(pkg);
+    }
+  }
+  return Array.from(found).sort();
 }
 
 const TSCONFIG = `{
@@ -160,7 +218,22 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && url.pathname === "/health") {
       const health = tool.healthcheck ? await tool.healthcheck() : { ok: true, detail: "No healthcheck registered." };
       response.statusCode = health.ok ? 200 : 503;
-      response.end(JSON.stringify(health));
+      // Phase 22 Slice E — include tool name + version in every
+      // health response so the operator can sanity-check "which
+      // version is the runtime actually serving" from the outside
+      // without grepping logs. Useful especially when council
+      // rework produced multiple versions and a stale process is
+      // still bound to the port.
+      response.end(JSON.stringify({ ...health, tool: tool.name, version: tool.version }));
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/version") {
+      // Tiny convenience endpoint mirroring the /health version
+      // field — easier for curl checks where the operator does not
+      // care about the rest of the health payload.
+      response.statusCode = 200;
+      response.end(JSON.stringify({ tool: tool.name, version: tool.version }));
       return;
     }
 
@@ -199,7 +272,19 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, "0.0.0.0", () => {
-  console.log(JSON.stringify({ event: "tool-runtime-listening", tool: tool.name, port }));
+  // Phase 22 Slice E — emit version on startup so docker-logs (or
+  // whichever process supervises the bundle) can answer "which
+  // version is running right now?" without checking the DB or
+  // filesystem layout. Matches the existing structured-log
+  // convention used elsewhere in the runtime.
+  console.log(
+    JSON.stringify({
+      event: "tool-runtime-listening",
+      tool: tool.name,
+      version: tool.version,
+      port,
+    }),
+  );
 });
 
 async function readJsonBody(request: IncomingMessage): Promise<JsonRecord> {
