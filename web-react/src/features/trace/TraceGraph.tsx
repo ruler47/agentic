@@ -233,7 +233,9 @@ function SpanNode({ data }: NodeProps<Node<SpanNodeData>>) {
             statusBadgeClass(node.status),
           ].join(" ")}
         >
-          {node.status}
+          {/* "started" reads as a one-shot marker; the user wants a
+              progress label while the LLM is mid-call. */}
+          {node.status === "started" ? "in progress" : node.status}
         </span>
       </div>
       <p className="mt-1 line-clamp-2 break-words text-[11px] font-semibold leading-tight">

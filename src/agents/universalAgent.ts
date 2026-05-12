@@ -558,34 +558,88 @@ export class UniversalAgent {
               signal: signal ?? options.signal,
             })
         : undefined;
+    // Phase 17 Slice D follow-up: emit research events as PAIRED
+    // started/completed spans (same spanId) so the Trace Lab shows
+    // one card per request that transitions from blue → green/red
+    // with input AND output visible in the Inspector. Previously
+    // each ResearchEvent emit produced a separate 0-ms card and the
+    // payload used non-standard keys (`question`/`findings`) that
+    // the Inspector did not recognise, leaving cards looking empty.
+    const researchSpans = new Map<string, { spanId: string; startedAt: string }>();
     const emitResearchEvent = (
       phase: string,
       parentSpanId: string,
       event: import("./researchDelegate.js").ResearchEvent,
     ) => {
-      const spanId = createSpanId(`research-${phase}-${event.iteration}-${event.kind}`);
+      const key = `${parentSpanId}:${phase}:${event.iteration}`;
+      if (event.kind === "request") {
+        const spanId = createSpanId(`research-${phase}-${event.iteration}`);
+        const startedAt = new Date().toISOString();
+        researchSpans.set(key, { spanId, startedAt });
+        void emit({
+          spanId,
+          parentSpanId,
+          type: "tool-build-research-request",
+          actor: "research-delegate",
+          activity: "coordination",
+          status: "started",
+          title: `Research request: ${event.question.slice(0, 80)}`,
+          startedAt,
+          payload: {
+            phase,
+            iteration: event.iteration,
+            // Use `prompt` + `output` keys so the Inspector's
+            // standard buildPayloadSummary picks them up without
+            // event-type-specific code.
+            prompt: event.question,
+          },
+        });
+        return;
+      }
+      const tracked = researchSpans.get(key);
+      const spanId = tracked?.spanId ?? createSpanId(`research-${phase}-${event.iteration}`);
+      const startedAt = tracked?.startedAt ?? new Date().toISOString();
+      const completedAt = new Date().toISOString();
+      const durationMs = tracked ? elapsedMs(new Date(tracked.startedAt)) : 0;
+      researchSpans.delete(key);
+      if (event.kind === "result") {
+        void emit({
+          spanId,
+          parentSpanId,
+          type: "tool-build-research-request",
+          actor: "research-delegate",
+          activity: "coordination",
+          status: "completed",
+          title: `Research findings (${event.findings.length} chars)`,
+          startedAt,
+          completedAt,
+          durationMs,
+          payload: {
+            phase,
+            iteration: event.iteration,
+            prompt: event.question,
+            output: event.findings.slice(0, 4000),
+          },
+        });
+        return;
+      }
+      // delegate-failed
       void emit({
         spanId,
         parentSpanId,
-        type: "tool-build-brainstorm-proposal",
+        type: "tool-build-research-request",
         actor: "research-delegate",
         activity: "coordination",
-        status: event.kind === "delegate-failed" ? "failed" : "completed",
-        title:
-          event.kind === "request"
-            ? `Research request: ${event.question.slice(0, 80)}`
-            : event.kind === "result"
-              ? `Research findings (${event.findings.length} chars)`
-              : `Research delegate failed: ${event.error}`,
-        startedAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: 0,
+        status: "failed",
+        title: `Research delegate failed: ${event.error.slice(0, 80)}`,
+        startedAt,
+        completedAt,
+        durationMs,
         payload: {
           phase,
           iteration: event.iteration,
-          question: event.question,
-          findings: event.kind === "result" ? event.findings.slice(0, 4000) : undefined,
-          error: event.kind === "delegate-failed" ? event.error : undefined,
+          prompt: event.question,
+          error: event.error,
         },
       });
     };

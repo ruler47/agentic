@@ -268,6 +268,7 @@ export type AgentEventType =
   | "tool-build-code-repaired"
   | "tool-build-registered"
   | "tool-build-registration-aborted"
+  | "tool-build-research-request"
   // Phase 14 / Phase 2: parent build halted on a missing reader tool.
   | "tool-build-waiting-for-reader";
 
