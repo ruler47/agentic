@@ -114,6 +114,33 @@ const ORPHAN_RECOVERY_REASON =
  */
 const DEDUP_WINDOW_MS = 10 * 1000;
 
+/**
+ * Phase 19 Slice A helper: pull the original `toolBuildContext` back
+ * out of a council run's first event so `restart`/`resume` can
+ * re-enter the council pipeline. Returns undefined for runs that
+ * were not council runs (regular classify→plan flow needs no
+ * re-thread).
+ */
+function extractCouncilContext(
+  source: AgentRunRecord,
+): import("../../../agents/toolBuildCouncil.js").ToolBuildContext | undefined {
+  const events = source.events ?? [];
+  for (const event of events) {
+    if (event.type !== "run-started") continue;
+    const payload = event.payload as { kind?: string; toolBuildContext?: unknown } | undefined;
+    if (payload?.kind !== "tool_build_council") return undefined;
+    const ctx = payload.toolBuildContext;
+    if (ctx && typeof ctx === "object") {
+      // Cast the raw payload back to the structural type. The trace
+      // stores the same object we threaded in, so the shape is
+      // already correct — we only need TypeScript to accept it.
+      return ctx as import("../../../agents/toolBuildCouncil.js").ToolBuildContext;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
 @Injectable()
 export class RunsService implements OnApplicationBootstrap {
   private readonly logger = new Logger(RunsService.name);
@@ -279,8 +306,13 @@ export class RunsService implements OnApplicationBootstrap {
       },
     });
 
+    // Phase 19 Slice A: re-thread toolBuildContext if the source was
+    // a council run. Without this, restart of a council rework falls
+    // back to the regular classify→plan→worker flow and produces a
+    // nonsense run that has nothing to do with the original tool.
     void this.executeRun(restart.id, reloaded.task, [], {
       threadId: context.threadId,
+      toolBuildContext: extractCouncilContext(reloaded),
     });
 
     const updated = await this.runs.get(restart.id);
@@ -403,9 +435,13 @@ export class RunsService implements OnApplicationBootstrap {
     });
 
     const resumeFrom = toResumptionState(progress, sourceId);
+    // Phase 19 Slice A: same fix as restart — re-thread the council
+    // context so a council resume actually re-enters the council
+    // pipeline rather than the regular agent flow.
     void this.executeRun(resume.id, reloaded.task, [], {
       threadId: context.threadId,
       resumeFrom,
+      toolBuildContext: extractCouncilContext(reloaded),
     });
 
     const updated = await this.runs.get(resume.id);
