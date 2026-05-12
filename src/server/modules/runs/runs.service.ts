@@ -628,6 +628,14 @@ export class RunsService implements OnApplicationBootstrap {
       typeof body.existingToolName === "string" && body.existingToolName.trim().length > 0
         ? body.existingToolName.trim()
         : undefined;
+    // Phase 16 Slice I: optional version pin. The Tools-page
+    // per-version "Request changes" button forwards this so the
+    // council reads that specific source rather than whichever is
+    // currently active.
+    const existingToolVersion =
+      typeof body.existingToolVersion === "string" && body.existingToolVersion.trim().length > 0
+        ? body.existingToolVersion.trim()
+        : undefined;
     const bugContext =
       typeof body.bugContext === "string" && body.bugContext.trim().length > 0
         ? body.bugContext.trim()
@@ -722,6 +730,7 @@ export class RunsService implements OnApplicationBootstrap {
         qaCriteria,
         secretHandle,
         existingToolName,
+        existingToolVersion,
         bugContext,
         referenceDocs,
       },

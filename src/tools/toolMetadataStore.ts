@@ -108,6 +108,15 @@ export type ToolMetadataStore = {
    * green-runtime-but-red-status mismatches. No-op for builtins.
    */
   markAvailable(name: string, version: string): Promise<void>;
+  /**
+   * Phase 16 Slice I: drop a single non-active version from the
+   * version history. Returns true if the row was deleted, false if
+   * the version was not found OR if the caller asked to delete the
+   * currently-active version (refused — operator must
+   * `activateVersion` something else first to avoid orphaning the
+   * tool). Throws for builtins.
+   */
+  deleteVersion(name: string, version: string): Promise<boolean>;
   deleteGenerated(name: string): Promise<boolean>;
 };
 
@@ -303,6 +312,28 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       updatedAt: new Date().toISOString(),
     };
     this.modules.set(name, updated);
+  }
+
+  async deleteVersion(name: string, version: string): Promise<boolean> {
+    // In-memory store keeps a single row per tool (no version history),
+    // so the only safe semantics here is: refuse to delete because the
+    // version IS the active version (if name+version match) or no-op
+    // when the version isn't on record. Real per-version deletion lives
+    // in the Postgres store. This stub keeps tests + CLI happy.
+    const existing = this.modules.get(name);
+    if (!existing) return false;
+    if (existing.source === "builtin") {
+      throw new Error(`Cannot delete builtin tool ${name}.`);
+    }
+    if (existing.version === version) {
+      // Cannot delete the active version — operator must activate
+      // another version first. The Postgres impl enforces the same
+      // invariant; we keep it consistent here.
+      return false;
+    }
+    // Different version requested → not on record in the in-memory
+    // store. Treat as "nothing to do" rather than throwing.
+    return false;
   }
 
   async deleteGenerated(name: string): Promise<boolean> {

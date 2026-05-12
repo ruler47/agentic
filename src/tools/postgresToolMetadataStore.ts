@@ -404,6 +404,43 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     );
   }
 
+  async deleteVersion(name: string, version: string): Promise<boolean> {
+    // Phase 16 Slice I: drop a single non-active version from
+    // tool_module_versions. We deliberately refuse to delete the
+    // currently-active version (the row in tool_modules) so the
+    // operator never accidentally orphans the tool with one click.
+    // To delete an active version, activate something else first.
+    await this.pool.query("begin");
+    try {
+      const active = await this.pool.query<{ version: string; source: string }>(
+        `select version, source from tool_modules where name = $1 for update`,
+        [name],
+      );
+      const current = active.rows[0];
+      if (!current) {
+        await this.pool.query("commit");
+        return false;
+      }
+      if (current.source === "builtin") {
+        throw new Error(`Cannot delete a version of builtin tool ${name}.`);
+      }
+      if (current.version === version) {
+        // Refuse — operator must activate another version first.
+        await this.pool.query("commit");
+        return false;
+      }
+      const result = await this.pool.query(
+        `delete from tool_module_versions where name = $1 and version = $2`,
+        [name, version],
+      );
+      await this.pool.query("commit");
+      return (result.rowCount ?? 0) > 0;
+    } catch (error) {
+      await this.pool.query("rollback").catch(() => undefined);
+      throw error;
+    }
+  }
+
   async deleteGenerated(name: string): Promise<boolean> {
     await this.pool.query("begin");
     try {

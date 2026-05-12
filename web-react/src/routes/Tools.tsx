@@ -5,6 +5,7 @@ import {
   useActivateToolVersion,
   useDeleteGeneratedTool,
   useDeleteToolSetting,
+  useDeleteToolVersion,
   useReloadGeneratedTools,
   useRunToolHealthchecks,
   useRunToolManually,
@@ -365,7 +366,7 @@ function ToolDetail({
 
       {tool.source === "generated" ? (
         <Section title="Versions">
-          <VersionsPanel toolName={tool.name} activeVersion={tool.version} />
+          <VersionsPanel tool={tool} activeVersion={tool.version} />
         </Section>
       ) : null}
 
@@ -927,14 +928,15 @@ function serviceTone(status?: string): "ok" | "warn" | "danger" | "muted" | "run
  * versions so the operator can roll back without leaving the page.
  */
 function VersionsPanel({
-  toolName,
+  tool,
   activeVersion,
 }: {
-  toolName: string;
+  tool: ToolModuleMetadata;
   activeVersion: string;
 }) {
-  const versionsQuery = useToolVersions(toolName);
+  const versionsQuery = useToolVersions(tool.name);
   const activate = useActivateToolVersion();
+  const deleteVersion = useDeleteToolVersion();
 
   if (versionsQuery.isLoading) {
     return <p className="text-xs text-app-text-muted">Loading versions…</p>;
@@ -950,37 +952,52 @@ function VersionsPanel({
         {versions.map((version) => (
           <VersionRow
             key={version.version}
-            toolName={toolName}
+            tool={tool}
             version={version}
             isActive={version.version === activeVersion}
-            onActivate={() => activate.mutate({ name: toolName, version: version.version })}
-            isPending={activate.isPending}
+            onActivate={() => activate.mutate({ name: tool.name, version: version.version })}
+            isActivatePending={activate.isPending}
+            onDelete={() =>
+              deleteVersion.mutate({ name: tool.name, version: version.version })
+            }
+            isDeletePending={deleteVersion.isPending}
           />
         ))}
       </ul>
       {activate.isError ? (
         <p className="text-[11px] text-app-danger">{activate.error.message}</p>
       ) : null}
+      {deleteVersion.isError ? (
+        <p className="text-[11px] text-app-danger">{deleteVersion.error.message}</p>
+      ) : null}
     </div>
   );
 }
 
 function VersionRow({
-  toolName: _toolName,
+  tool,
   version,
   isActive,
   onActivate,
-  isPending,
+  isActivatePending,
+  onDelete,
+  isDeletePending,
 }: {
-  toolName: string;
+  tool: ToolModuleMetadata;
   version: ToolVersionSummary;
   isActive: boolean;
   onActivate: () => void;
-  isPending: boolean;
+  isActivatePending: boolean;
+  onDelete: () => void;
+  isDeletePending: boolean;
 }) {
   const success = version.successCount ?? 0;
   const failure = version.failureCount ?? 0;
   const total = success + failure;
+  // Phase 16 Slice I: per-row "Request changes" form. Always pinned
+  // to THIS version — the council reads this version's source as
+  // the rework baseline instead of whichever happens to be active.
+  const [requestOpen, setRequestOpen] = useState(false);
   return (
     <li
       className={[
@@ -994,31 +1011,56 @@ function VersionRow({
         <div className="flex flex-wrap items-baseline gap-2">
           <span className="font-mono text-[13px] font-semibold">v{version.version}</span>
           <GenericBadge tone={statusTone(version.status)}>{version.status}</GenericBadge>
-          {isActive ? (
-            <GenericBadge tone="ok">active</GenericBadge>
-          ) : null}
+          {isActive ? <GenericBadge tone="ok">active</GenericBadge> : null}
           <span className="text-app-text-muted">
             promoted {formatRelative(version.updatedAt)}
           </span>
         </div>
-        {!isActive ? (
+        <div className="flex flex-wrap gap-1.5">
           <button
             type="button"
-            onClick={() => {
-              if (
-                window.confirm(
-                  `Activate v${version.version}? The current active version will become inactive.`,
-                )
-              ) {
-                onActivate();
-              }
-            }}
-            disabled={isPending}
-            className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40 disabled:opacity-50"
+            onClick={() => setRequestOpen((prev) => !prev)}
+            className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
           >
-            {isPending ? "Activating…" : "Activate"}
+            {requestOpen ? "Close" : "Request changes"}
           </button>
-        ) : null}
+          {!isActive ? (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Activate v${version.version}? The current active version will become inactive.`,
+                    )
+                  ) {
+                    onActivate();
+                  }
+                }}
+                disabled={isActivatePending}
+                className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40 disabled:opacity-50"
+              >
+                {isActivatePending ? "Activating…" : "Activate"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Delete v${version.version}? This removes it from the version history and cannot be undone.`,
+                    )
+                  ) {
+                    onDelete();
+                  }
+                }}
+                disabled={isDeletePending}
+                className="rounded-md border border-app-danger/40 bg-app-surface px-2.5 py-1 text-[11px] text-app-danger hover:border-app-danger disabled:opacity-50"
+              >
+                {isDeletePending ? "Deleting…" : "Delete"}
+              </button>
+            </>
+          ) : null}
+        </div>
       </div>
       {version.changeSummary ? (
         <p className="mt-2 whitespace-pre-wrap break-words text-[11px] text-app-text">
@@ -1031,9 +1073,7 @@ function VersionRow({
             <span>runs: {total}</span>
             <span className="text-app-accent">{success} ok</span>
             <span className="text-app-danger">{failure} failed</span>
-            <span>
-              ({total > 0 ? Math.round((success / total) * 100) : 0}% success)
-            </span>
+            <span>({total > 0 ? Math.round((success / total) * 100) : 0}% success)</span>
           </>
         ) : (
           <span>no runs recorded</span>
@@ -1044,19 +1084,66 @@ function VersionRow({
           </span>
         ) : null}
       </div>
+      {requestOpen ? (
+        <RequestChangesForm
+          tool={tool}
+          versionPin={version.version}
+          onClose={() => setRequestOpen(false)}
+        />
+      ) : null}
     </li>
   );
 }
 
 /**
- * Phase 14 / Phase E follow-up: in-place "Request changes" form for a
- * registered tool. Posts to /api/tool-build-runs with
- * `existingToolName` + `bugContext` so the council treats it as a
- * rework (kept the original tool name, bumps the version). Accepts
- * the same reference-doc attachments as the create flow — operator
- * can drop in updated OpenAPI specs or bug repro PDFs.
+ * Phase 14 / Phase E + Phase 16 Slice I: top-level "Request changes"
+ * affordance. Always pinned to the currently-active version of the
+ * tool so the council reads THAT source as the rework baseline. For
+ * targeting older versions the operator uses the per-row "Request
+ * changes" button inside the Versions panel — see `VersionRow`.
  */
 function RequestChangesPanel({ tool }: { tool: ToolModuleMetadata }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-app-text-muted">
+          Describe what should change. Defaults to the active version (v{tool.version}).
+          Use the per-row buttons in <span className="font-semibold">Versions</span> to target
+          an older revision.
+        </p>
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          className="rounded-md border border-app-border bg-app-surface-2 px-2.5 py-1 text-[11px]"
+        >
+          {open ? "Close" : "Open form"}
+        </button>
+      </div>
+      {open ? (
+        <RequestChangesForm tool={tool} versionPin={tool.version} onClose={() => setOpen(false)} />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Phase 16 Slice I: shared form body used by BOTH the top-level
+ * RequestChangesPanel (pinned to the active version) and the
+ * per-row Versions panel buttons (pinned to that row's version).
+ * Posts to `/api/tool-build-runs` with `existingToolName` +
+ * `existingToolVersion` + `bugContext`. The council reads the
+ * named version's source as the rework baseline.
+ */
+function RequestChangesForm({
+  tool,
+  versionPin,
+  onClose,
+}: {
+  tool: ToolModuleMetadata;
+  versionPin: string;
+  onClose: () => void;
+}) {
   const create = useCreateToolBuildRun();
   const [bugContext, setBugContext] = useState("");
   const [qaCriteriaText, setQaCriteriaText] = useState("");
@@ -1064,7 +1151,6 @@ function RequestChangesPanel({ tool }: { tool: ToolModuleMetadata }) {
     Array<{ filename: string; mimeType: string; size: number; contentBase64: string }>
   >([]);
   const [referenceError, setReferenceError] = useState<string | undefined>();
-  const [open, setOpen] = useState(false);
 
   const onFilesPicked = async (files: FileList | null) => {
     setReferenceError(undefined);
@@ -1105,6 +1191,7 @@ function RequestChangesPanel({ tool }: { tool: ToolModuleMetadata }) {
         name: tool.name,
         description: tool.description,
         existingToolName: tool.name,
+        existingToolVersion: versionPin,
         bugContext: bugContext.trim(),
         qaCriteria: qaCriteria.length > 0 ? qaCriteria : undefined,
         references: references.length > 0
@@ -1121,30 +1208,19 @@ function RequestChangesPanel({ tool }: { tool: ToolModuleMetadata }) {
           setQaCriteriaText("");
           setReferences([]);
           setReferenceError(undefined);
-          setOpen(false);
+          onClose();
         },
       },
     );
   };
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-app-text-muted">
-          Describe what should change and (optionally) attach updated docs. The council
-          treats this as a rework: same tool name, bumped version, change summary written
-          to the next version.
-        </p>
-        <button
-          type="button"
-          onClick={() => setOpen((prev) => !prev)}
-          className="rounded-md border border-app-border bg-app-surface-2 px-2.5 py-1 text-[11px]"
-        >
-          {open ? "Close" : "Open form"}
-        </button>
-      </div>
-      {open ? (
-        <form onSubmit={submit} className="flex flex-col gap-3 rounded-md border border-app-border bg-app-surface-2 p-3 text-xs">
+    <div className="mt-2 flex flex-col gap-2">
+      <p className="text-[11px] text-app-text-muted">
+        Rework target: <span className="font-mono">v{versionPin}</span>. The council reads this
+        version's source as the baseline; the next successful build will be promoted on top.
+      </p>
+      <form onSubmit={submit} className="flex flex-col gap-3 rounded-md border border-app-border bg-app-surface-2 p-3 text-xs">
           <label className="flex flex-col gap-1">
             <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
               What should change? (bug report, new field, broken edge case…)
@@ -1216,7 +1292,7 @@ function RequestChangesPanel({ tool }: { tool: ToolModuleMetadata }) {
           <div className="flex justify-end gap-2">
             <button
               type="button"
-              onClick={() => setOpen(false)}
+              onClick={onClose}
               className="rounded-md border border-app-border bg-app-surface px-3 py-1.5 text-xs"
             >
               Cancel
@@ -1226,11 +1302,10 @@ function RequestChangesPanel({ tool }: { tool: ToolModuleMetadata }) {
               disabled={create.isPending || !bugContext.trim()}
               className="rounded-md bg-app-accent px-3 py-1.5 text-xs font-semibold text-app-bg disabled:opacity-50"
             >
-              {create.isPending ? "Starting rework…" : "Start rework build"}
+              {create.isPending ? "Starting rework…" : `Start rework build (v${versionPin} → next)`}
             </button>
           </div>
         </form>
-      ) : null}
     </div>
   );
 }

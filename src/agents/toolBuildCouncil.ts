@@ -47,6 +47,17 @@ export type ToolBuildContext = {
    * existing tool".
    */
   existingToolName?: string;
+  /**
+   * Phase 16 Slice I: optional version of the existing tool the
+   * rework should start from. When absent the council reads the
+   * currently-active version's source (legacy behaviour). When
+   * present, `readCurrentToolSource` reads the named version
+   * directly from disk so the operator can request changes against
+   * a specific older revision (e.g. roll back a regression in
+   * v1.0.3 by editing v1.0.2 with new instructions, without first
+   * having to manually re-activate v1.0.2).
+   */
+  existingToolVersion?: string;
   bugContext?: string;
   /**
    * On rework, the FULL source of the currently-active version of the

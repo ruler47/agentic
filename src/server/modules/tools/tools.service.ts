@@ -484,6 +484,47 @@ export class ToolsService {
     return { deleted: true, name };
   }
 
+  /**
+   * Phase 16 Slice I: drop a single non-active version from the
+   * version history. The metadata store refuses to delete the
+   * currently-active row, so a 400 here means "activate something
+   * else first". The active version stays untouched in
+   * tool_modules; only the historical row in
+   * tool_module_versions is removed.
+   */
+  async deleteVersion(
+    name: string,
+    version: string,
+  ): Promise<{ deleted: true; name: string; version: string }> {
+    if (!this.metadata) {
+      throw new ServiceUnavailableException("Tool metadata store is not configured");
+    }
+    let deleted: boolean;
+    try {
+      deleted = await this.metadata.deleteVersion(name, version);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : "Invalid version delete request",
+      );
+    }
+    if (!deleted) {
+      throw new BadRequestException(
+        `Cannot delete v${version} of ${name}: it is either the currently active version (activate another version first) or it is not on record.`,
+      );
+    }
+    await this.audit.record({
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "tool.deleted",
+      targetType: "tool",
+      targetId: `${name}@${version}`,
+      status: "success",
+      summary: `Generated tool version deleted: ${name} v${version}`,
+    });
+    return { deleted: true, name, version };
+  }
+
   async promoteReplacement(name: string, rawBody: unknown): Promise<ToolModuleMetadata> {
     if (!this.metadata) {
       throw new ServiceUnavailableException("Tool metadata store is not configured");
