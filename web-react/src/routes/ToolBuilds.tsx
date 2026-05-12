@@ -356,7 +356,7 @@ function CouncilRunRow({
   const resume = useResumeRun();
 
   const status = run.status;
-  const isLive = status === "running" || status === "queued" || status === "pending";
+  const isLive = status === "running" || status === "queued";
   const isStuckOrDone = status === "failed" || status === "cancelled";
   const anyPending = cancel.isPending || restart.isPending || resume.isPending;
 
