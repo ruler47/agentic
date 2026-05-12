@@ -2549,3 +2549,94 @@ council:
 
 Acceptance per slice ships when none of the three regress and the
 specific defect the slice targets stops reproducing.
+
+## Phase 17: Dynamic Research Delegation
+
+Status: **Designed, starting.** Surfaced from Phase 16 reworks where
+LLMs (qwen, gemma) repeatedly emitted code against stale knowledge of
+third-party APIs (thum.io, DuckDuckGo) and could not self-correct
+because they had no way to check the current docs.
+
+**Goal.** Any LLM step inside the agent — council brainstorm /
+implement / repair, or a regular `UniversalAgent` worker call — may
+optionally delegate a research request to a fresh sub-agent run.
+The delegate receives a plain-English question, uses its full tool
+catalog (`web.search`, `browser.operate`, `file.read`, …) to find
+an answer, and returns the synthesized result so the calling LLM
+can continue with up-to-date facts.
+
+**Key design choice (per operator feedback).** The calling LLM
+does **NOT** see the names of available tools. It only knows there
+is a "research delegate" that can answer questions in natural
+language. Sub-agent picks tools dynamically based on the question.
+The set of tools therefore stays a runtime detail — adding a new
+tool to the registry instantly extends what the delegate can do
+without touching prompts.
+
+### UX (LLM perspective)
+
+The prompt for brainstorm / implement / repair gains ONE block:
+
+```
+## Research (optional)
+
+If you need facts beyond your training data — current API docs,
+library versions, recent best practices — emit a research request:
+
+<request_research>your question in plain English</request_research>
+
+A universal agent will run with full tool access and return
+findings. Max 3 requests per turn. If you don't need external info,
+just answer normally — no penalty.
+```
+
+The LLM either answers directly OR emits a `<request_research>` block.
+The coordinator parses, spawns a `UniversalAgent.run(question)`,
+takes its `finalAnswer`, wraps it in `<research_result>…</research_result>`,
+and re-prompts. Up to `maxRequests` cycles, then a forced-final-answer
+nudge.
+
+### Slices
+
+- **Slice A — pure helper.** `parseResearchRequest(text)` regex /
+  permissive parser + `runLLMWithResearch(llm, messages, delegate,
+  options)` iteration loop. Pure, side-effect-free, unit-tested with
+  scripted LLM. Lives at `src/agents/researchDelegate.ts`.
+
+- **Slice B — `UniversalAgent.spawnResearch(question, parentCtx)`.**
+  Spawns a fresh `agent.run(question, …)` inheriting instanceId /
+  requesterUserId / signal from the parent. Caller gets the
+  `finalAnswer`. Recursion guard: passes
+  `researchDisabled: true` into the child run options so the
+  sub-agent cannot recursively spawn more research.
+
+- **Slice C — wire into council.** `runToolBuildCouncilInner`
+  routes brainstorm + implement + repair LLM calls through
+  `runLLMWithResearch`. Gated behind env `COUNCIL_RESEARCH_ENABLED`
+  (default false). Vote and review phases stay on the plain
+  `llm.complete` path — they don't benefit and we want to keep
+  costs predictable.
+
+- **Slice D — trace events.** Emits
+  `research-request started` / `completed` events (parent =
+  current council span) with the question + truncated findings in
+  the payload. TraceLab shows them inline so the operator can see
+  "during brainstorm, model asked for X, got back Y".
+
+- **Slice E — Settings toggle.** `coding_council_config.researchEnabled`
+  + Settings UI checkbox so operators don't need to set env vars.
+  Follow-up after A–D stabilise.
+
+- **Slice F — wire into regular `UniversalAgent.runWorker`.** Same
+  helper, applied to worker LLM calls in the normal classify→plan→
+  delegate flow. Higher regression risk; kept as a follow-up.
+
+### Risks
+
+| Risk | Mitigation |
+|---|---|
+| Sub-agent hangs or runs long | Per-request timeout (default 60 s); inherit parent `signal` so cancel propagates |
+| Sub-agent returns garbage and hurts proposal quality | Findings reach the LLM as DATA, not directives — LLM can ignore. Prompt: "findings may be partial, verify carefully" |
+| Infinite recursion (sub-agent requests its own research) | Child run option `researchDisabled` short-circuits the loop |
+| Parser misses the marker → text returned as-is | Permissive regex; non-parsed reply is treated as a final answer. Operator sees in trace if a `<request_research>` block leaked through |
+| Cost explosion | `maxRequests = 3` hard cap per LLM call; opt-in env / config flag; trace shows every spawn so operator can tune |
