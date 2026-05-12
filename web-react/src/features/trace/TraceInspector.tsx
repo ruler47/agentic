@@ -58,7 +58,9 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
         </span>
         <h3 className="mt-0.5 text-sm font-semibold leading-snug">{node.title}</h3>
         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
-          <GenericBadge tone={statusTone(node.status)}>{node.status}</GenericBadge>
+          <GenericBadge tone={statusTone(node.status)}>
+            {node.status === "started" ? "in progress" : node.status}
+          </GenericBadge>
           <span className="text-app-text-muted">{node.activity}</span>
           <span className="font-mono text-app-text-muted">{node.actor}</span>
           {tier ? <GenericBadge tone="muted">tier {tier}</GenericBadge> : null}
