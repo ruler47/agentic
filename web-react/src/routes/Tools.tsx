@@ -1097,20 +1097,29 @@ function VersionRow({
 
 /**
  * Phase 14 / Phase E + Phase 16 Slice I: top-level "Request changes"
- * affordance. Always pinned to the currently-active version of the
- * tool so the council reads THAT source as the rework baseline. For
- * targeting older versions the operator uses the per-row "Request
- * changes" button inside the Versions panel — see `VersionRow`.
+ * affordance. Lets the operator pick WHICH version to rework via a
+ * dropdown — defaults to the currently-active version. The per-row
+ * "Request changes" buttons in the Versions panel are quick
+ * shortcuts to the same flow with a pre-pinned version.
  */
 function RequestChangesPanel({ tool }: { tool: ToolModuleMetadata }) {
   const [open, setOpen] = useState(false);
+  const [selectedVersion, setSelectedVersion] = useState<string>(tool.version);
+  const versionsQuery = useToolVersions(tool.name);
+  const versions = versionsQuery.data ?? [];
+  // Keep the dropdown in sync if the active version changes
+  // underneath us (e.g. operator clicked Activate on a different
+  // row while this panel was closed).
+  useEffect(() => {
+    setSelectedVersion(tool.version);
+  }, [tool.version, tool.name]);
+
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-app-text-muted">
-          Describe what should change. Defaults to the active version (v{tool.version}).
-          Use the per-row buttons in <span className="font-semibold">Versions</span> to target
-          an older revision.
+          Pick the version you want to rework. The council reads that version's source as the
+          baseline and writes a new version on top.
         </p>
         <button
           type="button"
@@ -1121,7 +1130,36 @@ function RequestChangesPanel({ tool }: { tool: ToolModuleMetadata }) {
         </button>
       </div>
       {open ? (
-        <RequestChangesForm tool={tool} versionPin={tool.version} onClose={() => setOpen(false)} />
+        <>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
+              Rework target version
+            </span>
+            <select
+              value={selectedVersion}
+              onChange={(event) => setSelectedVersion(event.target.value)}
+              className="rounded-md border border-app-border bg-app-surface px-3 py-1.5 text-sm outline-none focus:border-app-accent/60"
+            >
+              {versions.length === 0 ? (
+                <option value={tool.version}>v{tool.version} (active)</option>
+              ) : (
+                versions.map((v) => (
+                  <option key={v.version} value={v.version}>
+                    v{v.version}
+                    {v.version === tool.version ? " (active)" : ""}
+                    {v.status === "failed" ? " — failed" : ""}
+                    {v.status === "disabled" && v.version !== tool.version ? " — disabled" : ""}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+          <RequestChangesForm
+            tool={tool}
+            versionPin={selectedVersion}
+            onClose={() => setOpen(false)}
+          />
+        </>
       ) : null}
     </div>
   );
