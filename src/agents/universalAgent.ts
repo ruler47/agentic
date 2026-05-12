@@ -1,4 +1,5 @@
 import { LlmClient } from "../llm/client.js";
+import { runLLMWithResearch } from "./researchDelegate.js";
 import type { GroupProfileRecord } from "../instance/groupProfileStore.js";
 import type { UserRecord } from "../instance/userStore.js";
 import {
@@ -184,6 +185,14 @@ type RunOptions = {
    * unblock immediately instead of letting the model finish.
    */
   signal?: AbortSignal;
+  /**
+   * Phase 17: when true, this run cannot itself spawn research
+   * sub-runs. Set by the parent run on every sub-agent it spawns
+   * to prevent unbounded recursion (LLM in sub-agent asks for
+   * research, which spawns another sub-agent, which asks for
+   * research…). Leave false on top-level runs.
+   */
+  researchDisabled?: boolean;
 };
 
 type BaseToolExecutionContext = Partial<Omit<ToolExecutionContext, "toolName" | "now">>;
@@ -526,6 +535,61 @@ export class UniversalAgent {
     const config = await adapter.resolveConfig();
     const councilModels = await adapter.resolveCouncilModels(config.tier);
 
+    // Phase 17: optional research delegation. When enabled, council
+    // LLM calls in brainstorm / implement / repair can emit
+    // <request_research>...</request_research> blocks that get
+    // resolved by spawning a fresh UniversalAgent.run as a
+    // sub-agent. The sub-agent uses its full tool catalog
+    // (web.search, browser.operate, file.read, …) to answer. Off
+    // by default to avoid surprise cost; opt-in via env flag.
+    // `researchDisabled` on the parent run (set when THIS run was
+    // itself spawned as a research sub-run) hard-disables the
+    // feature to prevent recursive sub-spawning.
+    const researchFeatureEnabled =
+      process.env.COUNCIL_RESEARCH_ENABLED === "enabled" && !options.researchDisabled;
+    const councilResearchDelegate: import("./researchDelegate.js").ResearchDelegate | undefined =
+      researchFeatureEnabled
+        ? async (question, signal) =>
+            this.spawnResearch(question, {
+              instanceId: options.instanceId,
+              requesterUserId: options.requesterUserId,
+              threadId: options.threadId,
+              memoryScopes: options.memoryScopes,
+              signal: signal ?? options.signal,
+            })
+        : undefined;
+    const emitResearchEvent = (
+      phase: string,
+      parentSpanId: string,
+      event: import("./researchDelegate.js").ResearchEvent,
+    ) => {
+      const spanId = createSpanId(`research-${phase}-${event.iteration}-${event.kind}`);
+      void emit({
+        spanId,
+        parentSpanId,
+        type: "tool-build-brainstorm-proposal",
+        actor: "research-delegate",
+        activity: "coordination",
+        status: event.kind === "delegate-failed" ? "failed" : "completed",
+        title:
+          event.kind === "request"
+            ? `Research request: ${event.question.slice(0, 80)}`
+            : event.kind === "result"
+              ? `Research findings (${event.findings.length} chars)`
+              : `Research delegate failed: ${event.error}`,
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: 0,
+        payload: {
+          phase,
+          iteration: event.iteration,
+          question: event.question,
+          findings: event.kind === "result" ? event.findings.slice(0, 4000) : undefined,
+          error: event.kind === "delegate-failed" ? event.error : undefined,
+        },
+      });
+    };
+
     // On rework, pull the active version's source so brainstorm /
     // implement / changeSummary prompts all see "here is the current
     // implementation, edit it" instead of "here's an empty canvas".
@@ -610,7 +674,11 @@ export class UniversalAgent {
           startedAt,
           payload: { modelId, prompt: promptText },
         });
-        const text = await this.llm.complete(messages, { model: modelId, signal: options.signal });
+        const text = await runLLMWithResearch(this.llm, messages, councilResearchDelegate, {
+          model: modelId,
+          signal: options.signal,
+          onResearch: (event) => emitResearchEvent("brainstorm", spanId, event),
+        });
         const parsed = parseProposalTail(text);
         await emit({
           spanId,
@@ -747,9 +815,10 @@ export class UniversalAgent {
       try {
         const implementMessages = implementPrompt(context, candidate.proposal);
         lastImplementPromptText = messagesToPromptText(implementMessages);
-        codeText = await this.llm.complete(implementMessages, {
+        codeText = await runLLMWithResearch(this.llm, implementMessages, councilResearchDelegate, {
           model: candidate.winnerModelId,
           signal: options.signal,
+          onResearch: (event) => emitResearchEvent("implement", currentCodeSpanId, event),
         });
         const parsed = parseFilesJson(codeText);
         if (parsed.length === 0) throw new Error("Implement step returned no parsable files.");
@@ -1213,7 +1282,11 @@ export class UniversalAgent {
         payload: { attempt: attempt + 1, failures: oracle.failures, prompt: repairPromptText },
       });
       try {
-        codeText = await this.llm.complete(repairMessages, { model: winner.winnerModelId, signal: options.signal });
+        codeText = await runLLMWithResearch(this.llm, repairMessages, councilResearchDelegate, {
+          model: winner.winnerModelId,
+          signal: options.signal,
+          onResearch: (event) => emitResearchEvent("repair", repairSpanId, event),
+        });
         const parsed = parseFilesJson(codeText);
         if (parsed.length === 0) throw new Error("Repair step returned no parsable files.");
         files = parsed;
@@ -1553,6 +1626,36 @@ export class UniversalAgent {
    * Phase 13 follow-up (TB-005b): expose the run-scoped user tool
    * policy so deep helpers can pass it to `findByCapability`.
    */
+  /**
+   * Phase 17: spawn a fresh sub-agent run to answer a research
+   * question. Used by `runLLMWithResearch` to satisfy
+   * `<request_research>` blocks emitted by council / worker LLM
+   * calls. The sub-run inherits scope (instanceId, requesterUserId,
+   * signal) from the parent so cancel propagates and audit lineage
+   * is preserved, but starts with a clean classify→plan flow
+   * (no toolBuildContext, no toolBuildCouncil). The child run is
+   * marked `researchDisabled` so it cannot recursively spawn more
+   * research — keeps the call tree bounded.
+   *
+   * Returns the child's `finalAnswer`. Errors from the child are
+   * caught upstream by `runLLMWithResearch` and surfaced to the
+   * calling LLM as a "research delegate failed" note.
+   */
+  async spawnResearch(
+    question: string,
+    parent: Pick<RunOptions, "instanceId" | "requesterUserId" | "threadId" | "signal" | "memoryScopes">,
+  ): Promise<string> {
+    const result = await this.run(question, {
+      instanceId: parent.instanceId,
+      requesterUserId: parent.requesterUserId,
+      threadId: parent.threadId,
+      signal: parent.signal,
+      memoryScopes: parent.memoryScopes,
+      researchDisabled: true,
+    });
+    return result.finalAnswer;
+  }
+
   private getToolPolicy(runId: string | undefined) {
     return runId ? this.runScopedToolPolicy.get(runId) : undefined;
   }
