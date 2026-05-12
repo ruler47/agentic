@@ -143,27 +143,54 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
   }
 
   async updateHealth(name: string, health: ToolHealth): Promise<void> {
+    // Phase 18: load-time probe writes `loaded` (not `available`),
+    // and PRESERVES `available` when set. Only a hard failure
+    // (`ok=false`) flips to `failed`. The "available" state is
+    // reserved for `markAvailable` (a real QA pass) — the load
+    // step says "the bundle imports", not "the tool works".
+    //
+    // SQL `CASE` keeps the upgrade idempotent across reloads: an
+    // already-blessed row stays available, a fresh row goes from
+    // disabled → loaded, and a row that was failed earlier can
+    // recover to loaded if the loader now succeeds.
+    if (health.ok) {
+      await this.pool.query(
+        `update tool_modules
+           set status = case when status = 'available' then 'available' else 'loaded' end,
+               last_health_ok = $2,
+               last_health_detail = $3,
+               updated_at = $4
+         where name = $1`,
+        [name, true, health.detail, new Date().toISOString()],
+      );
+      await this.pool.query(
+        `update tool_module_versions
+           set status = case when status = 'available' then 'available' else 'loaded' end,
+               last_health_ok = $2,
+               last_health_detail = $3,
+               updated_at = $4
+         where name = $1 and active = true`,
+        [name, true, health.detail, new Date().toISOString()],
+      );
+      return;
+    }
     await this.pool.query(
-      `
-        update tool_modules
-        set status = $2,
-            last_health_ok = $3,
-            last_health_detail = $4,
-            updated_at = $5
-        where name = $1
-      `,
-      [name, health.ok ? "available" : "failed", health.ok, health.detail, new Date().toISOString()],
+      `update tool_modules
+         set status = 'failed',
+             last_health_ok = false,
+             last_health_detail = $2,
+             updated_at = $3
+       where name = $1`,
+      [name, health.detail, new Date().toISOString()],
     );
     await this.pool.query(
-      `
-        update tool_module_versions
-        set status = $2,
-            last_health_ok = $3,
-            last_health_detail = $4,
-            updated_at = $5
-        where name = $1 and active = true
-      `,
-      [name, health.ok ? "available" : "failed", health.ok, health.detail, new Date().toISOString()],
+      `update tool_module_versions
+         set status = 'failed',
+             last_health_ok = false,
+             last_health_detail = $2,
+             updated_at = $3
+       where name = $1 and active = true`,
+      [name, health.detail, new Date().toISOString()],
     );
   }
 

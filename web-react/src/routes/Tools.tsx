@@ -6,6 +6,7 @@ import {
   useDeleteGeneratedTool,
   useDeleteToolSetting,
   useDeleteToolVersion,
+  useMarkToolVersionAvailable,
   useReloadGeneratedTools,
   useRunToolHealthchecks,
   useRunToolManually,
@@ -907,7 +908,12 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function statusTone(status?: string): "ok" | "warn" | "danger" | "muted" {
+  // Phase 18: `available` = council QA blessed → solid green.
+  // `loaded` = source-bundle imports → softer "warn" (yellow) so
+  // the operator can tell the runtime accepts it but it hasn't
+  // been verified by QA yet.
   if (status === "available") return "ok";
+  if (status === "loaded") return "warn";
   if (status === "disabled") return "muted";
   if (status === "failed") return "danger";
   return "muted";
@@ -937,6 +943,7 @@ function VersionsPanel({
   const versionsQuery = useToolVersions(tool.name);
   const activate = useActivateToolVersion();
   const deleteVersion = useDeleteToolVersion();
+  const markAvailable = useMarkToolVersionAvailable();
 
   if (versionsQuery.isLoading) {
     return <p className="text-xs text-app-text-muted">Loading versions…</p>;
@@ -961,6 +968,10 @@ function VersionsPanel({
               deleteVersion.mutate({ name: tool.name, version: version.version })
             }
             isDeletePending={deleteVersion.isPending}
+            onMarkAvailable={() =>
+              markAvailable.mutate({ name: tool.name, version: version.version })
+            }
+            isMarkAvailablePending={markAvailable.isPending}
           />
         ))}
       </ul>
@@ -969,6 +980,9 @@ function VersionsPanel({
       ) : null}
       {deleteVersion.isError ? (
         <p className="text-[11px] text-app-danger">{deleteVersion.error.message}</p>
+      ) : null}
+      {markAvailable.isError ? (
+        <p className="text-[11px] text-app-danger">{markAvailable.error.message}</p>
       ) : null}
     </div>
   );
@@ -982,6 +996,8 @@ function VersionRow({
   isActivatePending,
   onDelete,
   isDeletePending,
+  onMarkAvailable,
+  isMarkAvailablePending,
 }: {
   tool: ToolModuleMetadata;
   version: ToolVersionSummary;
@@ -990,6 +1006,8 @@ function VersionRow({
   isActivatePending: boolean;
   onDelete: () => void;
   isDeletePending: boolean;
+  onMarkAvailable: () => void;
+  isMarkAvailablePending: boolean;
 }) {
   const success = version.successCount ?? 0;
   const failure = version.failureCount ?? 0;
@@ -1017,6 +1035,24 @@ function VersionRow({
           </span>
         </div>
         <div className="flex flex-wrap gap-1.5">
+          {version.status === "loaded" ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Mark v${version.version} as available? Use this only if you've manually verified the tool works (e.g. via Manual Run). Skips a fresh council QA cycle.`,
+                  )
+                ) {
+                  onMarkAvailable();
+                }
+              }}
+              disabled={isMarkAvailablePending}
+              className="rounded-md border border-app-accent/40 bg-app-surface px-2.5 py-1 text-[11px] text-app-accent hover:border-app-accent disabled:opacity-50"
+            >
+              {isMarkAvailablePending ? "Marking…" : "Mark available"}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => setRequestOpen((prev) => !prev)}

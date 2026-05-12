@@ -123,6 +123,11 @@ export class ToolsController {
     return this.tools.deleteVersion(decodeURIComponent(name), decodeURIComponent(version));
   }
 
+  @Post("tools/generated-modules/:name/versions/:version/mark-available")
+  async markVersionAvailable(@Param("name") name: string, @Param("version") version: string) {
+    return this.tools.markVersionAvailable(decodeURIComponent(name), decodeURIComponent(version));
+  }
+
   @Post("tools/generated-modules/:name/promote-replacement")
   async promoteReplacement(@Param("name") name: string, @Body() body: unknown) {
     return { tool: await this.tools.promoteReplacement(decodeURIComponent(name), body) };

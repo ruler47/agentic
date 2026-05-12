@@ -60,7 +60,7 @@ test("loadGeneratedTools imports healthy generated tools and promotes metadata",
     const output = await tool?.run({ text: "hello" });
 
     assert.equal(results[0]?.loaded, true);
-    assert.equal(stored?.status, "available");
+    assert.equal(stored?.status, "loaded");
     assert.equal(stored?.lastHealthOk, true);
     assert.equal(tool?.name, "generated.test.echo");
     assert.equal(output?.content, "hello");
@@ -185,7 +185,7 @@ test("loadGeneratedTools can load non-local package manifests through a register
   const output = await registry.get("generated.remote.normalize")?.run({ text: " hello   runner " });
 
   assert.equal(results[0]?.loaded, true);
-  assert.equal(stored?.status, "available");
+  assert.equal(stored?.status, "loaded");
   assert.equal(stored?.lastHealthDetail, "external runner healthy");
   assert.equal(output?.content, "hello runner");
 });
@@ -232,7 +232,7 @@ test("loadGeneratedTools imports prebuilt source-bundle package manifests from p
     const output = await registry.get("generated.bundle.normalize")?.run({ text: "HELLO BUNDLE" });
 
     assert.equal(results[0]?.loaded, true);
-    assert.equal(stored?.status, "available");
+    assert.equal(stored?.status, "loaded");
     assert.equal(stored?.lastHealthDetail, "bundle healthy");
     assert.equal(output?.content, "hello bundle");
   } finally {
@@ -303,7 +303,7 @@ test("loadGeneratedTools can execute source-bundles through local HTTP process r
     const output = await registry.get("generated.bundle.httpnormalize")?.run({ text: " HELLO HTTP PROCESS " });
 
     assert.equal(results[0]?.loaded, true, JSON.stringify(results[0], null, 2));
-    assert.equal(stored?.status, "available");
+    assert.equal(stored?.status, "loaded");
     assert.match(stored?.lastHealthDetail ?? "", /entrypoint is present/);
     assert.equal(output?.content, "hello http process");
   } finally {
@@ -726,7 +726,7 @@ test("loadGeneratedTools proxies external-package HTTP runtimes", async () => {
     );
 
     assert.equal(results[0]?.loaded, true);
-    assert.equal(stored?.status, "available");
+    assert.equal(stored?.status, "loaded");
     assert.equal(stored?.lastHealthDetail, "external runtime healthy");
     assert.equal(output?.content, "external:hello");
     assert.deepEqual(output?.data, {
@@ -986,7 +986,7 @@ test("loadGeneratedTools proxies OCI image packages through the container HTTP r
       },
       resources: undefined,
     }]);
-    assert.equal(stored?.status, "available");
+    assert.equal(stored?.status, "loaded");
     assert.equal(stored?.lastHealthDetail, "OCI image manifest accepted; container starts lazily on run or service start.");
     assert.equal(output?.content, "oci:hello");
     assert.deepEqual(output?.data, { contextTool: "generated.oci.echo" });
@@ -1265,7 +1265,7 @@ test("OCI image packages stop lazy containers when their HTTP runtime fails heal
       "Loaded generated.oci.unhealthy from OCI image registry.local/agentic/unhealthy:1.0.0; container starts on run or service start.",
     );
     assert.deepEqual(stopped, ["container-unhealthy"]);
-    assert.equal(stored?.status, "available");
+    assert.equal(stored?.status, "loaded");
     assert.equal(stored?.lastHealthDetail, "OCI image manifest accepted; container starts lazily on run or service start.");
   } finally {
     await close(server);
