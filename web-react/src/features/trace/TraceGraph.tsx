@@ -242,14 +242,47 @@ function SpanNode({ data }: NodeProps<Node<SpanNodeData>>) {
         {node.title}
       </p>
       <p className="mt-0.5 truncate font-mono text-[10px] text-app-text-muted">{node.actor}</p>
-      {node.status === "started" ? (
-        <p className="mt-0.5 text-[10px] text-app-info">running…</p>
-      ) : typeof node.durationMs === "number" ? (
-        <p className="mt-0.5 text-[10px] text-app-text-muted">
-          {formatDuration(node.durationMs)}
-        </p>
-      ) : null}
+      {/* Phase 25 follow-up — duration bottom-left, total tokens
+          bottom-right. Two info pieces that operators want at a
+          glance while scanning the trace graph; both fall back
+          gracefully when unavailable. */}
+      <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] text-app-text-muted">
+        <span>
+          {node.status === "started" ? (
+            <span className="text-app-info">running…</span>
+          ) : typeof node.durationMs === "number" ? (
+            formatDuration(node.durationMs)
+          ) : (
+            ""
+          )}
+        </span>
+        <NodeTotalTokens node={node} />
+      </div>
     </div>
+  );
+}
+
+/**
+ * Phase 25 follow-up — show ONLY the total-token count on the
+ * trace-graph card (compact). Full breakdown lives in the
+ * inspector. We use `payload.tokens.total` directly so the same
+ * "k" compaction applies as the inspector badge.
+ */
+function NodeTotalTokens({ node }: { node: TraceNode }) {
+  const tokens =
+    node.payload && typeof node.payload === "object"
+      ? (node.payload as { tokens?: { total?: number } }).tokens
+      : undefined;
+  if (!tokens || typeof tokens.total !== "number" || tokens.total <= 0) {
+    return <span />;
+  }
+  const compact = tokens.total >= 1000
+    ? `${(tokens.total / 1000).toFixed(1)}k`
+    : String(tokens.total);
+  return (
+    <span title={`${tokens.total.toLocaleString()} tokens`} className="font-mono">
+      {compact} tok
+    </span>
   );
 }
 

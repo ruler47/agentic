@@ -109,6 +109,24 @@ export class LlmClient {
        * payload so the trace shows tokens per card + a per-run total.
        */
       onUsage?: (usage: LlmTokenUsage) => void;
+      /**
+       * Phase 23 Slice C — hard cap on completion tokens. Forwarded
+       * as `max_tokens` to the server. Useful for short phases like
+       * brainstorm / vote where letting Qwen run a 200 k-token
+       * reasoning chain costs hours without improving the proposal.
+       */
+      maxTokens?: number;
+      /**
+       * Phase 23 Slice C — reasoning depth control.
+       *   - "disabled": forces `chat_template_kwargs.enable_thinking=false`
+       *     (Qwen-specific) + `reasoning_effort: "low"` (OpenAI-style).
+       *     Non-reasoning models ignore both.
+       *   - "low" | "medium" | "high": maps to `reasoning_effort`
+       *     verbatim. Reasoning-capable models honour it; others
+       *     ignore.
+       * Default (undefined): no parameter sent — server default.
+       */
+      reasoning?: "disabled" | "low" | "medium" | "high";
     },
   ): Promise<string> {
     // Phase 14: explicit `model` override bypasses tier resolution so the
@@ -143,14 +161,33 @@ export class LlmClient {
         // module load via `setGlobalDispatcher` actually intercepts
         // these requests. Tests can swap the dispatcher to a
         // MockAgent through the same API.
+        // Phase 23 Slice C — assemble request body with optional
+        // per-phase max_tokens + reasoning controls. Disabled
+        // reasoning is sent BOTH as `reasoning_effort: "low"` (the
+        // OpenAI-style hint that quantised local models often
+        // respect) AND `chat_template_kwargs.enable_thinking: false`
+        // (the Qwen-specific switch LM Studio honours). Non-reasoning
+        // models silently drop both.
+        const requestBody: Record<string, unknown> = {
+          model,
+          messages,
+          temperature: options?.temperature ?? this.config.temperature,
+        };
+        if (typeof options?.maxTokens === "number" && options.maxTokens > 0) {
+          requestBody.max_tokens = options.maxTokens;
+        }
+        if (options?.reasoning) {
+          if (options.reasoning === "disabled") {
+            requestBody.reasoning_effort = "low";
+            requestBody.chat_template_kwargs = { enable_thinking: false };
+          } else {
+            requestBody.reasoning_effort = options.reasoning;
+          }
+        }
         const response = await undiciFetch(`${this.config.baseUrl}/chat/completions`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            model,
-            messages,
-            temperature: options?.temperature ?? this.config.temperature,
-          }),
+          body: JSON.stringify(requestBody),
           signal: options?.signal,
         });
 

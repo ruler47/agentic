@@ -534,6 +534,34 @@ export class UniversalAgent {
     // Trace Inspector + a "Total tokens" badge in the trace header.
     const runTokens = createTokenAccumulator();
 
+    // Phase 23 Slice C — `max_tokens` cap is OPT-IN. Without the
+    // feature flag, every phase runs unbounded (server decides
+    // when to stop based on its own context window). When the
+    // operator sets `COUNCIL_MAX_TOKENS_ENABLED=enabled`, the
+    // per-phase caps below kick in to protect against runaway
+    // reasoning chains. `cap(N)` returns the number when the
+    // flag is on, otherwise `undefined` so the LLM client skips
+    // the `max_tokens` field entirely.
+    const maxTokensEnabled = process.env.COUNCIL_MAX_TOKENS_ENABLED === "enabled";
+    const cap = (n: number): number | undefined => (maxTokensEnabled ? n : undefined);
+
+    // Phase 23 Slice C — `reasoning` parameter is ALSO opt-in.
+    // Without `COUNCIL_REASONING_ENABLED=enabled`, the per-phase
+    // `reasoning: "disabled"` hints are dropped on the floor and
+    // the LLM client doesn't send `reasoning_effort` /
+    // `chat_template_kwargs.enable_thinking`. Tools get the
+    // server-default behaviour (reasoning models think,
+    // non-reasoning models don't). When the flag is on, the
+    // per-phase reasoning overrides take effect.
+    //
+    // Why two flags? They protect different things and operators
+    // want to dial them independently.
+    const reasoningOverridesEnabled =
+      process.env.COUNCIL_REASONING_ENABLED === "enabled";
+    type ReasoningHint = "disabled" | "low" | "medium" | "high";
+    const gate = (level: ReasoningHint): ReasoningHint | undefined =>
+      reasoningOverridesEnabled ? level : undefined;
+
     // Phase 17: optional research delegation. When enabled, council
     // LLM calls in brainstorm / implement / repair can emit
     // <request_research>...</request_research> blocks that get
@@ -740,6 +768,12 @@ export class UniversalAgent {
         const text = await runLLMWithResearch(this.llm, messages, councilResearchDelegate, {
           model: modelId,
           signal: options.signal,
+          // Phase 23 Slice C — brainstorm doesn't need deep
+          // reasoning. We saw Qwen 35B chew 170 k+ tokens of
+          // <think> on simple reworks. Disable thinking +
+          // cap completion to 4 k.
+          reasoning: gate("disabled"),
+          maxTokens: cap(4000),
           onResearch: (event) => emitResearchEvent("brainstorm", spanId, event),
           onUsage: (usage) => {
             spanTokens.onUsage(usage);
@@ -797,7 +831,13 @@ export class UniversalAgent {
           startedAt,
           payload: { voterModelId: voterId, prompt: promptText },
         });
-        const text = await this.llm.complete(messages, { model: voterId, signal: options.signal });
+        const text = await this.llm.complete(messages, {
+          model: voterId,
+          signal: options.signal,
+          // Vote returns a tiny JSON ranking. No reasoning needed.
+          reasoning: gate("disabled"),
+          maxTokens: cap(1000),
+        });
         const ranking = parseRankingJson(text, proposals.length);
         await emit({
           spanId,
@@ -897,6 +937,15 @@ export class UniversalAgent {
         codeText = await runLLMWithResearch(this.llm, implementMessages, councilResearchDelegate, {
           model: candidate.winnerModelId,
           signal: options.signal,
+          // Phase 23 Slice C revised — implement is the ONE
+          // phase where deep reasoning earns its tokens. We
+          // leave `reasoning` UNSET (server default = thinking
+          // on for reasoning models) and only cap at 32 k.
+          // Cap is generous because a non-trivial tool body +
+          // reasoning chain can run 15-25 k legitimately, but
+          // 32 k is the brick wall: if the model can't wrap up
+          // by then, Borda fallback / repair takes over.
+          maxTokens: cap(32000),
           onResearch: (event) => emitResearchEvent("implement", attemptSpanId, event),
           onUsage: (usage) => {
             implementSpanTokens.onUsage(usage);
@@ -1037,6 +1086,12 @@ export class UniversalAgent {
               const text = await this.llm.complete(messages, {
                 model: reviewerId,
                 signal: options.signal,
+                // Phase 23 Slice C revised — reviewer judges
+                // existing code; deep <think> on Qwen routinely
+                // blew up to 100k+ tokens for no gain. Disabled
+                // thinking + 4 k cap: verdict + a few findings.
+                reasoning: gate("disabled"),
+                maxTokens: cap(4000),
                 onUsage: (usage) => {
                   reviewSpanTokens.onUsage(usage);
                   runTokens.onUsage(usage);
@@ -1109,7 +1164,16 @@ export class UniversalAgent {
         payload: { attempt: attempt + 1, prompt: revisePromptText },
       });
       try {
-        codeText = await this.llm.complete(reviseMessages, { model: winner.winnerModelId, signal: options.signal });
+        codeText = await this.llm.complete(reviseMessages, {
+          model: winner.winnerModelId,
+          signal: options.signal,
+          // Phase 23 Slice C revised — revise applies targeted
+          // changes from review findings. Same family of work
+          // as review (judgment + small edit), not deep design
+          // like implement. Disabled thinking + 16 k cap.
+          reasoning: gate("disabled"),
+          maxTokens: cap(16000),
+        });
         const parsed = parseFilesJson(codeText);
         if (parsed.length > 0) files = parsed;
       } catch (error) {
@@ -1188,6 +1252,10 @@ export class UniversalAgent {
       const qaInputText = await this.llm.complete(qaInputMessages, {
         modelTier: "S",
         signal: options.signal,
+        // QA input is a tiny JSON object matching the tool's
+        // inputSchema. 500 tokens is plenty.
+        reasoning: gate("disabled"),
+        maxTokens: cap(500),
       });
       const parsed = extractFirstJson<Record<string, unknown>>(qaInputText);
       if (parsed && typeof parsed === "object") qaInput = parsed;
@@ -1478,7 +1546,16 @@ export class UniversalAgent {
       let oracle: { verdict: "passed" | "failed"; failures: string[] };
       let qaOracleText = "";
       try {
-        qaOracleText = await this.llm.complete(qaMessages, { modelTier: "M", signal: options.signal });
+        qaOracleText = await this.llm.complete(qaMessages, {
+          modelTier: "M",
+          signal: options.signal,
+          // Phase 23 Slice C revised — oracle is binary
+          // judgment (does output satisfy each criterion).
+          // Reasoning here would just bloat the response with
+          // no signal. Disabled + 2 k cap.
+          reasoning: gate("disabled"),
+          maxTokens: cap(2000),
+        });
         oracle = parseQaOracle(qaOracleText);
       } catch (error) {
         await emit({
@@ -1615,6 +1692,12 @@ export class UniversalAgent {
         codeText = await runLLMWithResearch(this.llm, repairMessages, councilResearchDelegate, {
           model: currentRepairModel,
           signal: options.signal,
+          // Phase 23 Slice C — repair gets full reasoning +
+          // 32 k cap (mirror of implement). This is the second
+          // phase where deep thinking is worth its tokens: the
+          // model has to root-cause the QA failure, not just
+          // apply a literal diff.
+          maxTokens: cap(32000),
           onResearch: (event) => emitResearchEvent("repair", repairSpanId, event),
           onUsage: (usage) => {
             repairSpanTokens.onUsage(usage);
@@ -1752,6 +1835,9 @@ export class UniversalAgent {
       const summaryRaw = await this.llm.complete(summaryMessages, {
         modelTier: "S",
         signal: options.signal,
+        // 1-2 sentence change summary. No reasoning, 500 tokens.
+        reasoning: gate("disabled"),
+        maxTokens: cap(500),
       });
       changeSummary = sanitizeChangeSummary(summaryRaw);
       if (changeSummary && adapter.updateChangeSummary) {
@@ -1818,6 +1904,9 @@ export class UniversalAgent {
       const descRaw = await this.llm.complete(descMessages, {
         modelTier: "S",
         signal: options.signal,
+        // Same shape as change summary — one paragraph.
+        reasoning: gate("disabled"),
+        maxTokens: cap(500),
       });
       const description = sanitizeChangeSummary(descRaw);
       if (description && adapter.updateDescription) {

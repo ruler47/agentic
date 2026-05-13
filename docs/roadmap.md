@@ -3120,15 +3120,78 @@ through an S-tier summarizer with the rework's `bugContext` as
 the focus, replacing the 12 k-char block with a ~800-char
 focused excerpt.
 
-### Slice C — Reasoning budget per phase
+### Slice C — Per-phase reasoning + max_tokens (shipped, opt-in)
 
-LM Studio surfaces a `reasoning` parameter (`low` / `medium` /
-`high`) that bounds the model's internal `<think>` chain length.
-Brainstorm and vote benefit little from deep reasoning — set
-them to `low`. Implement / repair / review benefit a lot — keep
-them at `high`. Configured per phase in the council adapter's
-LLM call options. Estimated savings: 20-40 k tokens per
-implement call when Qwen / Gemma run with reduced reasoning.
+Two independent controls, each behind its own env-flag so
+operators can dial them separately:
+
+**`COUNCIL_REASONING_ENABLED`** (default `off`): when `enabled`,
+the council adapter sends per-phase reasoning hints to the LLM.
+The hints use both `reasoning_effort` (OpenAI-style) and
+`chat_template_kwargs.enable_thinking` (Qwen-specific) — the
+former is best-effort, the latter is the binary switch
+reasoning models actually honour. Per-phase defaults:
+
+| Phase | reasoning hint |
+|---|---|
+| brainstorm | disabled |
+| vote | disabled |
+| review | disabled |
+| revise | disabled |
+| qa-input synthesizer | disabled |
+| qa-oracle | disabled |
+| change-summary, description | disabled |
+| **implement** | unset (server default — thinking on for reasoning models) |
+| **repair** | unset (server default) |
+
+Why disabled almost everywhere? Operator feedback after watching
+Qwen 3.6 35B burn 200 k+ tokens of `<think>` on a simple
+brainstorm: deep reasoning earns its tokens on `implement` and
+`repair` (root-cause work) and adds noise everywhere else.
+
+**`COUNCIL_MAX_TOKENS_ENABLED`** (default `off`): when `enabled`,
+the council adapter sends a per-phase `max_tokens` cap. Hard
+cap on completion tokens — the server stops generating at that
+point and returns `finish_reason="length"`. Phase G fix catches
+`finish_reason=length` and routes through the existing Borda /
+repair fallbacks, so a truncated output is recoverable. Per-phase
+defaults:
+
+| Phase | max_tokens |
+|---|---|
+| brainstorm | 4000 |
+| vote | 1000 |
+| review | 4000 |
+| revise | 16000 |
+| qa-input synth | 500 |
+| qa-oracle | 2000 |
+| change-summary, description | 500 |
+| **implement** | 32000 |
+| **repair** | 32000 |
+
+The cap is a SAFETY NET, not a target — the model doesn't know
+about it; if it tries to fit the answer in N tokens, you pair
+the cap with a soft prompt hint ("be concise, aim for ~Y
+words"). Brainstorm prompt already carries a complexity-based
+soft hint; the cap protects against a model that ignores it.
+
+Both flags are wired through tiny `gate()` and `cap()` helpers
+in `src/agents/universalAgent.ts:runToolBuildCouncilInner` so a
+phase-callsite always reads
+`{ reasoning: gate("disabled"), maxTokens: cap(4000) }` —
+gating is local, not threaded through the LLM client. The
+client itself ignores `reasoning: undefined` and
+`maxTokens: undefined`, so OFF means "send vanilla request".
+
+Operators turn the flags on by setting them in
+`docker-compose.yml` under `app.environment` and restarting the
+app container (env is read at process start).
+
+Estimated savings when both flags are on:
+- brainstorm/vote/review/revise: ~10-100x token reduction per
+  call (no `<think>` chain).
+- implement/repair: unchanged — still allowed deep reasoning,
+  just with a 32 k brick wall.
 
 ### Slice D — Research-findings cache per run
 

@@ -63,6 +63,10 @@ export type RunLLMWithResearchOptions = {
    * payload.
    */
   onUsage?: (usage: LlmTokenUsage) => void;
+  /** Phase 23 Slice C — forwarded to llm.complete. */
+  maxTokens?: number;
+  /** Phase 23 Slice C — forwarded to llm.complete. */
+  reasoning?: "disabled" | "low" | "medium" | "high";
 };
 
 /**
@@ -79,8 +83,8 @@ export async function runLLMWithResearch(
   delegate: ResearchDelegate | undefined,
   options: RunLLMWithResearchOptions = {},
 ): Promise<string> {
-  const { maxRequests = 3, signal, model, modelTier, onResearch, onUsage } = options;
-  const baseLlmOpts = { signal, model, modelTier, onUsage };
+  const { maxRequests = 3, signal, model, modelTier, onResearch, onUsage, maxTokens, reasoning } = options;
+  const baseLlmOpts = { signal, model, modelTier, onUsage, maxTokens, reasoning };
   if (!delegate || maxRequests <= 0) {
     return llm.complete(messages, baseLlmOpts);
   }

@@ -397,6 +397,22 @@ free-form `bugContext`, and a list of runtime-validatable `qaCriteria`.
 The runtime spawns a `tool-build` channel run inside the agent and the
 council loop takes over.
 
+### Env-flag controls (operator dials)
+
+Three independent env flags shape council LLM behaviour. All three
+are read at process start; flip in `docker-compose.yml` under
+`app.environment` and restart the app container.
+
+| Env | Default | What it does when enabled |
+|---|---|---|
+| `COUNCIL_RESEARCH_ENABLED` | on (set to `disabled` to turn off) | LLM calls in brainstorm/implement/repair can emit `<request_research>` blocks that spawn a sub-agent with full tool access (Phase 22 Slice B). |
+| `COUNCIL_REASONING_ENABLED` | off | Council sends per-phase reasoning hints (`reasoning_effort` + `chat_template_kwargs.enable_thinking`). Defaults disable thinking for brainstorm / vote / review / revise / qa-input / qa-oracle / summary / description; implement and repair keep server-default (thinking on for reasoning models). See Phase 23 Slice C in roadmap. |
+| `COUNCIL_MAX_TOKENS_ENABLED` | off | Council sends per-phase `max_tokens` cap (brainstorm 4 k, vote 1 k, implement 32 k, …). Safety net against runaway reasoning chains. `finish_reason=length` routes through existing Borda / repair fallbacks. See Phase 23 Slice C. |
+
+The two opt-in flags are independent: turning on `REASONING` without
+`MAX_TOKENS` lets the operator compare "thinking off vs on" at
+identical token budgets, and vice-versa.
+
 The council pipeline (Phase 14 → Phase 22):
 
 ```text

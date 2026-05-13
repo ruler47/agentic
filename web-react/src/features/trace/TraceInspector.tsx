@@ -68,17 +68,16 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
           <span className="text-app-text-muted">{node.activity}</span>
           <span className="font-mono text-app-text-muted">{node.actor}</span>
           {tier ? <GenericBadge tone="muted">tier {tier}</GenericBadge> : null}
-          <LiveDuration node={node} />
-          {typeof node.durationMs === "number" && node.status !== "started" ? (
-            <span className="font-mono text-app-text-muted">{formatDuration(node.durationMs)}</span>
-          ) : null}
-          <TokenBadge node={node} />
         </div>
         {node.parentTitle ? (
           <p className="mt-1 text-[11px] text-app-text-muted">
             Called by <span className="font-mono">{node.parentTitle}</span>
           </p>
         ) : null}
+        {/* Phase 25 follow-up — vertical "duration + tokens" block.
+            Each metric on its own line with an explicit label so
+            operators don't have to decode "P/C/T tok". */}
+        <InspectorMetrics node={node} />
       </header>
 
       {stuckHelper.shouldShow ? (
@@ -501,40 +500,56 @@ function LiveDuration({ node }: { node: TraceNode }) {
 }
 
 /**
- * Phase 23 Slice A — render LM Studio's `usage` block next to the
- * duration on each council span. Compact "P/C/T" badge:
- *   P = prompt_tokens (what we sent the model)
- *   C = completion_tokens (what the model wrote back, including its
- *       reasoning chain)
- *   T = total_tokens (rough cost number)
- * Council root span (`run-started` completed) carries the run-wide
- * sum so the trace header doubles as a per-run telemetry badge.
+ * Phase 23 Slice A + Phase 25 follow-up — structured "duration +
+ * tokens" block in the Inspector header. Each metric is its OWN
+ * row with an explicit label so operators don't have to remember
+ * "P/C/T" shorthand. Rendered only when at least one of the
+ * metrics is meaningful.
+ *
+ *   Duration: 32.8 s
+ *   Prompt tokens: 2,200
+ *   Completion tokens: 1,700
+ *   Total tokens: 3,800
+ *
+ * For the root `run-started` span, the same block reads the run-wide
+ * total because the coordinator accumulator stamps it there.
  */
-function TokenBadge({ node }: { node: TraceNode }) {
+function InspectorMetrics({ node }: { node: TraceNode }) {
   const tokens =
     node.payload && typeof node.payload === "object"
       ? (node.payload as { tokens?: { prompt?: number; completion?: number; total?: number } }).tokens
       : undefined;
-  if (
-    !tokens ||
-    typeof tokens.total !== "number" ||
-    tokens.total <= 0
-  ) {
-    return null;
-  }
-  const compact = (value: number | undefined): string => {
-    const n = value ?? 0;
-    if (n >= 100_000) return `${Math.round(n / 1000)}k`;
-    if (n >= 1_000) return `${(n / 1000).toFixed(1)}k`;
-    return String(n);
-  };
+  const hasTokens =
+    tokens && typeof tokens.total === "number" && tokens.total > 0;
+  const showDuration =
+    node.status === "started" || typeof node.durationMs === "number";
+  if (!showDuration && !hasTokens) return null;
+
   return (
-    <span
-      className="font-mono text-app-text-muted"
-      title={`Prompt: ${tokens.prompt ?? 0} · Completion: ${tokens.completion ?? 0} · Total: ${tokens.total} tokens`}
-    >
-      {compact(tokens.prompt)}/{compact(tokens.completion)}/{compact(tokens.total)} tok
-    </span>
+    <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[11px]">
+      {showDuration ? (
+        <>
+          <dt className="text-app-text-muted">Duration</dt>
+          <dd className="font-mono">
+            {node.status === "started" ? (
+              <LiveDuration node={node} />
+            ) : (
+              formatDuration(node.durationMs ?? 0)
+            )}
+          </dd>
+        </>
+      ) : null}
+      {hasTokens ? (
+        <>
+          <dt className="text-app-text-muted">Prompt tokens</dt>
+          <dd className="font-mono">{(tokens!.prompt ?? 0).toLocaleString()}</dd>
+          <dt className="text-app-text-muted">Completion tokens</dt>
+          <dd className="font-mono">{(tokens!.completion ?? 0).toLocaleString()}</dd>
+          <dt className="text-app-text-muted">Total tokens</dt>
+          <dd className="font-mono font-semibold">{(tokens!.total ?? 0).toLocaleString()}</dd>
+        </>
+      ) : null}
+    </dl>
   );
 }
 
