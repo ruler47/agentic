@@ -855,40 +855,49 @@ export class UniversalAgent {
       winnerModelId: entry.p.modelId,
       proposal: entry.p,
     }))];
-    // Pre-allocate the implement span so we can emit a `started` event
-    // before the (possibly long-running) LLM call. The final code-drafted
-    // emit below reuses this same spanId so the Trace Graph shows one
-    // implement node transitioning from blue → green.
-    let currentCodeSpanId = createSpanId("council-implement");
-    const implementStartedAtDate = new Date();
-    const implementStartedAt = implementStartedAtDate.toISOString();
-    const implementPromptPreview = messagesToPromptText(implementPrompt(context, winner.proposal));
-    await emit({
-      spanId: currentCodeSpanId,
-      parentSpanId: winnerSpanId,
-      type: "tool-build-code-drafted",
-      actor: winner.winnerModelId,
-      activity: "llm",
-      status: "started",
-      title: `Drafting code with ${winner.winnerModelId}`,
-      startedAt: implementStartedAt,
-      payload: { modelId: winner.winnerModelId, prompt: implementPromptPreview },
-    });
-
+    // Phase 25 — per-attempt implement spans. Previously we emitted
+    // one placeholder `started` event and rewrote it on completion,
+    // which meant a cross-LLM fallback (Qwen failed → Gemma drafted)
+    // looked like a single in-place card swap to the operator. Now
+    // EACH attempt gets its OWN spanId + own started/completed pair
+    // with an explicit `attempt: N` counter and `modelId` in the
+    // title. The trace shows the full failure-then-recovery chain
+    // without any card mutation.
+    let currentCodeSpanId = "";
     let implementError: unknown;
     let lastImplementPromptText = "";
     let implementSpanTokens = createTokenAccumulator();
     for (let candidateIdx = 0; candidateIdx < implementCandidates.length; candidateIdx += 1) {
       ensureNotCancelled();
       const candidate = implementCandidates[candidateIdx]!;
+      const attemptNumber = candidateIdx + 1;
+      const attemptSpanId = createSpanId(`council-implement-attempt-${attemptNumber}`);
+      const attemptStartedAtDate = new Date();
+      const attemptStartedAt = attemptStartedAtDate.toISOString();
+      const implementMessages = implementPrompt(context, candidate.proposal);
+      lastImplementPromptText = messagesToPromptText(implementMessages);
+      await emit({
+        spanId: attemptSpanId,
+        parentSpanId: winnerSpanId,
+        type: "tool-build-code-drafted",
+        actor: candidate.winnerModelId,
+        activity: "llm",
+        status: "started",
+        title: `Drafting code with ${candidate.winnerModelId} (attempt ${attemptNumber}/${implementCandidates.length})`,
+        startedAt: attemptStartedAt,
+        payload: {
+          modelId: candidate.winnerModelId,
+          attempt: attemptNumber,
+          totalCandidates: implementCandidates.length,
+          prompt: lastImplementPromptText,
+        },
+      });
       try {
-        const implementMessages = implementPrompt(context, candidate.proposal);
-        lastImplementPromptText = messagesToPromptText(implementMessages);
         implementSpanTokens = createTokenAccumulator();
         codeText = await runLLMWithResearch(this.llm, implementMessages, councilResearchDelegate, {
           model: candidate.winnerModelId,
           signal: options.signal,
-          onResearch: (event) => emitResearchEvent("implement", currentCodeSpanId, event),
+          onResearch: (event) => emitResearchEvent("implement", attemptSpanId, event),
           onUsage: (usage) => {
             implementSpanTokens.onUsage(usage);
             runTokens.onUsage(usage);
@@ -897,7 +906,38 @@ export class UniversalAgent {
         const parsed = parseFilesJson(codeText);
         if (parsed.length === 0) throw new Error("Implement step returned no parsable files.");
         files = parsed;
+        // Successful attempt → emit a green completion span tied to
+        // this attempt's spanId. Subsequent review/qa events use
+        // this spanId as parent so the dependency edge points at
+        // the model that actually produced the working code.
+        await emit({
+          spanId: attemptSpanId,
+          parentSpanId: winnerSpanId,
+          type: "tool-build-code-drafted",
+          actor: candidate.winnerModelId,
+          activity: "llm",
+          status: "completed",
+          title: `Code drafted by ${candidate.winnerModelId} (attempt ${attemptNumber}/${implementCandidates.length})`,
+          startedAt: attemptStartedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(attemptStartedAtDate),
+          payload: {
+            modelId: candidate.winnerModelId,
+            attempt: attemptNumber,
+            totalCandidates: implementCandidates.length,
+            files,
+            raw: codeText,
+            prompt: lastImplementPromptText,
+            output: codeText,
+            tokens: implementSpanTokens.snapshot(),
+          },
+        });
+        currentCodeSpanId = attemptSpanId;
         if (candidate.winnerModelId !== winner.winnerModelId) {
+          // A LATER candidate succeeded → record a coordination
+          // span explaining WHY the winner changed. Distinct
+          // spanId so it shows up as its own card next to the
+          // failed attempt(s).
           const fallbackSpanId = createSpanId("council-winner-fallback");
           await emit({
             spanId: fallbackSpanId,
@@ -923,29 +963,26 @@ export class UniversalAgent {
         break;
       } catch (error) {
         implementError = error;
-        // Phase G follow-up: emit a visible failure card for each
-        // implement attempt that didn't produce parsable files. Without
-        // this the trace just shows "Drafting with X" started for 80s
-        // and nothing else, so the operator can't see that gemma
-        // returned empty content twice and we fell back to qwen.
-        const attemptSpanId = createSpanId("council-implement-attempt-failed");
         const detail = error instanceof Error ? error.message : String(error);
         await emit({
           spanId: attemptSpanId,
-          parentSpanId: currentCodeSpanId,
+          parentSpanId: winnerSpanId,
           type: "tool-build-code-drafted",
           actor: candidate.winnerModelId,
           activity: "llm",
           status: "failed",
-          title: `Implement attempt failed for ${candidate.winnerModelId}`,
+          title: `Implement attempt failed for ${candidate.winnerModelId} (attempt ${attemptNumber}/${implementCandidates.length})`,
           detail,
-          startedAt: implementStartedAt,
+          startedAt: attemptStartedAt,
           completedAt: new Date().toISOString(),
-          durationMs: elapsedMs(implementStartedAtDate),
+          durationMs: elapsedMs(attemptStartedAtDate),
           payload: {
             modelId: candidate.winnerModelId,
+            attempt: attemptNumber,
+            totalCandidates: implementCandidates.length,
             prompt: lastImplementPromptText,
             error: detail,
+            tokens: implementSpanTokens.snapshot(),
           },
         });
       }
@@ -953,25 +990,11 @@ export class UniversalAgent {
     if (implementError !== undefined) throw implementError;
     files = files!;
     codeText = codeText!;
-    await emit({
-      spanId: currentCodeSpanId,
-      parentSpanId: winnerSpanId,
-      type: "tool-build-code-drafted",
-      actor: winner.winnerModelId,
-      activity: "llm",
-      status: "completed",
-      title: `Code drafted by ${winner.winnerModelId}`,
-      startedAt: implementStartedAt,
-      completedAt: new Date().toISOString(),
-      durationMs: elapsedMs(implementStartedAtDate),
-      payload: {
-        files,
-        raw: codeText,
-        prompt: lastImplementPromptText,
-        output: codeText,
-        tokens: implementSpanTokens.snapshot(),
-      },
-    });
+    // Phase 25: the legacy single-emit "Code drafted by X" after
+    // the loop is gone — the per-attempt completed span above is
+    // now the canonical implementation card. `currentCodeSpanId`
+    // points at the winning attempt's spanId so subsequent
+    // review/qa events anchor under the right parent.
 
     // ── Step 4-5: REVIEW + REVISE ────────────────────────────────────
     // Reviews are best-effort per peer model. If a reviewer LLM dies
@@ -1221,6 +1244,44 @@ export class UniversalAgent {
     // cycle with the type errors visible to the model.
     let registered: { toolName: string; version: string; previousVersion?: string } | null = null;
     let initialRegistrationError: string | undefined;
+    // Phase 25 — emit a visible "install + build" span around the
+    // adapter's registerToolFromFiles call so the operator can see
+    // (a) how long npm install + tsc took, (b) whether it succeeded,
+    // (c) what packages were installed. Previously this whole step
+    // ran silently inside the package runner and a tsc/build failure
+    // surfaced only as a downstream QA-attempt failure.
+    const installSpanId = createSpanId("council-install-verify");
+    const installStartedAtDate = new Date();
+    const installStartedAt = installStartedAtDate.toISOString();
+    // Extract declared runtime deps from the tool body so the span
+    // can name them in the title without re-parsing source later.
+    let installPackages: string[] = [];
+    try {
+      const { extractToolBody, extractToolBodyImports } = await import("./councilScaffold.js");
+      const sanitized = context.name.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 120) || "council_tool";
+      const body = extractToolBody(files, sanitized);
+      if (body) installPackages = extractToolBodyImports(body);
+    } catch {
+      // Best-effort — fallback to empty list keeps the span emit happy.
+    }
+    await emit({
+      spanId: installSpanId,
+      parentSpanId: currentCodeSpanId,
+      type: "tool-build-registered",
+      actor: "package-runner",
+      activity: "tool",
+      status: "started",
+      title:
+        installPackages.length > 0
+          ? `Installing ${installPackages.length} package(s) + tsc build`
+          : "Registering tool (no runtime deps)",
+      detail:
+        installPackages.length > 0
+          ? `Bundle declares: ${installPackages.join(", ")}`
+          : "No external runtime dependencies declared by the tool body.",
+      startedAt: installStartedAt,
+      payload: { packages: installPackages, toolName: context.name },
+    });
     try {
       registered = await adapter.registerToolFromFiles(context.name, files, {
         description: context.description,
@@ -1231,24 +1292,55 @@ export class UniversalAgent {
     } catch (error) {
       initialRegistrationError = error instanceof Error ? error.message : String(error);
       await emit({
-        spanId: createSpanId("council-register-failed"),
+        spanId: installSpanId,
         parentSpanId: currentCodeSpanId,
-        type: "tool-build-qa-attempt",
-        actor: "coordinator",
-        activity: "coordination",
+        type: "tool-build-registered",
+        actor: "package-runner",
+        activity: "tool",
         status: "failed",
-        title: "Initial registration failed (tsc / loader error)",
+        title:
+          installPackages.length > 0
+            ? `Install / build failed (${installPackages.length} package(s))`
+            : "Registration failed (tsc / loader error)",
         detail: initialRegistrationError,
-        startedAt: new Date().toISOString(),
+        startedAt: installStartedAt,
         completedAt: new Date().toISOString(),
-        durationMs: 0,
-        payload: { error: initialRegistrationError, registrationFailed: true },
+        durationMs: elapsedMs(installStartedAtDate),
+        payload: {
+          packages: installPackages,
+          toolName: context.name,
+          error: initialRegistrationError,
+        },
       });
       // Fall through with a placeholder `registered` so the repair
       // loop below can iterate. The first repair attempt will
       // re-call adapter.registerToolFromFiles with the corrected
       // source; if that one succeeds, the loop proceeds normally.
       registered = { toolName: context.name, version: "pending", previousVersion: undefined };
+    }
+    if (registered && registered.version !== "pending") {
+      // Install + build + register all OK — close the span green.
+      await emit({
+        spanId: installSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-registered",
+        actor: "package-runner",
+        activity: "tool",
+        status: "completed",
+        title:
+          installPackages.length > 0
+            ? `Installed ${installPackages.length} package(s) + built ${registered.toolName} v${registered.version}`
+            : `Registered ${registered.toolName} v${registered.version}`,
+        startedAt: installStartedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(installStartedAtDate),
+        payload: {
+          packages: installPackages,
+          toolName: registered.toolName,
+          version: registered.version,
+          previousVersion: registered.previousVersion,
+        },
+      });
     }
 
     // Phase 16 Slice F: remember the previous active version on the

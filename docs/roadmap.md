@@ -3249,3 +3249,106 @@ binary paths on first boot).
 - Slice C's manual capability registry will drift unless we wire
   it to image build metadata (CI emits capability list on each
   image push). Until then, treat the registry as advisory only.
+
+
+## Phase 25: Self-contained tools + Trace Lab UX cleanup
+
+Status: **Slice A (self-contained-tool principle), Slice B (per-attempt
+implement spans), Slice C (install-verify span) shipped together.
+Slice D (timeline sort) planned.**
+
+Operator principle: **a tool is a self-describing lambda**. It declares
+its dependencies, its `npm install` brings every runtime binary it
+needs, and it does NOT read anything from the platform that wasn't
+explicitly handed to it. The runtime spawn forwards `PATH` + `PORT`,
+nothing else — no `CHROMIUM_PATH` bridge, no shared system Chromium
+fallback. If a tool wants headless Chrome, it puts `puppeteer` in
+its deps and lets puppeteer install its own bundled binary. The
+council learns this naturally from the model's `import` statements.
+
+Trade-off: each tool with puppeteer / playwright pays a one-time
+~300 MB download during install. Worth it for portability — a tool
+exported to another image / cluster / cluster works without
+operator-side env wiring.
+
+### Slice A — Drop platform-env bridges (shipped)
+
+`src/tools/toolPackageRunner.ts:startSourceBundleHttpRuntime` no
+longer reads `CHROMIUM_PATH` or sets `PUPPETEER_EXECUTABLE_PATH`
+in the tool's subprocess env. Tools are on their own for runtime
+binaries.
+
+### Slice B — Per-attempt implement spans (shipped)
+
+Council implement loop used to emit ONE placeholder
+`tool-build-code-drafted (started)` span by the original winner,
+then OVERWRITE the same spanId with `(completed)` by whoever
+actually drafted (post-Borda-fallback). Operators saw a single
+card whose actor magically changed. Now:
+
+- Each candidate in `implementCandidates` emits its OWN spanId.
+- Started + Completed (or Failed) emits are paired on that spanId.
+- Title carries `(attempt N / total)`.
+- Payload carries `attempt`, `totalCandidates`, `modelId`.
+- On post-fallback success, an explicit
+  `tool-build-council-winner-selected` "Implement re-assigned"
+  span is emitted as a separate card — operators see the failure
+  chain, not a single rewritten card.
+
+### Slice C — Install-verify span (shipped)
+
+`registerToolFromFiles` used to run `npm install` + `tsc build`
+silently. Now `runToolBuildCouncilInner` wraps the registration
+call in a `tool-build-registered` span with actor
+`package-runner` and title:
+
+- "Installing N package(s) + tsc build" when deps declared
+- "Registering tool (no runtime deps)" otherwise
+
+The span carries `payload.packages` with the auto-extracted dep
+list. On registration failure the span goes red with the tsc /
+loader error in `detail`, and a separate qa-attempt failure
+flows into the repair loop as before.
+
+### Slice D — Trace Lab timeline sort mode (planned)
+
+Today the trace graph lays out cards by parent-span tree depth
++ insertion order. Cross-LLM fallbacks and retry-then-recover
+chains end up visually mixed because a "failed attempt" card
+emitted late still inherits the parent of an early-emitted
+placeholder. Add a mode toggle:
+
+- **Tree mode** (default, current): by parent-child + insertion
+- **Timeline mode**: by `startedAt` within a depth band, with a
+  vertical time axis on the left
+
+The timeline view answers "what happened in what order" at a
+glance. Tree view answers "what depended on what". Operators
+flip between them depending on what they're debugging.
+
+Implementation lives entirely in `web-react/src/features/trace/`
+(buildTraceNodes + graph layout). No backend change needed.
+
+### Future: tool documentation + tests as council artefacts
+
+Operator suggestion: the council should emit, alongside the tool
+body, a `README.md` (purpose, inputSchema explanation, sample
+calls) and a `tests.spec.ts` (smoke tests the tool can run
+itself). Phase 26 territory. Would let `/api/tools/<name>/docs`
+serve real docs instead of regenerating descriptions from source,
+and would give the install-verify step a real "self-test" probe
+to call before promoting.
+
+### Risks
+
+- Slice A: each puppeteer-using tool pays ~300 MB install per
+  rework. Cache npm + Chromium artefacts at the host level so
+  subsequent reworks of the same tool name hit the cache.
+- Slice B: per-attempt spans inflate the trace event count for
+  long-running runs. With max 2 implement candidates × 5 QA
+  attempts that's still ~30 events — fine.
+- Slice C: the install-span title says "installing N packages"
+  but the actual install might still skip work if `node_modules`
+  was pre-symlinked. Title is an over-promise in that case. Live
+  with it for now; Phase 24's deeper install-verify probe will
+  decide truthfully.

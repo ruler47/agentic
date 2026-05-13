@@ -951,25 +951,22 @@ async function startSourceBundleHttpRuntime(
   const port = await freeLocalPort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const output: Buffer[] = [];
-  // Phase 22 Slice E follow-up — give council-built tools a
-  // pre-installed headless browser so puppeteer.launch() works
-  // without bundling its own ~300 MB Chromium per rework. The
-  // main image already provides `/usr/bin/chromium` (advertised
-  // via `CHROMIUM_PATH`); puppeteer reads `PUPPETEER_EXECUTABLE_PATH`.
-  // Bridging here means every council-spawned tool runtime
-  // automatically resolves Chrome without the model having to know
-  // about either env var.
-  const browserExecutablePath =
-    process.env.PUPPETEER_EXECUTABLE_PATH ??
-    process.env.CHROMIUM_PATH ??
-    undefined;
+  // Phase 25 — tools are self-contained. We DELIBERATELY do not
+  // bridge `CHROMIUM_PATH` from the host image into the tool's
+  // subprocess. A council-built tool is a self-describing lambda:
+  // it declares its dependencies (puppeteer, playwright, …), the
+  // bundle's `npm install` brings the runtime binaries it needs
+  // (e.g. puppeteer's bundled Chromium under `node_modules/...`),
+  // and the spawn here only forwards PATH + PORT. If a tool needs
+  // a system binary that isn't in its bundle, the install-verify
+  // phase (Phase 24) will surface that mismatch with a clear
+  // detail BEFORE QA gets to it — and the operator decides how to
+  // fix it (declare the dep, embed the binary, or wire a tool-
+  // specific env in the tool's own config), not us silently
+  // injecting platform globals.
   const child = spawn(process.execPath, [options.serverFile], {
     cwd: options.packageDir,
-    env: {
-      ...process.env,
-      PORT: String(port),
-      ...(browserExecutablePath ? { PUPPETEER_EXECUTABLE_PATH: browserExecutablePath } : {}),
-    },
+    env: { ...process.env, PORT: String(port) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   // Phase 22 Slice E follow-up — `spawn()` emits an asynchronous
