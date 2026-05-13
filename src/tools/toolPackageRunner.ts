@@ -705,45 +705,40 @@ async function buildSourceBundlePackage(
     // tools declare zero runtime deps and rely entirely on shared
     // packages installed at the project root — for those the
     // symlink is the only path).
-    const hasRuntimeDeps = await packageDeclaresRuntimeDependencies(packageDir);
-    if (hasRuntimeDeps) {
-      try {
-        await execFileAsync(
-          "npm",
-          ["install", "--prefer-offline", "--no-audit", "--no-fund", "--no-progress"],
-          {
-            cwd: packageDir,
-            timeout: sourceBundleBuildTimeoutMs(),
-            maxBuffer: 4 * 1024 * 1024,
-            env: {
-              ...process.env,
-              // Phase 22 Slice E (revised) — let each tool's own
-              // postinstall (e.g. `puppeteer install` →
-              // ~/.cache/puppeteer/chrome) bring whatever runtime
-              // bytes it needs. We DELIBERATELY do not pass
-              // `PUPPETEER_SKIP_DOWNLOAD=true` anymore: the council
-              // shouldn't pre-judge what a tool will or won't need
-              // at runtime, and operators kept tripping on
-              // "Could not find Chrome" when the bundled binary
-              // was skipped. When the host image already provides
-              // a Chromium binary via `CHROMIUM_PATH` (Docker
-              // default), the spawn in `startSourceBundleHttpRuntime`
-              // sets `PUPPETEER_EXECUTABLE_PATH` so puppeteer
-              // resolves the shared one without downloading
-              // — but the install path is no longer blocked, so
-              // tools running on hosts without a system Chromium
-              // can still self-provision.
-            },
-          },
-        );
-      } catch (installError) {
-        return {
-          ok: false,
-          detail: `Source-bundle package ${ref} npm install failed: ${commandErrorDetail(installError)}`,
-        };
-      }
-    } else {
-      await linkRootNodeModulesIfAvailable(projectRoot, packageDir);
+    // Phase 25 Slice A (revised) — tools are FULLY self-contained.
+    // Always run `npm install` in the bundle dir; never symlink
+    // the host's root node_modules. Even tools with zero declared
+    // runtime deps get their own empty `node_modules` so `import`
+    // resolution stays scoped to the bundle. This matches the
+    // operator's "tool = standalone project" model: a tool moved
+    // to another host / image / cluster still works without
+    // pulling anything from the platform's package graph.
+    //
+    // Tools with no `dependencies` block run `npm install` on a
+    // bundle that only declares devDependencies (typescript +
+    // @types/node) — fast (<2 s) and produces just the tsc
+    // toolchain needed to build `dist/`.
+    try {
+      await execFileAsync(
+        "npm",
+        ["install", "--prefer-offline", "--no-audit", "--no-fund", "--no-progress"],
+        {
+          cwd: packageDir,
+          timeout: sourceBundleBuildTimeoutMs(),
+          maxBuffer: 4 * 1024 * 1024,
+          // env passes through unchanged — we DELIBERATELY do not
+          // set PUPPETEER_SKIP_DOWNLOAD or any other "skip the
+          // tool's postinstall" flags. If the tool declared
+          // puppeteer, its postinstall brings a bundled Chromium
+          // into its OWN node_modules and the runtime resolves
+          // it locally. No platform-side binaries are consulted.
+        },
+      );
+    } catch (installError) {
+      return {
+        ok: false,
+        detail: `Source-bundle package ${ref} npm install failed: ${commandErrorDetail(installError)}`,
+      };
     }
     const { stdout, stderr } = await execFileAsync("npm", ["run", "build"], {
       cwd: packageDir,
@@ -774,6 +769,15 @@ async function packageDeclaresRuntimeDependencies(packageDir: string): Promise<b
   }
 }
 
+/**
+ * Phase 25 Slice A (revised): retained only as documentation of
+ * the legacy fallback behaviour. The bundle runner no longer
+ * symlinks the host root `node_modules` into the tool's package
+ * dir — tools are fully self-contained and must declare every
+ * runtime dependency in their own package.json. Left here in case
+ * a future operator wants a `--shared-deps` opt-in mode.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function linkRootNodeModulesIfAvailable(projectRoot: string, packageDir: string): Promise<void> {
   const packageNodeModules = join(packageDir, "node_modules");
   if (existsSync(packageNodeModules)) return;
@@ -951,22 +955,23 @@ async function startSourceBundleHttpRuntime(
   const port = await freeLocalPort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const output: Buffer[] = [];
-  // Phase 25 — tools are self-contained. We DELIBERATELY do not
-  // bridge `CHROMIUM_PATH` from the host image into the tool's
-  // subprocess. A council-built tool is a self-describing lambda:
-  // it declares its dependencies (puppeteer, playwright, …), the
-  // bundle's `npm install` brings the runtime binaries it needs
-  // (e.g. puppeteer's bundled Chromium under `node_modules/...`),
-  // and the spawn here only forwards PATH + PORT. If a tool needs
-  // a system binary that isn't in its bundle, the install-verify
-  // phase (Phase 24) will surface that mismatch with a clear
-  // detail BEFORE QA gets to it — and the operator decides how to
-  // fix it (declare the dep, embed the binary, or wire a tool-
-  // specific env in the tool's own config), not us silently
-  // injecting platform globals.
+  // Phase 25 Slice A (revised) — tools are self-contained. The
+  // spawned subprocess only receives a minimal env: PATH so the
+  // `node` binary resolves, HOME so npm/cache lookups don't write
+  // to root, PORT so the runtime knows which TCP port to bind.
+  // We DELIBERATELY do NOT pass `process.env` through. Without
+  // this clamp the tool would inherit DATABASE_URL, LLM_BASE_URL,
+  // PUPPETEER_EXECUTABLE_PATH, et al — every platform secret +
+  // every shared binary lookup leaks in. With it the tool stays
+  // a "separate project": its only inputs are the JSON over /run.
+  const minimalEnv: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    HOME: process.env.HOME ?? "/tmp",
+    PORT: String(port),
+  };
   const child = spawn(process.execPath, [options.serverFile], {
     cwd: options.packageDir,
-    env: { ...process.env, PORT: String(port) },
+    env: minimalEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
   // Phase 22 Slice E follow-up — `spawn()` emits an asynchronous

@@ -1,15 +1,20 @@
 import type { TraceNode } from "@/features/trace/buildTraceNodes";
 
 /**
- * Trace graph layout. Two modes mirror the legacy console:
+ * Trace graph layout. Three modes:
  *   - "category" — semantic columns (Coordinator, Workers, Tools, ...)
- *   - "depth"    — call-depth columns (Level 1, Level 2, ...)
+ *   - "depth"    — call-depth columns (Level 1, Level 2, ...), nodes
+ *                   within a column ordered by event emission order.
+ *   - "timeline" — call-depth columns, BUT nodes within a column
+ *                   are sorted by `startedAt` ascending. Use this
+ *                   to read failure-then-recovery chains in actual
+ *                   chronological order (Phase 25 Slice D).
  *
  * Layout returns absolute (x, y) positions ready for xyflow. We place each
  * column at a fixed x and stack siblings vertically by trace order.
  */
 
-export type TraceGraphLayoutMode = "category" | "depth";
+export type TraceGraphLayoutMode = "category" | "depth" | "timeline";
 
 const COLUMN_WIDTH = 260;
 const NODE_HEIGHT = 116;
@@ -109,8 +114,31 @@ export function layoutTrace(nodes: TraceNode[], mode: TraceGraphLayoutMode): Lay
     label: `Level ${index + 1}`,
     x: index * (COLUMN_WIDTH + COLUMN_GAP),
   }));
+
+  // Phase 25 Slice D — timeline mode sorts nodes within each depth
+  // column by `startedAt` ascending. Depth columns are preserved so
+  // "what calls what" is still visible; the change is purely the
+  // y-ordering inside each column. Nodes with the same parent that
+  // ran sequentially (e.g. a failed Qwen implement and the
+  // subsequent successful Gemma implement) end up in chronological
+  // order down the column instead of insertion order.
+  const orderedNodes =
+    mode === "timeline"
+      ? [...nodes].sort((a, b) => {
+          const aDepth = depths.get(a.spanId) ?? 0;
+          const bDepth = depths.get(b.spanId) ?? 0;
+          if (aDepth !== bDepth) return aDepth - bDepth;
+          const aStart = new Date(a.startedAt).getTime();
+          const bStart = new Date(b.startedAt).getTime();
+          if (Number.isFinite(aStart) && Number.isFinite(bStart) && aStart !== bStart) {
+            return aStart - bStart;
+          }
+          return 0;
+        })
+      : nodes;
+
   const counters = new Map<number, number>();
-  for (const node of nodes) {
+  for (const node of orderedNodes) {
     const depth = depths.get(node.spanId) ?? 0;
     const row = counters.get(depth) ?? 0;
     counters.set(depth, row + 1);

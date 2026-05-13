@@ -239,7 +239,7 @@ function FiltersBar({
         <div className="ml-auto flex items-center gap-1 text-[11px] text-app-text-muted">
           <span>layout</span>
           <div className="flex items-center gap-0.5 rounded-md border border-app-border bg-app-surface-2 p-0.5">
-            {(["category", "depth"] as TraceGraphLayoutMode[]).map((entry) => (
+            {(["category", "depth", "timeline"] as TraceGraphLayoutMode[]).map((entry) => (
               <button
                 key={entry}
                 type="button"
@@ -419,8 +419,9 @@ function readStoredTraceMode(): TraceMode {
 
 function readStoredTraceLayoutMode(): TraceGraphLayoutMode {
   if (typeof window === "undefined") return "category";
+
   const value = window.localStorage.getItem(TRACE_LAYOUT_STORAGE_KEY);
-  if (value === "category" || value === "depth") return value;
+  if (value === "category" || value === "depth" || value === "timeline") return value;
   return "category";
 }
 
