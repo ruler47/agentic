@@ -10,24 +10,36 @@ import {
  * Phase 22 Slice D — long-tail LM Studio patience.
  *
  * Local LLMs (LM Studio + 26B-35B Q4 models on consumer GPUs) can
- * genuinely think for 5-10 minutes on a single implement or repair
- * call. Undici's default `headersTimeout = 5min` means a slow model
- * gets killed with "fetch failed" exactly at the headers-wait
- * boundary, even though the LLM is still working on the response.
+ * genuinely think for 30+ minutes on a single implement or repair
+ * call once the reasoning chain + research delegation cycles
+ * accumulate to ~100 k tokens. Undici's default
+ * `headersTimeout = 5min` cuts that off prematurely with
+ * "fetch failed" and the council Borda-falls to a different model
+ * mid-thought, wasting work.
  *
- * We bump both `headersTimeout` and `bodyTimeout` to 30 minutes via
- * undici's global dispatcher — that way unit tests can swap in a
- * MockAgent through the same `setGlobalDispatcher` API and intercept
- * the request without our per-instance Agent stomping the mock.
- * `connectTimeout` stays at the default since a slow DNS / TCP
- * handshake is a real infra problem the operator should see fast.
+ * We initially capped at 30 min as a safety net; in practice
+ * Qwen 35 B routinely exceeded that on the implement phase of
+ * non-trivial tools (e.g. screenshot.url rework with bumped 250 k
+ * LM-Studio context). Setting both timeouts to `0` disables them
+ * in undici — the fetch lives as long as the TCP socket does,
+ * matching what an operator wants for a healthy-but-slow local
+ * model. `connectTimeout` stays at the default so a wedged DNS /
+ * TCP handshake still fails fast (that one IS a real infra problem
+ * and should not hang the run).
  *
- * A later "is the LLM actually thinking or has it hung?" liveness
- * probe (Phase 22 Slice E) would replace this fixed window with
- * a stall-detection signal — for now 30 min is the conservative
- * upper bound the operator asked for.
+ * The runaway-prompt risk is bounded elsewhere:
+ *   - Phase 22 Slice A (cross-LLM repair fallback) re-routes if a
+ *     model keeps failing.
+ *   - Operator cancel + Phase 19 Slice B "resume from here" let
+ *     the human kill a genuinely-stuck run.
+ *   - Phase 23 (planned) adds prompt-token instrumentation +
+ *     reasoning-budget controls so we shrink prompts at source
+ *     instead of timing them out.
+ *
+ * Using undici's global dispatcher lets unit tests swap a
+ * `MockAgent` through the same API to intercept requests.
  */
-const LLM_FETCH_TIMEOUT_MS = 30 * 60 * 1000;
+const LLM_FETCH_TIMEOUT_MS = 0;
 setGlobalDispatcher(
   new Agent({
     headersTimeout: LLM_FETCH_TIMEOUT_MS,
@@ -50,7 +62,27 @@ type ChatCompletionResponse = {
      */
     finish_reason?: string;
   }>;
+  /**
+   * Phase 23 Slice A — token telemetry. Every OpenAI-compatible
+   * server emits this on completion responses. Surfaced to council
+   * callers via the `onUsage` option so individual span emits can
+   * record per-call token cost in `payload.tokens` and the run
+   * coordinator can aggregate a per-run total.
+   */
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
   error?: unknown;
+};
+
+export type LlmTokenUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  /** The model that produced the usage (post-fallback resolution). */
+  model: string;
 };
 
 const tierOrder: ModelTier[] = ["S", "M", "L", "XL"];
@@ -69,6 +101,14 @@ export class LlmClient {
       model?: string;
       /** Aborts the underlying fetch when the operator cancels the run. */
       signal?: AbortSignal;
+      /**
+       * Phase 23 Slice A — fires with the LM Studio `usage` block
+       * once a model returns a non-empty completion. Side-channel so
+       * existing string-returning callers don't need to change their
+       * signatures. Council callers attach the usage to their span
+       * payload so the trace shows tokens per card + a per-run total.
+       */
+      onUsage?: (usage: LlmTokenUsage) => void;
     },
   ): Promise<string> {
     // Phase 14: explicit `model` override bypasses tier resolution so the
@@ -133,6 +173,22 @@ export class LlmClient {
           const reasonNote = finishReason ? ` (finish_reason=${finishReason})` : "";
           errors.push(`${model}: empty assistant content${reasonNote}`);
           continue;
+        }
+
+        // Phase 23 Slice A — fire onUsage with whatever the server
+        // returned. Missing fields default to 0 so the aggregator
+        // can sum without null-checks. Server omitting usage entirely
+        // is rare (LM Studio always sends it) but possible — skip
+        // the callback in that case rather than fire zeros.
+        if (options?.onUsage && data.usage) {
+          options.onUsage({
+            promptTokens: data.usage.prompt_tokens ?? 0,
+            completionTokens: data.usage.completion_tokens ?? 0,
+            totalTokens:
+              data.usage.total_tokens ??
+              (data.usage.prompt_tokens ?? 0) + (data.usage.completion_tokens ?? 0),
+            model,
+          });
         }
 
         return content.trim();

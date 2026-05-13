@@ -717,13 +717,22 @@ async function buildSourceBundlePackage(
             maxBuffer: 4 * 1024 * 1024,
             env: {
               ...process.env,
-              // Skip Chromium download in CI/QA — most tools that
-              // need a browser will set PUPPETEER_SKIP_DOWNLOAD or
-              // bring their own. If they don't, the runtime
-              // healthcheck will fail with a clear error the
-              // operator can read. Leaving the download on is a
-              // 300 MB-per-rework cost we don't want at QA time.
-              PUPPETEER_SKIP_DOWNLOAD: process.env.PUPPETEER_SKIP_DOWNLOAD ?? "true",
+              // Phase 22 Slice E (revised) — let each tool's own
+              // postinstall (e.g. `puppeteer install` →
+              // ~/.cache/puppeteer/chrome) bring whatever runtime
+              // bytes it needs. We DELIBERATELY do not pass
+              // `PUPPETEER_SKIP_DOWNLOAD=true` anymore: the council
+              // shouldn't pre-judge what a tool will or won't need
+              // at runtime, and operators kept tripping on
+              // "Could not find Chrome" when the bundled binary
+              // was skipped. When the host image already provides
+              // a Chromium binary via `CHROMIUM_PATH` (Docker
+              // default), the spawn in `startSourceBundleHttpRuntime`
+              // sets `PUPPETEER_EXECUTABLE_PATH` so puppeteer
+              // resolves the shared one without downloading
+              // — but the install path is no longer blocked, so
+              // tools running on hosts without a system Chromium
+              // can still self-provision.
             },
           },
         );
@@ -942,9 +951,25 @@ async function startSourceBundleHttpRuntime(
   const port = await freeLocalPort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const output: Buffer[] = [];
+  // Phase 22 Slice E follow-up — give council-built tools a
+  // pre-installed headless browser so puppeteer.launch() works
+  // without bundling its own ~300 MB Chromium per rework. The
+  // main image already provides `/usr/bin/chromium` (advertised
+  // via `CHROMIUM_PATH`); puppeteer reads `PUPPETEER_EXECUTABLE_PATH`.
+  // Bridging here means every council-spawned tool runtime
+  // automatically resolves Chrome without the model having to know
+  // about either env var.
+  const browserExecutablePath =
+    process.env.PUPPETEER_EXECUTABLE_PATH ??
+    process.env.CHROMIUM_PATH ??
+    undefined;
   const child = spawn(process.execPath, [options.serverFile], {
     cwd: options.packageDir,
-    env: { ...process.env, PORT: String(port) },
+    env: {
+      ...process.env,
+      PORT: String(port),
+      ...(browserExecutablePath ? { PUPPETEER_EXECUTABLE_PATH: browserExecutablePath } : {}),
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   // Phase 22 Slice E follow-up — `spawn()` emits an asynchronous

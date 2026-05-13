@@ -20,7 +20,7 @@
  * a `delegate` callable. No imports of UniversalAgent so it stays
  * unit-testable with scripted LLMs.
  */
-import type { LlmClient } from "../llm/client.js";
+import type { LlmClient, LlmTokenUsage } from "../llm/client.js";
 import type { Message, ModelTier } from "../types.js";
 
 export const RESEARCH_PROMPT_BLOCK = `
@@ -55,6 +55,14 @@ export type RunLLMWithResearchOptions = {
   modelTier?: ModelTier;
   /** Per-iteration callback so the caller can emit trace events. */
   onResearch?: (event: ResearchEvent) => void;
+  /**
+   * Phase 23 Slice A — token telemetry callback. Fires once per
+   * underlying llm.complete call (so a research-bearing prompt with
+   * 3 inner-iterations fires up to 3 times). Council callers
+   * accumulate the per-span total and stamp it on their span
+   * payload.
+   */
+  onUsage?: (usage: LlmTokenUsage) => void;
 };
 
 /**
@@ -71,8 +79,8 @@ export async function runLLMWithResearch(
   delegate: ResearchDelegate | undefined,
   options: RunLLMWithResearchOptions = {},
 ): Promise<string> {
-  const { maxRequests = 3, signal, model, modelTier, onResearch } = options;
-  const baseLlmOpts = { signal, model, modelTier };
+  const { maxRequests = 3, signal, model, modelTier, onResearch, onUsage } = options;
+  const baseLlmOpts = { signal, model, modelTier, onUsage };
   if (!delegate || maxRequests <= 0) {
     return llm.complete(messages, baseLlmOpts);
   }

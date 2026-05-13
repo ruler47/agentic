@@ -72,6 +72,7 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
           {typeof node.durationMs === "number" && node.status !== "started" ? (
             <span className="font-mono text-app-text-muted">{formatDuration(node.durationMs)}</span>
           ) : null}
+          <TokenBadge node={node} />
         </div>
         {node.parentTitle ? (
           <p className="mt-1 text-[11px] text-app-text-muted">
@@ -496,6 +497,44 @@ function LiveDuration({ node }: { node: TraceNode }) {
   const elapsed = Math.max(0, now - startedMs);
   return (
     <span className="font-mono text-app-info">{formatDuration(elapsed)} (running)</span>
+  );
+}
+
+/**
+ * Phase 23 Slice A — render LM Studio's `usage` block next to the
+ * duration on each council span. Compact "P/C/T" badge:
+ *   P = prompt_tokens (what we sent the model)
+ *   C = completion_tokens (what the model wrote back, including its
+ *       reasoning chain)
+ *   T = total_tokens (rough cost number)
+ * Council root span (`run-started` completed) carries the run-wide
+ * sum so the trace header doubles as a per-run telemetry badge.
+ */
+function TokenBadge({ node }: { node: TraceNode }) {
+  const tokens =
+    node.payload && typeof node.payload === "object"
+      ? (node.payload as { tokens?: { prompt?: number; completion?: number; total?: number } }).tokens
+      : undefined;
+  if (
+    !tokens ||
+    typeof tokens.total !== "number" ||
+    tokens.total <= 0
+  ) {
+    return null;
+  }
+  const compact = (value: number | undefined): string => {
+    const n = value ?? 0;
+    if (n >= 100_000) return `${Math.round(n / 1000)}k`;
+    if (n >= 1_000) return `${(n / 1000).toFixed(1)}k`;
+    return String(n);
+  };
+  return (
+    <span
+      className="font-mono text-app-text-muted"
+      title={`Prompt: ${tokens.prompt ?? 0} · Completion: ${tokens.completion ?? 0} · Total: ${tokens.total} tokens`}
+    >
+      {compact(tokens.prompt)}/{compact(tokens.completion)}/{compact(tokens.total)} tok
+    </span>
   );
 }
 

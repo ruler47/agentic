@@ -1,5 +1,6 @@
 import { LlmClient } from "../llm/client.js";
 import { runLLMWithResearch } from "./researchDelegate.js";
+import { createTokenAccumulator } from "./llmTokenAccumulator.js";
 import type { GroupProfileRecord } from "../instance/groupProfileStore.js";
 import type { UserRecord } from "../instance/userStore.js";
 import {
@@ -525,6 +526,14 @@ export class UniversalAgent {
     const config = await adapter.resolveConfig();
     const councilModels = await adapter.resolveCouncilModels(config.tier);
 
+    // Phase 23 Slice A — per-run token totals. Every LLM call below
+    // forwards its `onUsage` into both a per-span accumulator (for
+    // `payload.tokens` on the individual span emit) AND this
+    // per-run roller, which gets stamped on the closing
+    // `run-started` event. Operators see per-card costs in the
+    // Trace Inspector + a "Total tokens" badge in the trace header.
+    const runTokens = createTokenAccumulator();
+
     // Phase 17: optional research delegation. When enabled, council
     // LLM calls in brainstorm / implement / repair can emit
     // <request_research>...</request_research> blocks that get
@@ -727,10 +736,15 @@ export class UniversalAgent {
           startedAt,
           payload: { modelId, prompt: promptText },
         });
+        const spanTokens = createTokenAccumulator();
         const text = await runLLMWithResearch(this.llm, messages, councilResearchDelegate, {
           model: modelId,
           signal: options.signal,
           onResearch: (event) => emitResearchEvent("brainstorm", spanId, event),
+          onUsage: (usage) => {
+            spanTokens.onUsage(usage);
+            runTokens.onUsage(usage);
+          },
         });
         const parsed = parseProposalTail(text);
         await emit({
@@ -751,6 +765,7 @@ export class UniversalAgent {
             externalDependencies: parsed.externalDependencies,
             prompt: promptText,
             output: text,
+            tokens: spanTokens.snapshot(),
           },
         });
         return {
@@ -862,16 +877,22 @@ export class UniversalAgent {
 
     let implementError: unknown;
     let lastImplementPromptText = "";
+    let implementSpanTokens = createTokenAccumulator();
     for (let candidateIdx = 0; candidateIdx < implementCandidates.length; candidateIdx += 1) {
       ensureNotCancelled();
       const candidate = implementCandidates[candidateIdx]!;
       try {
         const implementMessages = implementPrompt(context, candidate.proposal);
         lastImplementPromptText = messagesToPromptText(implementMessages);
+        implementSpanTokens = createTokenAccumulator();
         codeText = await runLLMWithResearch(this.llm, implementMessages, councilResearchDelegate, {
           model: candidate.winnerModelId,
           signal: options.signal,
           onResearch: (event) => emitResearchEvent("implement", currentCodeSpanId, event),
+          onUsage: (usage) => {
+            implementSpanTokens.onUsage(usage);
+            runTokens.onUsage(usage);
+          },
         });
         const parsed = parseFilesJson(codeText);
         if (parsed.length === 0) throw new Error("Implement step returned no parsable files.");
@@ -943,7 +964,13 @@ export class UniversalAgent {
       startedAt: implementStartedAt,
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(implementStartedAtDate),
-      payload: { files, raw: codeText, prompt: lastImplementPromptText, output: codeText },
+      payload: {
+        files,
+        raw: codeText,
+        prompt: lastImplementPromptText,
+        output: codeText,
+        tokens: implementSpanTokens.snapshot(),
+      },
     });
 
     // ── Step 4-5: REVIEW + REVISE ────────────────────────────────────
@@ -983,7 +1010,15 @@ export class UniversalAgent {
               payload: { reviewerModelId: reviewerId, prompt: promptText },
             });
             try {
-              const text = await this.llm.complete(messages, { model: reviewerId, signal: options.signal });
+              const reviewSpanTokens = createTokenAccumulator();
+              const text = await this.llm.complete(messages, {
+                model: reviewerId,
+                signal: options.signal,
+                onUsage: (usage) => {
+                  reviewSpanTokens.onUsage(usage);
+                  runTokens.onUsage(usage);
+                },
+              });
               const verdict = parseReviewVerdict(text);
               await emit({
                 spanId,
@@ -1001,6 +1036,7 @@ export class UniversalAgent {
                   ...verdict,
                   prompt: promptText,
                   output: text,
+                  tokens: reviewSpanTokens.snapshot(),
                 },
               });
               return verdict;
@@ -1482,11 +1518,16 @@ export class UniversalAgent {
         startedAt: repairStartedAt,
         payload: { attempt: attempt + 1, failures: oracle.failures, prompt: repairPromptText, modelId: currentRepairModel },
       });
+      const repairSpanTokens = createTokenAccumulator();
       try {
         codeText = await runLLMWithResearch(this.llm, repairMessages, councilResearchDelegate, {
           model: currentRepairModel,
           signal: options.signal,
           onResearch: (event) => emitResearchEvent("repair", repairSpanId, event),
+          onUsage: (usage) => {
+            repairSpanTokens.onUsage(usage);
+            runTokens.onUsage(usage);
+          },
         });
         const parsed = parseFilesJson(codeText);
         if (parsed.length === 0) throw new Error("Repair step returned no parsable files.");
@@ -1514,6 +1555,7 @@ export class UniversalAgent {
             prompt: repairPromptText,
             output: codeText,
             modelId: currentRepairModel,
+            tokens: repairSpanTokens.snapshot(),
           },
         });
         currentCodeSpanId = repairSpanId;
@@ -1788,6 +1830,7 @@ export class UniversalAgent {
         qaPassed,
         attemptsRun,
         repairBrokenEarly,
+        tokens: runTokens.snapshot(),
       },
     });
 

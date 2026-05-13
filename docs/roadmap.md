@@ -3163,3 +3163,89 @@ showing where the real bottlenecks are.
 - Slice E: sub-tool registration order matters. The umbrella
   tool's QA can only run after all sub-tools are registered AND
   active. Build coordinator must serialise the cycle.
+
+
+## Phase 24: Install-verify agent (decouple deps from QA)
+
+Status: **Planned. Operator feedback after Phase 22 Slice E:
+"you shouldn't be fixing every tool's runtime environment by
+hand — they should set themselves up".**
+
+The Phase 22 Slice E REGISTER step today:
+1. writes scaffold + tool body
+2. runs `npm install` (per-tool deps auto-extracted from imports)
+3. runs `npm run build`
+4. probes the in-memory registry to confirm import
+
+If step 4 fails (TS error, missing runtime binary like Chromium,
+postinstall didn't execute), the failure is currently surfaced as a
+synthetic QA-attempt failure → repair loop tries to FIX THE CODE.
+That's wrong when the actual missing piece is a runtime artefact:
+no amount of `repair` will conjure a Chromium binary on disk if the
+operator's image doesn't have one and the tool's postinstall was
+skipped. The council burns LLM tokens on a code problem when the
+environment is broken.
+
+### Slice A — Install-verify phase between REGISTER and QA
+
+New deterministic step in `runToolBuildCouncil`:
+
+```
+REGISTER (write files + npm install + tsc + register row)
+  ↓
+INSTALL-VERIFY                                         ← NEW
+  - run any `tool.healthcheck()` the tool defines
+  - try `import` of every declared dependency
+  - if puppeteer / playwright dependency declared, verify
+    the browser binary resolves (executablePath check or
+    a no-op browser.launch() with immediate close)
+  - if anything missing → emit a `tool-build-install-failed`
+    event with structured detail (which dep, which file
+    couldn't be found, suggested env var)
+  ↓
+QA + REPAIR (only if install-verify passed)
+```
+
+Failure path: emit a distinct `tool-build-install-failed` event
+(not a QA failure) and abort the run with a runbook in the detail
+text — operator action, not LLM repair.
+
+### Slice B — Optional install-fix-agent
+
+When install-verify reports a fixable mismatch (puppeteer needs
+`postinstall` permission, missing system lib detected via
+`apt-cache search` heuristic, environment variable known to fix
+the symptom), an automated agent can propose a fix and emit it
+back to the operator for one-click apply. Examples:
+- "puppeteer wants Chromium — your image has `/usr/bin/chromium`,
+  set `PUPPETEER_EXECUTABLE_PATH` in docker-compose"
+- "playwright postinstall didn't run — add
+  `npx playwright install chromium` to your Dockerfile"
+
+The agent never modifies the host image without operator consent;
+it only proposes patches as artifacts.
+
+### Slice C — Per-image capability registry
+
+Track what each container image offers (Chromium, ffmpeg, ghostscript,
+…) in a small `image_capabilities` table. The install-verify step
+cross-references the tool's deps against the active image's
+capabilities and short-circuits any spawn that requires a missing
+runtime — much cheaper than waiting for puppeteer to fail at
+`launch()`. Population can start manual (operator declares once per
+image release) and add auto-detection later (probe well-known
+binary paths on first boot).
+
+### Risks
+
+- Slice A adds ~10-30 s to the happy-path council cycle (an
+  extra deterministic verify pass before QA). Worth it: it
+  prevents the QA + repair loop from burning 5 LLM rounds on a
+  bug it can't fix.
+- Slice B's "propose fix" output must NEVER be auto-applied.
+  Operator approval gate is non-negotiable — auto-installing
+  300 MB Chromium downloads or apt packages on a production
+  image is a foot-gun.
+- Slice C's manual capability registry will drift unless we wire
+  it to image build metadata (CI emits capability list on each
+  image push). Until then, treat the registry as advisory only.
