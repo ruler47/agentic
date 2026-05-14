@@ -6,6 +6,7 @@ import {
   HttpCode,
   Inject,
   Param,
+  Patch,
   Post,
   Put,
   Query,
@@ -111,6 +112,27 @@ export class ToolsController {
   @Get("tools/:name/export")
   async exportPackage(@Param("name") name: string) {
     return await this.tools.exportPackageManifest(decodeURIComponent(name));
+  }
+
+  /**
+   * Phase 28 follow-up — operator-edit tool metadata.
+   *
+   * PATCH body shape:
+   *   { description?, displayName?, capabilities? }
+   *
+   * All fields optional; at least one required. Council reworks
+   * regenerate description+capabilities from source code, so this
+   * edit is the operator's override "until the next rework". Use
+   * for cases where the council-synthesized text isn't accurate
+   * enough for downstream agents to pick the right tool.
+   */
+  @Patch("tools/generated-modules/:name")
+  async patchGenerated(@Param("name") name: string, @Body() body: unknown) {
+    const patch =
+      body && typeof body === "object" && !Array.isArray(body)
+        ? (body as { description?: string; displayName?: string; capabilities?: string[] })
+        : {};
+    return this.tools.patchGeneratedMetadata(decodeURIComponent(name), patch);
   }
 
   @Delete("tools/generated-modules/:name")

@@ -457,6 +457,134 @@ export class ToolsService {
     return tool.packageManifest;
   }
 
+  /**
+   * Phase 28 follow-up — operator-edits for tool metadata.
+   *
+   * Agents discover tools by reading `name + description +
+   * capabilities` from the registry. Council-built tools have an
+   * LLM-synthesized description (Phase 14 `descriptionPrompt`) and
+   * inherited capabilities; the operator can override any of these
+   * three so that downstream agents see what the operator considers
+   * most accurate. Council reworks regenerate description+capabilities
+   * from source, so this edit is "until the next council run" —
+   * persistent but not eternal.
+   *
+   * Editable fields:
+   *   - description       (free text, shown directly to selecting LLMs)
+   *   - displayName       (UI label, defaults to name)
+   *   - capabilities      (string[], used as tags + capability matching)
+   *
+   * Name (the identifier the registry keys on) is NOT editable here —
+   * renaming a tool breaks every prior reference to it. If the
+   * operator wants a different name, the right path is a fresh
+   * council build under the new name and a deprecation of the old.
+   */
+  async patchGeneratedMetadata(
+    name: string,
+    patch: { description?: string; displayName?: string; capabilities?: string[] },
+  ): Promise<{ updated: true; name: string; description: string; displayName?: string; capabilities: string[] }> {
+    if (!this.metadata) {
+      throw new ServiceUnavailableException("Tool metadata store is not configured");
+    }
+    const existing = (await this.metadata.list()).find((m) => m.name === name);
+    if (!existing) throw new NotFoundException(`Tool ${name} is not registered`);
+
+    const trimmedDescription =
+      typeof patch.description === "string" ? patch.description.trim() : undefined;
+    const trimmedDisplay =
+      typeof patch.displayName === "string" ? patch.displayName.trim() : undefined;
+    const newCapabilities = Array.isArray(patch.capabilities)
+      ? patch.capabilities
+          .filter((c): c is string => typeof c === "string")
+          .map((c) => c.trim())
+          .filter(Boolean)
+      : undefined;
+
+    if (
+      trimmedDescription === undefined &&
+      trimmedDisplay === undefined &&
+      newCapabilities === undefined
+    ) {
+      throw new BadRequestException(
+        "Provide at least one of: description, displayName, capabilities",
+      );
+    }
+
+    const nextDescription = trimmedDescription !== undefined ? trimmedDescription : existing.description;
+    const nextDisplayName =
+      trimmedDisplay !== undefined ? (trimmedDisplay || undefined) : existing.displayName;
+    const nextCapabilities = newCapabilities !== undefined ? newCapabilities : [...existing.capabilities];
+
+    // Same-version registerGenerated is an in-place metadata update;
+    // every other field is preserved by spread.
+    await this.metadata.registerGenerated({
+      name: existing.name,
+      displayName: nextDisplayName,
+      version: existing.version,
+      description: nextDescription,
+      capabilities: nextCapabilities,
+      startupMode: existing.startupMode,
+      inputSchema: existing.inputSchema,
+      outputSchema: existing.outputSchema,
+      modulePath: existing.modulePath,
+      testPath: existing.testPath,
+      requiredConfigurationKeys: existing.requiredConfigurationKeys,
+      requiredSecretHandles: existing.requiredSecretHandles,
+      settingsSchema: existing.settingsSchema,
+      storage: existing.storage,
+      docsMarkdown: existing.docsMarkdown,
+      examples: existing.examples,
+      packageManifest: existing.packageManifest,
+      changeSummary: existing.changeSummary,
+    });
+
+    // Hot-reload so the running registry exposes the new metadata
+    // to selecting agents on the very next discovery prompt.
+    if (this.reload) {
+      try {
+        await this.reload();
+      } catch {
+        // Best-effort: a reload failure doesn't undo the metadata write;
+        // operator can re-trigger via /api/tools/reload-generated.
+      }
+    }
+
+    await this.audit.record({
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "tool.metadata_patched",
+      targetType: "tool",
+      targetId: name,
+      status: "success",
+      summary:
+        `Operator patched ${name} metadata` +
+        (trimmedDescription !== undefined ? " (description)" : "") +
+        (trimmedDisplay !== undefined ? " (displayName)" : "") +
+        (newCapabilities !== undefined ? ` (capabilities=${nextCapabilities.length})` : ""),
+      metadata: {
+        previous: {
+          description: existing.description,
+          displayName: existing.displayName,
+          capabilities: existing.capabilities,
+        },
+        next: {
+          description: nextDescription,
+          displayName: nextDisplayName,
+          capabilities: nextCapabilities,
+        },
+      },
+    });
+
+    return {
+      updated: true,
+      name,
+      description: nextDescription,
+      displayName: nextDisplayName,
+      capabilities: nextCapabilities,
+    };
+  }
+
   async deleteGenerated(name: string): Promise<{ deleted: true; name: string }> {
     if (!this.metadata) {
       throw new ServiceUnavailableException("Tool metadata store is not configured");

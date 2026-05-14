@@ -2448,162 +2448,164 @@ export class UniversalAgent {
       }
     }
 
-    // ── Step 8.5: CHANGE SUMMARY ─────────────────────────────────────
-    // Synthesize a 1-2 sentence changelog entry so the Tools-page
-    // version history is actually useful instead of every row reading
-    // "Council-built version X". Best-effort: if the synth fails we
-    // keep the default summary the adapter wrote at register time.
-    const { changeSummaryPrompt } = await import("./toolBuildCouncil.js");
+    // ── Step 8.5-8.7: CHANGE SUMMARY + DESCRIPTION (parallel) ───────
+    // Phase 28 follow-up — these two LLM calls read the SAME final
+    // tool body and produce independent text outputs (a changelog
+    // entry + the canonical description). They have no data
+    // dependency on each other, so we Promise.all them. Saves ~8 s
+    // wallclock on the success path (each takes ~8 s sequentially).
+    // Pin the non-null registered binding so the async-IIFE closures
+    // below don't lose TS narrowing of `registered`.
+    const registeredPinned: { toolName: string; version: string; previousVersion?: string } =
+      registered;
+    const { changeSummaryPrompt, descriptionPrompt } = await import("./toolBuildCouncil.js");
     let changeSummary = "";
     const changeSummarySpanId = createSpanId("council-change-summary");
     const changeSummaryStartedAt = new Date();
-    try {
-      const summaryToolBody = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
-      const repairFailures = collectRepairFailuresFromEvents(options.onEvent);
-      const summaryMessages = changeSummaryPrompt({
-        context,
-        toolBodyExcerpt: summaryToolBody,
-        previousToolSource,
-        repairFailures,
-        qaPassed,
-        isRework: Boolean(context.existingToolName),
-      });
-      await emit({
-        spanId: changeSummarySpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "change-summary-synthesizer",
-        activity: "llm",
-        status: "started",
-        title: "Synthesizing change summary",
-        startedAt: changeSummaryStartedAt.toISOString(),
-        payload: { prompt: messagesToPromptText(summaryMessages) },
-      });
-      const summarySpanTokens = createTokenAccumulator();
-      const summaryRaw = await this.llm.complete(summaryMessages, {
-        modelTier: "S",
-        signal: options.signal,
-        // 1-2 sentence change summary. No reasoning, 500 tokens.
-        reasoning: gate("disabled"),
-        maxTokens: cap(500),
-        onUsage: (usage) => {
-          summarySpanTokens.onUsage(usage);
-          runTokens.onUsage(usage);
-        },
-      });
-      changeSummary = sanitizeChangeSummary(summaryRaw);
-      if (changeSummary && adapter.updateChangeSummary) {
-        await adapter.updateChangeSummary(registered.toolName, registered.version, changeSummary);
-      }
-      await emit({
-        spanId: changeSummarySpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "change-summary-synthesizer",
-        activity: "llm",
-        status: "completed",
-        title: "Change summary synthesized",
-        startedAt: changeSummaryStartedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(changeSummaryStartedAt),
-        payload: {
-          prompt: messagesToPromptText(summaryMessages),
-          output: summaryRaw,
-          changeSummary,
-          tokens: summarySpanTokens.snapshot(),
-        },
-      });
-    } catch (error) {
-      await emit({
-        spanId: changeSummarySpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "change-summary-synthesizer",
-        activity: "llm",
-        status: "failed",
-        title: "Change summary synthesis failed — keeping default",
-        detail: error instanceof Error ? error.message : String(error),
-        startedAt: changeSummaryStartedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(changeSummaryStartedAt),
-        payload: { error: error instanceof Error ? error.message : String(error) },
-      });
-    }
-
-    // ── Step 8.7: DESCRIPTION ────────────────────────────────────────
-    // Synthesize the canonical tool description from the FINAL source.
-    // Every other agent reads metadata.description when discovering
-    // tools — leaving the operator's hint in there means downstream
-    // agents see stale shape information after every rework. The
-    // description LLM call follows changeSummary so they share the
-    // same body excerpt.
-    const { descriptionPrompt } = await import("./toolBuildCouncil.js");
     const descSpanId = createSpanId("council-description");
     const descStartedAt = new Date();
-    try {
-      const descBody = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
-      const descMessages = descriptionPrompt({ context, toolBodyExcerpt: descBody });
-      await emit({
-        spanId: descSpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "description-synthesizer",
-        activity: "llm",
-        status: "started",
-        title: "Synthesizing canonical description",
-        startedAt: descStartedAt.toISOString(),
-        payload: { prompt: messagesToPromptText(descMessages) },
-      });
-      const descSpanTokens = createTokenAccumulator();
-      const descRaw = await this.llm.complete(descMessages, {
-        modelTier: "S",
-        signal: options.signal,
-        // Same shape as change summary — one paragraph.
-        reasoning: gate("disabled"),
-        maxTokens: cap(500),
-        onUsage: (usage) => {
-          descSpanTokens.onUsage(usage);
-          runTokens.onUsage(usage);
-        },
-      });
-      const description = sanitizeChangeSummary(descRaw);
-      if (description && adapter.updateDescription) {
-        await adapter.updateDescription(registered.toolName, registered.version, description);
+
+    const runChangeSummary = async (): Promise<void> => {
+      try {
+        const summaryToolBody = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
+        const repairFailures = collectRepairFailuresFromEvents(options.onEvent);
+        const summaryMessages = changeSummaryPrompt({
+          context,
+          toolBodyExcerpt: summaryToolBody,
+          previousToolSource,
+          repairFailures,
+          qaPassed,
+          isRework: Boolean(context.existingToolName),
+        });
+        await emit({
+          spanId: changeSummarySpanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-registered",
+          actor: "change-summary-synthesizer",
+          activity: "llm",
+          status: "started",
+          title: "Synthesizing change summary",
+          startedAt: changeSummaryStartedAt.toISOString(),
+          payload: { prompt: messagesToPromptText(summaryMessages) },
+        });
+        const summarySpanTokens = createTokenAccumulator();
+        const summaryRaw = await this.llm.complete(summaryMessages, {
+          modelTier: "S",
+          signal: options.signal,
+          reasoning: gate("disabled"),
+          maxTokens: cap(500),
+          onUsage: (usage) => {
+            summarySpanTokens.onUsage(usage);
+            runTokens.onUsage(usage);
+          },
+        });
+        changeSummary = sanitizeChangeSummary(summaryRaw);
+        if (changeSummary && adapter.updateChangeSummary) {
+          await adapter.updateChangeSummary(registeredPinned.toolName, registeredPinned.version, changeSummary);
+        }
+        await emit({
+          spanId: changeSummarySpanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-registered",
+          actor: "change-summary-synthesizer",
+          activity: "llm",
+          status: "completed",
+          title: "Change summary synthesized",
+          startedAt: changeSummaryStartedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(changeSummaryStartedAt),
+          payload: {
+            prompt: messagesToPromptText(summaryMessages),
+            output: summaryRaw,
+            changeSummary,
+            tokens: summarySpanTokens.snapshot(),
+          },
+        });
+      } catch (error) {
+        await emit({
+          spanId: changeSummarySpanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-registered",
+          actor: "change-summary-synthesizer",
+          activity: "llm",
+          status: "failed",
+          title: "Change summary synthesis failed — keeping default",
+          detail: error instanceof Error ? error.message : String(error),
+          startedAt: changeSummaryStartedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(changeSummaryStartedAt),
+          payload: { error: error instanceof Error ? error.message : String(error) },
+        });
       }
-      await emit({
-        spanId: descSpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "description-synthesizer",
-        activity: "llm",
-        status: "completed",
-        title: "Description synthesized",
-        startedAt: descStartedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(descStartedAt),
-        payload: {
-          prompt: messagesToPromptText(descMessages),
-          output: descRaw,
-          description,
-          tokens: descSpanTokens.snapshot(),
-        },
-      });
-    } catch (error) {
-      await emit({
-        spanId: descSpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "description-synthesizer",
-        activity: "llm",
-        status: "failed",
-        title: "Description synthesis failed — keeping operator hint",
-        detail: error instanceof Error ? error.message : String(error),
-        startedAt: descStartedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(descStartedAt),
-        payload: { error: error instanceof Error ? error.message : String(error) },
-      });
-    }
+    };
+
+    const runDescription = async (): Promise<void> => {
+      try {
+        const descBody = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
+        const descMessages = descriptionPrompt({ context, toolBodyExcerpt: descBody });
+        await emit({
+          spanId: descSpanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-registered",
+          actor: "description-synthesizer",
+          activity: "llm",
+          status: "started",
+          title: "Synthesizing canonical description",
+          startedAt: descStartedAt.toISOString(),
+          payload: { prompt: messagesToPromptText(descMessages) },
+        });
+        const descSpanTokens = createTokenAccumulator();
+        const descRaw = await this.llm.complete(descMessages, {
+          modelTier: "S",
+          signal: options.signal,
+          reasoning: gate("disabled"),
+          maxTokens: cap(500),
+          onUsage: (usage) => {
+            descSpanTokens.onUsage(usage);
+            runTokens.onUsage(usage);
+          },
+        });
+        const description = sanitizeChangeSummary(descRaw);
+        if (description && adapter.updateDescription) {
+          await adapter.updateDescription(registeredPinned.toolName, registeredPinned.version, description);
+        }
+        await emit({
+          spanId: descSpanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-registered",
+          actor: "description-synthesizer",
+          activity: "llm",
+          status: "completed",
+          title: "Description synthesized",
+          startedAt: descStartedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(descStartedAt),
+          payload: {
+            prompt: messagesToPromptText(descMessages),
+            output: descRaw,
+            description,
+            tokens: descSpanTokens.snapshot(),
+          },
+        });
+      } catch (error) {
+        await emit({
+          spanId: descSpanId,
+          parentSpanId: runSpanId,
+          type: "tool-build-registered",
+          actor: "description-synthesizer",
+          activity: "llm",
+          status: "failed",
+          title: "Description synthesis failed — keeping operator hint",
+          detail: error instanceof Error ? error.message : String(error),
+          startedAt: descStartedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(descStartedAt),
+          payload: { error: error instanceof Error ? error.message : String(error) },
+        });
+      }
+    };
+
+    await Promise.all([runChangeSummary(), runDescription()]);
 
     // ── Step 9: FINALIZE ─────────────────────────────────────────────
     // Phase 16 Slice C: use distinct event types for happy-path

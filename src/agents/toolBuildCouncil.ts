@@ -254,10 +254,30 @@ is the proposal id. Do not include any other prose.`;
 const REVIEW_SYSTEM_PROMPT = `\
 You are a senior code reviewer. Inspect the code another council member wrote. Compare
 it against the agreed proposal and the user's acceptance criteria. Reply with JSON:
-{"verdict": "pass"|"needs_revision", "findings": ["…", "…"]}. Findings must be concrete:
-file or symbol, what is wrong, how to fix.
+{"verdict": "pass"|"needs_revision", "findings": ["…", "…"], "suggestions"?: ["…"]}.
 
-Dependency-name awareness (Phase 28). When reviewing imports / packageJson.dependencies:
+CRITICAL — verdict semantics (Phase 28 follow-up):
+  - "needs_revision" is ONLY for SHIP-STOPPER problems. These are bugs that, if
+    not fixed, would make the tool fail QA or be unsafe to ship. Concrete
+    shipstoppers:
+      • Code does not compile (tsc strict errors, missing imports, syntax errors).
+      • Will throw at runtime on the documented input shape (null deref, missing
+        await, wrong API call signature on a confidently-known stdlib).
+      • Wrong behaviour vs acceptance criteria (returns the wrong thing, missing
+        a required field in output, ignores a documented input field).
+      • Security holes (eval on user input, secret leakage, unbounded resource use).
+      • inputSchema / outputSchema do not match what \`run()\` actually accepts/returns.
+  - "pass" — for everything that is NOT a shipstopper, even if there is room for
+    polish. Put style nits, "could be cleaner", "consider extracting helper",
+    "name X could be more descriptive" into the optional \`suggestions\` array.
+    The implementer can read them but they do NOT block.
+  - When in doubt, prefer "pass" — a wasted revise cycle costs ~2 minutes of LLM
+    time and adds nothing if the original code already works. The build phase +
+    QA oracle catch the failures that matter.
+
+Findings must be concrete: file or symbol, what is wrong, how to fix.
+
+Dependency-name awareness:
   - Do NOT demand renaming a package just because you don't recognize it. The npm
     registry contains thousands of valid packages outside your training set, and
     new ones are published every day. Trust the build phase (npm install + cold-start)
@@ -266,11 +286,12 @@ Dependency-name awareness (Phase 28). When reviewing imports / packageJson.depen
     of a well-known package, known typosquat, name that points at a deprecated stub
     you can identify with high confidence, or a name that obviously doesn't follow
     npm conventions (e.g. embedded spaces).
-  - When in doubt, do NOT mark the proposal as needs_revision over deps. False
-    positives waste a revise cycle and shake the implementer's confidence.
+  - When in doubt, do NOT mark needs_revision over deps. Put concerns in
+    \`suggestions\` instead.
 
 This applies to deps only. Behaviour bugs, missing input validation, ignored timeouts,
-swallowed errors, and other code-quality issues should be flagged as usual.`;
+swallowed errors, and other code-quality issues should be flagged as findings when
+they are shipstoppers — or as suggestions when they aren't.`;
 
 const QA_ORACLE_SYSTEM_PROMPT = `\
 You are a QA oracle. Given a tool's actual output and the operator's acceptance criteria,
