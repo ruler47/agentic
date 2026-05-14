@@ -2414,6 +2414,14 @@ export class UniversalAgent {
       startedAt: synthesisStartedAt.toISOString(),
       payload: { modelTier: synthesisTier },
     });
+    // Phase 28 follow-up — aggregate structured tool records across
+    // all workers so the synthesizer can read tool `data.pageText`
+    // etc. directly, not via the LLM-summarized worker output.
+    const aggregatedRecords = aggregateEvidenceRecords(workerResults);
+    const structuredEvidenceText = formatEvidenceRecordsForPrompt(
+      aggregatedRecords,
+      promptBudget.synthesisWorkerOutputChars,
+    );
     const synthesisUserPrompt = synthesizePrompt(
       limitText(agentTaskContext, promptBudget.taskContextChars),
       complexity,
@@ -2421,6 +2429,7 @@ export class UniversalAgent {
       reviews,
       compactMemoriesForPrompt(memories),
       artifacts,
+      structuredEvidenceText,
     );
     const rawFinalAnswer = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
@@ -2885,6 +2894,12 @@ export class UniversalAgent {
       subtask,
       output,
       toolEvidence: collectedEvidence.evidence,
+      // Phase 28 follow-up — also publish the structured records so
+      // reviewer + synthesizer can read `data.pageText` etc. without
+      // depending on the LLM-lossy worker prose. Typed as `unknown[]`
+      // in WorkerResult so types.ts doesn't depend on agent code; we
+      // cast back when consuming.
+      toolEvidenceRecords: collectedEvidence.records,
       artifacts: collectedEvidence.artifacts,
       traceSpanId: spanId,
       modelTier,
@@ -5697,11 +5712,39 @@ function compactWorkerResultForPrompt(workerResult: WorkerResult, outputBudget: 
     ...workerResult,
     output: limitText(workerResult.output, outputBudget),
     toolEvidence: workerResult.toolEvidence?.slice(0, 6).map((item) => limitText(item, 1_500)),
+    // Phase 28 follow-up — drop raw `toolEvidenceRecords` from the
+    // serialized worker result so the synthesizer's `JSON.stringify`
+    // doesn't print every `data.imageBase64` payload. The synthesizer
+    // reads records via a separate, properly-rendered block — see
+    // `aggregateEvidenceRecords` + the structured-evidence section in
+    // `synthesizePrompt`.
+    toolEvidenceRecords: undefined,
     artifacts: workerResult.artifacts?.map((artifact) => ({
       ...artifact,
       contentPreview: artifact.contentPreview ? limitText(artifact.contentPreview, 1_000) : undefined,
     })),
   };
+}
+
+/**
+ * Phase 28 follow-up — flatten the `toolEvidenceRecords` from every
+ * worker result into a single chronologically-ordered list of
+ * `EvidenceRecord` entries. Used by the synthesizer + reviewer so
+ * they can read tool data (pageText, numericTokens, pageTitle, …)
+ * across all workers, not just one worker's prose summary.
+ *
+ * Returns a fresh array. Order = source-worker order, then the order
+ * that the records were emitted within that worker.
+ */
+function aggregateEvidenceRecords(workerResults: readonly WorkerResult[]): EvidenceRecord[] {
+  const acc: EvidenceRecord[] = [];
+  for (const wr of workerResults) {
+    const records = (wr.toolEvidenceRecords as EvidenceRecord[] | undefined) ?? [];
+    for (const r of records) {
+      acc.push(r);
+    }
+  }
+  return acc;
 }
 
 function summarizeEvidenceList(evidence: string[], maxChars: number): string {
@@ -7882,6 +7925,19 @@ function buildSynthesisEvidenceCorpus(
     parts.push(wr.subtask?.expectedOutput ?? "");
     if (wr.subtask?.reviewCriteria) parts.push(wr.subtask.reviewCriteria.join("\n"));
     if (wr.toolEvidence) parts.push(wr.toolEvidence.join("\n"));
+    // Phase 28 follow-up — also dump the structured tool records into
+    // the corpus. The ungrounded-specifics gate works by checking
+    // whether tokens cited in the synthesis answer appear ANYWHERE in
+    // this corpus (full-text search). If we don't include the raw
+    // tool data (e.g. `data.pageText: "Bitcoin BTC $81,335.94 ..."`),
+    // the synthesizer's correctly-quoted number gets flagged as
+    // ungrounded and the gate strips it out — exactly the failure
+    // mode where worker prose hedged but the page actually held the
+    // answer.
+    const recs = wr.toolEvidenceRecords as EvidenceRecord[] | undefined;
+    if (recs && recs.length > 0) {
+      parts.push(formatEvidenceRecordsForPrompt(recs, 12_000));
+    }
     // Phase 12 follow-up: include the dependency context that fed the
     // upstream → downstream chain. A subtask's `toolEvidence` only
     // covers what THAT subtask's tools produced; tokens grounded in

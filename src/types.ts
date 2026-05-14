@@ -111,6 +111,20 @@ export type WorkerResult = {
   subtask: Subtask;
   output: string;
   toolEvidence?: string[];
+  /**
+   * Phase 28 follow-up — structured per-action tool records.
+   * Carries the FULL `ToolResult.data` (pageText, numericTokens,
+   * pageTitle, etc.) from each tool call this worker made, so the
+   * reviewer + synthesizer + retrospective can read what the tool
+   * ACTUALLY returned without going through the worker LLM's
+   * lossy prose summary. Optional + co-exists with `toolEvidence`
+   * during the staged migration; new callers should read this when
+   * they need to verify or quote specifics like numbers / titles.
+   * Shape is intentionally `unknown[]` here (rather than the
+   * concrete `EvidenceRecord` union) so the type module doesn't
+   * depend on the agent module; consumers cast as needed.
+   */
+  toolEvidenceRecords?: unknown[];
   artifacts?: AgentArtifact[];
   traceSpanId?: string;
   modelTier?: ModelTier;

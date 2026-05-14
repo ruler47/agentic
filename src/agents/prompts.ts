@@ -270,7 +270,22 @@ export function synthesizePrompt(
   reviews: ReviewResult[],
   memories: SkillMemoryEntry[],
   artifacts: AgentArtifact[] = [],
+  // Phase 28 follow-up — pre-rendered block of `EvidenceRecord[]`
+  // (one entry per tool call across all workers). Carries the FULL
+  // tool output, including fields like `data.pageText` /
+  // `data.numericTokens` that the worker LLM may have summarized or
+  // ignored. The synthesizer reads THIS for specifics — numbers,
+  // titles, freshness markers — instead of trusting worker prose,
+  // which is what made the bitcoin task hedge on the price even
+  // though the screenshot tool returned $81,335.94 in pageText.
+  structuredToolEvidence: string = "",
 ): string {
+  const structuredBlock = structuredToolEvidence.trim()
+    ? `Structured tool evidence (raw tool data — prefer this over worker prose for any specific number, title, date, URL, or quoted text):
+${structuredToolEvidence}
+
+`
+    : "";
   return `
 Synthesize the final answer for the user.
 
@@ -280,7 +295,7 @@ ${task}
 Complexity:
 ${JSON.stringify(complexity, null, 2)}
 
-Worker results:
+${structuredBlock}Worker results:
 ${JSON.stringify(workerResults, null, 2)}
 
 Reviews:
@@ -294,6 +309,13 @@ ${formatArtifacts(artifacts)}
 
 Rules:
 - Answer the original task, not the subtasks.
+- Specifics — prices, version numbers, dates, exact titles, URLs — MUST come from the
+  "Structured tool evidence" block when it exists. The worker prose is a SUMMARY; if a
+  worker omits or hedges a number that the structured block clearly shows, trust the
+  structured block and quote the value directly.
+- When multiple tool calls reported the same kind of fact (e.g. a price), prefer the
+  freshest one — the structured block lists records in chronological order, last entry
+  is newest.
 - Before finalizing, self-check that the answer and artifacts are actually useful for the user request. If the available evidence is insufficient, state the limitation plainly instead of dressing a weak result as complete.
 - Do not include screenshot/browser artifacts as proof if the evidence indicates they are blank, still loading, blocked, login-only, bot-check pages, or unrelated to the requested content.
 - Mention important assumptions or confidence limits.
