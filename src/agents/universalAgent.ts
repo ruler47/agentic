@@ -4756,6 +4756,22 @@ export class UniversalAgent {
       return { workerResult, review, attempts: [workerResult], reviews: [review] };
     }
 
+    // Phase 28 follow-up — pass the FIRST attempt's artifacts into
+    // the revision as additional `dependencyArtifacts`. Without this,
+    // every revision's `collectToolEvidence` re-runs the artifact
+    // pipeline (createScreenshotArtifact, chart generation, etc.)
+    // from scratch — even though the previous attempt already produced
+    // a perfectly good artifact for the same subtask. The Bitcoin
+    // run captured the SAME coinmarketcap.com screenshot twice
+    // (~277 KB each) because the screenshot pipeline didn't see the
+    // attempt-1 artifact when running attempt-2. Adding the prior
+    // attempt's artifacts here triggers the `inheritedArtifact` path
+    // in `createSubtaskArtifact`, which short-circuits to reuse
+    // instead of re-capturing.
+    const revisionDependencyArtifacts = [
+      ...dependencyArtifacts,
+      ...(workerResult.artifacts ?? []),
+    ];
     const revisedWorkerResult = await this.runWorker(
       originalTask,
       complexity,
@@ -4765,7 +4781,7 @@ export class UniversalAgent {
       workerResult.traceSpanId ?? parentSpanId,
       dependencyContext,
       dependencySpanIds,
-      dependencyArtifacts,
+      revisionDependencyArtifacts,
       review.notes,
       saveArtifact,
       toolExecutionContext,
@@ -6081,6 +6097,36 @@ function normalizeSubtask(subtask: Subtask): Subtask {
 function formatDependencyContext(dependencyResults: ReviewedWorkerResult[]): string | undefined {
   if (dependencyResults.length === 0) return undefined;
 
+  // Phase 28 follow-up — also surface the upstream subtask's
+  // `toolEvidence`. The downstream subtask often needs facts that
+  // were in the upstream's tool output (e.g. "find a Bitcoin price
+  // source" subtask 1 returns a URL, but the actual price came from
+  // DDG snippets in toolEvidence; subtask 2 "extract the price"
+  // can't reach those snippets through just the upstream worker's
+  // prose). Without this, downstream workers reported "data
+  // missing" and the run dead-ended even when the answer was right
+  // there in subtask 1's evidence.
+  //
+  // Budget: per-dependency toolEvidence slice is capped at ~1.5 k
+  // chars so 3 dependencies still fit under the 6 k overall
+  // dependency-context budget. The most recent snippets win — they
+  // usually carry the freshest factual data.
+  const PER_DEP_EVIDENCE_CHARS = 1500;
+  const formatToolEvidenceBlock = (evidence: readonly string[] | undefined): string => {
+    if (!evidence || evidence.length === 0) return "No tool evidence.";
+    const joined = evidence.join("\n");
+    return joined.length > PER_DEP_EVIDENCE_CHARS
+      ? `${joined.slice(0, PER_DEP_EVIDENCE_CHARS)}\n…[truncated ${joined.length - PER_DEP_EVIDENCE_CHARS} chars]`
+      : joined;
+  };
+
+  // Order matters: worker OUTPUT comes BEFORE tool evidence. Downstream
+  // URL-rewrite paths (e.g. resolving "URL_FROM_PREVIOUS_STEP"
+  // placeholders) pick the FIRST extractable URL, and the worker's
+  // chosen URL is the conclusion the upstream agent committed to —
+  // higher priority than raw search results. Tool evidence still
+  // appears for FACTUAL grounding (prices, dates, version strings
+  // the upstream worker may not have copied into its output prose).
   return limitText(`Dependency results from earlier reviewed agents:
 ${dependencyResults
   .map(
@@ -6089,8 +6135,10 @@ ${dependencyResults
   review: ${result.review.verdict} - ${result.review.notes}
   artifacts:
 ${indent(formatWorkerArtifacts(result.workerResult.artifacts))}
-  worker output:
-${indent(result.workerResult.output)}`,
+  worker output (cite URLs from here first):
+${indent(result.workerResult.output)}
+  tool evidence (upstream — cite factual specifics from here, like prices/dates/versions):
+${indent(formatToolEvidenceBlock(result.workerResult.toolEvidence))}`,
   )
   .join("\n")}`, promptBudget.dependencyContextChars);
 }

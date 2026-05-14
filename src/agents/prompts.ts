@@ -238,13 +238,29 @@ Be strict about unsupported claims, missing steps, contradictions, and unclear a
 ${toolCatalogBlock(tools)}
 
 CROSS-CHECK SPECIFICS AGAINST EVIDENCE.
-The worker's "toolEvidence" array contains the verbatim text the runtime extracted from web search results and browser pages. Before passing the worker output, scan its claims for any of:
+Valid evidence sources for grounding the worker's claims, in order of priority:
+  (1) The worker's own \`toolEvidence\` array — verbatim text extracted by the runtime
+      from web search results, browser pages, structured tool outputs.
+  (2) The worker's \`dependencyContextSnapshot\` — output of UPSTREAM subtasks in the
+      same run. These outputs ALREADY passed their own review (or were rejected),
+      so any specific surviving from upstream is grounded data the downstream
+      worker is entitled to cite. A claim like "the price extracted in the previous
+      step was $79,661" is grounded if the upstream subtask snapshot contains that
+      figure — even though the current subtask's own toolEvidence doesn't.
+  (3) The original user task text.
+
+Before passing the worker output, scan its claims for any of:
 - specific product models / model numbers (e.g. "RTX 4080", "M3 Pro", "Galaxy S24")
 - version numbers (e.g. "v3.2", "Llama 3 70B")
 - prices ("€2300", "$1999")
 - dates / timeframes ("April 2026", "last quarter")
 - place names, people, organizations (when not from the original task)
-For EACH such specific claim, search the evidence text for that exact token (or an obvious paraphrase). If the token does not appear in the evidence AND was not in the original task, FAIL the output with verdict=needs_revision. Worker training data may be outdated (e.g. claims "M3" when evidence says "M5") — the evidence is the source of truth.
+For EACH such specific claim, search ALL THREE evidence sources above for that exact
+token (or an obvious paraphrase). If the token does not appear in ANY of the three,
+FAIL the output with verdict=needs_revision. Do NOT fail a claim just because the
+current subtask's own toolEvidence lacks it — the dependency context counts.
+Worker training data may be outdated (e.g. claims "M3" when evidence says "M5") —
+the evidence is the source of truth.
 
 If the subtask expected discovery, candidate collection, source lookup, comparison, or recommendations, do not pass a result that only says nothing was found unless it proves a reasonable recovery attempt or clearly classifies a real external blocker.
 If the subtask or original request requires a generated file/artifact, fail outputs that provide only code, prose, or instructions instead of an actual artifact reference.
