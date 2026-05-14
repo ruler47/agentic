@@ -9,6 +9,1068 @@
     "summary": "When a task requires finding entities that satisfy multiple specific criteria—particularly qualitative or rapidly changing ones (e.g., 'notable community' or 'active tech sector')—use measurable proxy indicators to validate presence before performing a logical intersection of the resulting sets.",
     "reusableProcedure": "1. Decompose the complex query into independent research subtasks, one for each specific criterion.\n2. For qualitative/subjective criteria, define and use verifiable proxies (e.g., for 'community,' use social media engagement or NGO presence; for 'IT sector,' use tech parks or coworking density).\n3. Execute each subtask to generate distinct candidate lists.\n4. Perform a logical intersection (A ∩ B ∩ C) across all lists to identify the final set of entities that satisfy every condition simultaneously.",
     "id": "multi-criteria-set-intersection-with-qualitative-1777636042453",
-    "createdAt": "2026-05-01T11:47:22.453Z"
+    "createdAt": "2026-05-01T11:47:22.453Z",
+    "evidence": [],
+    "scope": "global",
+    "status": "accepted",
+    "confidence": 0.75,
+    "sensitivity": "normal",
+    "updatedAt": "2026-05-01T11:47:22.453Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778543160630",
+    "createdAt": "2026-05-11T23:46:00.630Z",
+    "updatedAt": "2026-05-11T23:46:00.630Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778543430642",
+    "createdAt": "2026-05-11T23:50:30.642Z",
+    "updatedAt": "2026-05-11T23:50:30.642Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778586955413",
+    "createdAt": "2026-05-12T11:55:55.413Z",
+    "updatedAt": "2026-05-12T11:55:55.413Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778587173433",
+    "createdAt": "2026-05-12T11:59:33.433Z",
+    "updatedAt": "2026-05-12T11:59:33.433Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778587209747",
+    "createdAt": "2026-05-12T12:00:09.747Z",
+    "updatedAt": "2026-05-12T12:00:09.747Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778587247884",
+    "createdAt": "2026-05-12T12:00:47.884Z",
+    "updatedAt": "2026-05-12T12:00:47.884Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778587280287",
+    "createdAt": "2026-05-12T12:01:20.287Z",
+    "updatedAt": "2026-05-12T12:01:20.287Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778587369102",
+    "createdAt": "2026-05-12T12:02:49.102Z",
+    "updatedAt": "2026-05-12T12:02:49.102Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778590297768",
+    "createdAt": "2026-05-12T12:51:37.768Z",
+    "updatedAt": "2026-05-12T12:51:37.768Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778590767245",
+    "createdAt": "2026-05-12T12:59:27.245Z",
+    "updatedAt": "2026-05-12T12:59:27.245Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778591461649",
+    "createdAt": "2026-05-12T13:11:01.649Z",
+    "updatedAt": "2026-05-12T13:11:01.649Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778591720162",
+    "createdAt": "2026-05-12T13:15:20.162Z",
+    "updatedAt": "2026-05-12T13:15:20.162Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778595150476",
+    "createdAt": "2026-05-12T14:12:30.476Z",
+    "updatedAt": "2026-05-12T14:12:30.476Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778595173605",
+    "createdAt": "2026-05-12T14:12:53.605Z",
+    "updatedAt": "2026-05-12T14:12:53.605Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778595416006",
+    "createdAt": "2026-05-12T14:16:56.006Z",
+    "updatedAt": "2026-05-12T14:16:56.006Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778595443490",
+    "createdAt": "2026-05-12T14:17:23.490Z",
+    "updatedAt": "2026-05-12T14:17:23.490Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778595469825",
+    "createdAt": "2026-05-12T14:17:49.825Z",
+    "updatedAt": "2026-05-12T14:17:49.825Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778595523674",
+    "createdAt": "2026-05-12T14:18:43.674Z",
+    "updatedAt": "2026-05-12T14:18:43.674Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778595552706",
+    "createdAt": "2026-05-12T14:19:12.706Z",
+    "updatedAt": "2026-05-12T14:19:12.706Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778595584987",
+    "createdAt": "2026-05-12T14:19:44.987Z",
+    "updatedAt": "2026-05-12T14:19:44.987Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778595615496",
+    "createdAt": "2026-05-12T14:20:15.496Z",
+    "updatedAt": "2026-05-12T14:20:15.496Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778595689168",
+    "createdAt": "2026-05-12T14:21:29.168Z",
+    "updatedAt": "2026-05-12T14:21:29.168Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778595722953",
+    "createdAt": "2026-05-12T14:22:02.953Z",
+    "updatedAt": "2026-05-12T14:22:02.953Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778596070278",
+    "createdAt": "2026-05-12T14:27:50.278Z",
+    "updatedAt": "2026-05-12T14:27:50.278Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778596381912",
+    "createdAt": "2026-05-12T14:33:01.912Z",
+    "updatedAt": "2026-05-12T14:33:01.912Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778596435000",
+    "createdAt": "2026-05-12T14:33:55.000Z",
+    "updatedAt": "2026-05-12T14:33:55.000Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778597432019",
+    "createdAt": "2026-05-12T14:50:32.019Z",
+    "updatedAt": "2026-05-12T14:50:32.019Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778600781155",
+    "createdAt": "2026-05-12T15:46:21.155Z",
+    "updatedAt": "2026-05-12T15:46:21.155Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778600840877",
+    "createdAt": "2026-05-12T15:47:20.877Z",
+    "updatedAt": "2026-05-12T15:47:20.877Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778611068614",
+    "createdAt": "2026-05-12T18:37:48.614Z",
+    "updatedAt": "2026-05-12T18:37:48.614Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778611525567",
+    "createdAt": "2026-05-12T18:45:25.567Z",
+    "updatedAt": "2026-05-12T18:45:25.567Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778611628263",
+    "createdAt": "2026-05-12T18:47:08.263Z",
+    "updatedAt": "2026-05-12T18:47:08.263Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778611947312",
+    "createdAt": "2026-05-12T18:52:27.312Z",
+    "updatedAt": "2026-05-12T18:52:27.312Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778612878154",
+    "createdAt": "2026-05-12T19:07:58.154Z",
+    "updatedAt": "2026-05-12T19:07:58.154Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778620567173",
+    "createdAt": "2026-05-12T21:16:07.173Z",
+    "updatedAt": "2026-05-12T21:16:07.173Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778621277927",
+    "createdAt": "2026-05-12T21:27:57.927Z",
+    "updatedAt": "2026-05-12T21:27:57.927Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778621481081",
+    "createdAt": "2026-05-12T21:31:21.081Z",
+    "updatedAt": "2026-05-12T21:31:21.081Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778621569516",
+    "createdAt": "2026-05-12T21:32:49.516Z",
+    "updatedAt": "2026-05-12T21:32:49.516Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778622005992",
+    "createdAt": "2026-05-12T21:40:05.992Z",
+    "updatedAt": "2026-05-12T21:40:05.992Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778622482885",
+    "createdAt": "2026-05-12T21:48:02.884Z",
+    "updatedAt": "2026-05-12T21:48:02.884Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778623042124",
+    "createdAt": "2026-05-12T21:57:22.124Z",
+    "updatedAt": "2026-05-12T21:57:22.124Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778626031516",
+    "createdAt": "2026-05-12T22:47:11.516Z",
+    "updatedAt": "2026-05-12T22:47:11.516Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778626305956",
+    "createdAt": "2026-05-12T22:51:45.956Z",
+    "updatedAt": "2026-05-12T22:51:45.956Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778626471854",
+    "createdAt": "2026-05-12T22:54:31.854Z",
+    "updatedAt": "2026-05-12T22:54:31.854Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778626569495",
+    "createdAt": "2026-05-12T22:56:09.495Z",
+    "updatedAt": "2026-05-12T22:56:09.495Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778658992370",
+    "createdAt": "2026-05-13T07:56:32.370Z",
+    "updatedAt": "2026-05-13T07:56:32.370Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778660251987",
+    "createdAt": "2026-05-13T08:17:31.987Z",
+    "updatedAt": "2026-05-13T08:17:31.987Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778665740275",
+    "createdAt": "2026-05-13T09:49:00.275Z",
+    "updatedAt": "2026-05-13T09:49:00.275Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778670821448",
+    "createdAt": "2026-05-13T11:13:41.448Z",
+    "updatedAt": "2026-05-13T11:13:41.448Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778671499186",
+    "createdAt": "2026-05-13T11:24:59.186Z",
+    "updatedAt": "2026-05-13T11:24:59.186Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778671622609",
+    "createdAt": "2026-05-13T11:27:02.609Z",
+    "updatedAt": "2026-05-13T11:27:02.609Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778671796356",
+    "createdAt": "2026-05-13T11:29:56.356Z",
+    "updatedAt": "2026-05-13T11:29:56.356Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778674747912",
+    "createdAt": "2026-05-13T12:19:07.912Z",
+    "updatedAt": "2026-05-13T12:19:07.912Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778675127026",
+    "createdAt": "2026-05-13T12:25:27.026Z",
+    "updatedAt": "2026-05-13T12:25:27.026Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778676388609",
+    "createdAt": "2026-05-13T12:46:28.609Z",
+    "updatedAt": "2026-05-13T12:46:28.609Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778680279473",
+    "createdAt": "2026-05-13T13:51:19.473Z",
+    "updatedAt": "2026-05-13T13:51:19.473Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778680309117",
+    "createdAt": "2026-05-13T13:51:49.117Z",
+    "updatedAt": "2026-05-13T13:51:49.117Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778680337742",
+    "createdAt": "2026-05-13T13:52:17.742Z",
+    "updatedAt": "2026-05-13T13:52:17.742Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778680476359",
+    "createdAt": "2026-05-13T13:54:36.359Z",
+    "updatedAt": "2026-05-13T13:54:36.359Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778682733558",
+    "createdAt": "2026-05-13T14:32:13.558Z",
+    "updatedAt": "2026-05-13T14:32:13.558Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778687508952",
+    "createdAt": "2026-05-13T15:51:48.952Z",
+    "updatedAt": "2026-05-13T15:51:48.952Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778689768626",
+    "createdAt": "2026-05-13T16:29:28.626Z",
+    "updatedAt": "2026-05-13T16:29:28.626Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778698129945",
+    "createdAt": "2026-05-13T18:48:49.945Z",
+    "updatedAt": "2026-05-13T18:48:49.945Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778703311230",
+    "createdAt": "2026-05-13T20:15:11.230Z",
+    "updatedAt": "2026-05-13T20:15:11.230Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778707297368",
+    "createdAt": "2026-05-13T21:21:37.368Z",
+    "updatedAt": "2026-05-13T21:21:37.368Z"
+  },
+  {
+    "title": "Review queue memory",
+    "summary": "Proposed memory should be visible in review queue.",
+    "reusableProcedure": "Join review records back to memory records by memoryId.",
+    "tags": [],
+    "scope": "global",
+    "status": "proposed",
+    "confidence": 0.7,
+    "sensitivity": "normal",
+    "evidence": [
+      "nest api test"
+    ],
+    "id": "review-queue-memory-1778707330371",
+    "createdAt": "2026-05-13T21:22:10.371Z",
+    "updatedAt": "2026-05-13T21:22:10.371Z"
   }
 ]

@@ -84,6 +84,18 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
       sampleInput?: Record<string, unknown>;
       /** Extra capability tags to advertise besides the defaults. */
       requiredCapabilities?: string[];
+      /**
+       * Phase 24 Slice B — model-emitted package.json patch.
+       * The implement / repair prompts now invite the model to
+       * declare its own dependencies + postinstall scripts;
+       * `parsePackageJsonPatch` in universalAgent.ts lifts the
+       * block out of the LLM response and threads it here.
+       */
+      modelPackageJson?: {
+        dependencies?: Record<string, string>;
+        scripts?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
     },
   ): Promise<{ toolName: string; version: string; previousVersion?: string }> {
     const version = metadata.version ?? (await this.nextVersionFor(toolName));
@@ -138,12 +150,67 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     for (const pkg of importedPackages) {
       dependencies[pkg] = "latest";
     }
+
+    // Phase 24 Slice B step 3 — pre-install npm-registry probe.
+    // The model's `packageJson.dependencies` block (Phase 24 Slice B
+    // step 1) plus auto-extracted imports can include names that
+    // simply do NOT exist on the npm registry. We've seen the LLM
+    // emit `@purgebugs/playwright-extra-plugin-stealth` (a scope
+    // that doesn't exist) and `playwright-extra-plugin-stealth`
+    // (a typosquatter stub). The former crashes `npm install` with
+    // a 404 after ~3 s of registry chatter; the latter installs
+    // fine but throws at module load. Catching the 404 case BEFORE
+    // we run `npm install` saves install time AND gives the repair
+    // loop a clean structured signal ("dependency 'X' does not
+    // exist on the npm registry — pick a different name") instead
+    // of a wall of npm error log lines.
+    //
+    // The probe is best-effort: a network outage skips it (we fall
+    // through to the existing `npm install` path), and tests can
+    // disable it entirely by setting
+    // `COUNCIL_NPM_REGISTRY_PROBE_ENABLED=disabled`. Default is on.
+    const allDepNames = Array.from(
+      new Set([
+        ...Object.keys(dependencies),
+        ...Object.keys(metadata.modelPackageJson?.dependencies ?? {}),
+      ]),
+    ).filter((name) => name && !name.startsWith("node:"));
+    if (
+      allDepNames.length > 0 &&
+      process.env.COUNCIL_NPM_REGISTRY_PROBE_ENABLED !== "disabled"
+    ) {
+      let probeOutcome: { missing: string[]; errored: Array<{ name: string; reason: string }> } | undefined;
+      try {
+        probeOutcome = await probeNpmRegistryExistence(allDepNames);
+      } catch {
+        // Network down, fetch missing, etc. — silently skip the
+        // pre-probe. The existing `npm install` step will surface
+        // any 404 the slow way, which is what we did before this
+        // probe existed.
+        probeOutcome = undefined;
+      }
+      if (probeOutcome && probeOutcome.missing.length > 0) {
+        const missingList = probeOutcome.missing.map((n) => `"${n}"`).join(", ");
+        throw new Error(
+          `Pre-install npm-registry probe found ${probeOutcome.missing.length} declared ` +
+            `dependency name(s) that do NOT exist on the public npm registry: ${missingList}. ` +
+            `These names did not resolve at https://registry.npmjs.org/<name> — they are ` +
+            `either typosquats, hallucinated scopes, deprecated stubs, or simply misspelled. ` +
+            `Look up the canonical name for the functionality you need (use the research ` +
+            `delegate if uncertain) and update BOTH the source import AND the ` +
+            `packageJson.dependencies entry. Do not retry name variants without verifying ` +
+            `first — each 404 wastes another repair cycle.`,
+        );
+      }
+    }
+
     const scaffold = renderCouncilScaffold({
       toolName,
       sanitizedName: sanitized,
       version,
       toolBody,
       dependencies,
+      modelPackageJson: metadata.modelPackageJson,
     });
     for (const file of scaffold) {
       const target = join(baseDir, sanitizeRelativePath(file.path));
@@ -221,6 +288,44 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
               ? `Loader said: ${detail}`
               : `No loader detail is available — check the runtime logs for the ` +
                 `most recent loadGeneratedTools error for ${toolName}.`),
+        );
+      }
+      // Phase 28 — VERSION-PIN PROBE.
+      //
+      // The registry's `reloadGeneratedTools` is **lenient** by design:
+      // when a NEW version's load throws (npm install 404, tsc compile
+      // error, missing entrypoint), the loader leaves whatever it had
+      // loaded LAST KNOWN GOOD in the in-memory registry — that's
+      // usually a previous version of this same tool. So
+      // `getRegisteredTool(toolName)` returns a non-null Tool that's
+      // serving an OLDER version while metadata's `tool_modules`
+      // already promoted the broken new version. Without this check
+      // the council pipeline thinks register succeeded, the cold-start
+      // probe spawns a subprocess for the OLD version (which has dist/
+      // + maybe Chromium from a prior install), QA sees the OLD code
+      // returning ok=false on something — and the operator chases a
+      // ghost behaviour bug while the real issue is "new version
+      // didn't compile at all".
+      //
+      // Explicit version-pin: the live tool MUST report the version
+      // we just wrote. If it doesn't, the new version silently
+      // failed to load and we surface that as a hard error with the
+      // loader's diagnostic text. The build-fix loop above this can
+      // then route the model into a real fix.
+      const liveVersion = (probe as { version?: string }).version;
+      if (liveVersion && liveVersion !== version) {
+        const detail = await this.collectLoadFailureDetail(toolName);
+        throw new Error(
+          `Tool ${toolName} v${version} was promoted in metadata, but the in-memory ` +
+            `registry is still serving v${liveVersion}. The runtime's loader rejected ` +
+            `the new version (likely npm install / tsc / missing entrypoint failure) ` +
+            `and silently kept the previous load active. Forcing a clean failure here ` +
+            `so the build-fix loop sees the real error instead of QA-testing the ` +
+            `wrong version. ` +
+            (detail
+              ? `Loader said: ${detail}`
+              : `No loader detail available — check runtime logs for the most ` +
+                `recent loadGeneratedTools error for ${toolName} v${version}.`),
         );
       }
     }
@@ -512,6 +617,90 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     return response.result;
   }
 
+  /**
+   * Phase 24 Slice B step 2 — install-probe.
+   *
+   * Force a cold-start of the freshly-registered tool to verify that
+   * `npm install` + `tsc build` produced a SUBPROCESS THAT CAN ACTUALLY
+   * LOAD. Catches the class of bugs where:
+   *   - the model emitted a typosquatter / placeholder package that
+   *     `throw`s at module-evaluation time (e.g. the real
+   *     `playwright-extra-plugin-stealth@0.0.1` is a stub that does
+   *     `throw new Error('Wrong package, please see this: …')` from its
+   *     index.js top level);
+   *   - a postinstall hook silently failed to fetch a browser binary;
+   *   - the bundle compiled but a runtime-only `await import()` resolves
+   *     to a broken module on the first request.
+   *
+   * The runner's HTTP process runtime ALREADY catches the "exited before
+   * healthcheck" case and surfaces it as `result.content`. This probe
+   * just makes that signal EXPLICIT (one extra cold-start before QA so
+   * we route the failure into the repair loop with a clean structured
+   * message, instead of relying on QA attempt 1 to accidentally exhibit
+   * the same boot crash).
+   *
+   * Input is `{}` (empty) — we don't care if zod / type validation
+   * rejects it. We only care whether the subprocess SURVIVED long
+   * enough to respond at all. ok=false + any content other than
+   * "Source-bundle HTTP runtime exited before healthcheck …" is treated
+   * as PROBE PASS.
+   */
+  async probeRegisteredTool(toolName: string): Promise<{
+    ok: boolean;
+    kind?: "subprocess-exit" | "subprocess-error" | "module-load-error" | "dep-import-error";
+    detail?: string;
+    brokenDeps?: Array<{ name: string; error: string }>;
+  }> {
+    let response: Awaited<ReturnType<CouncilToolAdapterDeps["runToolManually"]>>;
+    try {
+      // Magic input `{__probe: true}` — the scaffold's server.ts
+      // intercepts this before invoking the tool body and runs a
+      // per-dependency dynamic-import probe instead, reporting
+      // which packages failed to load. The probe payload comes back
+      // through the normal /run response so the existing runner
+      // doesn't need any new HTTP plumbing.
+      response = await this.deps.runToolManually(toolName, { input: { __probe: true } });
+    } catch (error) {
+      return {
+        ok: false,
+        kind: "subprocess-error",
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const content = (response.result.content ?? "").trim();
+    // Layer 1 — subprocess died at module-evaluation time (top-level
+    // throw, missing CJS require, postinstall failure). The runner
+    // emits this exact phrase from `startSourceBundleHttpRuntime`.
+    if (/Source-bundle HTTP runtime exited before healthcheck/i.test(content)) {
+      return { ok: false, kind: "subprocess-exit", detail: content };
+    }
+    // Layer 2 — subprocess started, /run handled, but module-not-found
+    // surfaced (ESM loader crash, ERR_MODULE_NOT_FOUND, native binding
+    // mismatch). These show up as "Tool threw: …" wrapper text.
+    if (/ERR_MODULE_NOT_FOUND|Cannot find module|MODULE_NOT_FOUND|node-gyp|NODE_MODULE_VERSION/i.test(content)) {
+      return { ok: false, kind: "module-load-error", detail: content };
+    }
+    // Layer 3 — per-dep probe came back. data.broken[] tells us
+    // exactly which dep failed to dynamic-import. This is the most
+    // surgical signal: the model can swap one specific package
+    // without guessing from stderr.
+    const data = (response.result as { data?: unknown }).data;
+    if (data && typeof data === "object") {
+      const broken = (data as { broken?: Array<{ name: string; error: string }> }).broken;
+      if (Array.isArray(broken) && broken.length > 0) {
+        return {
+          ok: false,
+          kind: "dep-import-error",
+          detail: content || `${broken.length} declared dep(s) failed to import`,
+          brokenDeps: broken,
+        };
+      }
+    }
+    // All probe layers green — subprocess started, every declared
+    // dep imported cleanly. Probe pass.
+    return { ok: true };
+  }
+
   /** Pick the next semver bump for an existing tool, or `1.0.0` for a fresh one. */
   private async nextVersionFor(toolName: string): Promise<string> {
     const existing = (await this.deps.metadataStore.list()).find((m) => m.name === toolName);
@@ -629,6 +818,79 @@ function coerceInputSchema(value: Record<string, unknown> | undefined): import("
     out.required = (value.required as unknown[]).filter((entry): entry is string => typeof entry === "string");
   }
   return out;
+}
+
+/**
+ * Phase 24 Slice B step 3 — pre-install npm-registry probe.
+ *
+ * For each declared dependency name, do a lightweight GET against
+ * https://registry.npmjs.org/<name>. 404 → the package literally does
+ * not exist (typosquat, wrong scope, hallucinated name). 200 → name
+ * resolves; we don't care about version selection here, only existence.
+ *
+ * Scoped names (`@scope/pkg`) are URL-encoded with `%2F` between the
+ * scope and the package — the registry rejects raw `/` in scoped GETs.
+ *
+ * Probes run in parallel with a per-request timeout so a slow registry
+ * doesn't block tool registration. Network failures bubble up as
+ * `errored[]` entries; the caller treats them as "could not verify"
+ * (skip the gate, fall through to `npm install`). Only confirmed 404s
+ * trigger a fail-fast throw.
+ *
+ * Tests opt out via `COUNCIL_NPM_REGISTRY_PROBE_ENABLED=disabled`.
+ */
+export async function probeNpmRegistryExistence(
+  names: readonly string[],
+): Promise<{
+  missing: string[];
+  errored: Array<{ name: string; reason: string }>;
+}> {
+  const missing: string[] = [];
+  const errored: Array<{ name: string; reason: string }> = [];
+  const timeoutMs = 5_000;
+  await Promise.all(
+    names.map(async (name) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      // Encode scoped names: `@scope/pkg` → `@scope%2Fpkg`.
+      const encoded = trimmed.startsWith("@")
+        ? trimmed.replace("/", "%2F")
+        : trimmed.replace(/\//g, "%2F");
+      const url = `https://registry.npmjs.org/${encoded}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        // GET (not HEAD) — npm registry returns 200 only on GET for
+        // some scoped names, and HEAD is occasionally proxied to
+        // 405 by mirrors. The response body is ignored (we don't
+        // read it), so the cost is just the TCP round-trip + a few
+        // bytes of headers in practice.
+        const response = await fetch(url, {
+          method: "GET",
+          headers: { accept: "application/json" },
+          signal: controller.signal,
+        });
+        // Drain body to release the connection.
+        await response.text().catch(() => "");
+        if (response.status === 404) {
+          missing.push(trimmed);
+        } else if (!response.ok) {
+          errored.push({
+            name: trimmed,
+            reason: `registry returned HTTP ${response.status}`,
+          });
+        }
+      } catch (err) {
+        errored.push({
+          name: trimmed,
+          reason: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    }),
+  );
+  return { missing, errored };
 }
 
 function extractInputSchemaFromSource(source: string): Record<string, unknown> | undefined {

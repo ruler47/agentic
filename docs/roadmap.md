@@ -3230,9 +3230,13 @@ showing where the real bottlenecks are.
 
 ## Phase 24: Install-verify agent (decouple deps from QA)
 
-Status: **Planned. Operator feedback after Phase 22 Slice E:
-"you shouldn't be fixing every tool's runtime environment by
-hand — they should set themselves up".**
+Status: **Slice A planned. Slice B steps 1-3 shipped: model-emitted
+packageJson (step 1), install-probe + per-dep dynamic-import
+(step 2), pre-install npm-registry probe + repair-register
+routing (step 3). Slice C (empty-result strictness in QA oracle)
+shipped. Operator feedback after Phase 22 Slice E: "you shouldn't
+be fixing every tool's runtime environment by hand — they should
+set themselves up".**
 
 The Phase 22 Slice E REGISTER step today:
 1. writes scaffold + tool body
@@ -3273,22 +3277,284 @@ Failure path: emit a distinct `tool-build-install-failed` event
 (not a QA failure) and abort the run with a runbook in the detail
 text — operator action, not LLM repair.
 
-### Slice B — Optional install-fix-agent
+### Slice B — Model-emitted package.json + install-probe (shipped)
 
-When install-verify reports a fixable mismatch (puppeteer needs
-`postinstall` permission, missing system lib detected via
-`apt-cache search` heuristic, environment variable known to fix
-the symptom), an automated agent can propose a fix and emit it
-back to the operator for one-click apply. Examples:
-- "puppeteer wants Chromium — your image has `/usr/bin/chromium`,
-  set `PUPPETEER_EXECUTABLE_PATH` in docker-compose"
-- "playwright postinstall didn't run — add
-  `npx playwright install chromium` to your Dockerfile"
+Two-step systemic fix that replaces every per-package band-aid
+(`playwright install chromium` postinstall, regex detection of
+puppeteer imports, hardcoded Chromium env wiring, etc.):
 
-The agent never modifies the host image without operator consent;
-it only proposes patches as artifacts.
+**Step 1 — Model emits its own packageJson (shipped run
+`run_1778676…`).** The implement / revise / repair prompts now
+invite the LLM to include a `packageJson` block alongside the
+`files` array in its JSON envelope. The model owns its install
+concerns:
 
-### Slice C — Per-image capability registry
+```json
+{
+  "files": [{ "path": "src/tools/generated/foo.ts", "content": "..." }],
+  "packageJson": {
+    "dependencies": { "playwright-extra": "latest", "...": "..." },
+    "scripts": { "postinstall": "playwright install chromium" }
+  }
+}
+```
+
+`universalAgent.parsePackageJsonPatch()` lifts the block out
+of the response. `councilToolAdapter.registerToolFromFiles`
+forwards it to `renderCouncilScaffold`, which merges the
+model's `dependencies` / `scripts` / `devDependencies` onto the
+canonical scaffold defaults. The scaffold's build + start
+scripts remain immutable (the model cannot accidentally break
+`tsc -p tsconfig.json` or `node dist/runtime/server.js`),
+everything else is the model's call.
+
+Auto-extracted imports from the tool body stay as a safety net
+when the model forgets to declare a package.
+
+**Step 2 — Install-probe (shipped after observing flaky
+"QA passed with empty results" → broken-on-cold-start bug).**
+`npm install` + `tsc build` returning ok ≠ the subprocess
+actually loads. A typosquatter package like
+`playwright-extra-plugin-stealth@0.0.1` exists on npm registry
+(npm install succeeds) and `tsc` compiles against its types
+(or lack thereof) without complaint — but its `index.js` is a
+single line: `throw new Error('Wrong package, please see this: …')`.
+Any `import` or `require()` of it crashes module evaluation.
+
+Without the probe, this surfaced randomly via QA: the first
+cold-start sometimes returned `ok=true` with empty `data.results`
+(the oracle lenient enough to pass it), the tool got registered,
+and subsequent calls all failed with `Source-bundle HTTP runtime
+exited before healthcheck`. The probe closes this hole.
+
+Pipeline now inserts a `tool-build-install-probe` span between
+the install-verify span and the QA loop:
+
+```
+REGISTER (write files + npm install + tsc + register row)
+  ↓
+INSTALL-VERIFY  (existing — files written, npm install + tsc OK)
+  ↓
+INSTALL-PROBE                                          ← NEW
+  - cold-start the subprocess via runToolManually({__probe: true})
+  - the scaffold's server.ts intercepts the magic input and
+    runs a per-dependency dynamic-import probe (reads its own
+    package.json, awaits import(name) for each declared dep)
+  - returns ok + per-dep success/failure
+  - failure paths:
+      "subprocess-exit"      → top-level import threw (typosquat)
+      "module-load-error"    → ERR_MODULE_NOT_FOUND / native binding
+      "dep-import-error"     → specific declared dep failed dynamic import
+      "subprocess-error"     → spawn ENOENT etc.
+  - on failure, set `initialRegistrationError` to a structured
+    message containing the loader stderr + per-broken-dep names
+  ↓
+QA + REPAIR (probe pass → real qaInput; probe fail → attempt-0
+              synthetic failure with structured install-shape
+              detail and a repairPrompt that explicitly knows
+              how to swap typosquatter / wrong-name packages)
+```
+
+Files: `src/agents/universalAgent.ts` (probe span), `src/tools/
+councilToolAdapter.ts` (probeRegisteredTool implementation),
+`src/agents/councilScaffold.ts` (server.ts /probe endpoint +
+`{__probe: true}` /run interceptor + `probeDeclaredDependencies`
+helper), `src/agents/toolBuildCouncil.ts` (repairPrompt
+install-shape guidance, expanded with wrong-package signals
+including the literal "Wrong package, please see this:" hint
+for the playwright-extra-plugin-stealth typosquatter case).
+
+The model's repair-loop prompt now explicitly handles three
+wrong-name scenarios:
+  - `Wrong package, please see this:` → typosquatter / placeholder
+    package; emit a packageJson patch that REMOVES the bad name
+    and adds the correct one, AND updates the tool body's import.
+  - `Cannot find module 'X'` → add `X` to dependencies, or fix
+    a wrong subpath import.
+  - `Executable doesn't exist at /path/to/browser` → add a
+    `postinstall` script.
+
+### Slice B step 3 — pre-install registry probe + repair-register routing (shipped)
+
+Two complementary fixes discovered while exercising step 2 on
+`run_1778680610091_…`:
+
+**(a) Pre-install npm-registry probe.** The model can emit a
+`packageJson.dependencies` block with names that do NOT EXIST on
+the public npm registry — we observed `@purgebugs/playwright-extra-plugin-stealth`
+(scope `@purgebugs` is not registered) AND the
+`playwright-extra-plugin-stealth` typosquatter (exists, but its
+index.js is a load-time `throw`). Step 2's install-probe catches
+the latter (subprocess crashes on import); the former crashes
+`npm install` ITSELF with a slow 404 dance and lots of npm
+error log lines.
+
+Step 3 adds a fast pre-flight check in
+`councilToolAdapter.registerToolFromFiles`, right before disk
+writes: for every name in the merged dependency set (model patch
++ auto-extracted imports), do a `GET https://registry.npmjs.org/<name>`
+in parallel with a 5 s timeout. Any confirmed 404 throws with a
+structured message:
+
+> Pre-install npm-registry probe found N declared dependency
+> name(s) that do NOT exist on the public npm registry: "X", "Y".
+> These must be wrong names (typosquat, hallucinated scope,
+> deprecated stub, or simply misspelled). Choose a different
+> package — for example, the real stealth plugin for
+> playwright-extra is published as `puppeteer-extra-plugin-stealth`
+> (yes, the puppeteer-named package; it works with playwright-extra
+> through shared infrastructure). Update both the source import
+> AND the packageJson.dependencies entry to use a name that
+> resolves on https://registry.npmjs.org/.
+
+The throw is caught by `universalAgent`'s existing register-error
+path and plants the message into the next QA-attempt synthetic.
+The repair LLM then sees an explicit list of broken names and a
+nudge toward the correct one.
+
+Network outages skip the probe silently (best-effort). Tests
+disable it via `COUNCIL_NPM_REGISTRY_PROBE_ENABLED=disabled`.
+
+Files: `src/tools/councilToolAdapter.ts` (`probeNpmRegistryExistence`,
+inline pre-install gate in `registerToolFromFiles`).
+
+**(b) Repair-register failure routing.** Before step 3, a
+repair attempt whose `registerToolFromFiles` threw (tsc compile
+error, install error, install-probe miss) ended in the catch
+block, set `repairBrokenEarly = true`, and **broke out of the QA
+loop entirely**. That meant the model effectively got ONE shot
+at a repair: if the second attempt's code didn't compile, the
+loop gave up without giving it a third try at the same bug.
+
+Step 3 separates the registration failure from the
+LLM/parsing failure inside the repair block. Now:
+  - LLM call errors (network, timeout, unparseable response):
+    span `failed`, `repairBrokenEarly = true`, abort loop —
+    this IS the right time to give up.
+  - Register failures (install / tsc / probe): captured as
+    `repairRegistrationError`, planted into
+    `initialRegistrationError`, span `completed` with a "routing
+    into next QA attempt" title. The next iteration synthesizes
+    its QA-attempt output from the error and the model gets
+    another swing.
+
+Also: the synthetic QA-output condition dropped the
+`attempt === 0` constraint — it now fires on any outstanding
+`initialRegistrationError`, which is cleared whenever a register
+succeeds and set whenever any register (initial OR repair) fails.
+
+Finally, step 3 also runs the cold-start `probeRegisteredTool`
+after every successful repair-register, mirroring the initial
+install-probe. Catches the case where `npm install` + `tsc`
+both pass but the subprocess still can't load the tool body
+(squatter package that throws at module load); previously this
+only fired once on initial registration.
+
+Files: `src/agents/universalAgent.ts` (repair block refactor +
+synthetic QA condition + repair-cold-start probe).
+
+### Slice B step 4 — LLM install-fix agent (planned)
+
+Stretch: when install-probe + repair-loop together fail to
+produce a working bundle after N attempts, spawn a focused
+LLM call BEFORE giving up:
+
+```
+Tool failed to start. Loader said:
+  {error message from the runtime probe}
+
+Bundle's current package.json:
+  {package.json content}
+
+Tool body imports:
+  {body's first import block}
+
+Propose a JSON patch to package.json that fixes the install
+issue. Allowed fields: scripts.postinstall, dependencies
+(adding pins or new packages). Reply with a single JSON object
+ONLY:
+  {"scripts": {"postinstall": "..."}}
+  OR
+  {"dependencies": {"some-pkg": "^x.y.z"}}
+  OR
+  {} if no fix is possible at install time.
+```
+
+Adapter applies the patch by deep-merging into the bundle's
+package.json on disk, then re-runs `npm install` in the bundle
+dir and re-probes. Up to 2 LLM iterations before giving up and
+routing the error into the QA repair loop. Each attempt is a
+visible `tool-build-install-verify` span in the trace.
+
+This replaces per-package special cases in the scaffold (the
+playwright `postinstall: "playwright install chromium"` we hand-
+wired is the canonical example — once Slice B ships, the
+scaffold can revert to a vanilla package.json and let the agent
+discover that hint from the runtime error).
+
+Why an LLM agent rather than deterministic detection?
+Counter-cases to deterministic detection: a tool importing
+`@anthropic-ai/sdk` may need `ANTHROPIC_API_KEY` in env (NOT a
+package fix); a tool importing `node-pty` needs apt
+`build-essential` (system, not npm); a tool needing `ffmpeg`
+needs the binary in PATH (image-level). The LLM is better at
+mapping a free-form error message to a fix domain than a
+hand-maintained regex table.
+
+Safety:
+- The LLM CAN modify `package.json.scripts.postinstall` and
+  `package.json.dependencies` only — every other field is
+  preserved by the merge.
+- The applied postinstall runs inside the bundle's own
+  install — it cannot touch the platform image.
+- If the patch increases install time beyond a threshold
+  (e.g. 5 min for first npm install), abort and surface as
+  operator action.
+
+### Slice C — Empty-result strictness in QA oracle (shipped)
+
+Companion fix discovered together with install-probe: even when
+the subprocess loaded and `tool.run()` returned a structurally
+valid response, the QA oracle was accepting `ok=true` with
+`data.results: []` and `content: "No results found for …"` as a
+PASS for criteria like "search works". That's exactly how
+`web.duckduckgo.search v1.0.2` registered with a broken stealth
+import — the first cold-start coincidentally returned an
+empty-result response, oracle waved it through, install-probe
+was not yet in place, broken bundle promoted, every later call
+crashed.
+
+The QA oracle system prompt now carries a strict rule:
+
+> empty `data.results` / `data.items` / `data.records` arrays,
+> `data === null|undefined|{}`, or `content` containing "no
+> results", "not found", "0 items", "empty", "ничего не найдено"
+> = FAIL by default. The ONLY way to pass an empty-result case is
+> when an acceptance criterion EXPLICITLY says empty is allowed
+> (e.g. "returns ok=true with empty results when no match").
+
+Trade-off: tools whose criteria really do allow empty output
+need their criteria phrased to say so. Tools that are supposed
+to actually produce output get their broken-selector / wrong-
+endpoint / silent-provider-error bugs caught instead of
+hidden. Net win — the empty-result case is much rarer than the
+"actually broken" case.
+
+File: `src/agents/toolBuildCouncil.ts` (`QA_ORACLE_SYSTEM_PROMPT`).
+
+### Slice D — Persisted fix knowledge (planned)
+
+When Slice B step 3's install-fix agent successfully repairs an
+install error, record (errorSignature → patch) in a small
+`tool_install_fixes` table. Next time the SAME error
+signature appears (e.g. another tool emitting the same
+"playwright Chromium missing" diagnostic), apply the cached
+patch deterministically without an LLM call. This makes the
+system progressively learn install patterns instead of
+re-rediscovering them every time. The LLM stays the source of
+truth for novel errors.
+
+### Slice E — Per-image capability registry (planned)
 
 Track what each container image offers (Chromium, ffmpeg, ghostscript,
 …) in a small `image_capabilities` table. The install-verify step
@@ -3415,6 +3681,117 @@ to call before promoting.
   was pre-symlinked. Title is an over-promise in that case. Live
   with it for now; Phase 24's deeper install-verify probe will
   decide truthfully.
+
+
+## Phase 28: 3-gate pipeline (review → build → QA → register)
+
+Status: **Shipped.** Operator feedback: "ллм сделала файлы, другая
+ллм ревьювает — но осторожно с deps; тулза собралась изолированно
+как тест, если что не так — фикс-ллмке (2 попытки); потом QA, при
+фейле — bug back to author; и только при QA pass регистрируется".
+
+Replaces the patchwork of install-probe + synthetic-QA-attempt-from-
+registration-error + dual-purpose `repairPrompt` (which we built up
+across Phases 22-24) with a clean 3-gate state machine:
+
+```
+brainstorm → vote → implement
+                       ↓
+              review/revise loop (existing)
+                       ↓
+              ┌──────────────────┐
+              │   BUILD-PHASE    │ ← new explicit gate
+              │                  │
+              │ register (npm    │
+              │ install + tsc +  │
+              │ load probe)      │
+              │   ↓ fail         │
+              │ build-fix LLM    │ ← narrow buildFixPrompt
+              │ (max 2 attempts) │   no QA criteria, no behaviour
+              │   ↓ exhausted    │
+              │   ABORT          │
+              │   ↓ pass         │
+              └─────┬────────────┘
+                    ↓
+              ┌──────────────────┐
+              │   QA-PHASE       │ ← only runs when build is green
+              │                  │
+              │ call tool with   │
+              │ synthesized QA   │
+              │ input + oracle   │
+              │   ↓ fail         │
+              │ qa-fix LLM       │ ← existing repairPrompt
+              │ (Borda fallback) │   sees only behaviour errors
+              │   ↓ exhausted    │
+              │   ABORT (rollback│
+              │   to prev ver)   │
+              │   ↓ pass         │
+              └─────┬────────────┘
+                    ↓
+              markActive (status → available)
+```
+
+### Key separations
+
+**Three LLM roles, three prompts, three concerns:**
+- **Reviewer** — code quality + obviously-wrong deps. Updated to
+  acknowledge unknown new packages: "do NOT demand renaming a dep
+  just because you don't recognize it. The npm registry contains
+  thousands of valid packages outside your training set. Trust the
+  build phase to catch a name that doesn't resolve." Reviewer flags
+  deps ONLY on strong evidence (typo, known squatter, deprecated
+  stub, or violates npm conventions like embedded spaces).
+- **Build-fixer** — `buildFixPrompt` is laser-focused on install /
+  compile / start errors. Sees stderr + current files + current
+  packageJson. Does NOT see QA criteria. Forbidden from "improving"
+  behaviour beyond what the build error literally requires. 2
+  attempts max — if both fail, run aborts.
+- **QA-fixer** — existing `repairPrompt`, but now only ever sees
+  behaviour failures (oracle verdict + tool output). Install errors
+  never leak in. Cross-LLM Borda fallback still rotates between
+  candidate models if one can't make QA pass.
+
+**Register at the end (effectively):** the `markActive` call (which
+flips metadata status from `disabled` → `available`) still fires only
+on QA pass, just like before. The 3-gate restructure makes the
+intermediate states explicit and removes the conflated path where
+install errors used to be funneled through QA repair.
+
+### What got deleted
+
+- The `attempt === 0 && initialRegistrationError` synthetic-QA-output
+  branch in the QA loop — install errors no longer reach QA.
+- The `initialRegistrationError` / `repairRegistrationError` state
+  threading through the QA loop.
+- The post-repair `probeRegisteredTool` re-run inside the QA loop —
+  build-phase is the canonical gate; QA-fix register failures abort
+  the loop honestly instead of looping forever.
+- The conflated install-fix guidance inside `repairPrompt` (wrong-
+  name packages, install-shape error patterns, etc.) — that text
+  moved to `buildFixPrompt` where it belongs and `repairPrompt`
+  shrank to pure behaviour-fix guidance.
+
+### Files touched
+
+- `src/agents/toolBuildCouncil.ts` — new `buildFixPrompt`, updated
+  `REVIEW_SYSTEM_PROMPT` for deps-awareness, `repairPrompt` cleaned
+  of install-shape band-aids.
+- `src/agents/universalAgent.ts` — `runBuildAttempt` closure + while-
+  loop for build-fix, abort-and-return-AgentRunResult path, QA loop
+  simplified (`output = await runToolForQa(...)` unconditionally),
+  repair-block simplified (any failure → break, no register-routing).
+
+### Risks acknowledged
+
+- 2 build-fix attempts is strict. If both attempts fail, the run
+  aborts with a clean `runStatus: "failed"` and the operator sees
+  a useful message. A future stretch is cross-LLM Borda fallback
+  for build-fix too (after both attempts by author, give one model
+  a third shot).
+- QA-fix register failure now aborts the QA loop instead of looping
+  with a synthetic. The QA-fix LLM is expected not to regress the
+  build it inherited. If this becomes a real failure mode, we can
+  add a single bounce back to build-fix.
 
 
 ## Phase 26: Each tool runs in its own Docker container

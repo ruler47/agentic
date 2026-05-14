@@ -255,12 +255,49 @@ const REVIEW_SYSTEM_PROMPT = `\
 You are a senior code reviewer. Inspect the code another council member wrote. Compare
 it against the agreed proposal and the user's acceptance criteria. Reply with JSON:
 {"verdict": "pass"|"needs_revision", "findings": ["…", "…"]}. Findings must be concrete:
-file or symbol, what is wrong, how to fix.`;
+file or symbol, what is wrong, how to fix.
+
+Dependency-name awareness (Phase 28). When reviewing imports / packageJson.dependencies:
+  - Do NOT demand renaming a package just because you don't recognize it. The npm
+    registry contains thousands of valid packages outside your training set, and
+    new ones are published every day. Trust the build phase (npm install + cold-start)
+    to catch a name that doesn't resolve.
+  - DO flag dep names ONLY when you have STRONG evidence they are wrong: clear typo
+    of a well-known package, known typosquat, name that points at a deprecated stub
+    you can identify with high confidence, or a name that obviously doesn't follow
+    npm conventions (e.g. embedded spaces).
+  - When in doubt, do NOT mark the proposal as needs_revision over deps. False
+    positives waste a revise cycle and shake the implementer's confidence.
+
+This applies to deps only. Behaviour bugs, missing input validation, ignored timeouts,
+swallowed errors, and other code-quality issues should be flagged as usual.`;
 
 const QA_ORACLE_SYSTEM_PROMPT = `\
 You are a QA oracle. Given a tool's actual output and the operator's acceptance criteria,
 decide whether the output satisfies every criterion. Reply with JSON:
-{"verdict": "passed"|"failed", "failures": ["criterion: why it's not met", ...]}.`;
+{"verdict": "passed"|"failed", "failures": ["criterion: why it's not met", ...]}.
+
+STRICT RULE — empty results are a FAILURE by default.
+
+When a criterion implies the tool should produce data (e.g. "search works", "fetch list",
+"scrape results", "extract entities", "convert image"), and the tool's output has any of:
+  - data.results / data.items / data.records / data.entries that is an empty array, OR
+  - data is null, undefined, or {}, OR
+  - content explicitly says "no results", "not found", "0 items", "empty", "ничего не
+    найдено", "пустой", or similar wording,
+then VERDICT MUST BE "failed". Reasoning: the tool is supposed to actually do the thing
+the criterion describes — returning ok=true with zero output is almost always a broken
+selector, wrong endpoint, silent provider error, or auth failure. Mark it failed and let
+the repair loop investigate.
+
+The ONLY way to accept an empty result is when an acceptance criterion EXPLICITLY says
+empty is allowed (e.g. "returns ok=true with empty results when no match", "gracefully
+handles zero-hit queries"). If you cannot point at a specific criterion that permits
+empty output, fail the verdict.
+
+When you fail an empty-result case, list the failure as:
+  "criterion N: tool returned ok=true but data.results is empty / content says no
+  results — criteria require the tool to actually produce output, not just respond."`;
 
 /** Shown to council members so they emit code matching the runtime contract. */
 const TOOL_INTERFACE_SNIPPET = `\
@@ -471,14 +508,41 @@ export function implementPrompt(
     "     a `properties` map (each property typed), and `required: [...]`. This",
     "     drives the Tools-page Manual Run form, so be explicit about what the",
     "     tool accepts.",
-    "  6. Allowed imports: Node built-ins (node:http, node:fs, node:path,",
-    "     global `fetch`, etc.) AND `zod` for runtime input validation.",
-    "     Do NOT import any OTHER npm package — only Node built-ins + zod are guaranteed",
-    "     to be resolvable at runtime.",
+    "  6. Imports are unrestricted: Node built-ins (node:http, node:fs, etc.),",
+    "     `zod`, and ANY npm package you list in `packageJson.dependencies`",
+    "     below. The runner runs `npm install` in the tool's own isolated",
+    "     bundle before the first call, so whatever you declare gets",
+    "     installed — including any postinstall script you wire up.",
     "  7. Keep the file self-contained — no top-level side effects, no helper files.",
     "",
-    "Reply with a SINGLE JSON object only:",
-    `{"files":[{"path":"${targetPath}","content":"…the file body…"}]}`,
+    "Reply with a SINGLE JSON object containing the file body AND an optional",
+    "package.json patch. The patch is MERGED into the runtime scaffold's canonical",
+    "defaults: the model owns runtime concerns (`dependencies`, install",
+    "`scripts.postinstall`, extra `devDependencies`); the scaffold owns the tsc",
+    "build + HTTP-server wrapper. Shape:",
+    "",
+    "{",
+    `  "files":[{"path":"${targetPath}","content":"…the file body…"}],`,
+    `  "packageJson": {`,
+    `    "dependencies": { "<npm-name>": "<semver-range>" },`,
+    `    "scripts": { "postinstall": "<install command for any runtime binary you need>" }`,
+    `  }`,
+    "}",
+    "",
+    "Rules for `packageJson`:",
+    "  - Pin runtime deps to a caret-range you trust (e.g. `^4.3.6`), NOT `latest`.",
+    "    The runner falls back to `latest` only for deps it auto-extracts from",
+    "    your `import` statements when you forgot to declare them.",
+    "  - If your dep needs a runtime binary or native module the npm tarball",
+    "    doesn't ship with, add the appropriate install command under",
+    "    `scripts.postinstall`. Look up the command in the dep's own docs",
+    "    rather than guessing.",
+    "  - Use real, canonical package names that resolve on the npm registry.",
+    "    If you are not 100% sure a name exists, issue a `<request_research>`",
+    "    block to look it up — npm 404s waste a full repair cycle.",
+    "  - `packageJson` is optional. Omit it for tools that only need built-ins",
+    "    + zod. The scaffold's defaults still apply.",
+    "",
     "Do not wrap the JSON in backticks. Do not add commentary.",
   ]
     .filter(Boolean)
@@ -540,8 +604,10 @@ export function revisePrompt(
     "",
     "Apply targeted fixes that satisfy every finding without regressing prior",
     "behaviour. Emit the FULL revised tool body (same single file at the same",
-    `path), wrapped in the same JSON envelope: {"files":[{"path","content"}]}.`,
-    "Do not re-emit scaffolding (index.ts, runtime/server.ts, package.json, etc).",
+    `path), wrapped in the same JSON envelope: {"files":[{"path","content"}], "packageJson"?:{...}}.`,
+    "You MAY also adjust `packageJson.dependencies` / `packageJson.scripts.postinstall`",
+    "if the review pointed at a dep/install issue. Omit packageJson to keep prior.",
+    "Do not re-emit scaffolding (index.ts, runtime/server.ts, etc).",
   ]
     .filter(Boolean)
     .join("\n");
@@ -771,6 +837,90 @@ export function descriptionPrompt(args: {
   ];
 }
 
+/**
+ * Phase 28 — BUILD-PHASE fix prompt (narrow).
+ *
+ * Fired ONLY when the tool's bundle could not install + compile + start
+ * (npm 404, tsc compile error, install-probe subprocess crash). The
+ * model's job here is laser-focused: get the bundle to LOAD, period.
+ * It does NOT see QA acceptance criteria — those are irrelevant until
+ * the tool actually runs. It does NOT change behaviour for behaviour's
+ * sake — only what's required to make `npm install + tsc -p . + start`
+ * succeed.
+ *
+ * Distinct from `repairPrompt` (QA-FIX), which fires AFTER the bundle
+ * already starts and only its OUTPUT needs work. Mixing the two used to
+ * confuse the model — it would refactor logic to "fix" an npm-install
+ * error, or add a missing package while also tweaking the algorithm.
+ * The split gives each LLM exactly one concern.
+ */
+export function buildFixPrompt(args: {
+  context: ToolBuildContext;
+  winner: CouncilProposal;
+  code: string;
+  packageJsonText: string | undefined;
+  buildError: string;
+  attempt: number;
+  maxAttempts: number;
+}): Message[] {
+  const { context, winner, code, packageJsonText, buildError, attempt, maxAttempts } = args;
+  const refsBlock = formatReferenceDocsBlock(context.referenceDocs);
+  const user = [
+    `Tool name: ${context.name}`,
+    "",
+    "BUILD-PHASE FIX — your one job is to make this bundle install + compile + start.",
+    `Attempt ${attempt}/${maxAttempts}. If you fail again, the run aborts.`,
+    "",
+    refsBlock,
+    "Original winning proposal (do not redesign — preserve intent):",
+    winner.content.trim(),
+    "",
+    "Current tool source:",
+    code.trim(),
+    "",
+    packageJsonText
+      ? `Current packageJson dependencies/scripts/devDependencies (model-owned slice):\n${packageJsonText}`
+      : "No model packageJson patch yet — scaffold defaults are in effect.",
+    "",
+    "BUILD ERROR (raw stderr from npm install / tsc / cold-start probe — fix THIS):",
+    "```",
+    buildError.slice(0, 4000),
+    buildError.length > 4000 ? `…[truncated ${buildError.length - 4000} chars]` : "",
+    "```",
+    "",
+    "Rules for this fix:",
+    "  - Goal: make the bundle install + compile + start. Nothing else.",
+    "  - You MAY change package names, add dependencies, add scripts.postinstall,",
+    "    fix import paths, add tsc type annotations, narrow types. You MAY change",
+    "    a few lines of code if that's the cleanest fix.",
+    "  - You MUST NOT redesign the tool's algorithm, change its inputSchema /",
+    "    outputSchema, alter what it returns, or 'improve' behaviour beyond what",
+    "    the build error literally requires.",
+    "  - Wrong-name packages (npm 404): the dep does NOT exist on the registry.",
+    "    Do not retry name variants without verifying. Issue a `<request_research>`",
+    "    block to look up the canonical name when uncertain, then swap it.",
+    "  - Missing runtime binary (`Executable doesn't exist`): add a postinstall",
+    "    that fetches the binary into the tool's own node_modules.",
+    "  - tsc strict-mode errors (`Parameter 'x' implicitly has an 'any' type`,",
+    "    `Cannot find name 'process'`): add the missing type annotations or",
+    "    types. Do not weaken tsconfig.",
+    "  - module-not-found at runtime: either the package is missing from",
+    "    dependencies, or the import path is wrong.",
+    "",
+    "Emit the FULL revised tool body (same single file at the same path), wrapped",
+    `in the JSON envelope: {"files":[{"path","content"}], "packageJson"?:{...}}.`,
+    "Include packageJson ONLY if the build error involves install / deps / postinstall.",
+    "Do not re-emit scaffolding (index.ts, runtime/server.ts, tsconfig.json).",
+    "Do not change the tool name.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return [
+    { role: "system", content: COUNCIL_SYSTEM_PROMPT_DEFAULT },
+    { role: "user", content: user },
+  ];
+}
+
 export function repairPrompt(
   context: ToolBuildContext,
   winner: CouncilProposal,
@@ -835,9 +985,38 @@ export function repairPrompt(
     "is much cheaper than burning another QA attempt on the same wrong assumption.",
     "",
     "Emit the FULL revised tool body (same single file at the same path), wrapped",
-    `in the same JSON envelope: {"files":[{"path","content"}]}. Do not re-emit`,
-    "scaffolding (index.ts, runtime/server.ts, package.json, etc). Do not change",
-    "the tool name.",
+    `in the JSON envelope: {"files":[{"path","content"}], "packageJson"?:{...}}.`,
+    "When the QA failure is install-shape, fix it via the `packageJson` block.",
+    "Install-shape covers any signal that the bundle could not LOAD or START:",
+    "  - npm install returned 404 (dependency name doesn't exist on the registry),",
+    "  - npm install completed but `Source-bundle HTTP runtime exited before healthcheck`",
+    "    (top-level `throw` from the imported module, native binding mismatch),",
+    "  - subprocess started but `Cannot find module` / `ERR_MODULE_NOT_FOUND` /",
+    "    `Executable doesn't exist` surfaced at runtime,",
+    "  - tsc reported a strict-mode error you cannot fix without changing the dep,",
+    "  - a per-dep dynamic-import probe flagged one of your declared deps as broken.",
+    "",
+    "What to do (without guessing — use the research delegate when uncertain):",
+    "  - WRONG NAME (404, typosquatter stub, deprecated placeholder): find the",
+    "    canonical package name yourself. Do NOT keep retrying name variants —",
+    "    issue a `<request_research>` block first to look up what the real",
+    "    package is called on the npm registry. When you have the answer,",
+    "    REMOVE the bad name from `packageJson.dependencies`, ADD the correct",
+    "    one, and update the source import to match. Source and packageJson",
+    "    must agree.",
+    "  - MISSING DEPENDENCY: add the missing package to `packageJson.dependencies`,",
+    "    or remove the unnecessary import.",
+    "  - MISSING RUNTIME BINARY: add a `scripts.postinstall` that fetches the",
+    "    binary into the tool's own node_modules (per the dep's own docs —",
+    "    look it up if you don't remember the exact command).",
+    "  - NATIVE BUILD ERROR: pin a known-working version range, or swap the",
+    "    dep for a JS-only alternative.",
+    "  - tsc errors are NOT install-shape: fix them in the tool source.",
+    "",
+    "Never patch the scaffold's `build` / `start` scripts or its tsc devDependencies.",
+    "Omit `packageJson` when the fix is purely in the tool source.",
+    "Do not re-emit scaffolding (index.ts, runtime/server.ts, tsconfig.json).",
+    "Do not change the tool name.",
   ]
     .filter(Boolean)
     .join("\n");

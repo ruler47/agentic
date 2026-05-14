@@ -51,6 +51,16 @@ type ChatCompletionResponse = {
   choices?: Array<{
     message?: {
       content?: string;
+      /**
+       * LM Studio (and some other local OpenAI-compatible servers
+       * running reasoning models) surface the model's chain-of-thought
+       * here when the chat template enters thinking mode. We treat
+       * it as a fallback for `content` when the latter is empty —
+       * Qwen 3.x in particular has been observed to put its entire
+       * answer in `reasoning_content` if `enable_thinking=false` was
+       * silently ignored.
+       */
+      reasoning_content?: string;
     };
     /**
      * OpenAI-compatible servers (LM Studio, vLLM, llama.cpp) set this
@@ -168,9 +178,43 @@ export class LlmClient {
         // respect) AND `chat_template_kwargs.enable_thinking: false`
         // (the Qwen-specific switch LM Studio honours). Non-reasoning
         // models silently drop both.
+        // Phase 28 follow-up — Qwen 3.x family ignores
+        // `chat_template_kwargs.enable_thinking: false` for unknown
+        // LM Studio reasons (we tested empirically: with
+        // enable_thinking=false the model STILL spends all completion
+        // tokens in `reasoning_content` and returns empty `content`).
+        // The actual switch Qwen honors is the magic `/no_think`
+        // string in the system prompt — when present at the start of
+        // any system message, Qwen's chat template skips the thinking
+        // block entirely. Gemma + other non-Qwen models silently
+        // ignore the marker, so it's safe to prepend universally
+        // whenever the caller said reasoning is "disabled".
+        const effectiveMessages: Message[] = (() => {
+          if (options?.reasoning !== "disabled") return [...messages];
+          const out: Message[] = [];
+          let injected = false;
+          for (const msg of messages) {
+            if (!injected && msg.role === "system") {
+              const already = /^\s*\/no_think\b/.test(msg.content);
+              out.push({
+                role: "system",
+                content: already ? msg.content : `/no_think\n${msg.content}`,
+              });
+              injected = true;
+            } else {
+              out.push(msg);
+            }
+          }
+          if (!injected) {
+            // No system message in this call — prepend a bare one
+            // carrying just the magic marker.
+            out.unshift({ role: "system", content: "/no_think" });
+          }
+          return out;
+        })();
         const requestBody: Record<string, unknown> = {
           model,
-          messages,
+          messages: effectiveMessages,
           temperature: options?.temperature ?? this.config.temperature,
         };
         if (typeof options?.maxTokens === "number" && options.maxTokens > 0) {
@@ -178,18 +222,66 @@ export class LlmClient {
         }
         if (options?.reasoning) {
           if (options.reasoning === "disabled") {
-            requestBody.reasoning_effort = "low";
-            requestBody.chat_template_kwargs = { enable_thinking: false };
+            // Phase 28 follow-up — empirically `reasoning_effort: "low"`
+            // is INTERPRETED DIFFERENTLY by different OpenAI-compatible
+            // servers and quantised local models: LM Studio's Qwen 3.x
+            // only accepts the literal strings `"on"` and `"off"` for
+            // `reasoning_effort` and FALLS BACK TO "on" when given an
+            // unrecognised value like `"low"` (we saw a fresh warning
+            // in the LM Studio log: "Reasoning setting 'low' is not
+            // supported … Falling back to reasoning setting 'on'."
+            // — i.e. our "disable" attempt was silently turning thinking
+            // ON). The `chat_template_kwargs.enable_thinking: false`
+            // path is also ignored on this combination.
+            //
+            // Reliable disable path that does NOT depend on any
+            // single server's quirks:
+            //   1. Inject `/no_think` into the system prompt above
+            //      — Qwen's chat template honours this universally.
+            //   2. Trust the operator's model-level setting in
+            //      LM Studio (or equivalent) for the deepest layer.
+            //
+            // Sending no `reasoning_effort` here means we don't
+            // collide with whatever the server's defaults are.
+            // OpenAI-style "low/medium/high" values are passed
+            // through unchanged in the else branch below for
+            // hosted reasoning models.
           } else {
             requestBody.reasoning_effort = options.reasoning;
           }
         }
-        const response = await undiciFetch(`${this.config.baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(requestBody),
-          signal: options?.signal,
-        });
+        // Phase 28 follow-up — per-request hard timeout. Without
+        // this, a misbehaving model (Qwen burning tokens in
+        // `reasoning_content` with unbounded `max_tokens`, a hung
+        // LM Studio, a network blip) can hang an entire council run
+        // indefinitely. We saw 3+ hour wedges in practice. Default
+        // 10 minutes is generous enough for a deep implement+repair
+        // pass at normal token budget, short enough that an
+        // operator notices the timeout instead of leaving the run
+        // stuck overnight. Override via env if needed.
+        const perRequestTimeoutMs = (() => {
+          const raw = Number(process.env.LLM_REQUEST_TIMEOUT_MS ?? 600_000);
+          return Number.isFinite(raw) && raw > 0 ? raw : 600_000;
+        })();
+        const timeoutController = new AbortController();
+        const timeoutHandle = setTimeout(() => timeoutController.abort(), perRequestTimeoutMs);
+        // Merge upstream cancellation with per-request timeout into a
+        // single AbortSignal so either source can kill the fetch.
+        if (options?.signal) {
+          if (options.signal.aborted) timeoutController.abort();
+          else options.signal.addEventListener("abort", () => timeoutController.abort(), { once: true });
+        }
+        let response;
+        try {
+          response = await undiciFetch(`${this.config.baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(requestBody),
+            signal: timeoutController.signal,
+          });
+        } finally {
+          clearTimeout(timeoutHandle);
+        }
 
         const rawBody = await response.text();
         const data = parseChatCompletionResponse(rawBody);
@@ -199,8 +291,24 @@ export class LlmClient {
           continue;
         }
 
-        const content = data.choices?.[0]?.message?.content;
+        let content = data.choices?.[0]?.message?.content;
         const finishReason = data.choices?.[0]?.finish_reason;
+        // Phase 28 follow-up — `reasoning_content` fallback. Some
+        // local reasoning models (Qwen 3.x in LM Studio in
+        // particular) return the actual answer inside
+        // `reasoning_content` when their template treats the entire
+        // turn as "thinking" mode. If `content` is empty but
+        // `reasoning_content` carries non-trivial text, surface that
+        // as the answer rather than throwing "empty content". Defence
+        // in depth — primary fix is the `/no_think` system-prompt
+        // injection above; this is the safety net when /no_think
+        // didn't take effect.
+        if (!content?.trim()) {
+          const reasoning = data.choices?.[0]?.message?.reasoning_content;
+          if (reasoning && typeof reasoning === "string" && reasoning.trim().length > 0) {
+            content = reasoning;
+          }
+        }
         // Phase G follow-up: treat whitespace-only output as empty
         // too. Gemma occasionally returns "\n\n" on context overflow
         // which would otherwise pass through the falsy-check and hit

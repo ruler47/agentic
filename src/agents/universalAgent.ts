@@ -257,6 +257,17 @@ export type ToolBuildCouncilAdapter = {
       sampleInput?: Record<string, unknown>;
       /** Extra capability tags the registered tool must declare. */
       requiredCapabilities?: string[];
+      /**
+       * Phase 24 Slice B — model-emitted package.json overrides
+       * (dependencies, scripts.postinstall, devDependencies).
+       * Adapter merges this into the canonical scaffold so the
+       * model owns its runtime install concerns.
+       */
+      modelPackageJson?: {
+        dependencies?: Record<string, string>;
+        scripts?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
     },
   ) => Promise<{ toolName: string; version: string; previousVersion?: string }>;
   /**
@@ -307,6 +318,42 @@ export type ToolBuildCouncilAdapter = {
     ok: boolean;
     content: string;
     data?: unknown;
+  }>;
+  /**
+   * Phase 24 Slice B step 2 — install-probe.
+   *
+   * Force a cold-start of the just-registered tool and classify any
+   * failure as install-shape (subprocess died before healthcheck,
+   * module-not-found, native binding crash). The council pipeline
+   * runs this BEFORE the first QA attempt so a typosquatter package
+   * or a missing browser binary is routed straight to the repair
+   * loop instead of relying on QA luck (e.g. a search that happened
+   * to return ok=true with empty results because the actual subprocess
+   * boot crash was masked by a flaky one-time success).
+   *
+   * Returns `{ok: true}` when the subprocess started and accepted a
+   * /run call (even if the tool returned ok=false on the empty input).
+   * Returns `{ok: false, kind, detail}` when the subprocess could not
+   * load or the module graph is broken — `detail` carries the raw
+   * stderr / stack trace so the repair LLM sees the exact cause.
+   *
+   * Optional: stub adapters (unit tests) may omit it; the pipeline
+   * then skips the explicit probe step and the existing QA-attempt
+   * code path absorbs install-shape failures the legacy way.
+   */
+  probeRegisteredTool?: (toolName: string) => Promise<{
+    ok: boolean;
+    kind?: "subprocess-exit" | "subprocess-error" | "module-load-error" | "dep-import-error";
+    detail?: string;
+    /**
+     * Per-dependency import probe results. Populated when the
+     * subprocess started but one or more declared packages failed
+     * dynamic import — `name` is the bare npm specifier, `error`
+     * is the loader's complaint text (typically copy-paste from
+     * the import attempt's `err.message`). The repair LLM uses
+     * this to swap a specific dep without guessing from stderr.
+     */
+    brokenDeps?: Array<{ name: string; error: string }>;
   }>;
   /**
    * Read the active version's Tool body source so the council can use
@@ -545,22 +592,31 @@ export class UniversalAgent {
     const maxTokensEnabled = process.env.COUNCIL_MAX_TOKENS_ENABLED === "enabled";
     const cap = (n: number): number | undefined => (maxTokensEnabled ? n : undefined);
 
-    // Phase 23 Slice C — `reasoning` parameter is ALSO opt-in.
-    // Without `COUNCIL_REASONING_ENABLED=enabled`, the per-phase
-    // `reasoning: "disabled"` hints are dropped on the floor and
-    // the LLM client doesn't send `reasoning_effort` /
-    // `chat_template_kwargs.enable_thinking`. Tools get the
-    // server-default behaviour (reasoning models think,
-    // non-reasoning models don't). When the flag is on, the
-    // per-phase reasoning overrides take effect.
+    // Phase 23 Slice C — `reasoning` has INVERTED-OPT-IN semantics
+    // (operator-driven default). Without `COUNCIL_REASONING_ENABLED
+    // =enabled`, every council LLM call is forced through
+    // `reasoning: "disabled"` — Qwen-style models stop emitting
+    // <think> entirely, OpenAI-style models get `reasoning_effort:
+    // low`. Default off matches operator intent after watching
+    // Qwen 3.6 35B burn 200 k+ tokens of reasoning on a brainstorm
+    // where it earned nothing.
     //
-    // Why two flags? They protect different things and operators
-    // want to dial them independently.
+    //   flag unset / =disabled (default):
+    //     gate(anything) → "disabled". Every phase, including
+    //     implement and repair. NO model thinks.
+    //
+    //   flag =enabled:
+    //     gate(level) → level. Per-phase rules apply: short phases
+    //     pass `gate("disabled")` (explicitly off); implement and
+    //     repair pass `gate()` with no argument → undefined →
+    //     server default (thinking on for reasoning models). Only
+    //     in this mode does reasoning earn its tokens on root-
+    //     cause work and stay quiet everywhere else.
     const reasoningOverridesEnabled =
       process.env.COUNCIL_REASONING_ENABLED === "enabled";
     type ReasoningHint = "disabled" | "low" | "medium" | "high";
-    const gate = (level: ReasoningHint): ReasoningHint | undefined =>
-      reasoningOverridesEnabled ? level : undefined;
+    const gate = (level?: ReasoningHint): ReasoningHint | undefined =>
+      reasoningOverridesEnabled ? level : "disabled";
 
     // Phase 17: optional research delegation. When enabled, council
     // LLM calls in brainstorm / implement / repair can emit
@@ -721,6 +777,7 @@ export class UniversalAgent {
       revisePrompt,
       qaOraclePrompt,
       repairPrompt,
+      buildFixPrompt,
       pickCouncilWinner,
     } = await import("./toolBuildCouncil.js");
 
@@ -831,12 +888,17 @@ export class UniversalAgent {
           startedAt,
           payload: { voterModelId: voterId, prompt: promptText },
         });
+        const voteSpanTokens = createTokenAccumulator();
         const text = await this.llm.complete(messages, {
           model: voterId,
           signal: options.signal,
           // Vote returns a tiny JSON ranking. No reasoning needed.
           reasoning: gate("disabled"),
           maxTokens: cap(1000),
+          onUsage: (usage) => {
+            voteSpanTokens.onUsage(usage);
+            runTokens.onUsage(usage);
+          },
         });
         const ranking = parseRankingJson(text, proposals.length);
         await emit({
@@ -855,6 +917,7 @@ export class UniversalAgent {
             ranking,
             prompt: promptText,
             output: text,
+            tokens: voteSpanTokens.snapshot(),
           },
         });
         return { voterModelId: voterId, ranking };
@@ -946,6 +1009,10 @@ export class UniversalAgent {
           // 32 k is the brick wall: if the model can't wrap up
           // by then, Borda fallback / repair takes over.
           maxTokens: cap(32000),
+          // `gate()` with no arg = server default when the
+          // reasoning flag is ON (thinking on for reasoning
+          // models); forced "disabled" when the flag is OFF.
+          reasoning: gate(),
           onResearch: (event) => emitResearchEvent("implement", attemptSpanId, event),
           onUsage: (usage) => {
             implementSpanTokens.onUsage(usage);
@@ -1163,6 +1230,7 @@ export class UniversalAgent {
         startedAt: reviseStartedAt,
         payload: { attempt: attempt + 1, prompt: revisePromptText },
       });
+      const reviseSpanTokens = createTokenAccumulator();
       try {
         codeText = await this.llm.complete(reviseMessages, {
           model: winner.winnerModelId,
@@ -1173,6 +1241,10 @@ export class UniversalAgent {
           // like implement. Disabled thinking + 16 k cap.
           reasoning: gate("disabled"),
           maxTokens: cap(16000),
+          onUsage: (usage) => {
+            reviseSpanTokens.onUsage(usage);
+            runTokens.onUsage(usage);
+          },
         });
         const parsed = parseFilesJson(codeText);
         if (parsed.length > 0) files = parsed;
@@ -1217,6 +1289,7 @@ export class UniversalAgent {
           findings,
           prompt: revisePromptText,
           output: codeText,
+          tokens: reviseSpanTokens.snapshot(),
         },
       });
       currentCodeSpanId = reviseSpanId;
@@ -1249,6 +1322,7 @@ export class UniversalAgent {
       payload: { prompt: qaInputPromptText },
     });
     try {
+      const qaInputSpanTokens = createTokenAccumulator();
       const qaInputText = await this.llm.complete(qaInputMessages, {
         modelTier: "S",
         signal: options.signal,
@@ -1256,6 +1330,10 @@ export class UniversalAgent {
         // inputSchema. 500 tokens is plenty.
         reasoning: gate("disabled"),
         maxTokens: cap(500),
+        onUsage: (usage) => {
+          qaInputSpanTokens.onUsage(usage);
+          runTokens.onUsage(usage);
+        },
       });
       const parsed = extractFirstJson<Record<string, unknown>>(qaInputText);
       if (parsed && typeof parsed === "object") qaInput = parsed;
@@ -1274,6 +1352,7 @@ export class UniversalAgent {
           prompt: qaInputPromptText,
           output: qaInputText,
           qaInput,
+          tokens: qaInputSpanTokens.snapshot(),
         },
       });
     } catch (error) {
@@ -1310,19 +1389,42 @@ export class UniversalAgent {
     // detect `registered === null` below and inject the tsc error
     // as the QA failure context) and head straight into a repair
     // cycle with the type errors visible to the model.
+    // ── Step 6: BUILD-PHASE ──────────────────────────────────────────
+    // Phase 28 — explicit build-phase as its own pipeline gate.
+    //
+    // Goal: get the tool's bundle to install, compile, and start a
+    // subprocess that responds to /run. Behaviour correctness is NOT
+    // checked here — that's the QA-phase below. Install / start errors
+    // never leak into the QA loop anymore; instead a focused build-fix
+    // LLM (with the narrow `buildFixPrompt`) gets up to
+    // `MAX_BUILD_FIX_ATTEMPTS` chances to make the bundle load. Only
+    // after this gate passes do we run real QA queries.
+    //
+    // What counts as a build error:
+    //   - `npm install` fails (404 on dep, ETARGET, network, etc.)
+    //   - `tsc` fails to compile (TS7006 implicit any, missing types)
+    //   - subprocess exits before healthcheck (top-level throw from a
+    //     typosquatter, missing native binding, broken postinstall)
+    //   - per-dep dynamic-import probe surfaces broken declared deps
+    //
+    // What does NOT belong here:
+    //   - Empty results / wrong content (that's QA-phase)
+    //   - Slow but correct responses (that's QA-phase)
+    //   - Anything semantic about the tool's behaviour
+    //
+    // Cross-LLM Borda fallback for build-fix is intentionally NOT
+    // wired (yet) — the user's design says 2 attempts then abort. If
+    // the same model can't make a bundle install + load twice with
+    // explicit stderr, the issue is upstream (e.g. proposal demands
+    // a library that doesn't exist for this platform) and a model
+    // swap rarely helps. Future stretch: cross-LLM fallback after 2.
+    const MAX_BUILD_FIX_ATTEMPTS = 2;
     let registered: { toolName: string; version: string; previousVersion?: string } | null = null;
-    let initialRegistrationError: string | undefined;
-    // Phase 25 — emit a visible "install + build" span around the
-    // adapter's registerToolFromFiles call so the operator can see
-    // (a) how long npm install + tsc took, (b) whether it succeeded,
-    // (c) what packages were installed. Previously this whole step
-    // ran silently inside the package runner and a tsc/build failure
-    // surfaced only as a downstream QA-attempt failure.
-    const installSpanId = createSpanId("council-install-verify");
-    const installStartedAtDate = new Date();
-    const installStartedAt = installStartedAtDate.toISOString();
-    // Extract declared runtime deps from the tool body so the span
-    // can name them in the title without re-parsing source later.
+    let buildPhaseFailed = false;
+    let buildPhaseFailureDetail: string | undefined;
+    let buildFixAttemptsRun = 0;
+    // Extract declared runtime deps from the tool body so the install
+    // span titles can name them without re-parsing source.
     let installPackages: string[] = [];
     try {
       const { extractToolBody, extractToolBodyImports } = await import("./councilScaffold.js");
@@ -1330,86 +1432,416 @@ export class UniversalAgent {
       const body = extractToolBody(files, sanitized);
       if (body) installPackages = extractToolBodyImports(body);
     } catch {
-      // Best-effort — fallback to empty list keeps the span emit happy.
+      // Best-effort — fallback to empty list keeps span emits happy.
     }
-    await emit({
-      spanId: installSpanId,
-      parentSpanId: currentCodeSpanId,
-      type: "tool-build-registered",
-      actor: "package-runner",
-      activity: "tool",
-      status: "started",
-      title:
-        installPackages.length > 0
-          ? `Installing ${installPackages.length} package(s) + tsc build`
-          : "Registering tool (no runtime deps)",
-      detail:
-        installPackages.length > 0
-          ? `Bundle declares: ${installPackages.join(", ")}`
-          : "No external runtime dependencies declared by the tool body.",
-      startedAt: installStartedAt,
-      payload: { packages: installPackages, toolName: context.name },
-    });
-    try {
-      registered = await adapter.registerToolFromFiles(context.name, files, {
-        description: context.description,
-        secretHandle: context.secretHandle,
-        sampleInput: qaInput,
-        requiredCapabilities: context.requiredCapabilities,
-      });
-    } catch (error) {
-      initialRegistrationError = error instanceof Error ? error.message : String(error);
+
+    // One iteration of the build-phase: register (writes files +
+    // installs + compiles + reloads registry) followed by cold-start
+    // probe. Returns the structured error text on failure, undefined
+    // on success.
+    const runBuildAttempt = async (): Promise<{ ok: true } | { ok: false; detail: string }> => {
+      ensureNotCancelled();
+      const installSpanId = createSpanId("council-install-verify");
+      const installStartedAtDate = new Date();
+      const installStartedAt = installStartedAtDate.toISOString();
       await emit({
         spanId: installSpanId,
         parentSpanId: currentCodeSpanId,
         type: "tool-build-registered",
         actor: "package-runner",
         activity: "tool",
-        status: "failed",
+        status: "started",
         title:
           installPackages.length > 0
-            ? `Install / build failed (${installPackages.length} package(s))`
-            : "Registration failed (tsc / loader error)",
-        detail: initialRegistrationError,
+            ? `Installing ${installPackages.length} package(s) + tsc build`
+            : "Registering tool (no runtime deps)",
+        detail:
+          installPackages.length > 0
+            ? `Bundle declares: ${installPackages.join(", ")}`
+            : "No external runtime dependencies declared by the tool body.",
         startedAt: installStartedAt,
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(installStartedAtDate),
-        payload: {
-          packages: installPackages,
-          toolName: context.name,
-          error: initialRegistrationError,
-        },
+        payload: { packages: installPackages, toolName: context.name },
       });
-      // Fall through with a placeholder `registered` so the repair
-      // loop below can iterate. The first repair attempt will
-      // re-call adapter.registerToolFromFiles with the corrected
-      // source; if that one succeeds, the loop proceeds normally.
-      registered = { toolName: context.name, version: "pending", previousVersion: undefined };
-    }
-    if (registered && registered.version !== "pending") {
-      // Install + build + register all OK — close the span green.
+      try {
+        const packageJsonPatch = parsePackageJsonPatch(codeText);
+        registered = await adapter.registerToolFromFiles(context.name, files, {
+          description: context.description,
+          secretHandle: context.secretHandle,
+          sampleInput: qaInput,
+          requiredCapabilities: context.requiredCapabilities,
+          modelPackageJson: packageJsonPatch,
+        });
+        await emit({
+          spanId: installSpanId,
+          parentSpanId: currentCodeSpanId,
+          type: "tool-build-registered",
+          actor: "package-runner",
+          activity: "tool",
+          status: "completed",
+          title:
+            installPackages.length > 0
+              ? `Installed ${installPackages.length} package(s) + built ${registered.toolName} v${registered.version}`
+              : `Registered ${registered.toolName} v${registered.version}`,
+          startedAt: installStartedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(installStartedAtDate),
+          payload: {
+            packages: installPackages,
+            toolName: registered.toolName,
+            version: registered.version,
+            previousVersion: registered.previousVersion,
+          },
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        await emit({
+          spanId: installSpanId,
+          parentSpanId: currentCodeSpanId,
+          type: "tool-build-registered",
+          actor: "package-runner",
+          activity: "tool",
+          status: "failed",
+          title:
+            installPackages.length > 0
+              ? `Install / build failed (${installPackages.length} package(s))`
+              : "Registration failed (tsc / loader error)",
+          detail,
+          startedAt: installStartedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(installStartedAtDate),
+          payload: { packages: installPackages, toolName: context.name, error: detail },
+        });
+        return { ok: false, detail };
+      }
+
+      // Cold-start probe — only when the adapter supports it. This
+      // catches install-shape failures where npm + tsc both passed
+      // but the subprocess can't actually start (typosquatter throw
+      // at module load, missing native binding, postinstall failed).
+      if (!adapter.probeRegisteredTool || registered.version === "pending") {
+        return { ok: true };
+      }
+      const probeSpanId = createSpanId("council-install-probe");
+      const probeStartedAtDate = new Date();
+      const probeStartedAt = probeStartedAtDate.toISOString();
       await emit({
-        spanId: installSpanId,
+        spanId: probeSpanId,
         parentSpanId: currentCodeSpanId,
         type: "tool-build-registered",
-        actor: "package-runner",
+        actor: "install-probe",
         activity: "tool",
-        status: "completed",
-        title:
-          installPackages.length > 0
-            ? `Installed ${installPackages.length} package(s) + built ${registered.toolName} v${registered.version}`
-            : `Registered ${registered.toolName} v${registered.version}`,
-        startedAt: installStartedAt,
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(installStartedAtDate),
+        status: "started",
+        title: `Probing ${registered.toolName} cold-start`,
+        detail:
+          "Force-spawn the registered tool's runtime subprocess with an empty " +
+          "input + per-dependency dynamic-import probe. Catches install-shape " +
+          "failures the npm install + tsc step couldn't see (top-level throws, " +
+          "missing native binding, broken postinstall, dep-import errors).",
+        startedAt: probeStartedAt,
         payload: {
-          packages: installPackages,
           toolName: registered.toolName,
           version: registered.version,
-          previousVersion: registered.previousVersion,
+          packages: installPackages,
         },
       });
+      let probeResult: {
+        ok: boolean;
+        kind?: "subprocess-exit" | "subprocess-error" | "module-load-error" | "dep-import-error";
+        detail?: string;
+        brokenDeps?: Array<{ name: string; error: string }>;
+      };
+      try {
+        probeResult = await adapter.probeRegisteredTool(registered.toolName);
+      } catch (error) {
+        probeResult = {
+          ok: false,
+          kind: "subprocess-error",
+          detail: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (probeResult.ok) {
+        await emit({
+          spanId: probeSpanId,
+          parentSpanId: currentCodeSpanId,
+          type: "tool-build-registered",
+          actor: "install-probe",
+          activity: "tool",
+          status: "completed",
+          title: `Cold-start probe passed (${registered.toolName})`,
+          detail:
+            "Subprocess started and responded to /run. Module graph loads cleanly.",
+          startedAt: probeStartedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(probeStartedAtDate),
+          payload: {
+            toolName: registered.toolName,
+            version: registered.version,
+            probe: probeResult,
+          },
+        });
+        return { ok: true };
+      }
+      const probeFailureDetail = (probeResult.detail ?? "").trim();
+      await emit({
+        spanId: probeSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-registered",
+        actor: "install-probe",
+        activity: "tool",
+        status: "failed",
+        title: `Cold-start probe failed (${probeResult.kind ?? "unknown"})`,
+        detail: probeFailureDetail.slice(0, 800),
+        startedAt: probeStartedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(probeStartedAtDate),
+        payload: {
+          toolName: registered.toolName,
+          version: registered.version,
+          probe: probeResult,
+          packages: installPackages,
+        },
+      });
+      const brokenDepsBlock =
+        probeResult.brokenDeps && probeResult.brokenDeps.length > 0
+          ? `\n\nPer-dependency dynamic-import probe surfaced ${probeResult.brokenDeps.length} broken dep(s):\n` +
+            probeResult.brokenDeps.map((b) => `  - "${b.name}": ${b.error}`).join("\n")
+          : "";
+      const consolidatedDetail =
+        `Cold-start probe of v${registered.version} failed: ` +
+        `${probeResult.kind ?? "unknown failure"}.\n` +
+        `Loader stderr:\n${probeFailureDetail || "(probe returned no diagnostic detail)"}` +
+        brokenDepsBlock;
+      return { ok: false, detail: consolidatedDetail };
+    };
+
+    // First build attempt — straight off the implement/revise output.
+    let buildOutcome = await runBuildAttempt();
+    while (!buildOutcome.ok && buildFixAttemptsRun < MAX_BUILD_FIX_ATTEMPTS) {
+      ensureNotCancelled();
+      buildFixAttemptsRun += 1;
+      const buildFixSpanId = createSpanId(`council-build-fix-${buildFixAttemptsRun}`);
+      const buildFixStartedAtDate = new Date();
+      const buildFixStartedAt = buildFixStartedAtDate.toISOString();
+      const buildFixModel = winner.winnerModelId;
+      const currentPackageJson = parsePackageJsonPatch(codeText);
+      const buildFixMessages = buildFixPrompt({
+        context,
+        winner: winner.proposal,
+        code: formatFilesForPrompt(files),
+        packageJsonText: currentPackageJson
+          ? JSON.stringify(currentPackageJson, null, 2)
+          : undefined,
+        buildError: buildOutcome.detail,
+        attempt: buildFixAttemptsRun,
+        maxAttempts: MAX_BUILD_FIX_ATTEMPTS,
+      });
+      const buildFixPromptText = messagesToPromptText(buildFixMessages);
+      await emit({
+        spanId: buildFixSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-code-repaired",
+        actor: buildFixModel,
+        activity: "llm",
+        status: "started",
+        title: `Build-fix attempt ${buildFixAttemptsRun}/${MAX_BUILD_FIX_ATTEMPTS} with ${buildFixModel}`,
+        detail: buildOutcome.detail.slice(0, 800),
+        startedAt: buildFixStartedAt,
+        payload: {
+          attempt: buildFixAttemptsRun,
+          prompt: buildFixPromptText,
+          modelId: buildFixModel,
+          buildError: buildOutcome.detail,
+        },
+      });
+      const buildFixSpanTokens = createTokenAccumulator();
+      let buildFixCodeText: string;
+      try {
+        buildFixCodeText = await runLLMWithResearch(this.llm, buildFixMessages, councilResearchDelegate, {
+          model: buildFixModel,
+          signal: options.signal,
+          maxTokens: cap(32000),
+          reasoning: gate(),
+          onResearch: (event) => emitResearchEvent("build-fix", buildFixSpanId, event),
+          onUsage: (usage) => {
+            buildFixSpanTokens.onUsage(usage);
+            runTokens.onUsage(usage);
+          },
+        });
+      } catch (error) {
+        const llmDetail = error instanceof Error ? error.message : String(error);
+        await emit({
+          spanId: buildFixSpanId,
+          parentSpanId: currentCodeSpanId,
+          type: "tool-build-code-repaired",
+          actor: buildFixModel,
+          activity: "llm",
+          status: "failed",
+          title: `Build-fix attempt ${buildFixAttemptsRun} LLM broke`,
+          detail: llmDetail,
+          startedAt: buildFixStartedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(buildFixStartedAtDate),
+          payload: { error: llmDetail, prompt: buildFixPromptText },
+        });
+        buildPhaseFailed = true;
+        buildPhaseFailureDetail = `Build-fix LLM broke: ${llmDetail}`;
+        break;
+      }
+      const parsed = parseFilesJson(buildFixCodeText);
+      if (parsed.length === 0) {
+        await emit({
+          spanId: buildFixSpanId,
+          parentSpanId: currentCodeSpanId,
+          type: "tool-build-code-repaired",
+          actor: buildFixModel,
+          activity: "llm",
+          status: "failed",
+          title: `Build-fix attempt ${buildFixAttemptsRun} returned no parsable files`,
+          startedAt: buildFixStartedAt,
+          completedAt: new Date().toISOString(),
+          durationMs: elapsedMs(buildFixStartedAtDate),
+          payload: { prompt: buildFixPromptText, output: buildFixCodeText },
+        });
+        buildPhaseFailed = true;
+        buildPhaseFailureDetail = `Build-fix attempt ${buildFixAttemptsRun} returned no parsable files`;
+        break;
+      }
+      files = parsed;
+      codeText = buildFixCodeText;
+      // Refresh `installPackages` so the next install-verify span
+      // title names whatever the build-fix LLM just declared.
+      try {
+        const { extractToolBody, extractToolBodyImports } = await import("./councilScaffold.js");
+        const sanitized = context.name.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 120) || "council_tool";
+        const body = extractToolBody(files, sanitized);
+        if (body) installPackages = extractToolBodyImports(body);
+      } catch {
+        // Best-effort.
+      }
+      await emit({
+        spanId: buildFixSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-code-repaired",
+        actor: buildFixModel,
+        activity: "llm",
+        status: "completed",
+        title: `Build-fix attempt ${buildFixAttemptsRun} applied; re-running build`,
+        startedAt: buildFixStartedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: elapsedMs(buildFixStartedAtDate),
+        payload: {
+          attempt: buildFixAttemptsRun,
+          files,
+          prompt: buildFixPromptText,
+          output: buildFixCodeText,
+          modelId: buildFixModel,
+          tokens: buildFixSpanTokens.snapshot(),
+        },
+      });
+      currentCodeSpanId = buildFixSpanId;
+      buildOutcome = await runBuildAttempt();
     }
+
+    if (!buildOutcome.ok && !buildPhaseFailed) {
+      // Exhausted build-fix attempts — bundle still doesn't load.
+      buildPhaseFailed = true;
+      buildPhaseFailureDetail = buildOutcome.detail;
+    }
+
+    // TypeScript narrowing: `registered` is assigned inside the
+    // `runBuildAttempt` closure so the type checker still sees it as
+    // potentially `null`. Snapshot through an explicit local with a
+    // permissive type so the abort branch and the happy-path
+    // narrowing both read clean.
+    const lastRegisteredBeforeAbort = registered as
+      | { toolName: string; version: string; previousVersion?: string }
+      | null;
+    if (buildPhaseFailed || !lastRegisteredBeforeAbort || lastRegisteredBeforeAbort.version === "pending") {
+      // Abort run cleanly. Roll back metadata if any version was
+      // promoted along the way, then emit a final fail span the
+      // operator can read without grep'ing the install-verify trail.
+      const failedVersion = lastRegisteredBeforeAbort?.version ?? "pending";
+      const failedToolName = lastRegisteredBeforeAbort?.toolName ?? context.name;
+      const rollbackVersion = lastRegisteredBeforeAbort?.previousVersion;
+      if (
+        lastRegisteredBeforeAbort &&
+        failedVersion !== "pending" &&
+        adapter.rollbackRegistration
+      ) {
+        try {
+          await adapter.rollbackRegistration(failedToolName, rollbackVersion);
+        } catch {
+          // Already logged inside the adapter; rollback failure must
+          // not mask the run's primary "build failed" outcome.
+        }
+      }
+      const buildFailSpanId = createSpanId("council-build-phase-failed");
+      const now = new Date().toISOString();
+      await emit({
+        spanId: buildFailSpanId,
+        parentSpanId: currentCodeSpanId,
+        type: "tool-build-registered",
+        actor: "coordinator",
+        activity: "coordination",
+        status: "failed",
+        title: `Build phase aborted after ${buildFixAttemptsRun}/${MAX_BUILD_FIX_ATTEMPTS} build-fix attempts`,
+        detail: (buildPhaseFailureDetail ?? "Build phase failed").slice(0, 800),
+        startedAt: now,
+        completedAt: now,
+        durationMs: 0,
+        payload: {
+          buildFixAttemptsRun,
+          maxBuildFixAttempts: MAX_BUILD_FIX_ATTEMPTS,
+          buildError: buildPhaseFailureDetail,
+        },
+      });
+      const summary =
+        `Council aborted at build phase for ${context.name}: bundle still failed to install / ` +
+        `compile / start after ${buildFixAttemptsRun} build-fix attempt(s). Last error:\n` +
+        (buildPhaseFailureDetail ?? "(no detail)");
+      await emit({
+        spanId: runSpanId,
+        type: "run-started",
+        actor: "coordinator",
+        activity: "coordination",
+        status: "failed",
+        title: "Tool-build council run",
+        detail: summary,
+        startedAt: runStartedAt.toISOString(),
+        completedAt: now,
+        durationMs: elapsedMs(runStartedAt),
+        payload: {
+          kind: "tool_build_council",
+          buildPhaseFailed: true,
+          buildFixAttemptsRun,
+          tokens: runTokens.snapshot(),
+        },
+      });
+      return {
+        finalAnswer: summary,
+        complexity: {
+          mode: "direct",
+          domains: ["tool-build"],
+          riskLevel: "medium",
+          sensitivity: "normal",
+        } as never,
+        subtasks: [],
+        workerResults: [],
+        reviews: [],
+        artifacts: [],
+        runStatus: "failed",
+        runFailureReason: summary,
+      };
+    }
+
+    // After the abort guard above, `registered` is guaranteed non-null
+    // with a real (non-"pending") version. Re-bind through the local
+    // we narrowed so TypeScript drops the `| null` for the rest of
+    // the pipeline (QA loop, repair-loop register re-throws, rollback,
+    // final-answer string).
+    registered = lastRegisteredBeforeAbort;
+    const registeredAfterBuild: { toolName: string; version: string; previousVersion?: string } =
+      lastRegisteredBeforeAbort;
 
     // Phase 16 Slice F: remember the previous active version on the
     // FIRST register call so we can roll back if every QA attempt
@@ -1418,7 +1850,7 @@ export class UniversalAgent {
     // tool_modules already points at one of OUR new versions — only
     // the original `previousVersion` (the rework's starting point)
     // is a safe fallback. Stays undefined for fresh builds.
-    const originalPreviousVersion = registered.previousVersion;
+    const originalPreviousVersion = registeredAfterBuild.previousVersion;
 
     // ── Step 7-8: QA + REPAIR ────────────────────────────────────────
     // Status semantic in this section:
@@ -1486,22 +1918,39 @@ export class UniversalAgent {
         startedAt: toolCallStartedAt,
         payload: { attempt: attempt + 1, qaInput },
       });
-      // Phase 22 Slice E — if the INITIAL registration threw (tsc /
-      // loader error from the implement step), use the captured
-      // error as a synthetic tool failure on attempt 0 so the QA
-      // loop can route it into the repair model. Attempts > 0
-      // always go through `runToolForQa` because by then the
-      // previous repair iteration has re-registered the tool.
+      // Phase 28 — QA-PHASE proper. Build-phase guarantees the bundle
+      // installed, compiled, and the subprocess starts. But the
+      // build-phase probe uses an empty input that doesn't exercise
+      // every code path: a tool that imports playwright cleanly will
+      // pass the cold-start probe AND fail on the first real /run
+      // call when `browser.launch()` cannot find its Chromium binary
+      // ("Executable doesn't exist at /root/.cache/ms-playwright/…").
+      // That class of install-shape failure surfaces here, in QA.
+      //
+      // Phase 28 follow-up — when QA output `content` matches a
+      // recognised install-shape pattern (missing runtime binary,
+      // module-not-found at first import, etc.), we BOUNCE BACK to
+      // the build-fix loop instead of routing the failure into the
+      // QA-fix LLM. QA-fix is focused on behaviour bugs and gets
+      // confused if handed install-shape stderr; build-fix has the
+      // narrow prompt that knows about postinstall scripts and
+      // package fixes. This honors the user's "tool builds in
+      // isolation as test → if broken hand to build-fix; only then
+      // QA → if bad output hand to author" design.
       const output: { ok: boolean; content: string; data?: unknown } =
-        attempt === 0 && initialRegistrationError
-          ? {
-              ok: false,
-              content:
-                `Tool body failed to compile or load (tsc / loader error). Fix the ` +
-                `type or import errors and re-emit the corrected source. Loader said: ` +
-                initialRegistrationError,
-            }
-          : await adapter.runToolForQa(registered.toolName, qaInput);
+        await adapter.runToolForQa(registered.toolName, qaInput);
+      const qaContentText = (output.content ?? "").toString();
+      const installShapeLeak = !output.ok && (
+        /Executable doesn't exist at/i.test(qaContentText) ||
+        /Looks like Playwright was just installed/i.test(qaContentText) ||
+        /npx playwright install/i.test(qaContentText) ||
+        /puppeteer.*browsers install/i.test(qaContentText) ||
+        /ERR_MODULE_NOT_FOUND|Cannot find module|MODULE_NOT_FOUND/i.test(qaContentText) ||
+        /Source-bundle HTTP runtime exited before healthcheck/i.test(qaContentText) ||
+        /Wrong package, please see this:/i.test(qaContentText) ||
+        /node-gyp|NODE_MODULE_VERSION/i.test(qaContentText) ||
+        /libGL\.so|libnss3\.so|libgbm/i.test(qaContentText)
+      );
       await emit({
         spanId: toolCallSpanId,
         parentSpanId: currentCodeSpanId,
@@ -1516,12 +1965,179 @@ export class UniversalAgent {
         // produces `failed` for a different reason (the judge itself
         // breaking) and that's handled on the qa-oracle span below.
         status: output.ok ? "completed" : "failed",
-        title: `${registered.toolName} returned ok=${output.ok}`,
+        title: `${registered.toolName} returned ok=${output.ok}${installShapeLeak ? " (install-shape leak — routing to build-fix)" : ""}`,
         startedAt: toolCallStartedAt,
         completedAt: new Date().toISOString(),
         durationMs: elapsedMs(toolCallStartedAtDate),
-        payload: { attempt: attempt + 1, qaInput, output },
+        payload: { attempt: attempt + 1, qaInput, output, installShapeLeak },
       });
+
+      // Phase 28 follow-up — install-shape leak bounce-back. If the
+      // QA call surfaced an install-shape error (missing runtime
+      // binary, module-not-found that the cold-start probe missed
+      // because it didn't exercise that code path), kick back into
+      // the build-fix loop with the QA stderr as the build error.
+      // This is the design's escape hatch: QA's job is behaviour,
+      // not install. When install-shape leaks past the probe, the
+      // build-fixer LLM gets the real diagnostic in its narrow
+      // prompt and can patch packageJson (e.g. add postinstall) or
+      // swap the dep. We get MAX_BUILD_FIX_ATTEMPTS more chances
+      // before giving up.
+      if (installShapeLeak) {
+        let leakFixAttemptsRun = 0;
+        let leakFixOutcome: { ok: true } | { ok: false; detail: string } = {
+          ok: false,
+          detail: qaContentText,
+        };
+        while (!leakFixOutcome.ok && leakFixAttemptsRun < MAX_BUILD_FIX_ATTEMPTS) {
+          ensureNotCancelled();
+          leakFixAttemptsRun += 1;
+          const leakFixSpanId = createSpanId(`council-build-fix-leak-${leakFixAttemptsRun}`);
+          const leakFixStartedAtDate = new Date();
+          const leakFixStartedAt = leakFixStartedAtDate.toISOString();
+          const leakFixModel = winner.winnerModelId;
+          const currentPackageJson = parsePackageJsonPatch(codeText);
+          const leakFixMessages = buildFixPrompt({
+            context,
+            winner: winner.proposal,
+            code: formatFilesForPrompt(files),
+            packageJsonText: currentPackageJson
+              ? JSON.stringify(currentPackageJson, null, 2)
+              : undefined,
+            buildError: leakFixOutcome.detail,
+            attempt: leakFixAttemptsRun,
+            maxAttempts: MAX_BUILD_FIX_ATTEMPTS,
+          });
+          const leakFixPromptText = messagesToPromptText(leakFixMessages);
+          await emit({
+            spanId: leakFixSpanId,
+            parentSpanId: toolCallSpanId,
+            type: "tool-build-code-repaired",
+            actor: leakFixModel,
+            activity: "llm",
+            status: "started",
+            title: `Build-fix attempt ${leakFixAttemptsRun}/${MAX_BUILD_FIX_ATTEMPTS} (install-shape leak from QA)`,
+            detail: leakFixOutcome.detail.slice(0, 800),
+            startedAt: leakFixStartedAt,
+            payload: {
+              attempt: leakFixAttemptsRun,
+              prompt: leakFixPromptText,
+              modelId: leakFixModel,
+              buildError: leakFixOutcome.detail,
+              source: "qa-install-shape-leak",
+            },
+          });
+          const leakFixSpanTokens = createTokenAccumulator();
+          let leakFixCodeText: string;
+          try {
+            leakFixCodeText = await runLLMWithResearch(this.llm, leakFixMessages, councilResearchDelegate, {
+              model: leakFixModel,
+              signal: options.signal,
+              maxTokens: cap(32000),
+              reasoning: gate(),
+              onResearch: (event) => emitResearchEvent("build-fix-leak", leakFixSpanId, event),
+              onUsage: (usage) => {
+                leakFixSpanTokens.onUsage(usage);
+                runTokens.onUsage(usage);
+              },
+            });
+          } catch (error) {
+            await emit({
+              spanId: leakFixSpanId,
+              parentSpanId: toolCallSpanId,
+              type: "tool-build-code-repaired",
+              actor: leakFixModel,
+              activity: "llm",
+              status: "failed",
+              title: `Build-fix attempt ${leakFixAttemptsRun} (install-shape leak) LLM broke`,
+              detail: error instanceof Error ? error.message : String(error),
+              startedAt: leakFixStartedAt,
+              completedAt: new Date().toISOString(),
+              durationMs: elapsedMs(leakFixStartedAtDate),
+              payload: { error: error instanceof Error ? error.message : String(error) },
+            });
+            break;
+          }
+          const leakParsed = parseFilesJson(leakFixCodeText);
+          if (leakParsed.length === 0) {
+            await emit({
+              spanId: leakFixSpanId,
+              parentSpanId: toolCallSpanId,
+              type: "tool-build-code-repaired",
+              actor: leakFixModel,
+              activity: "llm",
+              status: "failed",
+              title: `Build-fix attempt ${leakFixAttemptsRun} returned no parsable files`,
+              startedAt: leakFixStartedAt,
+              completedAt: new Date().toISOString(),
+              durationMs: elapsedMs(leakFixStartedAtDate),
+              payload: { prompt: leakFixPromptText, output: leakFixCodeText },
+            });
+            break;
+          }
+          files = leakParsed;
+          codeText = leakFixCodeText;
+          try {
+            const { extractToolBody, extractToolBodyImports } = await import("./councilScaffold.js");
+            const sanitized = context.name.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 120) || "council_tool";
+            const body = extractToolBody(files, sanitized);
+            if (body) installPackages = extractToolBodyImports(body);
+          } catch {
+            // Best-effort.
+          }
+          await emit({
+            spanId: leakFixSpanId,
+            parentSpanId: toolCallSpanId,
+            type: "tool-build-code-repaired",
+            actor: leakFixModel,
+            activity: "llm",
+            status: "completed",
+            title: `Build-fix attempt ${leakFixAttemptsRun} applied; re-running build`,
+            startedAt: leakFixStartedAt,
+            completedAt: new Date().toISOString(),
+            durationMs: elapsedMs(leakFixStartedAtDate),
+            payload: {
+              attempt: leakFixAttemptsRun,
+              files,
+              prompt: leakFixPromptText,
+              output: leakFixCodeText,
+              modelId: leakFixModel,
+              tokens: leakFixSpanTokens.snapshot(),
+            },
+          });
+          currentCodeSpanId = leakFixSpanId;
+          leakFixOutcome = await runBuildAttempt();
+          // After build re-passes, re-run the QA call below by
+          // CONTINUING this attempt iteration. We don't increment
+          // `attempt` here because we still owe this attempt a
+          // valid behaviour-judging QA call.
+        }
+        if (!leakFixOutcome.ok) {
+          // Build-fix exhausted on install-shape leak — abort the run
+          // exactly like the initial build-phase abort path does.
+          await emit({
+            spanId: createSpanId("council-build-phase-failed"),
+            parentSpanId: toolCallSpanId,
+            type: "tool-build-registered",
+            actor: "coordinator",
+            activity: "coordination",
+            status: "failed",
+            title: `Build-fix exhausted after ${leakFixAttemptsRun} attempts on QA install-shape leak`,
+            detail: (leakFixOutcome as { detail: string }).detail.slice(0, 800),
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            durationMs: 0,
+            payload: { leakFixAttemptsRun, source: "qa-install-shape-leak" },
+          });
+          buildPhaseFailed = true;
+          buildPhaseFailureDetail = `Install-shape error surfaced during QA after build-phase passed, and ${leakFixAttemptsRun} build-fix attempt(s) could not repair it. Last error: ${(leakFixOutcome as { detail: string }).detail.slice(0, 400)}`;
+          break;
+        }
+        // Build-fix repaired the install-shape leak. Skip the rest
+        // of THIS QA attempt's oracle/repair flow and let the outer
+        // loop fire a fresh QA call on the now-fixed bundle.
+        continue;
+      }
 
       // Oracle span: judges whether the tool output meets the
       // acceptance criteria. Status reflects the oracle's success at
@@ -1545,6 +2161,7 @@ export class UniversalAgent {
       });
       let oracle: { verdict: "passed" | "failed"; failures: string[] };
       let qaOracleText = "";
+      const qaOracleSpanTokens = createTokenAccumulator();
       try {
         qaOracleText = await this.llm.complete(qaMessages, {
           modelTier: "M",
@@ -1555,6 +2172,10 @@ export class UniversalAgent {
           // no signal. Disabled + 2 k cap.
           reasoning: gate("disabled"),
           maxTokens: cap(2000),
+          onUsage: (usage) => {
+            qaOracleSpanTokens.onUsage(usage);
+            runTokens.onUsage(usage);
+          },
         });
         oracle = parseQaOracle(qaOracleText);
       } catch (error) {
@@ -1601,6 +2222,7 @@ export class UniversalAgent {
           ...oracle,
           prompt: qaPromptText,
           oracleOutput: qaOracleText,
+          tokens: qaOracleSpanTokens.snapshot(),
         },
       });
       // Phase 16 Slice E: count this QA cycle as run before we
@@ -1698,6 +2320,9 @@ export class UniversalAgent {
           // model has to root-cause the QA failure, not just
           // apply a literal diff.
           maxTokens: cap(32000),
+          // Same gate as implement — flag ON = server default
+          // (thinking on); flag OFF = forced disabled.
+          reasoning: gate(),
           onResearch: (event) => emitResearchEvent("repair", repairSpanId, event),
           onUsage: (usage) => {
             repairSpanTokens.onUsage(usage);
@@ -1707,10 +2332,23 @@ export class UniversalAgent {
         const parsed = parseFilesJson(codeText);
         if (parsed.length === 0) throw new Error("Repair step returned no parsable files.");
         files = parsed;
+        // Phase 28 — repair LLM may also patch package.json (e.g. fix
+        // a behaviour bug that turns out to need a new helper lib).
+        // Forward to the adapter alongside the refreshed source.
+        const repairPackageJsonPatch = parsePackageJsonPatch(codeText);
+        // Phase 28 — QA-fix register goes through the SAME adapter
+        // call as build-phase. If the QA-fix LLM introduces a build
+        // regression (typo'd new dep, missed type annotation), this
+        // throws and we abort the QA loop via the outer catch. The
+        // build-phase gate above already guaranteed a clean baseline;
+        // QA-fix is expected not to regress it. Aborting here is
+        // strict-but-honest: it tells the operator "QA fix made the
+        // tool unbuildable" instead of looping pointlessly.
         registered = await adapter.registerToolFromFiles(context.name, files, {
           description: context.description,
           secretHandle: context.secretHandle,
           sampleInput: qaInput,
+          modelPackageJson: repairPackageJsonPatch,
         });
         await emit({
           spanId: repairSpanId,
@@ -1762,6 +2400,15 @@ export class UniversalAgent {
         // parsable, no improvement". The outer `attemptsRun` was
         // already advanced to `attempt + 1` above before the repair
         // started.
+        //
+        // Phase 24 Slice B step 3 — we are deliberately NARROWING
+        // this catch to the LLM / parsing layer only. Registration
+        // failures (which used to land here too, aborting the loop
+        // unnecessarily) are now captured above as
+        // `repairRegistrationError` and routed into the next
+        // QA-attempt synthetic. Only true LLM call failure or
+        // unparseable response reaches this branch — which IS the
+        // correct moment to give up.
         repairBrokenEarly = true;
         break;
       }
@@ -1832,12 +2479,17 @@ export class UniversalAgent {
         startedAt: changeSummaryStartedAt.toISOString(),
         payload: { prompt: messagesToPromptText(summaryMessages) },
       });
+      const summarySpanTokens = createTokenAccumulator();
       const summaryRaw = await this.llm.complete(summaryMessages, {
         modelTier: "S",
         signal: options.signal,
         // 1-2 sentence change summary. No reasoning, 500 tokens.
         reasoning: gate("disabled"),
         maxTokens: cap(500),
+        onUsage: (usage) => {
+          summarySpanTokens.onUsage(usage);
+          runTokens.onUsage(usage);
+        },
       });
       changeSummary = sanitizeChangeSummary(summaryRaw);
       if (changeSummary && adapter.updateChangeSummary) {
@@ -1858,6 +2510,7 @@ export class UniversalAgent {
           prompt: messagesToPromptText(summaryMessages),
           output: summaryRaw,
           changeSummary,
+          tokens: summarySpanTokens.snapshot(),
         },
       });
     } catch (error) {
@@ -1901,12 +2554,17 @@ export class UniversalAgent {
         startedAt: descStartedAt.toISOString(),
         payload: { prompt: messagesToPromptText(descMessages) },
       });
+      const descSpanTokens = createTokenAccumulator();
       const descRaw = await this.llm.complete(descMessages, {
         modelTier: "S",
         signal: options.signal,
         // Same shape as change summary — one paragraph.
         reasoning: gate("disabled"),
         maxTokens: cap(500),
+        onUsage: (usage) => {
+          descSpanTokens.onUsage(usage);
+          runTokens.onUsage(usage);
+        },
       });
       const description = sanitizeChangeSummary(descRaw);
       if (description && adapter.updateDescription) {
@@ -1927,6 +2585,7 @@ export class UniversalAgent {
           prompt: messagesToPromptText(descMessages),
           output: descRaw,
           description,
+          tokens: descSpanTokens.snapshot(),
         },
       });
     } catch (error) {
@@ -7827,6 +8486,47 @@ function parseFilesJson(raw: string): Array<{ path: string; content: string }> {
     }
   }
   return out;
+}
+
+/**
+ * Phase 24 Slice B — sibling of parseFilesJson that lifts out a
+ * model-emitted `packageJson` block when present. The shape is
+ * intentionally narrow: only `dependencies`, `scripts`,
+ * `devDependencies` are picked. Anything else the model wrote
+ * (name, version, repository fields) is dropped — those are
+ * scaffold-owned and the model shouldn't be allowed to override
+ * them. Returns `undefined` when no block was emitted so the
+ * adapter knows to use scaffold defaults only.
+ */
+function parsePackageJsonPatch(raw: string): {
+  dependencies?: Record<string, string>;
+  scripts?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+} | undefined {
+  const obj = extractFirstJson<{ packageJson?: unknown }>(raw);
+  const pkg = obj?.packageJson;
+  if (!pkg || typeof pkg !== "object" || Array.isArray(pkg)) return undefined;
+  const candidate = pkg as Record<string, unknown>;
+  const out: {
+    dependencies?: Record<string, string>;
+    scripts?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  } = {};
+  const pickStringMap = (input: unknown): Record<string, string> | undefined => {
+    if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+    const entries: [string, string][] = [];
+    for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+      if (typeof k === "string" && typeof v === "string") entries.push([k, v]);
+    }
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  };
+  const deps = pickStringMap(candidate.dependencies);
+  const scripts = pickStringMap(candidate.scripts);
+  const devDeps = pickStringMap(candidate.devDependencies);
+  if (deps) out.dependencies = deps;
+  if (scripts) out.scripts = scripts;
+  if (devDeps) out.devDependencies = devDeps;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function parseReviewVerdict(raw: string): { verdict: "pass" | "needs_revision"; findings: string[] } {

@@ -27,6 +27,12 @@ export const COUNCIL_TOOL_BODY_PATH = (sanitizedName: string) =>
 /** Files we always overlay regardless of what the model emits. */
 export type ScaffoldFile = { path: string; content: string };
 
+export type ModelPackageJsonPatch = {
+  dependencies?: Record<string, string>;
+  scripts?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+};
+
 export function renderCouncilScaffold(options: {
   toolName: string;
   sanitizedName: string;
@@ -42,8 +48,22 @@ export function renderCouncilScaffold(options: {
    * into the main app image.
    */
   dependencies?: Record<string, string>;
+  /**
+   * Phase 24 Slice B — model-emitted package.json overrides.
+   * The implement / repair prompt now lets the LLM include a
+   * `packageJson` block in its response. We treat that as the
+   * source of truth for runtime concerns: dependencies (with
+   * pinned versions the model chose), scripts.postinstall
+   * (e.g. `playwright install chromium` for tools that need
+   * a browser binary), and extra devDependencies. Merged into
+   * the scaffold's canonical defaults — the model can OVERRIDE
+   * but cannot REMOVE the scaffold's build/start scripts or the
+   * tsc devDependencies. Auto-extracted `dependencies` stay as
+   * a safety net when the model forgets to declare a package.
+   */
+  modelPackageJson?: ModelPackageJsonPatch;
 }): ScaffoldFile[] {
-  const { toolName, sanitizedName, version, toolBody, dependencies } = options;
+  const { toolName, sanitizedName, version, toolBody, dependencies, modelPackageJson } = options;
   return [
     { path: COUNCIL_TOOL_BODY_PATH(sanitizedName), content: toolBody },
     { path: "index.ts", content: indexFile(sanitizedName) },
@@ -51,7 +71,7 @@ export function renderCouncilScaffold(options: {
     { path: "src/tools/tool.ts", content: TOOL_TYPES },
     {
       path: "package.json",
-      content: packageJsonFile(toolName, version, dependencies),
+      content: packageJsonFile(toolName, version, dependencies, modelPackageJson),
     },
     { path: "tsconfig.json", content: TSCONFIG },
   ];
@@ -65,23 +85,48 @@ function packageJsonFile(
   toolName: string,
   version: string,
   dependencies?: Record<string, string>,
+  modelPackageJson?: ModelPackageJsonPatch,
 ): string {
+  // Canonical defaults — the scaffold's contract with the
+  // bundle runner. These two scripts cannot be removed (the
+  // runner expects `dist/runtime/server.js` to exist after
+  // build) but the model CAN add more, e.g. postinstall.
+  const scripts: Record<string, string> = {
+    build: "tsc -p tsconfig.json",
+    start: "node dist/runtime/server.js",
+    ...(modelPackageJson?.scripts ?? {}),
+    // Re-pin the immutables LAST so the model can't accidentally
+    // overwrite them with a typo'd version.
+    build_immutable: undefined as unknown as string,
+  };
+  delete scripts.build_immutable;
+  scripts.build = "tsc -p tsconfig.json";
+  scripts.start = "node dist/runtime/server.js";
+
+  // dependencies: model's pinned versions take precedence over
+  // auto-extracted "latest" fallbacks. The auto-extractor stays
+  // as a safety net for packages the model forgot to declare.
+  const mergedDependencies: Record<string, string> = {
+    ...(dependencies ?? {}),
+    ...(modelPackageJson?.dependencies ?? {}),
+  };
+
+  const devDependencies: Record<string, string> = {
+    "@types/node": "^20.12.12",
+    typescript: "^5.6.3",
+    ...(modelPackageJson?.devDependencies ?? {}),
+  };
+
   const pkg: Record<string, unknown> = {
     name: toolName.replace(/[^a-zA-Z0-9_.-]/g, "-"),
     version,
     private: true,
     type: "module",
-    scripts: {
-      build: "tsc -p tsconfig.json",
-      start: "node dist/runtime/server.js",
-    },
-    devDependencies: {
-      "@types/node": "^20.12.12",
-      typescript: "^5.6.3",
-    },
+    scripts,
+    devDependencies,
   };
-  if (dependencies && Object.keys(dependencies).length > 0) {
-    pkg.dependencies = dependencies;
+  if (Object.keys(mergedDependencies).length > 0) {
+    pkg.dependencies = mergedDependencies;
   }
   return `${JSON.stringify(pkg, null, 2)}\n`;
 }
@@ -204,6 +249,9 @@ export type Tool = {
 
 const RUNTIME_SERVER = `import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tool } from "../index.js";
 
 type JsonRecord = Record<string, unknown>;
@@ -237,10 +285,46 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/probe") {
+      // Phase 24 Slice B step 2 — per-dependency import probe.
+      // GET sibling of the magic \`{__probe: true}\` POST /run input.
+      // Same logic, different transport: handy for ad-hoc curl
+      // checks while the subprocess is alive.
+      const probe = await probeDeclaredDependencies();
+      response.statusCode = 200;
+      response.end(JSON.stringify(probe));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/run") {
       const body = await readJsonBody(request);
+      const input = asRecord(body.input);
+      // Phase 24 Slice B step 2 — magic install-probe input.
+      // \`{__probe: true}\` short-circuits the tool body and runs a
+      // per-dependency dynamic-import probe instead. The adapter's
+      // \`probeRegisteredTool\` uses this to verify EVERY declared
+      // top-level dep loads cleanly inside the subprocess (catches
+      // lazy-imported deps that wouldn't crash module evaluation
+      // but would crash on the first real /run call).
+      //
+      // Returning the probe result through /run instead of adding a
+      // POST /probe lets the existing source-bundle HTTP runner
+      // surface install-shape failures without new plumbing — the
+      // runner already does cold-start + waitForHealthyRuntime +
+      // single POST /run + teardown, so a probe call is just one
+      // such cycle with a special payload.
+      if (input.__probe === true) {
+        const probe = await probeDeclaredDependencies();
+        response.statusCode = 200;
+        response.end(JSON.stringify({
+          ok: probe.ok,
+          content: probe.detail,
+          data: { tool: tool.name, version: tool.version, ...probe },
+        }));
+        return;
+      }
       try {
-        const result = await tool.run(asRecord(body.input), asRecord(body.context));
+        const result = await tool.run(input, asRecord(body.context));
         // ALWAYS return HTTP 200 when tool.run() returned a structured
         // response, regardless of result.ok. ok=false is a normal
         // domain-level signal ("the tool reports the action did not
@@ -298,6 +382,72 @@ async function readJsonBody(request: IncomingMessage): Promise<JsonRecord> {
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
+}
+
+type ProbeResult = {
+  ok: boolean;
+  detail: string;
+  declaredDeps: string[];
+  broken: Array<{ name: string; error: string }>;
+};
+
+async function probeDeclaredDependencies(): Promise<ProbeResult> {
+  // Phase 24 Slice B step 2 — per-dependency dynamic-import probe.
+  // Reads the bundle's own package.json (NOT a hardcoded list — the
+  // model owns its own deps via the council's packageJson block) and
+  // tries to import each top-level runtime dependency. Reports
+  // per-package success / failure so the repair LLM can swap a
+  // typosquatter / wrong-name package surgically instead of guessing.
+  //
+  // Note: reaching this code at all means the tool body's TOP-LEVEL
+  // imports already loaded cleanly (the module graph evaluated up to
+  // the server.ts createServer() call). The probe's primary value is
+  // for deps declared but NOT imported top-level — those would
+  // otherwise hide until a specific code path runs at first /run.
+  // It is ALSO a useful sanity check for ESM/CJS interop bugs that
+  // \`tsc\` cannot detect statically. Always idempotent and side-effect
+  // free; ok to call as often as needed.
+  let declaredDeps: string[] = [];
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // dist/runtime/server.js → package root is two dirs up.
+    const packageRoot = resolve(here, "..", "..");
+    const pkgJsonText = await readFile(resolve(packageRoot, "package.json"), "utf8");
+    const pkgJson = JSON.parse(pkgJsonText) as { dependencies?: Record<string, string> };
+    declaredDeps = Object.keys(pkgJson.dependencies ?? {});
+  } catch (err) {
+    return {
+      ok: false,
+      detail: \`probe: could not read package.json: \${err instanceof Error ? err.message : String(err)}\`,
+      declaredDeps: [],
+      broken: [],
+    };
+  }
+  const broken: Array<{ name: string; error: string }> = [];
+  for (const name of declaredDeps) {
+    try {
+      await import(name);
+    } catch (err) {
+      broken.push({
+        name,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  // Quiet reference so an unused import in some scaffold permutations
+  // does not trip strict tsc. \`pathToFileURL\` is imported at the
+  // top in case a future probe step needs to import an on-disk file
+  // by URL; keep it tracked.
+  void pathToFileURL;
+  return {
+    ok: broken.length === 0,
+    detail:
+      broken.length === 0
+        ? \`probe: \${declaredDeps.length} declared dep(s) imported cleanly\`
+        : \`probe: \${broken.length}/\${declaredDeps.length} declared dep(s) failed to import: \${broken.map((b) => b.name).join(", ")}\`,
+    declaredDeps,
+    broken,
+  };
 }
 `;
 
