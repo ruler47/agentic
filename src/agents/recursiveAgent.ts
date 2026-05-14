@@ -40,7 +40,15 @@ import type { Tool, ToolResult } from "../tools/tool.js";
 import type { SkillMemory } from "../memory/skillMemory.js";
 
 const DEFAULT_MAX_ITERATIONS = 12;
-const DEFAULT_MAX_DEPTH = 3;
+// Phase 28 follow-up — keep DEPTH at 1 by default. Otherwise local
+// models (Qwen, Gemma) read the spawn_subagent description and
+// happily delegate every task to a child copy of themselves
+// instead of just calling the real tool. The bitcoin probe with
+// MAX_DEPTH=3 produced 4 levels of "let me spawn a subagent to do
+// the screenshot" with zero actual screenshot.url invocations.
+// With MAX_DEPTH=1 a non-trivial task can still fan out one layer
+// of subagents, but the leaves are forced to do real work.
+const DEFAULT_MAX_DEPTH = 1;
 const RESULT_PREVIEW_CHARS = 6_000;
 
 export type RecursiveAgentEvent =
@@ -127,7 +135,16 @@ export class RecursiveAgent {
         reply = await this.llm.completeWithTools(messages, toolSchemas, {
           modelTier: ctx.modelTier ?? "L",
           signal: ctx.signal,
-          toolChoice: "auto",
+          // Phase 28 follow-up — force a tool call on iteration 1.
+          // Local models otherwise generate a "I can't help, the tool
+          // is broken (puppeteer-core missing)" hallucination on
+          // simple-fact tasks like "what's the price of X?", refusing
+          // to even try the tool because they pattern-matched the
+          // tool name against a training-memory failure. Required
+          // tool_choice on the first turn pins them to actually
+          // invoke something — usually the right tool, occasionally
+          // `finish` if the task truly needs no action.
+          toolChoice: iteration === 1 ? "required" : "auto",
           maxTokens: 1_500,
         });
       } catch (error) {
@@ -138,12 +155,31 @@ export class RecursiveAgent {
         throw new Error(`Recursive agent: LLM failed at depth=${ctx.depth} iter=${iteration}: ${error instanceof Error ? error.message : String(error)}`);
       }
 
-      // No tool calls + has content → treat as implicit finish.
-      // Some models forget to call `finish` and just write the
-      // answer as content; respect that instead of looping
-      // forever.
+      // No tool calls + has content. Two cases:
+      //
+      //   1. Final iteration / model clearly intends to wrap up
+      //      (content looks like an answer to the user) — accept
+      //      as implicit finish.
+      //   2. Model produced a "let me check..." or "I will now
+      //      look up..." style preamble and forgot to issue the
+      //      tool_call — push back a system-style reminder and
+      //      let it try again. Otherwise local models like Qwen
+      //      and Gemma waste a quarter of their iteration budget
+      //      narrating intent without acting.
       if (reply.finishReason !== "tool_calls" && reply.toolCalls.length === 0) {
-        const answer = reply.content || "(empty)";
+        const content = reply.content || "";
+        const looksLikePreamble = /(?:^|\b)(?:let me|i will|i'll|i need to|i'm going to|сейчас|я попробую|я проверю|i should)\b/i.test(content) && content.length < 400;
+        const isLastIteration = iteration >= maxIterations;
+        if (looksLikePreamble && !isLastIteration) {
+          messages.push({ role: "assistant", content } as Message);
+          messages.push({
+            role: "user",
+            content:
+              "Don't narrate. Call a tool now, or call `finish` with the final answer. Pure prose is not an action.",
+          } as Message);
+          continue;
+        }
+        const answer = content || "(empty)";
         ctx.onEvent?.({ type: "finish", depth: ctx.depth, finalAnswer: answer });
         return { finalAnswer: answer };
       }
@@ -166,6 +202,14 @@ export class RecursiveAgent {
         })),
       } as Message);
 
+      // Phase 28 debug — log every tool call attempt so we can see
+      // why the bitcoin task hallucinates errors instead of invoking
+      // screenshot_url. Cheap; runs once per iteration.
+      console.log(
+        `[recursive depth=${ctx.depth} iter=${iteration}] finish_reason=${reply.finishReason} ` +
+          `tool_calls=[${reply.toolCalls.map((c) => c.name).join(", ")}] ` +
+          `content_first40=${(reply.content || "").slice(0, 40).replace(/\n/g, " ")}`,
+      );
       for (const call of reply.toolCalls) {
         if (ctx.signal?.aborted) return { finalAnswer: "[run cancelled]" };
         if (call.name === "finish") {
@@ -210,8 +254,12 @@ export class RecursiveAgent {
           messages.push(this.toolResultMessage(call.id, true, `note recorded: ${note}`));
           continue;
         }
-        // Regular registered tool.
-        const tool = this.tools.get(call.name);
+        // Regular registered tool. Match by sanitized name because
+        // the LLM saw and replied with the sanitized form (dots
+        // stripped to underscores).
+        const tool =
+          this.tools.get(call.name) ??
+          this.tools.list().find((t) => t.name.replace(/[^a-zA-Z0-9_-]/g, "_") === call.name);
         if (!tool) {
           messages.push(
             this.toolResultMessage(
@@ -230,6 +278,20 @@ export class RecursiveAgent {
           });
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
+          // Phase 28 follow-up — emit a structured event for the
+          // throw so the operator sees the failure in the run
+          // timeline. Without this the model writes "the tool
+          // failed with X" but the trace has no record of it.
+          ctx.onEvent?.({
+            type: "tool-call",
+            depth: ctx.depth,
+            tool: call.name,
+            input: call.arguments,
+            ok: false,
+            durationMs: Date.now() - t0,
+            contentPreview: `Tool threw: ${msg}`,
+          });
+          console.log(`[recursive depth=${ctx.depth} iter=${iteration}] tool ${call.name} threw: ${msg}`);
           messages.push(this.toolResultMessage(call.id, false, `Tool ${call.name} threw: ${msg}`));
           continue;
         }
@@ -282,10 +344,18 @@ export class RecursiveAgent {
         tool.inputSchema && typeof tool.inputSchema === "object"
           ? (tool.inputSchema as Record<string, unknown>)
           : { type: "object", properties: {}, additionalProperties: true };
+      // Phase 28 follow-up — LM Studio + Qwen + Gemma normalize tool
+      // names by stripping non-alphanumerics: `screenshot.url` arrives
+      // back as `screenshot_url` in the model's tool_calls reply.
+      // We pre-sanitize the schema name so what we send equals what
+      // we receive, and dispatch maps it back to the registry's
+      // canonical name (which may contain dots like "screenshot.url"
+      // or "web.duckduckgo.search").
+      const safeName = tool.name.replace(/[^a-zA-Z0-9_-]/g, "_");
       out.push({
         type: "function",
         function: {
-          name: tool.name,
+          name: safeName,
           description: limitText(tool.description ?? `Tool ${tool.name}.`, 600),
           parameters: params,
         },
@@ -353,22 +423,18 @@ export class RecursiveAgent {
       .map((t) => `  - ${t.function.name}: ${t.function.description}`)
       .join("\n");
     return [
-      "You are a universal agent. You answer the user's request by calling tools.",
+      "You are a tool-using agent. Solve the user's task by calling tools, then call `finish` with the answer.",
       "",
-      "How to operate:",
-      "  • If the task is SIMPLE (one or two tool calls answer it) — call the tools directly, then call `finish` with the answer.",
-      "  • If the task is COMPLEX — break it into 2–5 independent sub-tasks and call `spawn_subagent` for each, then synthesize the children's answers and call `finish`.",
-      "  • Use `note` to think out loud between tool calls when it helps you plan. Don't over-use it — one note per tricky decision is plenty.",
-      "  • Every quoted number, date, version, URL in your final answer MUST come from a tool's output, not from your training memory. If a tool returns a fact, quote it verbatim.",
-      "  • When a tool returns an artifact (e.g. screenshot saved with a URL), include the artifact URL in your final answer.",
-      "  • If a tool fails or returns no useful evidence, say so honestly in your `finish` answer rather than fabricating.",
-      "",
-      `Current depth: ${depth}/${maxDepth}. ${depth >= maxDepth ? "Spawning sub-agents is DISABLED at this depth — finish this slice atomically." : "You may spawn sub-agents."}`,
+      "Hard rules:",
+      "  • DO call a real tool first (e.g. screenshot_url, web_duckduckgo_search). Do NOT explain what you're going to do — just call the tool.",
+      "  • DO NOT hallucinate errors about tools. If a tool returns a result, trust it. Quote its data verbatim in your `finish` answer.",
+      "  • DO NOT invent specific numbers, dates, prices, URLs from your training memory. Only quote what a tool returned this turn.",
+      "  • spawn_subagent exists for genuinely multi-step tasks. For a single fact lookup (\"what is the current price of X\"), call the real tool directly.",
       "",
       "Available tools:",
       toolList,
       "",
-      "Always end with a call to `finish`. The conversation continues until you do.",
+      `(depth ${depth}/${maxDepth}${depth >= maxDepth ? " — spawn_subagent disabled" : ""})`,
     ].join("\n");
   }
 
