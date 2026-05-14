@@ -5478,6 +5478,68 @@ function createExecutionPlan(rawSubtasks: Subtask[]): ExecutionPlan {
 
     return dependsOn.length > 0 ? { ...subtask, dependsOn } : { ...subtask, dependsOn: [] };
   });
+
+  // Phase 28 follow-up — DETERMINISTIC DAG REPAIR.
+  //
+  // Observed planner failure: bitcoin task got
+  //   - subtask "research-price"   requiredTools=[web-search]
+  //   - subtask "capture-screenshot" requiredArtifacts=[browser-screenshot]
+  // with NO dependsOn relationship. Both subtasks ran in parallel,
+  // capture-screenshot started before research-price produced a URL,
+  // emitted `tool-missing: input-missing-source-url`, the whole run
+  // collapsed into a tool-rework wait.
+  //
+  // The model writes good per-subtask metadata but forgets to wire
+  // the DAG. Rather than chase prompts forever, we patch dependencies
+  // deterministically: a subtask that requires an artifact derived
+  // from a URL (screenshot, browser-screenshot) AND has no explicit
+  // URL in its own prompt MUST depend on a subtask that runs a
+  // web-search or browser-discovery tool. We attach the missing
+  // edge here so the DAG executor honours it.
+  //
+  // Other links worth inferring later (Slice TBD): chart subtasks
+  // depending on the market-timeseries source, synthesis subtasks
+  // depending on every prior subtask (already common). Bitcoin's
+  // case was the urgent one.
+  const URL_IN_PROMPT_RE = /https?:\/\//i;
+  for (const subtask of subtasks) {
+    const needsUrl = (subtask.requiredArtifacts ?? []).some(
+      (a) => a.kind === "screenshot" || a.capability === "browser-screenshot",
+    );
+    if (!needsUrl) continue;
+    // If the subtask's own prompt already cites a URL, the worker
+    // can act without waiting on a sibling — no edge required.
+    const promptText = [subtask.prompt, subtask.title, subtask.expectedOutput]
+      .filter(Boolean)
+      .join("\n");
+    if (URL_IN_PROMPT_RE.test(promptText)) continue;
+    // Find candidate producers — subtasks that look like they
+    // discover a URL (web-search / browser-discovery / "research" /
+    // "find" roles).
+    const producers = subtasks.filter((other) => {
+      if (other.id === subtask.id) return false;
+      if (other.dependsOn?.includes(subtask.id)) return false; // would create a cycle
+      const tools = (other.requiredTools ?? []).map((t) => t.toLowerCase());
+      if (tools.includes("web-search") || tools.includes("browser-discovery")) return true;
+      const otherText = `${other.title} ${other.role} ${other.prompt}`.toLowerCase();
+      if (/\b(search|research|find|discover|locate|identify)\b/.test(otherText)) return true;
+      return false;
+    });
+    if (producers.length === 0) continue;
+    const before = new Set(subtask.dependsOn ?? []);
+    let added = false;
+    for (const producer of producers) {
+      if (before.has(producer.id)) continue;
+      before.add(producer.id);
+      added = true;
+    }
+    if (added) {
+      subtask.dependsOn = Array.from(before);
+      warnings.push(
+        `Auto-linked ${subtask.id} → depends on [${producers.map((p) => p.id).join(", ")}] (needs URL from upstream search/research).`,
+      );
+    }
+  }
   const remaining = new Map(subtasks.map((subtask) => [subtask.id, subtask]));
   const completed = new Set<string>();
   const levels: Subtask[][] = [];
