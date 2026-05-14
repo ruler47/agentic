@@ -288,6 +288,8 @@ function createRunsService(
     undefined, // toolMetadataStore
     undefined, // toolsService
     undefined, // toolRegistry
+    undefined, // llm (Phase 28 recursive agent)
+    undefined, // skillMemory (Phase 28 recursive agent)
   );
 }
 

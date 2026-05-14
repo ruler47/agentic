@@ -8,9 +8,46 @@ type ChatCompletionResponse = {
   choices?: Array<{
     message?: {
       content?: string;
+      tool_calls?: ToolCallFromLlm[];
     };
+    finish_reason?: string;
   }>;
   error?: unknown;
+};
+
+export type ToolCallFromLlm = {
+  id?: string;
+  type?: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+/**
+ * Phase 28 — recursive agent loop needs tool_calls back from the
+ * model, not just the text body. This is the typed reply shape
+ * `completeWithTools` returns; downstream callers branch on
+ * `finishReason` to decide whether to invoke a tool and loop again
+ * or treat `content` as the final answer.
+ */
+export type LlmToolReply = {
+  content: string;
+  toolCalls: Array<{
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+  }>;
+  finishReason: "tool_calls" | "stop" | "length" | "other";
+};
+
+export type LlmToolSchema = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
 };
 
 const tierOrder: ModelTier[] = ["S", "M", "L", "XL"];
@@ -81,6 +118,93 @@ export class LlmClient {
     }
 
     throw new Error(`LLM request failed for all model candidates: ${errors.join("; ")}`);
+  }
+
+  /**
+   * Phase 28 — chat completion that ALSO returns tool_calls (native
+   * OpenAI function-calling shape). Used by the recursive agent loop
+   * so the model can request `screenshot.url(...)`, `web.search(...)`,
+   * `spawn_subagent(...)`, or `finish(...)` and we invoke them
+   * programmatically rather than parsing JSON out of prose.
+   *
+   * Returns `{ content, toolCalls, finishReason }`. When
+   * `finishReason === "tool_calls"` the caller MUST execute every
+   * call in `toolCalls`, append the results to `messages`, and call
+   * `completeWithTools` again. When `finishReason === "stop"` the
+   * `content` is the final answer for this turn.
+   *
+   * Falls back to `complete()` semantics on retry-on-empty.
+   */
+  async completeWithTools(
+    messages: Message[],
+    tools: LlmToolSchema[],
+    options?: {
+      temperature?: number;
+      modelTier?: ModelTier;
+      model?: string;
+      signal?: AbortSignal;
+      toolChoice?: "auto" | "required" | "none";
+      maxTokens?: number;
+    },
+  ): Promise<LlmToolReply> {
+    const attempts = options?.model
+      ? [options.model, options.model]
+      : await this.modelAttemptsForTier(options?.modelTier);
+    const errors: string[] = [];
+
+    for (const model of attempts) {
+      if (options?.signal?.aborted) {
+        throw new Error("LLM request cancelled by caller");
+      }
+      try {
+        const body: Record<string, unknown> = {
+          model,
+          messages,
+          temperature: options?.temperature ?? this.config.temperature,
+          tools,
+        };
+        if (options?.toolChoice) body.tool_choice = options.toolChoice;
+        if (options?.maxTokens) body.max_tokens = options.maxTokens;
+        const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+          signal: options?.signal,
+        });
+        const rawBody = await response.text();
+        const data = parseChatCompletionResponse(rawBody);
+        if (!response.ok) {
+          errors.push(`${model}: ${extractResponseError(data, response.status, rawBody)}`);
+          continue;
+        }
+        const choice = data.choices?.[0];
+        if (!choice) {
+          errors.push(`${model}: empty choices`);
+          continue;
+        }
+        const rawCalls = choice.message?.tool_calls ?? [];
+        const toolCalls = rawCalls
+          .map((call, index) => parseToolCall(call, index))
+          .filter((call): call is { id: string; name: string; arguments: Record<string, unknown> } => Boolean(call));
+        const finish = mapFinishReason(choice.finish_reason);
+        // A model that emits `finish_reason=tool_calls` with no
+        // parseable tool_calls is unusable — treat as transient
+        // error and try next attempt.
+        if (finish === "tool_calls" && toolCalls.length === 0) {
+          errors.push(`${model}: finish_reason=tool_calls but tool_calls array was empty or malformed`);
+          continue;
+        }
+        return {
+          content: (choice.message?.content ?? "").trim(),
+          toolCalls,
+          finishReason: finish,
+        };
+      } catch (error) {
+        errors.push(`${model}: ${error instanceof Error ? error.message : "request failed"}`);
+      }
+    }
+
+    throw new Error(`LLM tool request failed for all model candidates: ${errors.join("; ")}`);
   }
 
   async modelForTier(tier?: ModelTier): Promise<string> {
@@ -201,4 +325,36 @@ function uniqueModels(models: string[]): string[] {
 function nextTier(tier: ModelTier): ModelTier | undefined {
   const nextIndex = tierOrder.indexOf(tier) + 1;
   return tierOrder[nextIndex];
+}
+
+function parseToolCall(
+  raw: ToolCallFromLlm,
+  index: number,
+): { id: string; name: string; arguments: Record<string, unknown> } | undefined {
+  if (!raw || typeof raw.function !== "object") return undefined;
+  const name = raw.function?.name;
+  if (typeof name !== "string" || name.length === 0) return undefined;
+  let parsed: Record<string, unknown> = {};
+  if (typeof raw.function.arguments === "string" && raw.function.arguments.trim()) {
+    try {
+      const obj = JSON.parse(raw.function.arguments);
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) parsed = obj as Record<string, unknown>;
+    } catch {
+      // Malformed arguments — leave parsed empty; the agent loop
+      // can decide whether to bail or feed back an error so the
+      // model retries.
+    }
+  }
+  return {
+    id: raw.id || `tool-call-${index}-${Date.now()}`,
+    name,
+    arguments: parsed,
+  };
+}
+
+function mapFinishReason(reason: string | undefined): "tool_calls" | "stop" | "length" | "other" {
+  if (reason === "tool_calls") return "tool_calls";
+  if (reason === "stop") return "stop";
+  if (reason === "length") return "length";
+  return "other";
 }

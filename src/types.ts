@@ -10,8 +10,26 @@ export type AgentRole =
   | "tool-user";
 
 export type Message = {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /**
+   * Phase 28 — present on `assistant` turns when the model invoked
+   * tools. Echoed back to the chat API on the NEXT turn so it can
+   * match `tool_call_id` on subsequent `role: "tool"` messages.
+   * Optional + only used by `RecursiveAgent`; legacy code paths
+   * ignore it.
+   */
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }>;
+  /**
+   * Phase 28 — present on `role: "tool"` messages. Links the result
+   * back to the assistant turn's `tool_calls[].id`. Required by the
+   * OpenAI function-calling protocol.
+   */
+  tool_call_id?: string;
 };
 
 export type LlmConfig = {

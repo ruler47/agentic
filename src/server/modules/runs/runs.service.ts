@@ -80,6 +80,8 @@ import {
   UNIVERSAL_AGENT,
   USER_STORE,
   WORK_LEDGER_STORE,
+  LLM_CLIENT,
+  SKILL_MEMORY,
 } from "../../persistence/tokens.js";
 
 const TERMINAL: AgentRunRecord["status"][] = ["completed", "failed", "cancelled"];
@@ -200,6 +202,12 @@ export class RunsService implements OnApplicationBootstrap {
     @Inject(TOOL_REGISTRY) private readonly toolRegistry:
       | import("../../../tools/registry.js").ToolRegistry
       | undefined,
+    // Phase 28 — recursive agent mode wiring. All three optional so
+    // legacy unit-test wiring without LLM/memory still constructs
+    // the service; the recursive path itself errors clearly when
+    // any of them is missing.
+    @Inject(LLM_CLIENT) private readonly llm: import("../../../llm/client.js").LlmClient | undefined,
+    @Inject(SKILL_MEMORY) private readonly skillMemory: import("../../../memory/skillMemory.js").SkillMemory | undefined,
   ) {}
 
   /**
@@ -1322,6 +1330,82 @@ export class RunsService implements OnApplicationBootstrap {
             })
           : undefined;
 
+      // Phase 28 — agent mode switch. The classic delegated_dag
+      // pipeline still drives every existing fixture, council
+      // tool-build run, and resume path; the recursive loop runs
+      // only when AGENT_MODE=recursive is set or the task body
+      // explicitly opts in. Tool-build runs (`toolBuildContext`)
+      // ALWAYS use the classic agent because the council pipeline
+      // lives there.
+      const recursiveMode =
+        !context.toolBuildContext &&
+        (process.env.AGENT_MODE === "recursive" || /\[recursive\]/i.test(task));
+      if (recursiveMode) {
+        const { RecursiveAgent } = await import("../../../agents/recursiveAgent.js");
+        if (!this.toolRegistry || !this.llm || !this.skillMemory) {
+          throw new Error("Recursive agent requires LLM_CLIENT, SKILL_MEMORY, and TOOL_REGISTRY to be wired");
+        }
+        const recursive = new RecursiveAgent(this.llm, this.skillMemory, this.toolRegistry);
+        const recursiveResult = await recursive.run(task, {
+          signal: runAbort.signal,
+          saveArtifact: this.artifacts
+            ? async (artifact) => this.artifacts!.saveGenerated(id, artifact)
+            : undefined,
+          onEvent: async (ev) => {
+            const now = new Date().toISOString();
+            const spanId = `recursive-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const type = ev.type === "tool-call"
+              ? "tool-completed"
+              : ev.type === "subagent-spawned"
+                ? "worker-started"
+                : ev.type === "subagent-finished"
+                  ? "worker-completed"
+                  : ev.type === "finish"
+                    ? "synthesis-completed"
+                    : "agent-self-check-completed";
+            try {
+              await this.runs.appendEvent(id, {
+                id: `${spanId}-evt`,
+                spanId,
+                type,
+                actor: ev.type === "subagent-spawned" || ev.type === "subagent-finished"
+                  ? `recursive:depth-${ev.depth}`
+                  : "recursive-agent",
+                activity: ev.type === "tool-call" ? "tool" : "agent",
+                status: ev.type === "tool-call" ? (ev.ok ? "completed" : "failed") : "completed",
+                title:
+                  ev.type === "tool-call"
+                    ? `Tool: ${ev.tool}`
+                    : ev.type === "subagent-spawned"
+                      ? `Sub-agent spawned: ${ev.childTask.slice(0, 80)}`
+                      : ev.type === "subagent-finished"
+                        ? `Sub-agent finished`
+                        : ev.type === "finish"
+                          ? "Final answer"
+                          : `iteration ${ev.depth}/${("iteration" in ev) ? ev.iteration : "?"}`,
+                detail: "contentPreview" in ev ? ev.contentPreview : undefined,
+                timestamp: now,
+                startedAt: now,
+                completedAt: now,
+                payload: ev as unknown as Record<string, unknown>,
+              });
+            } catch (err) {
+              // Don't kill the loop on event-store hiccups; the agent's
+              // own output is the source of truth. Logged so we notice.
+              console.warn(`[recursive] appendEvent failed:`, err instanceof Error ? err.message : err);
+            }
+          },
+        });
+        await this.runs.complete(id, {
+          finalAnswer: recursiveResult.finalAnswer,
+          complexity: recursiveResult.complexity,
+          subtasks: [],
+          workerResults: [],
+          reviews: [],
+          artifacts: recursiveResult.artifacts ?? [],
+        });
+        return;
+      }
       const result = await this.agent.run(task, {
         inputArtifacts,
         threadContext: context.threadContext,
