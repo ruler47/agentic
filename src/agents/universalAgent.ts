@@ -219,8 +219,60 @@ type ExecutionPlan = {
 type CollectedToolEvidence = {
   text: string;
   evidence: string[];
+  /**
+   * Phase 28 follow-up — structured tool evidence the agent
+   * collected on the way to producing `text`. Carries the FULL
+   * `ToolResult` (ok, content, data) plus the saved artifact, so
+   * downstream consumers (worker LLM, reviewer LLM, synthesizer)
+   * can read fields like `data.pageText` and `data.numericTokens`
+   * that the legacy `evidence: string[]` shape had to throw away.
+   *
+   * Co-exists with `evidence: string[]` during the staged
+   * migration. Both arrays describe the same actions; readers that
+   * want raw structure use `records`, readers that want the human
+   * summary keep using `evidence` / `text`.
+   */
+  records?: EvidenceRecord[];
   artifacts: AgentArtifact[];
 };
+
+/**
+ * Phase 28 follow-up — structured per-action evidence record.
+ *
+ * Every tool call, fallback, or artifact-save emits one record.
+ * Subtask workers, reviewers, and the synthesizer all read these
+ * (via `formatEvidenceRecordsForPrompt`) instead of the legacy
+ * one-liner strings, so a screenshot tool that returns
+ * `data: { pageText: "Bitcoin BTC $81,335.94 ..." }` no longer
+ * gets summarized to `"Created artifact for screenshot: foo.png"`
+ * before the model has a chance to read the number.
+ */
+export type EvidenceRecord =
+  | {
+      kind: "tool_call";
+      toolName: string;
+      capability?: string;
+      input: Record<string, unknown>;
+      output: { ok: boolean; content: string; data?: unknown };
+      artifact?: { filename: string; mimeType: string; url: string };
+      timestamp: string;
+      spanId?: string;
+    }
+  | {
+      kind: "artifact";
+      artifact: { filename: string; mimeType: string; url: string };
+      sourceTool?: string;
+      sourceUrl?: string;
+      timestamp: string;
+      spanId?: string;
+    }
+  | {
+      kind: "limitation";
+      summary: string;
+      provider?: string;
+      timestamp: string;
+      spanId?: string;
+    };
 
 const promptBudget = {
   taskContextChars: 8_000,
@@ -2902,6 +2954,18 @@ export class UniversalAgent {
   ): Promise<CollectedToolEvidence> {
     const evidence: string[] = [];
     const artifacts: AgentArtifact[] = [];
+    // Phase 28 follow-up — collect a STRUCTURED record per tool
+    // call alongside the legacy string evidence. Lets the worker
+    // LLM (and reviewer + synthesizer) read the FULL tool data
+    // (pageText, numericTokens, pageTitle) without the string
+    // summarizer throwing it away. Local sink for this subtask;
+    // we publish it through `CollectedToolEvidence.records` at
+    // the bottom of this method and via the run-scoped store so
+    // sibling subtasks can read each other's findings.
+    const evidenceRecords: EvidenceRecord[] = [];
+    const onEvidence = (record: EvidenceRecord) => {
+      evidenceRecords.push(record);
+    };
     // Phase 13 follow-up (TB-005a/b): user-driven tool policy applies
     // here. `findByCapability("web-search", policy)` returns the
     // built-in `web.search` first if present, but a user instruction
@@ -2998,6 +3062,7 @@ export class UniversalAgent {
         requestToolBuild,
         improveTool,
         toolExecutionContext,
+        onEvidence,
       );
 
       if (artifact) {
@@ -3006,17 +3071,30 @@ export class UniversalAgent {
       }
     }
 
-    if (evidence.length === 0) {
+    if (evidence.length === 0 && evidenceRecords.length === 0) {
       return {
         text: "No external tool evidence was collected for this subtask.",
         evidence: [],
+        records: [],
         artifacts: [],
       };
     }
 
+    // Phase 28 follow-up — when we have structured records, prefer
+    // them in the prompt text. The recordRendering carries pageText,
+    // numericTokens, pageTitle, etc. — the data the model actually
+    // needs to answer the user. We still keep the legacy `evidence`
+    // string array attached for backward-compatible consumers (notes,
+    // self-checks) that haven't migrated yet.
+    const recordText = formatEvidenceRecordsForPrompt(evidenceRecords, promptBudget.toolEvidenceChars);
+    const legacyText = summarizeEvidenceList(evidence, promptBudget.toolEvidenceChars);
+    const composedText = [recordText, legacyText].filter(Boolean).join("\n\n");
     return {
-      text: `External tool evidence collected for this subtask:\n${summarizeEvidenceList(evidence, promptBudget.toolEvidenceChars)}`,
+      text: composedText
+        ? `External tool evidence collected for this subtask:\n${composedText}`
+        : "External tool evidence collected for this subtask:\n(empty)",
       evidence: evidence.map((item) => limitText(item, promptBudget.toolEvidenceChars)),
+      records: evidenceRecords,
       artifacts,
     };
   }
@@ -3646,6 +3724,13 @@ export class UniversalAgent {
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
     improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
+    // Phase 28 follow-up — structured evidence sink (propagated
+    // from `collectSubtaskEvidence`). When the chosen artifact
+    // path is a tool call, this captures the FULL tool output
+    // including `data.pageText / numericTokens / pageTitle` so
+    // the worker LLM can read it. See `EvidenceRecord` type and
+    // `formatEvidenceRecordsForPrompt` for the consumer side.
+    onEvidence?: (record: EvidenceRecord) => void,
   ): Promise<AgentArtifact | undefined> {
     if (!saveArtifact) return undefined;
 
@@ -3658,6 +3743,7 @@ export class UniversalAgent {
         requestToolBuild,
         improveTool,
         toolExecutionContext,
+        onEvidence,
       );
     }
 
@@ -3895,6 +3981,11 @@ export class UniversalAgent {
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
     improveTool?: AgentImproveToolFn,
     toolExecutionContext?: BaseToolExecutionContext,
+    // Phase 28 follow-up — when supplied, structured records for
+    // the screenshot.url call AND the saved artifact land here so
+    // the parent worker can surface data.pageText / numericTokens /
+    // pageTitle to its LLM (and reviewer), not just the artifact URL.
+    onEvidence?: (record: EvidenceRecord) => void,
   ): Promise<AgentArtifact | undefined> {
     const screenshotIntents = this.resolveTaskIntents(context, toolExecutionContext?.runId);
     const screenshotPatterns = await this.resolveEvidencePatterns(screenshotIntents);
@@ -4014,6 +4105,8 @@ export class UniversalAgent {
         toolExecutionContext,
         requestToolBuild,
         improveTool,
+        undefined,
+        onEvidence,
       );
     }
 
@@ -4071,6 +4164,8 @@ export class UniversalAgent {
       toolExecutionContext,
       requestToolBuild,
       improveTool,
+      undefined,
+      onEvidence,
     );
   }
 
@@ -4311,6 +4406,16 @@ export class UniversalAgent {
     requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>,
     improveTool?: AgentImproveToolFn,
     reworkRetryKeys = new Set<string>(),
+    // Phase 28 follow-up — caller-supplied sink for structured
+    // evidence records. When provided, this method emits one
+    // EvidenceRecord per tool-call attempt + one per saved artifact,
+    // carrying the FULL `ToolResult.data` (pageText, numericTokens,
+    // pageTitle, etc.) so downstream worker/reviewer/synthesizer
+    // LLMs see the actual extracted content. The legacy callsites
+    // that don't supply this sink still get the AgentArtifact return
+    // and the legacy `Created artifact for ...` string evidence path
+    // untouched, so this is a pure additive seam.
+    onEvidence?: (record: EvidenceRecord) => void,
   ): Promise<AgentArtifact | undefined> {
     const spanId = createSpanId(`tool-${tool.name}`);
     const startedAt = new Date();
@@ -4438,6 +4543,23 @@ export class UniversalAgent {
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(startedAt),
       payload: sanitizeToolPayload(toolResult),
+    });
+
+    // Phase 28 follow-up — capture the FULL ToolResult into the
+    // structured evidence sink, NOT just a one-liner. The artifact
+    // record is appended below after saveArtifact completes.
+    onEvidence?.({
+      kind: "tool_call",
+      toolName: tool.name,
+      capability,
+      input,
+      output: {
+        ok: toolResult.ok,
+        content: toolResult.content,
+        data: toolResult.data,
+      },
+      timestamp: new Date().toISOString(),
+      spanId,
     });
 
     const artifactStartedAt = new Date();
@@ -4586,6 +4708,17 @@ export class UniversalAgent {
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(artifactStartedAt),
       payload: { artifact },
+    });
+    // Phase 28 follow-up — surface the artifact metadata to the
+    // structured evidence sink so the worker LLM doesn't have to
+    // guess the filename / url from the prose layer.
+    onEvidence?.({
+      kind: "artifact",
+      artifact: { filename: artifact.filename, mimeType: artifact.mimeType, url: artifact.url },
+      sourceTool: tool.name,
+      sourceUrl: typeof input.url === "string" ? input.url : undefined,
+      timestamp: new Date().toISOString(),
+      spanId: artifactSpanId,
     });
     if (claim) {
       await ledger?.markCompleted(claim.item.id, {
@@ -5575,6 +5708,130 @@ function summarizeEvidenceList(evidence: string[], maxChars: number): string {
   if (evidence.length === 0) return "";
   const perItemBudget = Math.max(800, Math.floor(maxChars / evidence.length));
   return evidence.map((item) => limitText(item, perItemBudget)).join("\n\n");
+}
+
+/**
+ * Phase 28 follow-up — render the structured `EvidenceRecord[]` into
+ * a single text block worker / reviewer / synthesizer LLMs can read.
+ *
+ * Each record is formatted with its FULL semantically-useful payload
+ * (tool input + output.content + output.data + saved artifact url),
+ * not just a one-liner like the legacy string evidence path. Without
+ * this, a screenshot tool that returns
+ * `data: { pageText: "...$81,335.94 USD..." }` would have its text
+ * thrown away before the model that needs to cite the price ever sees
+ * it.
+ *
+ * `maxChars` is a soft budget: we render records newest-last (so the
+ * most recent run dominates if we truncate), and each record's `data`
+ * payload is per-field-capped so a single huge `data.imageBase64`
+ * can't blow out the budget for the rest of the run.
+ */
+function formatEvidenceRecordsForPrompt(
+  records: readonly EvidenceRecord[] | undefined,
+  maxChars: number,
+): string {
+  if (!records || records.length === 0) return "";
+  const lines: string[] = [];
+  for (const rec of records) {
+    if (rec.kind === "tool_call") {
+      const inputSummary = JSON.stringify(rec.input).slice(0, 400);
+      lines.push(`[tool:${rec.toolName}${rec.capability ? `:${rec.capability}` : ""}] at ${rec.timestamp}`);
+      lines.push(`  input: ${inputSummary}`);
+      lines.push(`  ok: ${rec.output.ok}`);
+      if (rec.output.content) {
+        lines.push(`  content: ${limitText(rec.output.content, 1200)}`);
+      }
+      if (rec.output.data !== undefined && rec.output.data !== null) {
+        const dataPreview = formatToolDataForEvidenceRecord(rec.output.data, 2000);
+        if (dataPreview) lines.push(`  data:\n${dataPreview}`);
+      }
+      if (rec.artifact) {
+        lines.push(`  artifact: ${rec.artifact.filename} (${rec.artifact.mimeType}) ${rec.artifact.url}`);
+      }
+    } else if (rec.kind === "artifact") {
+      lines.push(`[artifact:${rec.artifact.filename}] at ${rec.timestamp}`);
+      lines.push(`  mimeType: ${rec.artifact.mimeType}`);
+      lines.push(`  url: ${rec.artifact.url}`);
+      if (rec.sourceTool) lines.push(`  fromTool: ${rec.sourceTool}`);
+      if (rec.sourceUrl) lines.push(`  capturedFrom: ${rec.sourceUrl}`);
+    } else {
+      lines.push(`[limitation${rec.provider ? `:${rec.provider}` : ""}] at ${rec.timestamp}`);
+      lines.push(`  ${limitText(rec.summary, 800)}`);
+    }
+    lines.push("");
+  }
+  return limitText(lines.join("\n"), maxChars).trim();
+}
+
+/**
+ * Per-record `data` field renderer. Inlines small primitives, strings
+ * up to ~700 chars, arrays up to 12 items, and explicit
+ * `[<bytes>-byte base64 omitted]` placeholders so a giant
+ * `data.imageBase64` doesn't trample the rest of the prompt.
+ */
+function formatToolDataForEvidenceRecord(data: unknown, maxChars: number): string {
+  if (data === undefined || data === null) return "";
+  if (typeof data === "string") return `    "${limitText(data, Math.min(maxChars, 1200))}"`;
+  if (typeof data === "number" || typeof data === "boolean") return `    ${String(data)}`;
+  if (Array.isArray(data)) {
+    const slice = data.slice(0, 12);
+    const more = data.length > slice.length ? ` (and ${data.length - slice.length} more)` : "";
+    return `    [${slice.map((item) => formatToolDataValue(item, 200)).join(", ")}]${more}`;
+  }
+  if (typeof data === "object") {
+    const record = data as Record<string, unknown>;
+    const entries: string[] = [];
+    let used = 0;
+    for (const [key, value] of Object.entries(record)) {
+      // Special-case BIG base64 fields — emit a placeholder so the
+      // prompt budget isn't blown by a 30 KB PNG payload that the
+      // LLM cannot use anyway.
+      if (typeof value === "string" && /^[A-Za-z0-9+/=\s]+$/.test(value) && value.length > 1500) {
+        entries.push(`    ${key}: <${value.length}-byte base64 omitted>`);
+        continue;
+      }
+      const rendered = formatToolDataValue(value, 800);
+      const line = `    ${key}: ${rendered}`;
+      if (used + line.length > maxChars) {
+        entries.push(`    [...${Object.keys(record).length - entries.length} more keys truncated...]`);
+        break;
+      }
+      entries.push(line);
+      used += line.length;
+    }
+    return entries.join("\n");
+  }
+  return "";
+}
+
+function formatToolDataValue(value: unknown, maxChars: number): string {
+  if (value === undefined || value === null) return String(value);
+  if (typeof value === "string") {
+    if (value.length > 1500 && /^[A-Za-z0-9+/=\s]+$/.test(value)) {
+      return `<${value.length}-byte base64 omitted>`;
+    }
+    return JSON.stringify(limitText(value, maxChars));
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const slice = value.slice(0, 8);
+    const more = value.length > slice.length ? `,...+${value.length - slice.length}` : "";
+    return `[${slice.map((item) => formatToolDataValue(item, 100)).join(",")}${more}]`;
+  }
+  return limitText(JSON.stringify(value), maxChars);
+}
+
+/**
+ * Build a single text block summarizing the FULL `EvidenceRecord[]`
+ * for a subtask, designed to slot under the `[Tool Evidence]` heading
+ * that worker / review prompts already render. When the legacy
+ * `evidence: string[]` had at least one entry the caller may keep
+ * appending it for backward compatibility; the structured block sits
+ * on top.
+ */
+function buildEvidenceTextFromRecords(records: readonly EvidenceRecord[] | undefined, maxChars: number): string {
+  return formatEvidenceRecordsForPrompt(records, maxChars);
 }
 
 function limitText(text: string | undefined, maxChars: number): string {
