@@ -889,7 +889,28 @@ async function startSourceBundleHttpRuntime(
   const output: Buffer[] = [];
   const child = spawn(process.execPath, [options.serverFile], {
     cwd: options.packageDir,
-    env: { ...process.env, PORT: String(port) },
+    env: {
+      ...process.env,
+      PORT: String(port),
+      // PLAYWRIGHT_BROWSERS_PATH=0 tells playwright to look for browser
+      // binaries INSIDE the tool's own node_modules (specifically
+      // `node_modules/playwright-core/.local-browsers/`) instead of the
+      // default `$HOME/.cache/ms-playwright/` which doesn't survive
+      // container rebuilds. The tools/<name>/<version>/ directory is
+      // bind-mounted, so once `npm install` (postinstall) put the
+      // browsers there once they remain available across restarts.
+      //
+      // Without this var the runtime crashes with
+      //   "browserType.launch: Executable doesn't exist at
+      //   /root/.cache/ms-playwright/chromium_headless_shell-.../"
+      // even though the tool's node_modules already has the bytes.
+      //
+      // PUPPETEER_CACHE_DIR does the same job for puppeteer-extra
+      // based tools — point them at an in-package cache dir so the
+      // browser binaries land alongside the rest of node_modules.
+      PLAYWRIGHT_BROWSERS_PATH: "0",
+      PUPPETEER_CACHE_DIR: `${options.packageDir}/node_modules/.puppeteer-cache`,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout?.on("data", (chunk) => {

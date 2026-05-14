@@ -4026,12 +4026,46 @@ export class UniversalAgent {
       parentSpanId,
       saveArtifact,
       isScreenshotToolData,
-      (data) => ({
-        filename: data.artifact.filename,
-        mimeType: data.artifact.mimeType,
-        content: Buffer.from(data.artifact.contentBase64, "base64"),
-        description: data.artifact.description,
-      }),
+      (data) => {
+        // Phase 28 follow-up — accept both the canonical
+        // `{artifact: {filename, mimeType, contentBase64}}` shape
+        // and the simpler `{imageBase64}` / `{image}` / `{contentBase64}`
+        // shape that council-built screenshot tools emit. Derive the
+        // canonical AgentArtifact record from whatever's there.
+        const dAny = data as unknown as {
+          artifact?: { filename?: string; mimeType?: string; contentBase64?: string; description?: string };
+          imageBase64?: string;
+          image?: string;
+          contentBase64?: string;
+        };
+        if (dAny.artifact && typeof dAny.artifact === "object" && dAny.artifact.contentBase64) {
+          return {
+            filename: dAny.artifact.filename ?? "screenshot.png",
+            mimeType: dAny.artifact.mimeType ?? "image/png",
+            content: Buffer.from(dAny.artifact.contentBase64, "base64"),
+            description: dAny.artifact.description,
+          };
+        }
+        const base64 = dAny.imageBase64 ?? dAny.image ?? dAny.contentBase64 ?? "";
+        // Derive a sensible filename from the URL host + path so the
+        // Tools page + artifact viewer pick the right alt text.
+        const slug = (() => {
+          try {
+            const parsed = new URL(url);
+            const host = parsed.hostname.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+            const path = parsed.pathname.replace(/[^a-z0-9]+/gi, "-").toLowerCase().slice(0, 60).replace(/^-+|-+$/g, "");
+            return `${host}${path ? `-${path}` : ""}`.slice(0, 90) || "screenshot";
+          } catch {
+            return "screenshot";
+          }
+        })();
+        return {
+          filename: `${slug}.png`,
+          mimeType: "image/png",
+          content: Buffer.from(base64, "base64"),
+          description: `Screenshot captured from ${url}`,
+        };
+      },
       "artifact:screenshot",
       "Screenshot artifact generated",
       toolExecutionContext,
@@ -6105,20 +6139,69 @@ function mergeToolResults(results: Awaited<ReturnType<Tool["run"]>>[]): Awaited<
   const data: unknown[] = [];
 
   for (const result of results) {
-    if (Array.isArray(result.data)) {
-      for (const item of result.data) {
-        const url = typeof item === "object" && item && "url" in item ? String((item as { url?: unknown }).url) : "";
-        if (url && seenUrls.has(url)) continue;
-        if (url) seenUrls.add(url);
-        data.push(item);
-      }
+    // Phase 28 follow-up — accept the TWO shapes search tools
+    // actually return:
+    //   (a) data is an array of result objects (legacy / some
+    //       builtins)
+    //   (b) data is `{ results: [...] }` — natural shape when the
+    //       outputSchema declares `data: { type: "object",
+    //       properties: { results: { type: "array", ... } } }`,
+    //       which is what every council-built search tool we've
+    //       generated does (the LLM picks that shape).
+    // Previously we only handled (a); council-built searches ended
+    // up with `data: []` here and the agent lost every URL the tool
+    // worked hard to produce.
+    const resultItems: unknown[] = Array.isArray(result.data)
+      ? result.data
+      : result.data && typeof result.data === "object" && Array.isArray((result.data as { results?: unknown }).results)
+        ? (result.data as { results: unknown[] }).results
+        : [];
+    for (const item of resultItems) {
+      const url = typeof item === "object" && item && "url" in item ? String((item as { url?: unknown }).url) : "";
+      if (url && seenUrls.has(url)) continue;
+      if (url) seenUrls.add(url);
+      data.push(item);
     }
     if (result.content) lines.push(result.content);
   }
 
+  // Phase 28 follow-up — also surface result URLs in the merged
+  // `content` text so downstream `extractHttpUrls` (which only
+  // reads text) can find them. Without this, every search result
+  // URL stayed buried inside the structured `data` field, and the
+  // screenshot pipeline saw the tool's "Found 5 results" summary
+  // with no URL to feed `screenshot.url`. Each line as
+  // `- TITLE — URL` so the text reads naturally for the worker
+  // LLM too.
+  const urlLines: string[] = [];
+  for (const item of data) {
+    if (typeof item !== "object" || !item) continue;
+    const rec = item as Record<string, unknown>;
+    const url = typeof rec.url === "string" ? rec.url : "";
+    if (!url) continue;
+    const title = typeof rec.title === "string" ? rec.title.slice(0, 120) : "";
+    // Phase 28 follow-up — include the snippet too. Search-result
+    // snippets typically carry the actual factual answer the user
+    // is asking about (price, date, version, location). Without
+    // them in the evidence text, the worker LLM sees only titles
+    // and URLs and reports "value not found in evidence" — even
+    // though the DDG tool happily returned a snippet like
+    // "The live Bitcoin price today is $79,661.91 USD with a
+    // 24-hour trading volume of $36,837,381,984.16 USD". Promoting
+    // snippets into the text the worker actually reads is the
+    // single highest-impact change for factual question-answering.
+    const snippet = typeof rec.snippet === "string" ? rec.snippet.slice(0, 500) : "";
+    const head = title ? `- ${title} — ${url}` : `- ${url}`;
+    urlLines.push(snippet ? `${head}\n  ${snippet}` : head);
+  }
+  const mergedContent = (urlLines.length > 0
+    ? `${lines.join("\n\n")}\n\nResults:\n${urlLines.join("\n")}`
+    : lines.join("\n\n")
+  ).slice(0, 8000);
+
   return {
     ok,
-    content: lines.join("\n\n").slice(0, 8000),
+    content: mergedContent,
     data,
   };
 }
@@ -6564,7 +6647,42 @@ function selectBestUrlsForArtifact(
   // the top non-low-value URLs in a noisy search result. The agent now
   // skips browser discovery cleanly instead of capturing junk screenshots.
   if (selected.length > 0) return selected;
-  if (intents.length > 0) return [];
+  // Phase 28 follow-up — task-anchored URL fallback. When no
+  // pattern matches but a URL's HOST is explicitly mentioned in
+  // the task / subtask / evidence text (e.g. planner wrote
+  // "CoinMarketCap, Binance"), treat that URL as task-approved
+  // and include it. This keeps the safety net for off-topic URLs
+  // (arxiv.org on a travel task → not in the prompt → still
+  // dropped) while unblocking legitimate cases the pattern bank
+  // doesn't cover (bitcoin price on coinmarketcap.com).
+  if (intents.length > 0) {
+    // Tokenize the text WITHOUT the URLs themselves — otherwise
+    // every URL's host self-matches its own substring (e.g. an
+    // arxiv.org URL puts "arxiv" into the token set, then matches
+    // itself). The remaining prose is what the planner / task /
+    // dependency context actually said about sources.
+    const proseOnly = text
+      .replace(/https?:\/\/[^\s"'<>(),\]\[`]+/gi, " ")
+      .replace(/https?%3A%2F%2F[^\s"'<>(),\]\[`&]+/gi, " ");
+    const taskTokens = new Set<string>();
+    for (const token of proseOnly.toLowerCase().match(/[a-z0-9][a-z0-9.-]{2,}/g) ?? []) {
+      taskTokens.add(token);
+      // Also add the bare second-level domain prefix so "coinmarketcap.com"
+      // in evidence matches "coinmarketcap" in prose.
+      const dotIdx = token.indexOf(".");
+      if (dotIdx > 2) taskTokens.add(token.slice(0, dotIdx));
+    }
+    for (const url of sourceUrls) {
+      const host = normalizedHost(url);
+      const hostBase = host.split(".")[0] ?? host;
+      if (taskTokens.has(host) || taskTokens.has(hostBase)) {
+        if (selected.includes(url)) continue;
+        selected.push(url);
+        if (selected.length >= limit) return selected;
+      }
+    }
+    return selected;
+  }
 
   // Legacy / intent-less path: keep the previous behaviour for callers that
   // never threaded intents through (CLI smokes, fixtures).
@@ -6846,6 +6964,30 @@ function extractHttpUrls(text: string): string[] {
     if (seen.has(url)) continue;
     seen.add(url);
     urls.push(url);
+  }
+  // Phase 28 follow-up — decode URL-encoded targets hiding inside
+  // search-engine redirect URLs. DuckDuckGo wraps every result in
+  // `//duckduckgo.com/l/?uddg=https%3A%2F%2Fcoinmarketcap.com…`,
+  // Bing in `?u=…`, Google in `?url=…` / `?q=…`. The plain regex
+  // above misses these because the colon + slash are percent-encoded.
+  // Without this decode the screenshot pipeline saw "no source URL"
+  // even though the search tool returned 10 useful destinations,
+  // because every URL was hiding inside a `uddg=` parameter.
+  //
+  // Look for any percent-encoded `https%3A%2F%2F` (case-insensitive)
+  // and decode it. This is generic — works for any redirect format
+  // that URL-encodes the destination, not just DDG.
+  const encodedMatches = text.matchAll(/https?%3A%2F%2F[^\s"'<>(),\]\[`&]+/gi);
+  for (const m of encodedMatches) {
+    try {
+      const decoded = decodeURIComponent(m[0]).replace(/[.;:!?`)\]]+$/, "");
+      if (!decoded || seen.has(decoded)) continue;
+      if (!/^https?:\/\//i.test(decoded)) continue;
+      seen.add(decoded);
+      urls.push(decoded);
+    } catch {
+      // Bad encoding — skip silently.
+    }
   }
   return urls;
 }
@@ -7632,16 +7774,32 @@ type GenericArtifactToolData = {
 
 function isScreenshotToolData(data: unknown): data is ScreenshotToolData {
   if (!data || typeof data !== "object") return false;
+  // Canonical shape: `{artifact: {filename, mimeType: "image/png",
+  // contentBase64, ...}}` — what `browser.operate` and any agent-built
+  // screenshot tool that mirrored it returns.
   const artifact = (data as { artifact?: unknown }).artifact;
-  if (!artifact || typeof artifact !== "object") return false;
-
-  const candidate = artifact as Partial<ScreenshotToolData["artifact"]>;
-  return (
-    typeof candidate.filename === "string" &&
-    candidate.mimeType === "image/png" &&
-    typeof candidate.contentBase64 === "string" &&
-    candidate.contentBase64.length > 0
-  );
+  if (artifact && typeof artifact === "object") {
+    const candidate = artifact as Partial<ScreenshotToolData["artifact"]>;
+    if (
+      typeof candidate.filename === "string" &&
+      candidate.mimeType === "image/png" &&
+      typeof candidate.contentBase64 === "string" &&
+      candidate.contentBase64.length > 0
+    ) {
+      return true;
+    }
+  }
+  // Phase 28 follow-up — accept the simpler shape council-built tools
+  // emit when they don't wrap the bytes in an `artifact` object.
+  // We've observed `screenshot.url@1.0.8+` returning
+  // `data: { imageBase64: "<base64>" }`. Agent's `toArtifact` closure
+  // adapts both shapes to the canonical AgentArtifact record.
+  const flat = data as { imageBase64?: unknown; image?: unknown; contentBase64?: unknown };
+  for (const key of ["imageBase64", "image", "contentBase64"] as const) {
+    const value = flat[key];
+    if (typeof value === "string" && value.length > 0) return true;
+  }
+  return false;
 }
 
 function isGenericArtifactToolData(data: unknown): data is GenericArtifactToolData {

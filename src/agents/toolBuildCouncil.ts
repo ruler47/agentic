@@ -290,6 +290,42 @@ function sanitizeForFileName(value: string): string {
 }
 
 /**
+ * Hints about the runtime sandbox the generated tool will actually run
+ * in. The council has no way to know these facts unless we tell them,
+ * and missing them sends models down predictable dead ends:
+ *
+ *   • Browser tools that `import puppeteer from 'puppeteer'` and call
+ *     `puppeteer.launch()` with no executablePath: puppeteer's own
+ *     bundled Chromium is x86_64 and tries to load
+ *     `/lib64/ld-linux-x86-64.so.2` which is missing on our aarch64
+ *     container. The launch then crashes with a rosetta error and the
+ *     model has zero signal pointing at the fix (use system chromium
+ *     via process.env.CHROMIUM_PATH, or switch to playwright with
+ *     PLAYWRIGHT_BROWSERS_PATH=0).
+ *
+ *   • Anything assuming /tmp is writable, network egress unrestricted,
+ *     dns inside the cluster, etc. — these are env-specific and the
+ *     council otherwise guesses.
+ *
+ * We surface a short, prescriptive block once per council prompt
+ * (brainstorm + implement). Keep it concise — every paragraph here
+ * burns context budget that the bug context or qa criteria could use.
+ */
+const RUNTIME_ENV_HINTS = [
+  "Runtime sandbox (target where the generated tool will actually execute):",
+  "  • Container arch: aarch64 (ARM64) Linux, Node.js 20.",
+  "  • System Chromium IS installed at /usr/bin/chromium and exposed via",
+  "    process.env.CHROMIUM_PATH. Use this for any browser-based tool.",
+  "  • Playwright is preinstalled in /app/node_modules and runs with",
+  "    PLAYWRIGHT_BROWSERS_PATH=0 — its bundled Chromium works.",
+  "  • Puppeteer's own bundled Chromium DOES NOT launch on this host (x86_64 binary,",
+  "    missing /lib64/ld-linux-x86-64.so.2 → rosetta error). If you use puppeteer,",
+  "    you MUST pass executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium'",
+  "    to puppeteer.launch() — DO NOT rely on puppeteer's auto-download.",
+  "  • Network egress to the public internet is allowed.",
+].join("\n");
+
+/**
  * Render the operator-attached reference docs as a single block the
  * model can read. We cap each doc at 12 000 chars to keep the prompt
  * from blowing the context window; the model gets a "[truncated …]"
@@ -331,6 +367,7 @@ export function brainstormPrompt(
     context.qaCriteria.length > 0
       ? `QA acceptance criteria:\n${context.qaCriteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
       : undefined,
+    RUNTIME_ENV_HINTS,
     formatReferenceDocsBlock(context.referenceDocs),
     context.existingToolName
       ? `Rework target — existing tool: ${context.existingToolName}`
@@ -427,6 +464,7 @@ export function implementPrompt(
       ? `Acceptance criteria:\n${context.qaCriteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
       : undefined,
     context.secretHandle ? `Secret handle available: ${context.secretHandle}` : undefined,
+    RUNTIME_ENV_HINTS,
     formatReferenceDocsBlock(context.referenceDocs),
     context.existingToolName
       ? `Rework target: ${context.existingToolName} (start from the current source below).`
