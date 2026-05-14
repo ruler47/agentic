@@ -573,6 +573,29 @@ export class UniversalAgent {
     const config = await adapter.resolveConfig();
     const councilModels = await adapter.resolveCouncilModels(config.tier);
 
+    // Phase 28 follow-up — stamp every downstream council emit with
+    // the council's active model tier (S/M/L/XL). The Trace
+    // Inspector reads `payload.modelTier` to display a tier badge
+    // on each LLM card so the operator can see, at a glance, which
+    // tier is stuck (e.g. brainstorm is on L while QA-input synth
+    // is on S). Without this, all council spans showed a model id
+    // but no tier hint, and the operator had to grep settings to
+    // figure out where to retune.
+    const councilTier = config.tier;
+    const baseEmit = emit;
+    emit = async (ev) => {
+      // Only enrich council-pipeline spans (everything below this
+      // point), and only when the caller didn't already set a
+      // modelTier of its own. Untouched fields propagate through.
+      if (ev.payload && typeof ev.payload === "object" && !("modelTier" in (ev.payload as Record<string, unknown>))) {
+        return baseEmit({ ...ev, payload: { ...ev.payload, modelTier: councilTier } });
+      }
+      if (!ev.payload) {
+        return baseEmit({ ...ev, payload: { modelTier: councilTier } });
+      }
+      return baseEmit(ev);
+    };
+
     // Phase 23 Slice A — per-run token totals. Every LLM call below
     // forwards its `onUsage` into both a per-span accumulator (for
     // `payload.tokens` on the individual span emit) AND this
@@ -1304,7 +1327,14 @@ export class UniversalAgent {
     // tool's input shape.
     const { synthesizeQaInputPrompt } = await import("./toolBuildCouncil.js");
     const toolBodyExcerpt = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
-    let qaInput: Record<string, unknown> = synthesizeQaInput(context);
+    // Phase 28 follow-up — stub now reads `inputSchema` from the tool
+    // body so the fallback input matches the tool's actual contract.
+    // Without this, when LLM-based qa-input synthesis fails (parse
+    // error, model truncates), the legacy `{task, query}` stub was
+    // sent to tools that declared `{url, fullPage}` and they returned
+    // "Invalid input" — QA failed for a non-bug reason and the council
+    // wasted repair rounds on a sample-input issue.
+    let qaInput: Record<string, unknown> = synthesizeQaInput(context, toolBodyExcerpt);
     const qaInputSpanId = createSpanId("council-qa-input");
     const qaInputStartedAtDate = new Date();
     const qaInputStartedAt = qaInputStartedAtDate.toISOString();
@@ -8865,11 +8895,127 @@ function messagesToPromptText(messages: ReadonlyArray<{ role: string; content: s
   return messages.map((m) => `[${m.role}]\n${m.content}`).join("\n\n");
 }
 
-function synthesizeQaInput(context: import("./toolBuildCouncil.js").ToolBuildContext): Record<string, unknown> {
-  // Lightweight stub: use the first qaCriterion as the input task, falling
-  // back to the description. The real QA oracle reads the actual tool
-  // output, so the input only has to be "plausible enough" to exercise the
-  // tool.
+function synthesizeQaInput(
+  context: import("./toolBuildCouncil.js").ToolBuildContext,
+  toolBodyExcerpt?: string,
+): Record<string, unknown> {
+  // Phase 28 follow-up — schema-aware stub. Parse the tool body's
+  // declared `inputSchema` and emit a sample object that matches
+  // its `required` fields by type:
+  //   string → "https://example.com" if the field name hints at a
+  //            URL; "true" / "test query" / etc. by name heuristic;
+  //            description-driven fallback otherwise
+  //   integer/number → 1 (or `minimum` if declared)
+  //   boolean → true
+  //   array  → []
+  //   object → {}
+  // When the body cannot be parsed, fall back to the legacy
+  // `{task, query}` shape (deterministic and at least non-empty).
+  if (toolBodyExcerpt) {
+    const schema = extractInputSchemaFromToolBody(toolBodyExcerpt);
+    if (schema && typeof schema === "object") {
+      const properties = (schema as { properties?: Record<string, unknown> }).properties;
+      const required = (schema as { required?: unknown }).required;
+      if (properties && typeof properties === "object") {
+        const requiredNames: string[] = Array.isArray(required)
+          ? (required.filter((r): r is string => typeof r === "string"))
+          : Object.keys(properties);
+        const out: Record<string, unknown> = {};
+        for (const name of requiredNames) {
+          out[name] = sampleValueForSchemaField(name, properties[name]);
+        }
+        if (Object.keys(out).length > 0) return out;
+      }
+    }
+  }
+  // Legacy fallback when no schema is parseable.
   const firstCriterion = context.qaCriteria[0] ?? context.description;
   return { task: firstCriterion, query: firstCriterion };
+}
+
+function extractInputSchemaFromToolBody(body: string): Record<string, unknown> | undefined {
+  // Mirror of `extractInputSchemaFromSource` in councilToolAdapter.ts —
+  // duplicated here so the agent runtime stays self-contained (no
+  // cross-import into the tool-build adapter from agent code). Finds
+  // `inputSchema: { ... }` or `const inputSchema = { ... }` literal
+  // and JSON-parses it after unquoted-key normalization.
+  const inline = body.match(/inputSchema\s*:\s*\{/);
+  const decl = body.match(/(?:const|let|var)\s+inputSchema\s*[:=][^{]*\{/);
+  const marker = inline ?? decl;
+  if (!marker || marker.index === undefined) return undefined;
+  const matchedText = marker[0];
+  const braceOffsetInMatch = matchedText.lastIndexOf("{");
+  if (braceOffsetInMatch < 0) return undefined;
+  const start = marker.index + braceOffsetInMatch;
+  let depth = 0;
+  let inString: '"' | "'" | "`" | null = null;
+  let escape = false;
+  for (let i = start; i < body.length; i += 1) {
+    const ch = body[i]!;
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (ch === "\\") escape = true;
+      else if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") { inString = ch; continue; }
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        const literal = body.slice(start, i + 1);
+        const jsonish = literal
+          .replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z_$0-9]*)\s*:/g, '$1"$2":')
+          .replace(/,(\s*[}\]])/g, "$1")
+          .replace(/'([^'\\]*)'/g, '"$1"');
+        try {
+          return JSON.parse(jsonish) as Record<string, unknown>;
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function sampleValueForSchemaField(name: string, fieldSchema: unknown): unknown {
+  const lowerName = name.toLowerCase();
+  const field = (fieldSchema && typeof fieldSchema === "object") ? (fieldSchema as Record<string, unknown>) : {};
+  const type = typeof field.type === "string" ? field.type : undefined;
+  const description = typeof field.description === "string" ? field.description.toLowerCase() : "";
+
+  if (type === "integer" || type === "number") {
+    const min = typeof field.minimum === "number" ? field.minimum : 1;
+    return min;
+  }
+  if (type === "boolean") return true;
+  if (type === "array") return [];
+  if (type === "object") return {};
+  // String fallback — name-driven heuristic for the most common
+  // input shapes council tools emit. None of these are per-tool
+  // band-aids; they are property-name conventions that any
+  // OpenAPI-style schema author uses.
+  if (/^(url|link|href|target)$/.test(lowerName) || description.includes("url")) {
+    return "https://example.com";
+  }
+  if (/(query|search|q)$/.test(lowerName) || description.includes("search")) {
+    return "test";
+  }
+  if (/(text|content|message|prompt|input)$/.test(lowerName)) {
+    return "hello world";
+  }
+  if (/(name|title|label)$/.test(lowerName)) {
+    return "test";
+  }
+  if (/(path|file|filename)$/.test(lowerName)) {
+    return "test.txt";
+  }
+  if (/(email)$/.test(lowerName)) {
+    return "test@example.com";
+  }
+  if (/(date|time|timestamp)$/.test(lowerName)) {
+    return new Date().toISOString();
+  }
+  return "test";
 }

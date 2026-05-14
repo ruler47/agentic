@@ -327,9 +327,15 @@ function TimelineView({
   if (nodes.length === 0) {
     return <EmptyTracePanel filtersActive={total > 0} />;
   }
+  // Phase 28 follow-up — newest events on top. Reading a long run
+  // top-to-bottom with the latest activity at the BOTTOM forces the
+  // operator to scroll every time. Reverse-chrono order matches what
+  // every other tool (logs, console, CI runs) does and keeps the
+  // most relevant card under the eye when streaming live.
+  const orderedNodes = [...nodes].reverse();
   return (
     <ol className="flex flex-col gap-1.5 rounded-[var(--radius-card)] border border-app-border bg-app-surface p-3">
-      {nodes.map((node) => (
+      {orderedNodes.map((node) => (
         <li key={node.spanId}>
           <button
             type="button"
