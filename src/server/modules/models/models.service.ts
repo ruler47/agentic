@@ -143,8 +143,8 @@ export class ModelsService {
     const embeddingBaseUrl = process.env.EMBEDDING_BASE_URL ?? baseUrl;
     const providers = this.providers ? await this.providers.list() : [];
     const [chatModels, embeddingModels] = await Promise.all([
-      this.listOpenAiCompatibleModels(baseUrl),
-      this.listOpenAiCompatibleModels(embeddingBaseUrl),
+      this.listOpenAiCompatibleModels(baseUrl, "chat"),
+      this.listOpenAiCompatibleModels(embeddingBaseUrl, "embedding"),
     ]);
     return {
       chat: {
@@ -168,7 +168,29 @@ export class ModelsService {
 
   private async listOpenAiCompatibleModels(
     baseUrl: string,
+    role: "chat" | "embedding" = "chat",
   ): Promise<Array<{ id: string; ownedBy?: string }>> {
+    // Phase 28 follow-up — LM Studio's REST API at /api/v0/models
+    // returns rich metadata (state: "loaded"|"not-loaded", type:
+    // "llm"|"vlm"|"embeddings", arch, capabilities). The plain
+    // OpenAI-compatible /v1/models endpoint lists every DOWNLOADED
+    // model regardless of whether it's actually loaded into VRAM,
+    // and gives the operator no signal for which ones the council
+    // can actually call. We try v0 first (richer); fall back to v1
+    // for non-LM-Studio backends.
+    //
+    // Filter rules when v0 data is available:
+    //   - type === "embeddings" → drop from CHAT model list (they're
+    //     embedding-only and would error on /chat/completions)
+    //   - state !== "loaded" → drop (not in VRAM = unusable until
+    //     the operator loads it in LM Studio)
+    //
+    // This also makes LM Studio's multi-host mesh transparent: when
+    // the user connects another machine's LM Studio and loads
+    // openai/gpt-oss-120b there, the federated /v1/models reflects
+    // it as loaded — our v0 query picks it up automatically.
+    const v0Models = await this.tryLmStudioV0Models(baseUrl, role);
+    if (v0Models !== undefined) return v0Models;
     try {
       const response = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
         headers: { accept: "application/json" },
@@ -184,6 +206,64 @@ export class ModelsService {
         .filter((item) => item.id);
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * Probe LM Studio's REST API (`/api/v0/models`) for richer model
+   * info — state (loaded/not-loaded), type (llm/vlm/embeddings),
+   * capabilities. Returns `undefined` when the endpoint is missing
+   * (404 / non-JSON / wrong server) so the caller can fall back to
+   * the OpenAI-compat `/v1/models` path.
+   *
+   * The derivation strips a trailing `/v1` from the configured
+   * baseUrl to reach the LM Studio root, then appends `/api/v0/models`.
+   * Both forms `http://host:1234/v1` and `http://host:1234` work.
+   */
+  private async tryLmStudioV0Models(
+    baseUrl: string,
+    role: "chat" | "embedding" = "chat",
+  ): Promise<Array<{ id: string; ownedBy?: string }> | undefined> {
+    const root = baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+    const url = `${root}/api/v0/models`;
+    try {
+      const response = await fetch(url, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(2500),
+      });
+      if (!response.ok) return undefined;
+      const payload = (await response.json()) as {
+        data?: Array<{
+          id?: unknown;
+          publisher?: unknown;
+          type?: unknown;
+          state?: unknown;
+        }>;
+      };
+      if (!Array.isArray(payload.data)) return undefined;
+      // If NONE of the items has a `state` field, this isn't a real
+      // LM Studio v0 response — fall back to OpenAI-compat.
+      const hasStateField = payload.data.some((item) => typeof item.state === "string");
+      if (!hasStateField) return undefined;
+      return payload.data
+        .map((item) => ({
+          id: typeof item.id === "string" ? item.id : "",
+          ownedBy: typeof item.publisher === "string" ? item.publisher : undefined,
+          state: typeof item.state === "string" ? item.state : undefined,
+          type: typeof item.type === "string" ? item.type : undefined,
+        }))
+        .filter((item) => {
+          if (!item.id) return false;
+          if (item.state !== "loaded") return false;
+          // For the chat catalog, drop embedding-only models (they'd
+          // 4xx on /chat/completions). For the embedding catalog,
+          // KEEP only embedding-type models.
+          if (role === "chat") return item.type !== "embeddings";
+          return item.type === "embeddings";
+        })
+        .map(({ id, ownedBy }) => ({ id, ownedBy }));
+    } catch {
+      return undefined;
     }
   }
 }
