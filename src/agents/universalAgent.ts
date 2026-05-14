@@ -3156,13 +3156,31 @@ export class UniversalAgent {
         title: `Web search: ${query.slice(0, 96)}`,
         ownerSpanId: spanId,
         inputSummary: limitText(query, 600),
+        // Phase 28 follow-up — let the WorkLedger allow retries
+        // after a prior failure (DDG transient "No results", network
+        // blip). The trigger word "retry" tells `decideWorkReuse` to
+        // skip the 30-minute blocked-by-recent-failure window.
+        reason: `retry search via ${webSearch.name}`,
         metadata: { tool: webSearch.name, role: subtask.role },
       },
       parentSpanId,
     );
     if (claim?.decision.status === "reuse_completed" && claim.item.outputSummary) {
-      ledger?.trackWhatWorked(`Reused web search evidence for "${query.slice(0, 80)}"`);
-      return `External tool evidence from ${webSearch.name} (reused via Work Ledger ${claim.item.id}):\n${limitText(claim.item.outputSummary, promptBudget.toolEvidenceChars)}`;
+      // Phase 28 follow-up — only reuse a prior search summary if it
+      // ACTUALLY contains usable evidence (at least one http(s) or
+      // percent-encoded https URL the downstream screenshot pipeline
+      // can extract). Old completions written before mergeToolResults
+      // started surfacing URL lines into `content` left the
+      // outputSummary URL-less; reusing them poisoned every retry
+      // with empty evidence even after the underlying tool was fixed.
+      const summary = claim.item.outputSummary;
+      const hasUsableUrl = /https?:\/\//i.test(summary) || /https?%3A%2F%2F/i.test(summary);
+      if (hasUsableUrl) {
+        ledger?.trackWhatWorked(`Reused web search evidence for "${query.slice(0, 80)}"`);
+        return `External tool evidence from ${webSearch.name} (reused via Work Ledger ${claim.item.id}):\n${limitText(summary, promptBudget.toolEvidenceChars)}`;
+      }
+      // Otherwise fall through to a fresh attempt below — the cached
+      // entry is too thin to feed the screenshot pipeline.
     }
 
     await emit({
@@ -4449,6 +4467,16 @@ export class UniversalAgent {
         title: `${artifactTitle} via ${tool.name}`,
         ownerSpanId: spanId,
         inputSummary: limitText(detail, 600),
+        // Phase 28 follow-up — explicitly ask the WorkLedger to
+        // allow revalidation. Without this, a transient failure
+        // recorded on a prior run (e.g. v1.0.8 of screenshot.url
+        // crashed with rosetta error, marking the workKey "failed")
+        // blocks every subsequent retry with
+        // `blocked_by_recent_failure` for the next 30 minutes — even
+        // though the underlying tool now works after a rebuild.
+        // The reason text below contains the trigger word "retry"
+        // which decideWorkReuse already recognizes.
+        reason: `retry artifact via ${tool.name} (capability=${capability})`,
         metadata: { capability, tool: tool.name },
       },
       parentSpanId,
