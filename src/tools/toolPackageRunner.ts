@@ -726,12 +726,31 @@ async function buildSourceBundlePackage(
           cwd: packageDir,
           timeout: sourceBundleBuildTimeoutMs(),
           maxBuffer: 4 * 1024 * 1024,
-          // env passes through unchanged — we DELIBERATELY do not
-          // set PUPPETEER_SKIP_DOWNLOAD or any other "skip the
-          // tool's postinstall" flags. If the tool declared
-          // puppeteer, its postinstall brings a bundled Chromium
-          // into its OWN node_modules and the runtime resolves
-          // it locally. No platform-side binaries are consulted.
+          // Phase 28 follow-up — make playwright/puppeteer
+          // browser downloads SELF-CONTAINED to the tool's own
+          // node_modules. Default playwright postinstall installs
+          // Chromium to `$HOME/.cache/ms-playwright/` — which is
+          // container-ephemeral. After a container restart, the
+          // bind-mounted tools/ dir survives (source + node_modules
+          // + dist) but the home-cache browser disappears, leaving
+          // the tool reporting "Executable doesn't exist at
+          // /root/.cache/ms-playwright/...".
+          //
+          // PLAYWRIGHT_BROWSERS_PATH=0 tells playwright to look in
+          // and install to `node_modules/playwright-core/.local-browsers/`
+          // (i.e. INSIDE the package, which is bind-mounted). Same
+          // semantics for puppeteer via PUPPETEER_CACHE_DIR set to
+          // a per-package node_modules path.
+          //
+          // We DELIBERATELY do NOT set
+          // PUPPETEER_SKIP_DOWNLOAD / PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+          // — the tool's postinstall MUST actually download the
+          // browser; we just redirect WHERE the bytes land.
+          env: {
+            ...process.env,
+            PLAYWRIGHT_BROWSERS_PATH: "0",
+            PUPPETEER_CACHE_DIR: `${packageDir}/node_modules/.puppeteer-cache`,
+          },
         },
       );
     } catch (installError) {
@@ -968,6 +987,14 @@ async function startSourceBundleHttpRuntime(
     PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     HOME: process.env.HOME ?? "/tmp",
     PORT: String(port),
+    // Phase 28 follow-up — match the install-time env so the
+    // subprocess looks for browser binaries INSIDE its own
+    // node_modules (where postinstall just put them) instead of
+    // in $HOME/.cache/ms-playwright (container-ephemeral). Same
+    // PUPPETEER_CACHE_DIR pin so puppeteer-extra tools resolve
+    // their browsers from the bind-mounted package dir.
+    PLAYWRIGHT_BROWSERS_PATH: "0",
+    PUPPETEER_CACHE_DIR: `${options.packageDir}/node_modules/.puppeteer-cache`,
   };
   const child = spawn(process.execPath, [options.serverFile], {
     cwd: options.packageDir,

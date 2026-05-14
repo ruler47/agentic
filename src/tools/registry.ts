@@ -76,14 +76,36 @@ export class ToolRegistry {
     capability: string,
     policy?: { denied?: readonly string[]; preferred?: readonly string[] },
   ): Tool[] {
+    // Phase 28 follow-up — capability-name normalization.
+    //
+    // LLMs (planners, council emitters, operators editing via PATCH)
+    // emit capability tokens with inconsistent separators and case:
+    //   "web-search" / "web_search" / "Web Search"
+    //   "browser-screenshot" / "browser_screenshot"
+    //   "market-timeseries" / "market_timeseries"
+    // The runtime's `collectToolEvidence` always queries with the
+    // hyphenated lowercase form, but tool authors / patchers often
+    // store underscored or mixed-case capabilities. The mismatch
+    // silently dropped a registered web.search tool out of every
+    // worker's evidence pipeline ("Find bitcoin price" returned no
+    // data because `findByCapability("web-search")` saw zero matches
+    // when the only candidate had `web_search` in its capabilities).
+    //
+    // We normalize on BOTH sides — query and stored capability — to
+    // lowercase + collapse `_`/whitespace to `-`. Exact-vs-prefix
+    // semantics are preserved on the normalized strings.
+    const normalize = (s: string): string =>
+      s.trim().toLowerCase().replace(/[\s_]+/g, "-");
+    const target = normalize(capability);
     const exact: Tool[] = [];
     const prefixed: Tool[] = [];
     for (const tool of this.list()) {
-      if (tool.capabilities.includes(capability)) {
+      const normalizedCaps = tool.capabilities.map(normalize);
+      if (normalizedCaps.includes(target)) {
         exact.push(tool);
         continue;
       }
-      if (tool.capabilities.some((entry) => entry.startsWith(`${capability}-`))) {
+      if (normalizedCaps.some((entry) => entry.startsWith(`${target}-`))) {
         prefixed.push(tool);
       }
     }

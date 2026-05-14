@@ -221,10 +221,37 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     // 2. Register / replace metadata row. Use replacement when the tool
     //    already exists (rework / bugfix flow); otherwise register fresh.
     const existing = (await this.deps.metadataStore.list()).find((m) => m.name === toolName);
-    // Deduplicate so we don't end up with two copies of `council-built`
-    // if a sub-build asks for that exact tag too.
+    // Phase 28 follow-up — auto-derive standard capabilities from tool
+    // name + description + imports. Without this, every council-built
+    // tool registered with just `[toolName, "council-built"]` and the
+    // worker's `findByCapability("web-search" | "browser-screenshot" |
+    // "market-timeseries" | "chart-generation")` lookup never matched
+    // the council's own creations — so a planner that said "use
+    // web-search" got back zero tools and the worker wrote prose
+    // without any real evidence. The Bitcoin price run was the
+    // canonical failure mode.
+    //
+    // Also: preserve any operator-set capabilities from the previous
+    // active version. The previous code wiped them on every rework
+    // (a PATCH was overwritten by the next council build). Now we
+    // merge: derived + operator-preserved + request-requested.
+    const derivedCapabilities = deriveStandardCapabilities(
+      toolName,
+      metadata.description,
+      toolBody,
+      importedPackages,
+    );
+    const preservedFromExisting = existing
+      ? existing.capabilities.filter((c) => c !== toolName && c !== "council-built")
+      : [];
     const capabilities = Array.from(
-      new Set([toolName, "council-built", ...(metadata.requiredCapabilities ?? [])]),
+      new Set([
+        toolName,
+        "council-built",
+        ...derivedCapabilities,
+        ...preservedFromExisting,
+        ...(metadata.requiredCapabilities ?? []),
+      ]),
     );
     const baseInput = {
       name: toolName,
@@ -857,6 +884,97 @@ function compareSemver(a: string, b: string): number {
 
 function sanitizeName(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 120) || "council_tool";
+}
+
+/**
+ * Phase 28 follow-up — auto-derive the standard runtime capabilities
+ * a council-built tool should advertise based on observable signals
+ * from name / description / tool body. Without this, council-built
+ * tools registered with only `[name, "council-built"]` and the agent's
+ * `findByCapability("web-search" | "browser-screenshot" | …)` lookup
+ * silently returned zero — so the planner's `requiredTools: ["web-search"]`
+ * was unfulfillable even though we'd just built a working
+ * `web.duckduckgo.search`.
+ *
+ * Capability inference is conservative — we only add a tag when the
+ * evidence is unambiguous. Operators can always layer more via
+ * `PATCH /api/tools/generated-modules/:name`, and those overlays now
+ * survive reworks (see `preservedFromExisting` in `registerToolFromFiles`).
+ *
+ * Signals checked:
+ *   - Name token: "search", "screenshot", "chart", "ohlc"/"timeseries"
+ *   - Description text (case-insensitive)
+ *   - npm imports: playwright/puppeteer → browser-* capabilities,
+ *     ws/axios/openai-style libs hint at api-http-json, etc.
+ */
+export function deriveStandardCapabilities(
+  toolName: string,
+  description: string,
+  toolBody: string,
+  importedPackages: string[],
+): string[] {
+  const blob = `${toolName} ${description} ${importedPackages.join(" ")}`.toLowerCase();
+  const imports = importedPackages.map((p) => p.toLowerCase());
+  const out = new Set<string>();
+
+  const has = (...needles: string[]) => needles.some((n) => blob.includes(n));
+  const importsAny = (...names: string[]) =>
+    names.some((n) => imports.some((i) => i === n || i.startsWith(`${n}/`) || i.startsWith(`${n}-`)));
+
+  // web-search — anything that says "search", uses a search engine
+  // (DuckDuckGo, Google, Bing, Brave, Kagi), or scrapes a SERP page.
+  if (
+    has("search", "duckduckgo", "google search", "bing search", "kagi", "brave search", "serpapi") ||
+    importsAny("serpapi", "duck-duck-scrape")
+  ) {
+    out.add("web-search");
+  }
+
+  // browser-screenshot — anything that captures a page screenshot,
+  // including the canonical `screenshot.url` tool and any playwright
+  // / puppeteer-using tool that calls `.screenshot()`.
+  if (
+    has("screenshot", "snapshot", "page capture") ||
+    /\.screenshot\s*\(/.test(toolBody)
+  ) {
+    out.add("browser-screenshot");
+  }
+
+  // browser-automation — anything that automates a real browser
+  // (playwright / puppeteer / selenium-style page navigation).
+  if (
+    importsAny("playwright", "playwright-extra", "playwright-core", "puppeteer", "puppeteer-extra", "selenium-webdriver") ||
+    /(playwright|puppeteer|chromium)\.launch\s*\(/.test(toolBody)
+  ) {
+    out.add("browser-automation");
+  }
+
+  // chart-generation — charts / plots / svg renderers.
+  if (
+    has("chart", "plot", "graph render", "render svg") ||
+    importsAny("chart.js", "chartjs", "d3", "vega", "plotly")
+  ) {
+    out.add("chart-generation");
+  }
+
+  // market-timeseries — explicit market / OHLC / candles / quotes.
+  if (has("ohlc", "candles", "candlestick", "market data", "timeseries", "ticker", "quote feed")) {
+    out.add("market-timeseries");
+  }
+
+  // file-append / file IO.
+  if (toolName.startsWith("file.") || has("append to file", "write file", "file.append")) {
+    out.add("file-io");
+  }
+
+  // api-http-json — generic outbound JSON HTTP. We only add this when
+  // there's a fetch/axios import AND the description suggests it's the
+  // primary purpose (otherwise EVERY tool would get it).
+  if (importsAny("axios", "got", "undici") && has("api", "http", "endpoint", "rest")) {
+    out.add("api-http-json");
+  }
+
+  return Array.from(out).sort();
 }
 
 /**
