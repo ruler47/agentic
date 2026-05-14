@@ -869,7 +869,12 @@ test("UniversalAgent executes required screenshot artifacts inside delegated sub
       ],
     }),
     "Captured the page and saved proof at /artifacts/proof.png.",
-    '{"subtaskId":"proof","verdict":"pass","notes":"Real artifact was created and cited."}',
+    // Phase 28 follow-up — review LLM call is skipped by the new
+    // deterministic artifact-fast-pass gate (subtask requires a
+    // screenshot, the tool returned ok=true, and an artifact landed
+    // on the WorkerResult — no LLM verdict needed). Sequence used
+    // to have a review-verdict JSON line here; now the synthesis
+    // call comes right after the worker output.
     "Final answer cites /artifacts/proof.png.",
     '{"shouldStore":false}',
   ]);
@@ -925,7 +930,9 @@ test("UniversalAgent executes required screenshot artifacts inside delegated sub
     assert.equal(result.workerResults[0]?.artifacts?.[0]?.url, "/artifacts/proof.png");
     assert.equal(result.artifacts?.some((artifact) => artifact.url === "/artifacts/proof.png"), true);
     assert.ok(events.includes("artifact-created"));
-    assert.equal(fakeLlm.callCount, 6);
+    // Phase 28 follow-up — review LLM call is now skipped by the
+    // deterministic artifact-fast-pass gate; callCount drops 6 → 5.
+    assert.equal(fakeLlm.callCount, 5);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -2058,7 +2065,11 @@ test("UniversalAgent reuses dependency artifacts instead of recreating proof in 
       ],
     }),
     "Proof created at /artifacts/proof.png.",
-    '{"subtaskId":"proof","verdict":"pass","notes":"Proof exists."}',
+    // Phase 28 follow-up — the "proof" subtask's review LLM call is
+    // skipped by the deterministic artifact-fast-pass gate (real
+    // tool call returned ok=true, artifact saved). The "final"
+    // subtask inherits an existing artifact without making a new
+    // tool call, so its review still goes through the LLM.
     "Final response reuses /artifacts/proof.png.",
     '{"subtaskId":"final","verdict":"pass","notes":"Inherited proof was used."}',
     "Final answer with /artifacts/proof.png.",
@@ -2105,7 +2116,11 @@ test("UniversalAgent reuses dependency artifacts instead of recreating proof in 
     assert.equal(screenshotInputs.length, 1);
     assert.equal(result.workerResults[1]?.artifacts?.[0]?.url, "/artifacts/proof.png");
     assert.equal(result.artifacts?.length, 1);
-    assert.equal(fakeLlm.callCount, 8);
+    // Phase 28 follow-up — first subtask's review LLM call skipped
+    // (deterministic artifact-fast-pass); the second subtask
+    // inherits the artifact without a new tool call so its review
+    // still goes through the LLM. Total drops 8 → 7.
+    assert.equal(fakeLlm.callCount, 7);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
