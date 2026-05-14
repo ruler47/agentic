@@ -82,7 +82,15 @@ test("guard fires when reload + probe wired and the new version did not register
         /promoted in metadata/.test(err.message) && /could not import/.test(err.message),
       "expected a descriptive error mentioning promotion + import failure",
     );
-    assert.equal(reloadCalls, 1, "reload should have been called once before the throw");
+    // Phase 28 follow-up — atomic rollback fires a SECOND reload
+    // after metadata revert, so the registry shape matches the
+    // restored state. Expected: 1 (initial load attempt) + 1
+    // (post-rollback reload) = 2.
+    assert.equal(
+      reloadCalls,
+      2,
+      "reload should fire twice — once for the initial register attempt, once after atomic rollback",
+    );
   });
 });
 

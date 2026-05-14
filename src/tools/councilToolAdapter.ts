@@ -245,18 +245,30 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
       },
       changeSummary: `Council-built version ${version}.`,
     };
-    if (existing) {
-      await this.deps.metadataStore.promoteReplacement({
-        ...baseInput,
-        replacesVersion: existing.version,
-      });
-    } else {
-      await this.deps.metadataStore.registerGenerated(baseInput);
-    }
+    // Phase 28 follow-up — track metadata/disk writes so we can
+    // atomically roll them back on any throw inside this method.
+    // Without atomic rollback, a failed `registerToolFromFiles`
+    // (npm install 404, tsc compile fail, version-pin probe miss)
+    // leaves an orphan tool_module_versions row + disk dir behind.
+    // Build-fix loops then create N more orphans (one per attempt)
+    // and the tools/<name>/ directory accumulates broken versions
+    // that have no metadata pointer ever pointing at them.
+    const priorActiveVersion = existing?.version;
+    let metadataPromotedHere = false;
+    try {
+      if (existing) {
+        await this.deps.metadataStore.promoteReplacement({
+          ...baseInput,
+          replacesVersion: existing.version,
+        });
+      } else {
+        await this.deps.metadataStore.registerGenerated(baseInput);
+      }
+      metadataPromotedHere = true;
 
-    // 3. Refresh the in-process registry so the tool is callable
-    //    immediately (the QA loop calls it via `runToolManually` next).
-    await this.deps.reloadGeneratedTools?.();
+      // 3. Refresh the in-process registry so the tool is callable
+      //    immediately (the QA loop calls it via `runToolManually` next).
+      await this.deps.reloadGeneratedTools?.();
 
     // 3a. Phase 16 Slice B — fail fast when the new version did not
     //     load. Without this guard, `promoteReplacement` silently
@@ -329,6 +341,57 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
         );
       }
     }
+    } catch (error) {
+      // Phase 28 follow-up — atomic rollback. Anything between the
+      // metadata write and the version-pin probe failed: revert
+      // metadata + delete disk dir + reload registry to a clean
+      // state. Without this, every failed council attempt left a
+      // dangling tool_module_versions row + a tools/<name>/<version>
+      // dir, and the build-fix loop's nextVersionFor kept bumping
+      // off the broken version (v1.0.3 → 1.0.4 → … → 1.0.8) while
+      // none of them ever became active.
+      if (metadataPromotedHere) {
+        try {
+          if (priorActiveVersion) {
+            await this.deps.metadataStore.activateVersion(toolName, priorActiveVersion);
+          } else if (this.deps.metadataStore.deleteGenerated) {
+            await this.deps.metadataStore.deleteGenerated(toolName);
+          }
+        } catch {
+          // Best-effort; the throw below carries the real diagnostic.
+        }
+        // Drop the failed version's row from tool_module_versions
+        // entirely so it doesn't accumulate as a phantom in
+        // listVersions output.
+        if (this.deps.metadataStore.deleteVersion) {
+          try {
+            await this.deps.metadataStore.deleteVersion(toolName, version);
+          } catch {
+            // Best-effort.
+          }
+        }
+        // Reload so the in-memory registry reflects the rolled-back
+        // active version (back to existing) instead of the failed
+        // one we just promoted.
+        if (this.deps.reloadGeneratedTools) {
+          try {
+            await this.deps.reloadGeneratedTools();
+          } catch {
+            // Reload failure is logged inside the workers; the
+            // primary error below is what the operator needs.
+          }
+        }
+      }
+      // Nuke the failed version's disk dir so the next build-fix
+      // iteration starts fresh and pruneOldVersions can't carry
+      // the orphan forward.
+      try {
+        await rm(baseDir, { recursive: true, force: true });
+      } catch {
+        // Best-effort.
+      }
+      throw error;
+    }
 
     // 4. Backfill metadata with the schemas declared inside the Tool
     //    body. registerGenerated above only saw scaffold-level fields
@@ -343,13 +406,19 @@ export class CouncilToolAdapter implements ToolBuildCouncilAdapter {
     //   - inputSchema falls back to regex-parsed schema from the body
     //   - examples falls back to the QA sampleInput if any
     const fallbackInputSchema = extractInputSchemaFromSource(toolBody);
+    const fallbackOutputSchema = extractOutputSchemaFromSource(toolBody);
     const exampleFromSample = metadata.sampleInput
       ? [{ title: "Synthesized QA input", input: metadata.sampleInput }]
       : undefined;
     const enriched = {
       ...baseInput,
       inputSchema: (live?.inputSchema ?? coerceInputSchema(fallbackInputSchema)),
-      outputSchema: live?.outputSchema,
+      // Phase 28 follow-up — outputSchema fallback. HTTP process
+      // runners read outputSchema from the metadata row (the runner
+      // never imports the tool body — it proxies HTTP /run), so on
+      // first register `live?.outputSchema` is undefined. Use the
+      // model's source-declared outputSchema as a fallback.
+      outputSchema: live?.outputSchema ?? coerceInputSchema(fallbackOutputSchema),
       examples:
         live?.examples && live.examples.length > 0
           ? live.examples
@@ -894,12 +963,34 @@ export async function probeNpmRegistryExistence(
 }
 
 function extractInputSchemaFromSource(source: string): Record<string, unknown> | undefined {
-  // Find an inline `inputSchema: { ... }`. If the LLM used a separate
-  // `const inputSchema = { ... }` declaration and then shorthand'd it
-  // (`inputSchema,`) inside the Tool literal — which both gemma and
+  return extractSchemaFromSource(source, "inputSchema");
+}
+
+/**
+ * Phase 28 follow-up — outputSchema fallback.
+ *
+ * The HTTP process runner exposes inputSchema/outputSchema by reading
+ * them from the metadata row (it never imports the tool body, only
+ * proxies HTTP /run calls). So at `registerToolFromFiles` time the
+ * live tool object's `outputSchema` is whatever the metadata HAS,
+ * which on first register is undefined — chicken-and-egg. We
+ * regex-parse the literal from the model's source as a fallback so
+ * the Tools page + every consumer agent sees a real shape.
+ */
+function extractOutputSchemaFromSource(source: string): Record<string, unknown> | undefined {
+  return extractSchemaFromSource(source, "outputSchema");
+}
+
+function extractSchemaFromSource(
+  source: string,
+  fieldName: "inputSchema" | "outputSchema",
+): Record<string, unknown> | undefined {
+  // Find an inline `<fieldName>: { ... }`. If the LLM used a separate
+  // `const <fieldName> = { ... }` declaration and then shorthand'd it
+  // (`<fieldName>,`) inside the Tool literal — which both gemma and
   // qwen do regularly — fall back to that pattern.
-  const inline = source.match(/inputSchema\s*:\s*\{/);
-  const decl = source.match(/(?:const|let|var)\s+inputSchema\s*[:=][^{]*\{/);
+  const inline = new RegExp(`${fieldName}\\s*:\\s*\\{`).exec(source);
+  const decl = new RegExp(`(?:const|let|var)\\s+${fieldName}\\s*[:=][^{]*\\{`).exec(source);
   const marker = inline ?? decl;
   if (!marker || marker.index === undefined) return undefined;
   // Locate the `{` that starts the schema literal.
