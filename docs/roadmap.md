@@ -2749,3 +2749,180 @@ available  (loader does not downgrade)
 | Tests | Slice B updates the 7 toolPackageRunner tests; nothing else asserts on `status`. |
 | UI looks busier with one more badge | Keep the colour palette minimal — `loaded` is a softer green-yellow, `available` is solid green. |
 
+## Phase 28 — Evidence pipeline + RecursiveAgent + the tool-creation crisis
+
+### What landed (commits on `agentic-main-next`)
+
+Six rework slices on the legacy `UniversalAgent`, plus a from-scratch
+`RecursiveAgent` running ReAct-style native function calling:
+
+| Commit | What | Effect on bitcoin task |
+|---|---|---|
+| `084e042` | Worktree rescue ports: `RUNTIME_ENV_HINTS` in council prompts, `PLAYWRIGHT_BROWSERS_PATH=0` + `PUPPETEER_CACHE_DIR` in subprocess spawn, `mergeToolResults` accepts `data:{results:[]}`, `extractHttpUrls` decodes `uddg=…`, `selectBestUrlsForArtifact` task-anchored URL fallback, `isScreenshotToolData` accepts the flat `{imageBase64}` shape. | Pipeline runs end-to-end; screenshot tool launches with system Chromium. |
+| `16b7802` | Slice 1: `EvidenceRecord` type + `onEvidence` callback + `formatEvidenceRecordsForPrompt`. Worker LLM now reads full `tool.data.pageText` / `numericTokens` / `pageTitle` instead of a one-liner `"Created artifact for screenshot: foo.png"`. | Worker started quoting live price from screenshot pageText. |
+| `3d7557b` | Slice 3a: aggregate records across workers, inject as `Structured tool evidence` block in `synthesizePrompt`. `buildSynthesisEvidenceCorpus` includes records so the ungrounded-specifics gate doesn't strip valid quotes. | Synthesizer cites `$81,442.43` (live CMC) instead of `$79,661.91` (stale DDG snippet). |
+| `947b917` | Slice 3b: deterministic fast-pass in `hardGateReview` — when every required artifact is backed by an `ok=true` tool record AND a saved artifact, return `verdict: pass` without an LLM review call. | Artifact subtask stops looping into duplicate captures. Goes from 2 artifacts → 1. |
+| `e47bb32` | Slice 4: post-process DAG repair in `createExecutionPlan`. Artifact subtask without an explicit URL in its prompt gets auto-`dependsOn`-linked to the upstream search/research subtask. | Screenshot worker stops starting before the URL exists. |
+| `8fb905b` | Slice 5: explicit `claim.reason: "retry…"` on web-search + screenshot ledger claims so a prior transient failure doesn't lock the workKey for 30 minutes; web-search reuse only honoured when cached `outputSummary` actually contains a URL. | Stale ledger entries stop poisoning fresh runs. |
+| `c002de8` | `RecursiveAgent` class. ReAct loop with `LlmClient.completeWithTools()` (native OpenAI function-calling). Tools = registry + three meta-tools (`spawn_subagent`, `note`, `finish`). System prompt explains "call a tool, then finish". Routed via `[recursive]` marker in task or `AGENT_MODE=recursive` env var. ~350 lines. Tool-build council pipeline NOT routed through it — that path stays on the classic agent. |
+| `24d3467` | Recursive hardening from live trials: LM Studio strips dots from tool names (`screenshot.url → screenshot_url`) so sanitize on send + reverse-map on dispatch; `DEFAULT_MAX_DEPTH = 1` (otherwise Qwen/Gemma delegate every task to a subagent instead of calling the real tool); sharp short prompt ("call a tool, don't narrate, don't invent specifics"); `tool_choice: "required"` on iteration 1 to pin local models from refusing to act; preamble detection that pushes back a "don't narrate, call a tool" reminder; structured event emit for tool throws so failures land on the trace. |
+
+All 604 tests pass at HEAD.
+
+### Honest result — what actually worked end-to-end
+
+The only **fully successful** user-facing run for "какая цена биткоина сейчас?" was on
+the classic `UniversalAgent` after slices 1+3a+3b+4+5 landed: run
+`run_1778796435417_s9lfq82f` produced
+`"Текущая цена биткоина: $81,435.26 USD"` plus one CoinMarketCap screenshot
+artifact attached to the run record.
+
+The `RecursiveAgent` was **architecturally validated** — function-calling works on
+Qwen and Gemma, the dispatch + sanitize loop runs, errors propagate honestly
+into the model, events land in the run timeline — but **no user task completed
+successfully through it during this phase**. Every recursive run ended with
+the model honestly reporting `"Tool screenshot_url threw: ERR_MODULE_NOT_FOUND"`
+because the underlying tool runtime was broken on disk. Treat the recursive
+agent as "code in repo, waiting on a clean tool runtime to be validated end-to-end."
+
+### The two systemic problems we hit
+
+#### 1. Tool creation is brittle
+
+Today's pipeline for a council-built tool:
+
+```
+LLM writes TS → tsc compile → package as source-bundle → npm install in the
+package dir → spawn Node subprocess → spin up an HTTP server → wait
+healthcheck → POST /run → parse JSON → return ToolResult
+```
+
+Every layer broke at least once during this phase:
+
+- `import puppeteer` was emitted by the model but `package.json` didn't declare it →
+  `ERR_MODULE_NOT_FOUND` on import.
+- Subprocess crashed before healthcheck; the registry served a stale module → the
+  agent saw a phantom error from one version while metadata pointed at another.
+- `dist/` lazily compiled by the workflow lagged behind `src/` for several minutes.
+- The runtime reconciler logged `"removed 1 orphan"` and deleted disk dirs that
+  were actually working.
+- `deriveStandardCapabilities` didn't tag `browser-screenshot` on v1.0.9 → had to
+  `UPDATE tool_modules SET capabilities = …` by hand for the agent to find it.
+- An auto-rebuild background workflow re-broke a tool we'd just hand-fixed: v1.0.11
+  → 1.0.12, status `failed`, in a loop.
+
+Net: for "fetch + screenshot bitcoin price" — a task that needs ONE puppeteer
+call — we spent multiple hours fighting infrastructure, not building anything.
+
+#### 2. The agent can't degrade gracefully
+
+- Each capability resolves to **exactly one tool**. If that one tool throws, the
+  agent has no fallback and either hedges ("the tool failed, please check the
+  source manually") or loops re-calling the same broken tool.
+- LLMs can't tell a transient failure from a permanent one, so a single
+  `ERR_MODULE_NOT_FOUND` makes the model give up.
+- All operational `web-search`, `browser-screenshot`, `http-fetch` capabilities are
+  currently provided by **generated** tools. When the generator is broken, the
+  agent has nothing.
+
+### Proposed fundamental rework — three phases
+
+Stop trying to patch the existing tool subsystem. The subprocess+HTTP+npm-install
+runtime is overkill for tools that are 40-line functions. Three phases:
+
+#### Phase A — Built-in tools first (≈1 day)
+
+Hand-write 5–7 essential capability tools and ship them with the app, registered
+on startup via a single `registerBuiltinTools(registry)` call. No `npm install`,
+no subprocess, no disk packaging — they live in `src/tools/builtin/*.ts`,
+compile with the app, are always present.
+
+```
+src/tools/builtin/
+  http.fetch.ts          # raw HTTP GET → {ok, content, data:{status, body}}
+  http.fetch.json.ts     # GET → {ok, content, data: <parsed JSON>}
+  web.search.ts          # built-in DDG client (axios, in-process, no playwright)
+  playwright.screenshot.ts  # one playwright wrapper, in-process
+  file.write.ts          # save artifact via saveArtifact hook
+```
+
+After this phase, the bitcoin task becomes:
+
+```
+recursive agent →
+  playwright.screenshot({url:"https://coinmarketcap.com/currencies/bitcoin/"})
+    → ok=true, data.pageText="...Bitcoin BTC $81,XXX.XX..."
+  finish({answer:"Текущая цена биткоина $81,XXX.XX USD", artifacts:[...]})
+```
+
+Two tool calls, one LLM compose call, ~20 seconds. **No council, no subprocess,
+no npm install, no disk dirs.** Generated tools become an "occasional extension"
+mechanism for specific external APIs, not the default.
+
+#### Phase B — Capability-level routing with fallback chain (≈1 day)
+
+Today `findByCapability(cap)[0]` returns a single tool. After this slice it returns
+an ordered list, and `executeByCapability(cap, input)` walks it on failure:
+
+```ts
+"browser-screenshot": [
+  playwright.screenshot,        // built-in, always works
+  screenshot.url@1.0.11,        // generated, may be broken
+  browser.operate,              // legacy fallback
+]
+```
+
+The agent calls a **capability**, not a tool name. The registry handles
+transparent failover. When `screenshot.url@1.0.11` throws, the registry
+silently retries with `playwright.screenshot` before reporting failure to the
+agent. The LLM never sees the broken-tool error and so doesn't hedge.
+
+Trace events show which specific tool actually served the call so operators
+can see when generated tools degrade.
+
+#### Phase C — Template-based council (≈2 days)
+
+Replace "LLM writes a TS module" with "LLM fills the body of a sandboxed
+function". The wrapper is fixed; the model only fills `run()`:
+
+```ts
+// Hidden template — not visible to the model:
+export const tool = makeTool({
+  name, description, inputSchema, outputSchema,
+  async run(input, ctx) {
+    // ↓↓↓ model fills ONLY this block ↓↓↓
+    const page = await ctx.browser.newPage();
+    await page.goto(input.url, { waitUntil: "networkidle2" });
+    const text = await page.evaluate(() => document.body.innerText.slice(0, 4000));
+    return { ok: true, content: text, data: { pageText: text } };
+    // ↑↑↑ end model code ↑↑↑
+  },
+});
+```
+
+`ctx.browser`, `ctx.fetch`, `ctx.logger`, `ctx.signal`, `ctx.saveArtifact` are
+pre-injected by the wrapper — the model has no imports, no exports, no
+`package.json`. The runtime sanitises and runs the body in a `vm.Script` with
+a timeout + AbortSignal. No subprocess, no HTTP, no npm install.
+
+Council emits `{name, version, runBody: string, schema, capabilities}` and stores
+it in `tool_modules.run_body` (text column). The loader builds the
+`new Function(...)` at registration time.
+
+Tool creation becomes "model wrote a function, we ran it on the QA input, it
+passed, register it." No filesystem dirs to reconcile, no orphans to clean up.
+
+### Recommended starting point
+
+**Phase A.** It's the smallest, most isolated change, and after it lands the
+bitcoin task and similar simple-fact lookups stop depending on the generated-tool
+subsystem at all. We can validate `RecursiveAgent` end-to-end as soon as the
+first built-in tool is wired (no more "Tool threw: ERR_MODULE_NOT_FOUND"
+loops). Phase B builds on Phase A. Phase C is the big rewrite and should wait
+until we have a stable measurement baseline from A+B.
+
+The legacy `UniversalAgent` waterfall stays in place for tool-build council runs
+during the transition; we'll fold tool-build into the recursive loop in a
+follow-up phase once `RecursiveAgent` has a working track record on simple
+user tasks.
+

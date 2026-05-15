@@ -230,6 +230,39 @@ Review focus:
 
 If a review fails, the worker gets one bounded revision pass before synthesis.
 
+#### Structured tool evidence (Phase 28)
+
+Every tool call inside a subtask emits an `EvidenceRecord`
+(`{kind: "tool_call", toolName, input, output: {ok, content, data}, artifact?, timestamp}`)
+into the worker's `toolEvidenceRecords` array. These records carry the FULL
+`ToolResult.data` — `pageText`, `numericTokens`, `pageTitle`, etc. — not just
+a one-liner. The records flow to:
+
+- The worker LLM, via `formatEvidenceRecordsForPrompt()` rendered into the
+  `External tool evidence` block of the worker user prompt.
+- The reviewer LLM, via `compactWorkerResultsForPrompt()` (records dropped
+  before JSON.stringify so the budget isn't blown by base64 payloads; the
+  rendered block is attached as a separate section).
+- The synthesizer LLM, via a `Structured tool evidence` section in
+  `synthesizePrompt`. The synthesizer system prompt instructs the model to
+  pull specifics (prices, dates, exact titles) from this block in preference
+  to the worker's prose summary.
+- `buildSynthesisEvidenceCorpus`, so the ungrounded-specifics gate sees the
+  same data the synthesizer cited and doesn't strip the quote as fabricated.
+- A deterministic artifact-fast-pass in `hardGateReview`: when every
+  required artifact for a subtask is backed by a `tool_call` record with
+  `ok=true` AND a saved artifact is attached, the LLM reviewer is skipped
+  entirely and the subtask passes deterministically. This kills the duplicate-
+  artifact loop that the LLM reviewer used to cause by demanding "more proof".
+
+`createExecutionPlan` also runs a deterministic post-process that
+auto-`dependsOn`-links any subtask requiring a `browser-screenshot` artifact
+to upstream subtasks that produce URLs (those with `web-search` /
+`browser-discovery` tools or `search/research/find/discover/locate` in role
+or prompt), unless the artifact subtask's own prompt already cites an http(s)
+URL. Without this, planners regularly parallelise the screenshot worker with
+its own data source.
+
 ### Tool Registry
 
 Tools are TypeScript modules with:
@@ -676,6 +709,43 @@ cannot target a tool name outside `allowedToolNames`. This is the runtime scaffo
 planner. Full UniversalAgent worker/reviewer/tool-builder migration, durable call-frame
 persistence, ledger-aware child handlers, and span-level recursive retry remain follow-up
 work.
+
+### Recursive Agent — Native Function Calling Loop (Phase 28, experimental)
+
+`src/agents/recursiveAgent.ts` is a from-scratch ReAct-style loop that replaces
+the hardcoded waterfall (classify → strategy → plan → workers → reviews →
+synthesis) with a single conversation in which the model picks tools through
+**native OpenAI function calling** until it calls `finish`. ~350 lines vs the
+8 000-line `UniversalAgent`.
+
+Mechanics:
+
+- `LlmClient.completeWithTools()` returns `{content, toolCalls, finishReason}`
+  alongside the legacy text-only `complete()`. Each turn becomes
+  `messages → llm → assistant.tool_calls → execute → role:"tool" result →
+  next turn`.
+- Tool schemas are auto-built from `ToolRegistry.list()`. The registry's
+  canonical names may contain dots (`screenshot.url`, `web.duckduckgo.search`)
+  but LM Studio + Qwen/Gemma strip non-alphanumerics when echoing tool calls
+  back, so we pre-sanitise names (`screenshot.url → screenshot_url`) and
+  reverse-map on dispatch.
+- Three meta-tools are always available: `finish` (return the final answer),
+  `note` (think out loud without acting), and `spawn_subagent` (delegate a
+  self-contained slice to a child copy of the same loop). `spawn_subagent`
+  is disabled past `maxDepth` (default 1) — local models otherwise read its
+  description and recursively delegate every task instead of calling the real
+  tool.
+- Routing: triggered when `process.env.AGENT_MODE === "recursive"` or when the
+  task body contains `[recursive]`. Tool-build council runs always go through
+  the classic agent — fold-in is a follow-up phase.
+
+This loop is the experimental track. It is architecturally validated (Qwen and
+Gemma both emit `finish_reason=tool_calls` with parseable `arguments`, dispatch
+works, errors propagate honestly, events land in the run timeline) but has not
+yet produced a fully successful end-to-end user run — every recursive bitcoin
+trial died on a broken underlying tool (subprocess runner ERR_MODULE_NOT_FOUND).
+See `docs/roadmap.md` Phase 28 for the planned built-in-tools / capability-
+routing rework that should clear the runway.
 
 ### Model Tiers
 
