@@ -111,6 +111,7 @@ export class BaseAgent {
     let attemptedToolCalls = 0;
     let terminalFailureReason: string | undefined;
     let stoppedByStepLimit = false;
+    let answerRepairExtensions = 0;
     let successfulResearchToolCalls = 0;
     let successfulSourceReadToolCalls = 0;
     let researchRepairAttempts = 0;
@@ -205,14 +206,14 @@ export class BaseAgent {
     let candidateUseRepairAttempts = 0;
     let truncatedAnswerRepairAttempts = 0;
 
-    for (let step = 1; maxSteps === undefined || step <= maxSteps; step += 1) {
+    for (let step = 1; maxSteps === undefined || step <= maxSteps + answerRepairExtensions; step += 1) {
       if (options.signal?.aborted) {
         return failedResult("Run cancelled.", artifacts);
       }
 
       const llmSpanId = createLlmSpanId(runContext.runId, step);
       const toolSchemas = buildBaseAgentToolSchemas(tools, toolCatalog);
-      const isFinalBudgetedStep = maxSteps !== undefined && step === maxSteps && step > 1;
+      const isFinalBudgetedStep = maxSteps !== undefined && step >= maxSteps && step > 1;
       if (isFinalBudgetedStep) pushFinalStepNudge(messages, FINAL_STEP_WRAP_UP_NUDGE);
       const stepToolChoice = isFinalBudgetedStep ? ("none" as const) : ("auto" as const);
       compactToolMessagesForContextBudget(messages);
@@ -294,6 +295,9 @@ export class BaseAgent {
           });
           if (repair.repaired) {
             truncatedAnswerRepairAttempts = repair.repairAttempts;
+            if (maxSteps !== undefined && step >= maxSteps + answerRepairExtensions) {
+              answerRepairExtensions += 1;
+            }
             finalAnswer = "";
             continue;
           }

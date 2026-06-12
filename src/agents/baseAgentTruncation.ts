@@ -16,7 +16,11 @@ export type TruncatedAnswerRepairInput = {
 export async function requestTruncatedAnswerRepair(
   input: TruncatedAnswerRepairInput,
 ): Promise<{ repaired: true; repairAttempts: number } | { repaired: false; failureReason: string }> {
-  if (input.repairAttempts >= 2 || (input.maxSteps !== undefined && input.step >= input.maxSteps)) {
+  // The step budget bounds TOOL work; finishing a truncated ANSWER is a
+  // continuation of writing, not new work — the loop grants repair
+  // extension steps (see answerRepairExtensions in baseAgent.run), so only
+  // the attempt cap applies here.
+  if (input.repairAttempts >= 2) {
     return {
       repaired: false,
       failureReason: "Model output was truncated by the token limit before producing a complete final answer.",

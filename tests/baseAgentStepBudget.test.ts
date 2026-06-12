@@ -167,3 +167,50 @@ test("context overflow compacts older tool results and retries the step", async 
   );
   assert.ok(compacted.length > 0, "older tool results must be compacted after overflow retry");
 });
+
+test("truncated final answer gets a repair extension step past the budget", async () => {
+  class TruncatedFinalLlm {
+    calls = 0;
+    toolChoices: Array<string | undefined> = [];
+
+    async completeWithTools(
+      _messages: Message[],
+      _tools: LlmToolSchema[],
+      options?: { toolChoice?: string },
+    ): Promise<LlmToolReply> {
+      this.calls += 1;
+      this.toolChoices.push(options?.toolChoice);
+      if (options?.toolChoice !== "none") {
+        return {
+          content: "",
+          finishReason: "tool_calls",
+          toolCalls: [
+            { id: `call_${this.calls}`, name: "web_search", arguments: { query: `q${this.calls}` } },
+          ],
+        };
+      }
+      if (this.toolChoices.filter((choice) => choice === "none").length === 1) {
+        return { content: "Начало длинного ответа, оборванного на", finishReason: "length", toolCalls: [] };
+      }
+      return { content: "Полный финальный ответ после продолжения.", finishReason: "stop", toolCalls: [] };
+    }
+  }
+
+  const llm = new TruncatedFinalLlm();
+  const agent = new BaseAgent(llm as unknown as LlmClient, buildRegistry());
+  const result = await agent.run("Найди что-нибудь интересное про погоду", {
+    runId: "run_budget_3",
+    runContext: {
+      instanceId: "instance-local",
+      requesterUserId: "user-admin",
+      channel: "web",
+      threadId: "thread_budget_3",
+      currentDateTimeIso: "2026-06-12T15:00:00.000Z",
+    },
+    maxSteps: 3,
+  });
+
+  assert.equal(result.runStatus ?? "completed", "completed");
+  assert.match(result.finalAnswer, /Полный финальный ответ/);
+  assert.equal(llm.toolChoices.filter((choice) => choice === "none").length, 2, "repair ran as an extension step");
+});
