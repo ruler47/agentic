@@ -658,6 +658,7 @@ function extractExternalActionTargetFromLabeledLine(line: string): string | unde
 function cleanExternalActionTargetCandidate(value: string): string | undefined {
   const cleaned = value
     .replace(/\*\*/gu, "")
+    .replace(/[|]+/gu, " ")
     .replace(/[`_]/gu, "")
     .replace(/^\s*\d+[.)-]\s*/u, "")
     .replace(/\s+/g, " ")
@@ -677,7 +678,7 @@ function isLikelySourceLabelContext(value: string): boolean {
 }
 
 function isExternalActionTargetFieldLabel(value: string): boolean {
-  return /^(?:(?:selected|chosen|recommended|picked|выбранн(?:ый|ое|ая)|рекомендованн(?:ый|ое|ая)|лучший)\s+)?(?:restaurant|ресторан|venue|место|target|цель|salon|салон|barber|barbershop|барбер|барбершоп)$/iu.test(
+  return /^(?:(?:selected|chosen|recommended|picked|выбранн(?:ый|ое|ая)|рекомендованн(?:ый|ое|ая)|лучший)\s+)?(?:restaurant|ресторан|venue|место|target|цель|salon|салон|barber|barbershop|барбер|барбершоп|name|название|заведение|business|place)$/iu.test(
     value.replace(/[:：]+$/u, "").trim(),
   );
 }

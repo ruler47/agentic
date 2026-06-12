@@ -418,3 +418,30 @@ test("safe-preparation phrasings count as preparation intent", () => {
   assert.ok(policy);
   assert.equal(policy.actionType, "reservation");
 });
+
+test("target is read from the value cell of a Markdown table, not the header", () => {
+  const proposal = buildExternalActionProposal({
+    task: "Найди барбершоп в Марбелье и подготовь запись на стрижку, телефон +34 600 000 000. Только подготовь, не отправляй.",
+    finalAnswer: [
+      "## Proposal: Запись в барбершоп",
+      "| Параметр | Значение |",
+      "|---|---|",
+      "| **Название** | Harrisons Barbershop |",
+      "| **Адрес** | Calle Quevedo, Marbella |",
+      "🔗 Онлайн-запись: [Booksy](https://booksy.com/es-es/134426_harrisons-barbershop_barberia_29260_marbella)",
+    ].join("\n"),
+    taskFrame: frameTask(
+      "Найди барбершоп в Марбелье и подготовь запись на стрижку, телефон +34 600 000 000. Только подготовь, не отправляй.",
+    ),
+    runContext: { runId: "run_target_test" },
+    artifacts: [],
+    sourceUrls: ["https://ai.mobirise.com/sites/barbershop-online-booking-junk.html"],
+    createdAt: new Date().toISOString(),
+  });
+  assert.ok(proposal);
+  assert.equal(proposal.target, "Harrisons Barbershop");
+  assert.equal(
+    proposal.preparation?.targetUrl,
+    "https://booksy.com/es-es/134426_harrisons-barbershop_barberia_29260_marbella",
+  );
+});

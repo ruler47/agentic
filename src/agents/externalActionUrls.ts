@@ -27,15 +27,15 @@ export function selectExternalActionPreparationUrl(
   actionType: ExternalActionType,
   sourceUrls: string[],
 ): string | undefined {
-  return sourceUrls
-    .map((url, index) => ({
-      url,
-      index,
-      score: scoreExternalActionPreparationUrl(actionType, url),
-    }))
-    .filter((candidate) => candidate.score > 0)
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-    .at(0)?.url;
+  // Input order is authoritative: callers pass URLs already prioritized by
+  // answer citations and context. URL-shape score only FILTERS implausible
+  // candidates — re-sorting by shape let keyword-stuffed junk domains
+  // ("...-online-booking-....html" demo sites) beat the provider page the
+  // model itself cited (AGENTS.md: shape scoring must not make an
+  // off-topic URL relevant).
+  return sourceUrls.find(
+    (url) => scoreExternalActionPreparationUrl(actionType, url) > 0,
+  );
 }
 
 function uniqueProofWorthyFullUrls(urls: string[]): string[] {
@@ -131,6 +131,10 @@ function scoreExternalActionPreparationUrl(
     .replace(/[-_./?=&]+/g, " ");
   let score = url.protocol === "https:" ? 5 : 1;
   if (/\b(search|results?|serp|maps?|images?|video|cache)\b/.test(normalized)) {
+    score -= 40;
+  }
+  // Editorial/listing pages are research sources, not action targets.
+  if (/\b(blog|article|articles|guide|guides|review|reviews|news|wiki|top|best)\b/.test(normalized)) {
     score -= 40;
   }
   if (/(google|bing|yandex|duckduckgo)\./.test(url.hostname)) score -= 60;
