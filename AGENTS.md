@@ -57,13 +57,42 @@ generated tools.
 - Tool calls execute only through `ToolRegistry` with run-scoped runtime context:
   run/thread/user/instance provenance, per-call span id, artifact writer, callback
   envelope, secret/configuration resolvers, audit, and logger.
-- BaseAgent has no default hard cap on tool calls, LLM step count, or LLM response time;
-  explicit `maxToolCalls`, `maxSteps`, and `llmTimeoutMs` remain caller/operator safety
-  controls. Deep research should stop because the task is solved, blocked, or cancelled,
-  not because it crossed a small default search/step/time count. Within one run,
-  repeated or near-duplicate `web.search` queries are skipped and traced with
-  `duplicateSkipped` so the model must reuse prior evidence or change strategy
-  materially.
+- BaseAgent loops are budgeted BY DEFAULT: `maxSteps` comes from the task frame
+  (`defaultMaxStepsForTaskFrame` — 10 base, 12 for product selection, 18 for external
+  action preparation) and `maxToolCalls` defaults to `maxSteps * 4`. Unbounded research
+  was a product bug (observed live: 209 events / 16 minutes on one selection run).
+  Callers may still override the budgets explicitly for deliberately long loops.
+  The FINAL budgeted step forbids tool calls (`toolChoice: "none"`) and pushes a
+  wrap-up nudge so the run ends with an answer synthesized from collected evidence,
+  not a step-limit failure stub. Truncated final answers and raw tool-syntax leakage
+  (`<tool_call>` / `<function=` XML from local models) each get a bounded no-tool
+  repair extension step past the budget; after that the finalization gate fails the
+  run honestly. Within one run, repeated or near-duplicate `web.search` queries are
+  skipped and traced with `duplicateSkipped` so the model must reuse prior evidence
+  or change strategy materially.
+- Small-context local models get rolling context compaction: once the dialog exceeds
+  `DEFAULT_CONTEXT_CHAR_BUDGET` (60k chars), tool messages older than the most recent
+  three are compacted to a short head before each LLM step. A context-window error from
+  the model compacts to half the current size (keeping only the latest tool result
+  verbatim) and retries the same step; recovery is bounded because compaction
+  eventually has nothing left to shrink.
+- Run-scoped tool candidate attachment is DETERMINISTIC: a generated tool is attached
+  to a run only when a distinctive token of its NAME appears in the task (e.g. "амл"
+  matches `crypto.aml.gl`). Description/capability text-similarity matching is
+  forbidden — it once attached a stale `example.com` reservation-commit tool to an
+  ordinary booking task. Host-attached initial candidates are OFFERS: the
+  unused-candidate gate skips them (`initialAttachment: true`); only candidates the
+  agent itself requested mid-run must be used before finishing.
+- Thread memory must survive restart/resume: any path that starts a run with only a
+  `threadId` gets the conversation context rebuilt from the thread record
+  (`RunContextResolver.threadContextForThreadId`). The thread summary appends the
+  newest "Answered:" digest at the END; prompt rendering must keep enough tail
+  (currently 1 400 chars) so the latest answer is not truncated away.
+- Core toolbelt tools are generated packages whose metadata must be blessed to
+  status `available` before agents can call them directly: run the exact version
+  manually (`POST /api/tools/generated-modules/:name/versions/:ver/run`), then
+  `POST .../mark-available`. Unblessed tools force every run through the
+  tool-missing -> candidate ceremony and waste steps.
 - BaseAgent trace spans now use stable parent/child ids for the root agent, context,
   every LLM step, every tool call, artifact saves, and the return gate. LLM spans record
   safe normalized `input`/`output`; tool spans record summarized tool `input`/`output`.
@@ -678,6 +707,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
    task frame now includes a research plan, answer contract, proof strategy, external
    action policy, and source read/extract requirement so broad runs reason about ideal
    outcomes, failure modes, evidence, and approval boundaries before acting.
+   DONE (2026-06-13): default step/tool budgets from the task frame, final-step
+   wrap-up, truncation/raw-syntax repair extensions, rolling context compaction for
+   small-context local models, and event-I/O perf (O(1) appendEvent, batched list,
+   getMeta-driven SSE polling).
 3. Stabilize the tool registry/runtime UI: manifests, manual run evidence, versions,
    active version, health, usage stats, and disabled-tool policy.
 4. Continue Tool Creation V1: richer API-doc-driven adapter synthesis, file/PDF artifact

@@ -195,7 +195,13 @@ Deliverables:
 Manual exams:
 
 - Find a bookable place, prepare a form, stop before submit, and show proof.
+  PASSED 2026-06-13 (live, Marbella barbershop): run reaches `waiting_approval`
+  in ~50s with a clean proposal card (real target name, the provider URL the
+  answer cited), approve triggers preparation that captures a QA-checked proof
+  screenshot and commit candidates, and the no-submit boundary blocks final
+  commit controls in prepareOnly mode.
 - Approve once, submit, and return confirmation or explicit provider failure.
+  (Commit half still pending a live exam against a safe provider.)
 - Try the same flow in automode on a safe fixture or test provider.
 
 ## Phase 5: Reintroduce Tool Builder

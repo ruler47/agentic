@@ -334,8 +334,18 @@ allowed to reuse cached results from the previous active version; the new candid
 execute and prove its own output.
 
 Run-scoped generated or edited candidates are promoted only after the base return gate
-passes. A run that exhausts its step budget is failed, even if a candidate tool returned
-`ok`, and that candidate is not accepted globally.
+passes. Host-attached initial candidates are offers (`initialAttachment: true`): the
+unused-candidate gate skips them, so a run that solved the task without the offered tool
+still completes. Candidates the agent itself requested mid-run must be used before
+finishing, or the run fails.
+
+Budgets: `maxSteps` defaults from the task frame (10 base / 12 product selection / 18
+external-action preparation) and `maxToolCalls` defaults to `maxSteps * 4`. The final
+budgeted step runs with `toolChoice: "none"` plus a wrap-up nudge so the model writes
+the answer from collected evidence; truncated answers and raw tool-syntax leakage get
+bounded no-tool repair extension steps. Older tool messages are compacted once the
+dialog exceeds the context character budget, and a context-window error compacts
+harder and retries the same step.
 
 ## Trace Events
 
