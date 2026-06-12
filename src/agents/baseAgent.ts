@@ -12,7 +12,7 @@ import {
   upsertTool,
   type BaseAgentToolCatalogEntry,
 } from "./agentToolCatalog.js";
-import { DEFAULT_LLM_MAX_TOKENS, DEFAULT_TOOL_TIMEOUT_MS } from "./baseAgentConstants.js";
+import { DEFAULT_AGENT_LOOP_TIER, DEFAULT_LLM_MAX_TOKENS, DEFAULT_TOOL_TIMEOUT_MS } from "./baseAgentConstants.js";
 import { maybeSaveArtifact, saveStructuredDataProofArtifact, shouldSaveStructuredDataProofArtifact } from "./baseAgentArtifacts.js";
 import {
   extractClaimProofSignals,
@@ -221,7 +221,7 @@ export class BaseAgent {
       compactToolMessagesForContextBudget(messages);
       const llmInput = {
         step,
-        modelTier: options.modelTier ?? "S",
+        modelTier: options.modelTier ?? DEFAULT_AGENT_LOOP_TIER,
         toolChoice: stepToolChoice,
         maxTokens: DEFAULT_LLM_MAX_TOKENS,
         messages: messages.map(publicMessageForTrace),
@@ -234,7 +234,7 @@ export class BaseAgent {
           llmTimeoutMs,
           options.signal,
           (signal) => this.llm.completeWithTools(messages, toolSchemas, {
-            modelTier: options.modelTier ?? "S",
+            modelTier: options.modelTier ?? DEFAULT_AGENT_LOOP_TIER,
             signal,
             toolChoice: stepToolChoice,
             maxTokens: DEFAULT_LLM_MAX_TOKENS,

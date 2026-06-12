@@ -214,3 +214,28 @@ test("truncated final answer gets a repair extension step past the budget", asyn
   assert.match(result.finalAnswer, /Полный финальный ответ/);
   assert.equal(llm.toolChoices.filter((choice) => choice === "none").length, 2, "repair ran as an extension step");
 });
+
+test("agent loop defaults to tier M and honors an explicit override", async () => {
+  class TierCapturingLlm {
+    tiers: Array<string | undefined> = [];
+
+    async completeWithTools(
+      _messages: Message[],
+      _tools: LlmToolSchema[],
+      options?: { modelTier?: string },
+    ): Promise<LlmToolReply> {
+      this.tiers.push(options?.modelTier);
+      return { content: "ok", finishReason: "stop", toolCalls: [] };
+    }
+  }
+
+  const llm = new TierCapturingLlm();
+  const agent = new BaseAgent(llm as unknown as LlmClient, buildRegistry());
+  await agent.run("Ответь ok", { runId: "run_tier_1" });
+  assert.equal(llm.tiers[0], "M", "loop reasoning must default to tier M, not S");
+
+  const llm2 = new TierCapturingLlm();
+  const agent2 = new BaseAgent(llm2 as unknown as LlmClient, buildRegistry());
+  await agent2.run("Ответь ok", { runId: "run_tier_2", modelTier: "L" });
+  assert.equal(llm2.tiers[0], "L");
+});
