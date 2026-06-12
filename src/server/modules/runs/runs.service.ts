@@ -465,6 +465,13 @@ export class RunsService implements OnApplicationBootstrap {
   ): Promise<void> {
     await this.runs.markRunning(id);
     const run = await this.runs.get(id);
+    // Restart/resume callers pass only threadId; rebuild the conversation
+    // context so follow-up runs keep their thread memory.
+    if (!context.threadContext && (context.threadId ?? run?.threadId)) {
+      context.threadContext = await this.contextResolver()
+        .threadContextForThreadId((context.threadId ?? run?.threadId)!)
+        .catch(() => undefined);
+    }
     await this.audit.record({
       instanceId: run?.instanceId,
       actorId: "coordinator",

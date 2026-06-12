@@ -153,6 +153,19 @@ export class RunContextResolver {
     };
   }
 
+  /**
+   * Rebuild the thread context for a known thread id. Used by paths that
+   * start a run OUTSIDE createAndStart (restart/resume) — without it a
+   * restarted follow-up run answered with no memory of the conversation.
+   */
+  async threadContextForThreadId(
+    threadId: string,
+  ): Promise<ConversationThreadContext | undefined> {
+    if (!this.threads) return undefined;
+    const thread = await this.threads.get(threadId).catch(() => undefined);
+    return thread ? this.buildThreadContext(thread) : undefined;
+  }
+
   private async buildThreadContext(
     thread: ConversationThreadRecord,
   ): Promise<ConversationThreadContext> {

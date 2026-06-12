@@ -231,7 +231,9 @@ export function formatContextForPrompt(context: BaseAgentRunContext): string {
       lines.push(`- Group preference keys: ${context.groupProfile.preferenceKeys.join(", ")}`);
     }
   }
-  if (context.thread?.summary) lines.push(`- Thread summary: ${limitText(context.thread.summary, 500)}`);
+  // The summary appends the newest "Answered: ..." digest at the END and
+  // limitText keeps the head — 500 chars cut off exactly the latest answer.
+  if (context.thread?.summary) lines.push(`- Thread summary: ${limitText(context.thread.summary, 1_400)}`);
   if (context.thread?.acceptedFacts?.length) {
     lines.push(`- Accepted thread facts: ${context.thread.acceptedFacts.slice(0, 8).map((fact) => limitText(fact, 180)).join("; ")}`);
   }
