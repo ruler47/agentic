@@ -229,3 +229,14 @@ export function buildBaseAgentToolSchemas(
   });
   return schemas;
 }
+
+/**
+ * System nudge for the FINAL budgeted loop step: the model must stop
+ * requesting tools and synthesize the answer from collected evidence.
+ * Paired with toolChoice "none" on the same step — without this, runs end
+ * with a step-limit failure stub instead of a usable answer.
+ */
+export const FINAL_STEP_WRAP_UP_NUDGE =
+  "Step budget reached: this is your FINAL step. Do not request any more tools. " +
+  "Write the complete final answer for the user now from the evidence already collected above. " +
+  "If a detail could not be verified, say so honestly instead of guessing.";

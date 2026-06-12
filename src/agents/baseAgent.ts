@@ -24,7 +24,7 @@ import {
 } from "./baseAgentEvidence.js";
 import { finalizeBaseAgentRun } from "./baseAgentFinalization.js";
 import { handleBaseAgentRegisteredToolCall } from "./baseAgentToolExecution.js";
-import { buildBaseAgentSystemPrompt, buildBaseAgentToolSchemas } from "./baseAgentPrompt.js";
+import { buildBaseAgentSystemPrompt, buildBaseAgentToolSchemas, FINAL_STEP_WRAP_UP_NUDGE } from "./baseAgentPrompt.js";
 import { handleBaseAgentToolLifecycleCall } from "./baseAgentToolLifecycle.js";
 import {
   candidateUseRepairInstructionForModel,
@@ -68,7 +68,7 @@ import type {
   ToolEditOutcome,
 } from "./baseAgentTypes.js";
 import { PROOF_SOURCE_URL_LIMIT, isProofWorthySourceUrl } from "./proofSourceUrls.js";
-import { frameTask, researchContractRepairInstructionForModel, shouldRequireResearchContract } from "./taskFrame.js";
+import { defaultMaxStepsForTaskFrame, frameTask, researchContractRepairInstructionForModel, shouldRequireResearchContract } from "./taskFrame.js";
 
 export type { BaseAgentToolCatalogEntry } from "./agentToolCatalog.js";
 export type { BaseAgentRunContext, BaseAgentRunOptions, BaseAgentToolCandidateAccepted, BaseAgentToolCreationRequest, BaseAgentToolCreationResult, BaseAgentToolEditRequest, BaseAgentToolEditResult } from "./baseAgentTypes.js";
@@ -97,8 +97,10 @@ export class BaseAgent {
     const searchQueryHistory = new Map<string, string>();
     const runContext = normalizeRunContext(options.runContext, options.runId, startedAt);
     const taskFrame = frameTask(taskWithThreadContextForFraming(task, runContext));
-    const maxSteps = options.maxSteps;
-    const maxToolCalls = options.maxToolCalls;
+    // Unbounded loops are a product bug: budgets default from the task
+    // frame (observed: 209 events / 16 min unbounded); callers may override.
+    const maxSteps = options.maxSteps ?? defaultMaxStepsForTaskFrame(taskFrame);
+    const maxToolCalls = options.maxToolCalls ?? maxSteps * 4;
     const llmTimeoutMs = options.llmTimeoutMs;
     const toolTimeoutMs = options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
     let successfulToolCalls = 0;
@@ -140,6 +142,7 @@ export class BaseAgent {
         scopedTool: candidate.tool,
         scopedCatalogEntry: toolCatalog.find((entry) => entry.name === candidate.tool.name),
         reusedCandidate: true,
+        initialAttachment: true,
         promotionPolicy: candidate.promotionPolicy ?? "auto_on_success",
         request: {
           name: candidate.tool.name,
@@ -234,10 +237,13 @@ export class BaseAgent {
 
       const llmSpanId = createLlmSpanId(runContext.runId, step);
       const toolSchemas = buildBaseAgentToolSchemas(tools, toolCatalog);
+      const isFinalBudgetedStep = maxSteps !== undefined && step === maxSteps && step > 1;
+      if (isFinalBudgetedStep) messages.push({ role: "system", content: FINAL_STEP_WRAP_UP_NUDGE });
+      const stepToolChoice = isFinalBudgetedStep ? ("none" as const) : ("auto" as const);
       const llmInput = {
         step,
         modelTier: options.modelTier ?? "S",
-        toolChoice: "auto",
+        toolChoice: stepToolChoice,
         maxTokens: DEFAULT_LLM_MAX_TOKENS,
         messages: messages.map(publicMessageForTrace),
         tools: toolSchemas.map((schema) => schema.function.name),
@@ -251,7 +257,7 @@ export class BaseAgent {
           (signal) => this.llm.completeWithTools(messages, toolSchemas, {
             modelTier: options.modelTier ?? "S",
             signal,
-            toolChoice: "auto",
+            toolChoice: stepToolChoice,
             maxTokens: DEFAULT_LLM_MAX_TOKENS,
           }),
         );

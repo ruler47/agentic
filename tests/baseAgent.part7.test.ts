@@ -18,7 +18,10 @@ class SequenceLlm {
   }
 }
 
-test("BaseAgent has no default step cap for long agent loops", async () => {
+// Contract change (budgeted loops): runs are bounded by the task-frame
+// step budget BY DEFAULT (see tests/baseAgentStepBudget.test.ts); callers
+// that genuinely need long loops lift the cap explicitly via maxSteps.
+test("BaseAgent honors caller-provided maxSteps for long agent loops", async () => {
   const registry = new ToolRegistry();
   const calls: string[] = [];
   registry.register({
@@ -47,7 +50,7 @@ test("BaseAgent has no default step cap for long agent loops", async () => {
     },
   ]);
   const agent = new BaseAgent(llm as unknown as LlmClient, registry);
-  const result = await agent.run("Выполни длинный многошаговый цикл.");
+  const result = await agent.run("Выполни длинный многошаговый цикл.", { maxSteps: 20 });
 
   assert.equal(result.runStatus, "completed");
   assert.equal(result.finalAnswer, "После длинного цикла готово.");

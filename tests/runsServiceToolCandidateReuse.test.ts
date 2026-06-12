@@ -156,3 +156,34 @@ test("findExplicitRunScopedToolVersionCandidate pins a disabled generated versio
   assert.equal(match?.version, "0.1.20");
   assert.match(match?.reason ?? "", /without changing the active global version/);
 });
+
+test("findExplicitRunScopedToolCandidate ignores description-similarity matches (no fuzzy tool inference)", async () => {
+  // Live regression: a stale example.com reservation-commit tool was
+  // fuzzy-matched to an ordinary booking-prepare task via description
+  // text similarity, then the unused-candidate gate failed the run.
+  const tool: ToolModuleMetadata = {
+    name: "external.action.reservation.https.example.com.reserve.commit",
+    version: "0.1.0",
+    description:
+      "Commits a prepared reservation/appointment booking form (barbershop, restaurant) after operator approval.",
+    capabilities: ["external-action-commit", "external-action-commit-generic"],
+    startupMode: "on-demand",
+    source: "generated",
+    status: "loaded",
+    requiredConfigurationKeys: [],
+    requiredSecretHandles: [],
+    examples: [],
+    successCount: 0,
+    failureCount: 0,
+    updatedAt: new Date(0).toISOString(),
+  };
+
+  const match = await findExplicitRunScopedToolCandidate({
+    task:
+      "Найди барбершоп в Марбелье с онлайн-записью и подготовь запись на стрижку. Используй тестовые данные Test User.",
+    metadataTools: [tool],
+    alreadyAllowedNames: [],
+  });
+
+  assert.equal(match, undefined);
+});

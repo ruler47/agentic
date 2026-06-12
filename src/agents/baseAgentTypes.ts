@@ -176,6 +176,14 @@ export type BaseAgentToolCreationResult = {
   scopedCatalogEntry?: BaseAgentToolCatalogEntry;
   reusedCandidate?: boolean;
   promotionPolicy?: "auto_on_success" | "manual";
+  /**
+   * True when the candidate was attached by the host BEFORE the run
+   * started (e.g. an explicitly referenced generated tool), not created
+   * on the agent's own request. Initial attachments are offers — the
+   * unused-candidate gate must not fail the run when the agent solves
+   * the task without them.
+   */
+  initialAttachment?: boolean;
   error?: string;
 };
 

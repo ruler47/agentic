@@ -23,6 +23,11 @@ export function findUnusedScopedCandidate(input: {
   if (isToolLifecycleOnlyTask(input.task)) return undefined;
   for (const request of input.toolCreationRequests) {
     if (!request.ok || !request.scopedTool || !request.toolVersion) continue;
+    // Host-attached initial candidates are offers, not obligations: the
+    // agent may legitimately solve the task without them (observed live:
+    // a stale reservation-commit candidate failed an entire booking-prepare
+    // run that never needed it).
+    if (request.initialAttachment) continue;
     if (!input.usedScopedCandidates.has(`${request.toolName}@${request.toolVersion}`)) {
       return { toolName: request.toolName, toolVersion: request.toolVersion, source: "creation" };
     }

@@ -280,20 +280,29 @@ function explicitToolMatchScore(task: string, tool: ToolModuleMetadata): number 
   const normalizedTask = normalizeForToolMatch(task);
   const normalizedName = normalizeForToolMatch(tool.name);
   if (normalizedTask.includes(normalizedName)) return 1;
-  const nameTokens = tokenSet(normalizedName);
+  // Match ONLY on distinctive tool-name tokens ("амл" -> aml in
+  // crypto.aml.gl). Description/capability text similarity is forbidden
+  // here: it fuzzy-matched a stale example.com reservation-commit tool to
+  // an ordinary "подготовь запись" booking task and the unused-candidate
+  // gate then failed the whole run. Tool selection from prose must stay
+  // deterministic (project rule: no fuzzy tool inference).
+  const nameTokens = [...tokenSet(normalizedName)].filter(isDistinctiveToolNameToken);
+  if (nameTokens.length === 0) return 0;
   const taskTokens = tokenSet(normalizedTask);
-  const exactNameHits = [...nameTokens].filter((token) => taskTokens.has(token)).length;
-  const metadataText = [
-    tool.name,
-    tool.displayName,
-    tool.description,
-    ...(tool.capabilities ?? []),
-    tool.changeSummary,
-  ]
-    .filter(Boolean)
-    .join(" ");
-  const score = textSimilarityScore(normalizedTask, normalizeForToolMatch(metadataText));
-  return Math.max(score, exactNameHits > 0 ? exactNameHits / Math.max(nameTokens.size, 1) : 0);
+  const exactNameHits = nameTokens.filter((token) => taskTokens.has(token)).length;
+  return exactNameHits > 0 ? exactNameHits / nameTokens.length : 0;
+}
+
+const GENERIC_TOOL_NAME_TOKENS = new Set([
+  "http", "https", "www", "com", "org", "net", "api", "tool", "service",
+  "external", "action", "commit", "prepare", "client", "generic", "web",
+  "data", "file", "json", "text", "test",
+]);
+
+function isDistinctiveToolNameToken(token: string): boolean {
+  if (token.length < 3) return false;
+  if (/^\d+$/.test(token)) return false;
+  return !GENERIC_TOOL_NAME_TOKENS.has(token);
 }
 
 function hasExplicitToolUseIntent(task: string): boolean {
