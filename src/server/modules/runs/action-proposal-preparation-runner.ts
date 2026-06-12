@@ -613,7 +613,56 @@ function buildCanonicalCandidateFillCommands(
       optional: true,
     });
   }
+  const contact = valueByLabel.get("contact");
+  if (contact) {
+    const { name, email, phone } = splitContactValue(contact);
+    if (name) {
+      commands.push({
+        action: "fill",
+        field: "name",
+        labels: ["Name", "Full name", "Имя", "Nombre", "Contact name"],
+        placeholders: ["Name", "Your name", "Имя", "Nombre"],
+        value: name,
+        optional: true,
+      });
+    }
+    if (email) {
+      commands.push({
+        action: "fill",
+        field: "email",
+        labels: ["Email", "E-mail", "Почта", "Correo", "Correo electrónico"],
+        placeholders: ["Email", "you@example.com", "Correo"],
+        value: email,
+        optional: true,
+      });
+    }
+    if (phone) {
+      commands.push({
+        action: "fill",
+        field: "phone",
+        labels: ["Phone", "Phone number", "Телефон", "Teléfono", "Móvil"],
+        placeholders: ["Phone", "Телефон", "Teléfono", "+34"],
+        value: phone,
+        optional: true,
+      });
+    }
+  }
   return commands;
+}
+
+/** Split a combined contact string into name / email / phone parts. */
+function splitContactValue(value: string): { name?: string; email?: string; phone?: string } {
+  const email = value.match(/[\w.+-]+@[\w-]+\.[\w.-]+/u)?.[0];
+  const phone = value.match(/\+?\d[\d\s()-]{6,}\d/u)?.[0]?.trim();
+  let name = value;
+  if (email) name = name.replace(email, " ");
+  if (phone) name = name.replace(phone, " ");
+  name = name.replace(/[,;|]+/g, " ").replace(/\s+/g, " ").trim();
+  return {
+    name: name.length >= 2 ? name : undefined,
+    email,
+    phone,
+  };
 }
 
 function buildCollectedInputCommands(
@@ -640,7 +689,15 @@ function isCanonicalPreparationLabel(label: string): boolean {
 function supportsBrowserFieldCandidates(tool: {
   capabilities?: string[];
 }): boolean {
-  return Boolean(tool.capabilities?.includes("browser-field-candidates"));
+  // "form-fill" is the same contract under the name the registered
+  // external.action.prepare package actually declares — label/placeholder
+  // driven fill commands. Without this alias no canonical input (date,
+  // time, service, contact) was ever sent to the provider form and every
+  // commit was blocked with "data was not prepared on the provider page".
+  return Boolean(
+    tool.capabilities?.includes("browser-field-candidates") ||
+      tool.capabilities?.includes("form-fill"),
+  );
 }
 
 function supportsBrowserFormSchema(tool: { capabilities?: string[] }): boolean {

@@ -732,3 +732,86 @@ test("external action preparation replays approved profile hydration without lea
   assert.equal(JSON.stringify(replayStarted?.payload).includes("dmitrii@example.com"), false);
   assert.equal(JSON.stringify(replayStarted?.payload).includes("dm***@example.com"), true);
 });
+
+test("form-fill capability enables canonical fill commands including split contact", async () => {
+  const runs = new InMemoryRunStore();
+  const registry = new ToolRegistry();
+  const inputs: Record<string, unknown>[] = [];
+  registry.register({
+    name: "external.action.prepare",
+    version: "0.1.15",
+    description: "Prepare fixture.",
+    // The real registered package declares form-fill, not
+    // browser-field-candidates.
+    capabilities: ["external-action-preparation", "browser-operation", "form-fill"],
+    inputSchema: { type: "object", properties: {}, required: [] },
+    async run(input) {
+      inputs.push(input);
+      return {
+        ok: true,
+        content: "Prepared.",
+        data: { finalUrl: String(input.url), steps: [] },
+      };
+    },
+  });
+  const run = await runs.create("подготовь запись", {
+    instanceId: "instance-local",
+    requesterUserId: "user-admin",
+    channel: "web",
+  });
+  const proposal: ExternalActionProposal = {
+    id: `action_${run.id}_1`,
+    runId: run.id,
+    actionType: "appointment",
+    status: "approved",
+    title: "Appointment proposal: Fixture",
+    summary: "appointment",
+    proposedAction: "Prepare appointment.",
+    target: "Fixture salon",
+    approvalRequired: true,
+    userExplicitlyForbidsAction: false,
+    allowedWithoutApproval: [],
+    prohibitedWithoutApproval: [],
+    sourceUrls: [],
+    artifactIds: [],
+    preparation: {
+      stage: "prepared_for_approval",
+      target: "Fixture salon",
+      targetUrl: "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+      objective: "Prepare appointment.",
+      collectedInputs: [
+        { label: "service", value: "стрижка / haircut", source: "user_request" },
+        { label: "date_or_time", value: "Friday 17:30", source: "user_request" },
+        { label: "contact", value: "Test User, test@example.com, +34 600 000 000", source: "user_request" },
+      ],
+      missingInputs: [],
+      commitBoundary: "no submit",
+      operatorChecklist: [],
+      proofPlan: [],
+    },
+    createdAt: new Date().toISOString(),
+    createdBy: "base-agent",
+  };
+  const recorder = new ActionProposalAuditRecorder(
+    runs,
+    new AuditService(new InMemoryAuditEventStore()),
+  );
+  await new ActionProposalPreparationRunner({
+    runs,
+    artifacts: undefined,
+    toolRegistry: registry,
+    recorder,
+  }).prepare({ run, proposal, rawBody: {} });
+
+  const commands = (inputs[0]?.commands ?? []) as Array<Record<string, unknown>>;
+  const fillFields = commands.filter((c) => c.action === "fill").map((c) => c.field);
+  for (const field of ["time", "service", "name", "email", "phone"]) {
+    assert.ok(fillFields.includes(field), `fill command for ${field} expected, got: ${JSON.stringify(fillFields)}`);
+  }
+  const email = commands.find((c) => c.field === "email") as { value?: string };
+  assert.equal(email?.value, "test@example.com");
+  const phone = commands.find((c) => c.field === "phone") as { value?: string };
+  assert.equal(phone?.value, "+34 600 000 000");
+  const name = commands.find((c) => c.field === "name") as { value?: string };
+  assert.equal(name?.value, "Test User");
+});

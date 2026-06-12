@@ -715,7 +715,7 @@ function isExternalActionNonTargetHeading(value: string): boolean {
     .replace(/\([^)]*\)/gu, "")
     .replace(/[:：].*$/u, "")
     .trim();
-  return /^(?:details?|booking details?|reservation details?|appointment details?|action details?|search results?|results?|важная информация|детали(?: бронирования| записи| заказа)?|данные(?:\s+для\s+[а-яёa-z]+)?|информация|результат(?:ы)?(?: поиска)?|поиск|следующие шаги|чек[- ]?лист|почему\s+(?:это\s+)?(?:шикарно|подходит|выбрать)|про\s+(?:мясо|меню|атмосферу)|бронирование)$/iu.test(
+  return /^(?:details?|booking details?|reservation details?|appointment details?|action details?|search results?|results?|важная информация|детали(?: бронирования| записи| заказа)?|данные(?:\s+для\s+[а-яёa-z]+)?|информация|результат(?:ы)?(?: поиска)?|поиск|следующие шаги|чек[- ]?лист|почему\s+(?:это\s+)?(?:шикарно|подходит|выбрать)|предложени[ея](?:\s+по\s+[а-яёa-z]+)?|про\s+(?:мясо|меню|атмосферу)|бронирование)$/iu.test(
     heading,
   );
 }

@@ -479,7 +479,8 @@ export class ActionProposalsService {
         run,
         proposal,
         executor,
-        reason: operatorReason ?? blockReason,
+        // The diagnosis must never be masked by the operator's note.
+        reason: operatorReason ? `${blockReason} (operator note: ${operatorReason})` : blockReason,
       });
       const updated = await this.runs.get(run.id);
       if (!updated)
