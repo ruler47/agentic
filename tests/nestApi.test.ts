@@ -731,6 +731,11 @@ test("Nest API commits approved external actions through a generated commit tool
           replaySteps: [{ action: "fill", selector: "#name", value: "Dmitrii" }],
           commitCandidates: [{ label: "Confirm", reason: "final submit" }],
           artifactIds: ["artifact_prepare_1"],
+          // The commit gate requires a QA-passed proof artifact on the
+          // prepared session (externalActionCommitPayloadBlockReason);
+          // simulate the proof screenshot that buildPreparedSession records
+          // in the real preparation flow.
+          proofArtifactIds: ["artifact_prepare_1"],
           warnings: [],
         },
       },

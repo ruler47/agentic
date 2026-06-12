@@ -107,30 +107,37 @@ test("external action replay ignores stale prepared-session URL when payload has
     payloadPreview: `Ссылка для записи: [Book appointment](${bookingUrl})`,
     sourceUrls: [staleUrl],
     targetUrl: staleUrl,
-    preparationExecution: {
-      status: "completed",
-      toolName: "external.action.prepare",
-      toolVersion: "0.1.0",
-      startedAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
+  });
+  // The runner reads the previous prepared session from the RUN's
+  // `external-action-preparation-completed` events (see
+  // latestPreparedSession), not from the proposal — record the stale
+  // session the way the runtime does so the replay-vs-fresh-URL logic is
+  // actually exercised.
+  await runs.appendEvent(run.id, {
+    id: "event-stale-preparation",
+    spanId: "span-stale-preparation",
+    type: "external-action-preparation-completed",
+    actor: "external.action.prepare",
+    activity: "tool",
+    status: "completed",
+    title: "External action preparation completed",
+    timestamp: new Date().toISOString(),
+    payload: {
+      proposalId: proposal.id,
       preparedSession: {
-        id: "session-stale",
-        currentUrl: staleUrl,
+        preparedAt: new Date().toISOString(),
         toolName: "external.action.prepare",
         toolVersion: "0.1.0",
-        target: "Memento Barbershop",
-        actionType: "appointment",
+        currentUrl: staleUrl,
+        links: [],
         replaySteps: [
           { action: "fill", selector: "#comment", value: "wrong stale page command" },
         ],
-        filledFields: [],
-        formFieldGaps: [],
-        commitCandidates: [],
-        artifactIds: [],
-        preparedAt: new Date().toISOString(),
       },
     },
   });
+  const runWithStaleSession = await runs.get(run.id);
+  assert.ok(runWithStaleSession);
   const recorder = new ActionProposalAuditRecorder(
     runs,
     new AuditService(new InMemoryAuditEventStore()),
@@ -150,7 +157,7 @@ test("external action replay ignores stale prepared-session URL when payload has
         valuePreview: "Local Admin",
       },
     ],
-  }).prepare({ run, proposal, rawBody: { mode: "replay" } });
+  }).prepare({ run: runWithStaleSession, proposal, rawBody: { mode: "replay" } });
 
   assert.equal(inputs[0]?.url, bookingUrl);
   const commands = inputs[0]?.commands as Record<string, unknown>[];
@@ -178,7 +185,6 @@ function appointmentProposal(
     userExplicitlyForbidsAction: false,
     allowedWithoutApproval: ["research", "prepare"],
     prohibitedWithoutApproval: ["submit final appointment"],
-    sourceUrls: overrides.sourceUrls,
     artifactIds: [],
     preparation: {
       stage: "prepared_for_approval",
