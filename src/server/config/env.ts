@@ -25,6 +25,14 @@ export type AppEnv = {
    * `TOOL_CALLBACK_BASE_URL` for non-default deployments.
    */
   toolCallbackBaseUrl?: string;
+  /**
+   * Opt-in shared API token. When set, every /api/* request must present
+   * it (Authorization: Bearer, x-agentic-token header, or ?token= query
+   * for SSE/links). Unset keeps the open localhost-dev behavior.
+   * Exempt: /api/health, /api/tools/callbacks/* (own HMAC tokens), and
+   * /api/fixtures/* (local browser fixture pages).
+   */
+  apiAuthToken?: string;
 };
 
 export function readEnv(): AppEnv {
@@ -44,5 +52,6 @@ export function readEnv(): AppEnv {
     builtinToolsEnabled: process.env.BUILTIN_TOOLS === "enabled",
     internalBaseUrl: process.env.AGENTIC_INTERNAL_BASE_URL,
     toolCallbackBaseUrl: process.env.TOOL_CALLBACK_BASE_URL,
+    apiAuthToken: process.env.AGENTIC_API_TOKEN?.trim() || undefined,
   };
 }
