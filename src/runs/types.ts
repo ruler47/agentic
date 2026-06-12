@@ -44,10 +44,21 @@ export type RunCreateContext = {
   sourceThreadId?: string;
 };
 
+export type RunMeta = {
+  status: RunStatus;
+  updatedAt: string;
+  eventCount: number;
+};
+
 export type RunStore = {
   create(task: string, context?: RunCreateContext): Promise<AgentRunRecord>;
   list(): Promise<AgentRunRecord[]>;
   get(id: string): Promise<AgentRunRecord | undefined>;
+  /**
+   * Cheap change-detection projection for pollers (SSE stream): status,
+   * updated-at, and event count without hydrating the event list.
+   */
+  getMeta(id: string): Promise<RunMeta | undefined>;
   markRunning(id: string): Promise<void>;
   waitForApproval(id: string, result: AgentRunResult, reason: string): Promise<void>;
   appendEvent(id: string, event: AgentEvent): Promise<void>;

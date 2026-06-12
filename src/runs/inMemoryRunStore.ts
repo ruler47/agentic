@@ -34,6 +34,12 @@ export class InMemoryRunStore implements RunStore {
       .map(cloneRun);
   }
 
+  async getMeta(id: string): Promise<{ status: AgentRunRecord["status"]; updatedAt: string; eventCount: number } | undefined> {
+    const run = this.runs.get(id);
+    if (!run) return undefined;
+    return { status: run.status, updatedAt: run.updatedAt, eventCount: run.events.length };
+  }
+
   async get(id: string): Promise<AgentRunRecord | undefined> {
     const run = this.runs.get(id);
     return run ? cloneRun(run) : undefined;

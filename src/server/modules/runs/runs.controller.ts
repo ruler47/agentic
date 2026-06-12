@@ -246,6 +246,18 @@ export class RunsController {
 
       const writeRun = async () => {
         if (closed) return;
+        // Cheap change detection first: this poll fires every 650 ms and a
+        // full `get()` hydrates the entire event list each time. Only pay
+        // for hydration when the meta signature actually moved.
+        const meta = await this.runs.getMeta(decoded);
+        if (!meta) {
+          subscriber.next({ type: "error", data: { error: "Run not found" } } as MessageEvent);
+          subscriber.complete();
+          close();
+          return;
+        }
+        const signature = [meta.status, meta.updatedAt, meta.eventCount].join(":");
+        if (signature === lastSignature) return;
         const run = await this.runs.get(decoded);
         if (!run) {
           subscriber.next({ type: "error", data: { error: "Run not found" } } as MessageEvent);
@@ -253,14 +265,6 @@ export class RunsController {
           close();
           return;
         }
-        const signature = [
-          run.status,
-          run.updatedAt,
-          run.events.length,
-          run.result ? "result" : "",
-          run.error ?? "",
-        ].join(":");
-        if (signature === lastSignature) return;
         lastSignature = signature;
         subscriber.next({ type: "run", data: { run } } as MessageEvent);
         if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") {
