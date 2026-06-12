@@ -201,7 +201,14 @@ Manual exams:
   screenshot and commit candidates, and the no-submit boundary blocks final
   commit controls in prepareOnly mode.
 - Approve once, submit, and return confirmation or explicit provider failure.
-  (Commit half still pending a live exam against a safe provider.)
+  PASSED 2026-06-13 (live, local safe fixture): approve fills the provider
+  form from task-collected inputs (time/email; contact split into
+  name/email/phone), captures proof, and commit executes the generic
+  external.action.commit tool to `committed` with confirmation evidence
+  from the fixture page. Infra note: the commit tool launches its own
+  playwright-core browser — the host needs `chromium-headless-shell`
+  in the ms-playwright cache (install via the tool package's
+  node_modules/.bin/playwright-core).
 - Try the same flow in automode on a safe fixture or test provider.
 
 ## Phase 5: Reintroduce Tool Builder
