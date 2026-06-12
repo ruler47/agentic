@@ -69,7 +69,7 @@ export function DiagnosticsPage() {
             disabled={reload.isPending}
             className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 disabled:opacity-50"
           >
-            {reload.isPending ? "Reloading…" : "Reload generated tools"}
+            {reload.isPending ? "Reloading…" : "Reload tool registry"}
           </button>
         </div>
         {runHealth.isSuccess ? (

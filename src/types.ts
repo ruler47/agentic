@@ -36,6 +36,8 @@ export type LlmConfig = {
   baseUrl: string;
   model: string;
   temperature: number;
+  requestTimeoutMs?: number;
+  reasoningEffort?: string;
   tierModels: Partial<Record<ModelTier, string>>;
   tierModelCandidates: Partial<Record<ModelTier, string[]>>;
 };
@@ -144,6 +146,14 @@ export type WorkerResult = {
    */
   toolEvidenceRecords?: unknown[];
   artifacts?: AgentArtifact[];
+  selfCheck?: {
+    readyToReturn: boolean;
+    artifactCount: number;
+    evidenceCount: number;
+    checks: Array<{ name: string; ok: boolean; reason: string }>;
+    warnings: string[];
+    limitations: string[];
+  };
   traceSpanId?: string;
   modelTier?: ModelTier;
   /**
@@ -264,10 +274,13 @@ export type AgentEventType =
   | "agent-invocation-completed"
   | "agent-invocation-failed"
   | "agent-invocation-return-checked"
+  | "planning-started"
+  | "planning-fallback-created"
   | "planning-completed"
   | "worker-started"
   | "worker-completed"
   | "worker-failed"
+  | "worker-synthesis-degraded"
   | "review-started"
   | "review-completed"
   | "review-failed"

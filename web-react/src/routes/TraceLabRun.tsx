@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { useRun, useRunWaits } from "@/api/runs";
+import { useRun } from "@/api/runs";
 import { useRunStream } from "@/api/sse";
-import { useTools } from "@/api/tools";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { TraceGraph } from "@/features/trace/TraceGraph";
 import { TraceInspector } from "@/features/trace/TraceInspector";
-import { buildSpanInvestigationDraft } from "@/features/investigations/buildSpanInvestigationDraft";
-import { useInvestigationModal } from "@/features/investigations/store";
 import {
   applyTraceFilters,
   buildTraceNodes,
@@ -37,9 +34,6 @@ export function TraceLabRunPage() {
   const params = useParams<{ runId: string }>();
   const runId = params.runId;
   const run = useRun(runId);
-  const waits = useRunWaits(runId);
-  const tools = useTools();
-  const openInvestigationModal = useInvestigationModal((state) => state.openWith);
   useRunStream(runId);
 
   const [mode, setMode] = useState<TraceMode>(() => readStoredTraceMode());
@@ -53,14 +47,6 @@ export function TraceLabRunPage() {
     () => visibleNodes.find((node) => node.spanId === selectedSpanId) ?? visibleNodes[0],
     [visibleNodes, selectedSpanId],
   );
-  const linkedWait = useMemo(
-    () =>
-      (waits.data ?? []).find(
-        (wait) => wait.spanId && wait.spanId === selectedNode?.spanId,
-      ) ?? (waits.data ?? []).find((wait) => !wait.spanId),
-    [waits.data, selectedNode?.spanId],
-  );
-
   // If filters drop the previously selected span, re-anchor on the first visible.
   useEffect(() => {
     if (!selectedSpanId) return;
@@ -191,17 +177,6 @@ export function TraceLabRunPage() {
         <TraceInspector
           node={selectedNode}
           runId={run.data.id}
-          reworkWait={linkedWait}
-          onCreateInvestigation={(node) => {
-            if (!run.data) return;
-            openInvestigationModal(
-              buildSpanInvestigationDraft({
-                run: run.data,
-                node,
-                installedTools: tools.data ?? [],
-              }),
-            );
-          }}
         />
       </div>
     </section>

@@ -10,9 +10,24 @@ import type {
 } from "@/api/types";
 
 export type ModelCatalogResponse = {
-  chat?: { baseUrl?: string; models?: Array<{ id: string; ownedBy?: string }> };
-  embedding?: { provider?: string; model?: string; dimensions?: number; models?: Array<{ id: string }> };
+  chat?: { baseUrl?: string; models?: CatalogModel[] };
+  embedding?: { provider?: string; model?: string; dimensions?: number; models?: CatalogModel[] };
   providers?: ModelProviderRecord[];
+};
+
+export type ModelCapability =
+  | "chat"
+  | "embedding"
+  | "vision"
+  | "reasoning"
+  | "coding"
+  | "tool-calling";
+
+export type CatalogModel = {
+  id: string;
+  ownedBy?: string;
+  capabilities?: ModelCapability[];
+  capabilitySource?: "inferred";
 };
 
 export function useModelTiers() {

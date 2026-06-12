@@ -90,6 +90,7 @@ test("claim coordinator returns reuse_completed when prior fresh evidence exists
     title: "Source X",
     runId: "run-1",
     workItemId: first.workItem!.id,
+    sourceUrl: "https://example.com/source-x",
     summary: "snippet",
   });
   await coordinator.completeWork({

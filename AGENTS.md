@@ -21,6 +21,77 @@ instance/user/channel provenance so the assistant can maintain group memory, per
 memory, whitelisted channel identities, tools, credentials, outbound messages, and
 policies without leaking context.
 
+## Current Architecture Decision
+
+- The legacy Tool Builder / tool-rework queue is removed from the active server and UI.
+  Do not restore `/api/tool-build-*`, `/api/tool-investigations`, or
+  `/api/tool-rework-waits` as part of ordinary fixes.
+- The active tool foundation is the preinstalled `createCoreToolbelt()` registry:
+  `web.search`, `web.read`, `browser.operate`, `browser.screenshot`,
+  `http.request`, `file.read`, `file.write`, `document.extract`,
+  `data.transform`, `external.action.prepare`, `external.action.commit`, and
+  `channel.telegram`.
+- Local React/API development (`npm run web`) wires `BROWSER_OPERATE_BASE_URL` to
+  `http://127.0.0.1:18080` by default so the preinstalled
+  `browser.operate`/`browser.screenshot` tools can reach the local
+  browser-operate service. Docker/container deployments can still override the value
+  and use the container DNS default.
+- Local React/API development also wires `CHANNEL_TELEGRAM_BASE_URL` /
+  `TELEGRAM_BOT_BASE_URL` to `http://127.0.0.1:18081` by default so the preinstalled
+  `channel.telegram` tool can reach a host-mapped Telegram service. Health is expected
+  to be `failed`/`degraded` until the service is started with a bot token and context.
+- The same local dev script sets `ARTIFACT_ROOT` to `workspace/artifacts` by default
+  so generated screenshots/files save on the host instead of trying to write Docker's
+  `/app/workspace/artifacts` path.
+- The old `chart.generate`, `market.timeseries`, and `telegram.bot` modules can remain
+  as historical/reference source, but they are not part of the active preinstalled
+  toolbelt unless deliberately reintroduced through the registry.
+- Future builder work must build on the same versioned tool registry and metadata
+  contract used by those preinstalled tools. Generated implementations should live as
+  out-of-tree portable packages/services and be registered/promoted into the registry;
+  they must not become special Agentic app branches or hardcoded task-specific code.
+- Missing capabilities should currently surface as missing/unsupported work. The platform
+  should not silently create tool build requests until the new builder lifecycle is
+  redesigned and tested.
+- Explicit HTTP/API/JSON URL tasks should use the `http.request` fast path before
+  `web.read` or browser automation. The runtime must not infer unsafe write methods from
+  words like "send/create"; use `POST`/`PUT`/`PATCH`/`DELETE` only when explicitly stated
+  by the user/task/tool input. API-only tasks should not request screenshot artifacts
+  unless the user explicitly asks for visual proof.
+- `jsonplaceholder.typicode.com` is a valid public API smoke-test host. Do not treat it
+  as fake proof merely because the hostname contains the word "placeholder".
+- HTTP status phrases such as `HTTP 200` and `Status 404` are protocol evidence, not
+  product/model/version specifics, and should not trigger ungrounded-specifics repair.
+- Runtime date/time from the current instance context is valid grounding evidence for
+  scheduling/report prose. The ungrounded-specifics gate should not reject current-date
+  mentions such as "June 5, 2026" when they come from runtime context, while still
+  rejecting unsupported product models, prices, versions, or future availability claims.
+- Explicit local utility tasks that name or structurally require `document.extract`,
+  `data.transform`, `file.read`, or `file.write` should use the local core-tool fast
+  path before the general planner. The runtime must suppress web search/browser
+  discovery for those local-only toolchains unless the user explicitly asks for external
+  discovery.
+- Run stores must keep terminal statuses terminal. After a run is `completed`, `failed`,
+  or `cancelled`, late worker/tool events must not mutate it back into an active run.
+- `RUN_IDLE_TIMEOUT_MS` bounds runs with no observable progress, and
+  `LEARNING_TIMEOUT_MS` keeps post-run learning best-effort so completed work is not held
+  hostage by memory summarization.
+- Local OpenAI-compatible reasoning models can put useful assistant text in
+  `reasoning_content` while leaving `message.content` empty. The LLM client treats that
+  as valid assistant output, and local LM Studio `:1234` requests default
+  `reasoning_effort` to `none` unless `LLM_REASONING_EFFORT` overrides it or is set to
+  `disabled`.
+- Small-context local models must not receive full runtime context in early pre-flight
+  calls. Classification uses a compact task/profile/time context, normal chat requests
+  can set `max_tokens`, and delegated final synthesis has bounded prompt sections plus a
+  compact fallback answer when the model still reports context-window overflow. The
+  fallback should complete the run with diagnostic evidence instead of losing all work at
+  the final synthesis boundary.
+- For the current reset/handoff state, read [docs/agent-handoff.md](docs/agent-handoff.md).
+  It summarizes the active product philosophy, core-toolbelt roadmap, external-action
+  safety boundary, model-routing direction, known gaps, and rules about not restoring the
+  legacy Tool Builder path.
+
 ## User Collaboration Notes
 
 - The user wants the project in TypeScript.
@@ -34,15 +105,17 @@ policies without leaking context.
   separate agents, then accumulates the results centrally.
 - The user does not want private hardcoded solutions such as a special market/chart
   pipeline or a special Telegram branch. Build generic reusable capabilities through the
-  tool registry, Tool Builds, versioned replacements, QA, and documentation.
+  tool registry, versioned metadata, QA, documentation, and eventually a redesigned
+  out-of-tree tool builder.
 - The user expects requests to accept files and responses to return files when the task
   calls for artifacts such as charts, screenshots, reports, datasets, or source bundles.
 - The user wants the system to eventually run for a family or enterprise, with separate
   memory for the whole group and for each member.
-- External channels such as Telegram should be ordinary generated tool modules with a
-  startup mode such as `always-on`, not special runtime branches. They use the same
-  registry/versioning/QA/secret-handle flow as other capabilities, expose health/lifecycle
-  status, and translate provider events into normal runs.
+- External channels such as Telegram should be ordinary registered tools with a startup
+  mode such as `always-on`, not special runtime branches. The active preinstalled
+  channel is `channel.telegram`; future generated/rebuilt channel adapters must use the
+  same registry/versioning/QA/secret-handle flow as other capabilities, expose
+  health/lifecycle status, and translate provider events into normal runs.
 - Built-in, generated, and always-on tool changes should converge on one versioned
   lifecycle: change request -> new version -> code review -> behavior/QA review ->
   promotion -> reload/restart. Direct edits to reference tool source are temporary
@@ -77,6 +150,63 @@ policies without leaking context.
   falls back to its previous behaviour. Dedicated URL visit tools, file read/write tools,
   and the dedicated ledger UI are tracked for follow-up phases of the recursive-agent
   program.
+- Work Ledger keys are compacted when payloads are large, and Postgres indexes the
+  hashed key instead of a raw unbounded text btree. Do not reintroduce indexes on the
+  full `work_key`. Browser automation is not a globally reusable data fetch:
+  non-interactive `browser.operate` discovery is scoped to the current run, while
+  interactive commands such as click/fill/select/submit are scoped to the current
+  attempt so new runs cannot inherit stale browser state or old form screenshots.
+- Work Ledger reuse is quality-gated. Completed work is not automatically reusable when
+  its evidence records are failed/blocked/limitation-only, contain hallucination/
+  mismatch/insufficient-evidence signals, or search evidence lacks reusable source URLs.
+  Broad/current search evidence should record `sourceUrls` and confidence so later runs
+  can revalidate weak findings instead of inheriting them.
+- Search/browser evidence selection should prefer concrete detail pages over generic
+  listing/search/category pages when the task needs a specific product, provider,
+  booking, price, or proof screenshot. URL-shape scoring may sort already relevant or
+  explicitly mentioned hosts, but it must not make an otherwise off-topic URL relevant.
+- External action preparation must prefer customer-facing provider/action URLs over
+  marketplace directories and provider business/admin/software landing pages. Pages such
+  as `/for-business` are not valid customer proof for booking/form tasks. Prepared
+  external-action drafts are run-scoped approval state and must not be reused across runs
+  as if they were pure data fetches.
+- When browser screenshot/artifact QA rejects a customer-action URL, the rejected final
+  URL and reason must become machine-readable evidence for the retry. Revision attempts
+  should exclude rejected URLs and try the next actionable provider URL instead of
+  repeating the same failed landing page.
+- Rejected browser pages should also expose concrete action/provider links discovered on
+  that page as machine-readable retry candidates, while still excluding the rejected
+  branch itself when it is a directory, provider-business, or admin/software path.
+- External-action approval-draft review should trust runtime `external.action.prepare`
+  evidence plus the upstream `browser.operate` preparation/proof boundary. The worker's
+  free-form draft may contain harmless browser-derived URL ids or date labels; it should
+  not block the DAG when the tool evidence proves a no-submit boundary and a concrete
+  browser-preparation artifact/page.
+- Subtasks with explicit `requiredTools: []`, no `toolInputs`, and no required artifacts
+  are no-tool subtasks. The runtime must not infer tool calls from tool names mentioned
+  in explanatory prompt text.
+- Internal project/platform questions about Agentic concepts such as the preinstalled
+  core toolbelt should be answered from Agentic project context, not from external web
+  search results for unrelated products. Direct-answer synthesis receives that context
+  before generic instance/thread context so it is not truncated away.
+- `synthesis-completed` trace events should carry a concise `detail` preview of the
+  final answer in addition to the payload so Trace Lab and timelines do not show blank
+  completed synthesis nodes.
+- `browser.operate` includes a safe `fillFormSemantically` command for external-action
+  preparation. It maps labels/placeholders/names/nearby text to task-provided values,
+  fills obvious form controls, may click safe progress controls such as Next/Continue,
+  records a structured form-fill report, and stops before final submit/confirm/pay/send.
+  Legal/privacy consent controls are not checked unless explicitly allowed. Provider or
+  marketplace directory search boxes such as "services or businesses" are not treated as
+  target form fields. SPA-style progress controls can be clicked through the visible
+  observer fallback, but external-action-safe visible clicks must skip provider-side
+  business/admin/software CTAs such as "book a demo", "for business", "list your
+  business", booking-software links, or provider SaaS pages such as `/industries`,
+  `/solutions`, `/features`, and `/use-cases`; those pages are not customer booking
+  proof.
+  action-observer fallback when form DOM markup is weak, but social/account controls
+  such as "continue with Google/Facebook/Apple" are a login boundary and must stop the
+  preparation with an explicit blocker.
 - Runs produce a deterministic, non-LLM retrospective draft after completion/failure:
   what worked, what failed, observed weak tools, missing capabilities, duplicated-work
   signals, and the evidence ids it considered useful. The draft is written with status
@@ -181,6 +311,16 @@ reads `/api/models/catalog` and `/api/model-providers` to show discovered local 
 models, the active embedding provider, and durable local/remote provider registry entries.
 Future runtime routing should resolve tier model ids through this provider registry, and
 future DB-backed embedding selection should trigger memory re-embedding.
+`/api/models/catalog` decorates discovered OpenAI-compatible model ids with inferred
+capabilities (`chat`, `embedding`, `reasoning`, `coding`, `vision`, `tool-calling`) and
+filters embedding-only ids out of chat tier options. Vision detection is currently a
+conservative name-based inference because common `/models` endpoints do not expose formal
+modality metadata. `LLM_MODEL_CAPABILITIES` can add operator-verified overrides such as
+`qwen/qwen3.6-35b-a3b=vision,reasoning,tool-calling;google/gemma-4-26b-a4b=vision`.
+Future provider records should store these overrides durably with latency/throughput
+health, context window, reasoning budget behavior, and recommended routing roles.
+`LLM_REQUEST_TIMEOUT_MS` bounds each model attempt. Keep it configured in local/dev runs
+so a slow or stuck local model cannot leave runs permanently `running`.
 
 Durable artifact storage in Docker uses:
 
@@ -291,6 +431,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 ## Important Files
 
 - [README.md](README.md) - quick start and request execution summary.
+- [docs/agent-handoff.md](docs/agent-handoff.md) - current handoff for another AI agent:
+  philosophy, roadmap, active gaps, and do-not-reintroduce list.
 - [docs/architecture.md](docs/architecture.md) - detailed architecture and delegation model.
 - [docs/modules/instance-context.md](docs/modules/instance-context.md) - target
   instance/user/channel memory, Telegram, outbound action, model provider, and tool
@@ -317,6 +459,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   - Postgres-backed `model_providers` adapter.
 - [docs/modules/model-providers.md](docs/modules/model-providers.md) - provider registry,
   embedding-provider, and future runtime resolver notes.
+- [docs/model-routing-roadmap.md](docs/model-routing-roadmap.md) - model capabilities,
+  vision verification, tier routing, probes, and multimodal runtime roadmap.
 - [src/agents/prompts.ts](src/agents/prompts.ts) - prompts for classification, planning,
   workers, reviewers, synthesis, and learning.
 - [src/agents/recursiveAgentLoop.ts](src/agents/recursiveAgentLoop.ts) - deterministic
@@ -650,11 +794,12 @@ Highlights (Phases A–F shipped, plus follow-up work):
 - **Capability-aware self-check** — when no registered tool advertises the
   capability a planner asked for, the worker isn't punished for failing to
   produce that artifact.
-- **Pure-council registry** — `BUILTIN_TOOLS=disabled` skips the hard-coded
-  `web.search` / `file.read` / `chart.generate` / `browser.operate` /
-  `market.timeseries` / `telegram.bot` registrations so the only visible tools are
-  the council-built ones. Tools directory is reconciled on bootstrap (orphan
-  removal + version pruning to the last 5).
+- **Pure-council registry** — `BUILTIN_TOOLS=disabled` skips the preinstalled
+  core toolbelt registrations (`web.search`, `web.read`, `browser.operate`,
+  `browser.screenshot`, `http.request`, `file.read`, `file.write`,
+  `document.extract`, `data.transform`, `external.action.prepare`,
+  `external.action.commit`, `channel.telegram`) so experiments can run with an
+  empty/runtime-built registry.
 - **Tool Builds page** rewritten around `/api/tool-build-runs`; the Tools-page
   detail view has a Versions panel (rollback per version, change summary) and a
   Request-changes form (file uploads supported; posts as a rework run).
@@ -1347,7 +1492,22 @@ For documentation-only changes:
   UI and registry do not show multiple indistinguishable screenshot tools.
 - `browser.operate` must remain domain-neutral and portable. It executes typed browser
   commands and returns structured evidence plus Playwright storage state; agents decide
-  the scenario and reviewers decide whether the resulting artifact proves the task.
+  the scenario and reviewers decide whether the resulting artifact proves the task. The
+  `observe` and `clickVisible` commands inspect visible elements across both the main
+  document and embedded frames and return `frameIndex`/`frameUrl` so traces can explain
+  where an action happened. `observe` should filter hidden/decorative DOM candidates,
+  prefer viewport-visible form controls/buttons over offscreen/footer links, and expose
+  safe metadata such as `href`, form `name`, `inputType`, `placeholder`, and `checked`
+  without duplicating current field values into traces.
+- `browser.operate` `clickVisible` accepts `externalActionSafe` for customer-side
+  booking/reservation/checkout/contact preparation. In that mode it must skip generic
+  provider onboarding/admin/software CTAs such as `/for-business`, "book a demo",
+  pricing/software/business-management links, or "list your business" even when their
+  visible text partially matches "Book" or "Appointment".
+- `browser.operate` `dismissDialogs` should poll within its timeout for consent banners
+  that appear after navigation or after a click. Appointment flows such as Booksy may
+  reach service/time preparation and then require login/social auth; that is an external
+  blocker to report with proof, not a successful booking.
 - `browser.operate` also accepts screenshot-style `{ url, label?, filename?, fullPage? }`
   input and expands it into navigate/extract/screenshot commands. On command failure it
   should return any diagnostic screenshot payloads so the runtime can attach proof of

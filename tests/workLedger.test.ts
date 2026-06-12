@@ -14,6 +14,8 @@ import { InMemoryWorkLedgerStore } from "../src/work-ledger/workLedgerStore.js";
 import { InMemoryEvidenceLedgerStore } from "../src/work-ledger/evidenceLedgerStore.js";
 import { InMemoryRunRetrospectiveStore } from "../src/work-ledger/runRetrospectiveStore.js";
 import { WorkLedgerItem } from "../src/work-ledger/types.js";
+import { evaluateEvidenceReusePolicy } from "../src/work-ledger/evidenceReusePolicy.js";
+import { createWorkLedgerClaimCoordinator } from "../src/work-ledger/workLedgerClaimCoordinator.js";
 
 test("workKey helpers normalize input deterministically", () => {
   assert.equal(
@@ -55,6 +57,20 @@ test("workKey helpers normalize input deterministically", () => {
 
   // stableJson is order-independent and stable across nested objects/arrays.
   assert.equal(stableJson({ b: 1, a: { z: [3, 2, 1], y: 5 } }), stableJson({ a: { y: 5, z: [3, 2, 1] }, b: 1 }));
+});
+
+test("tool work keys compact large payloads without losing determinism", () => {
+  const commands = Array.from({ length: 80 }, (_, index) => ({
+    type: "observe",
+    label: `step-${index}`,
+    text: `Long browser instruction ${index} `.repeat(8),
+  }));
+  const a = toolCallWorkKey("browser.operate", { capability: "browser-operate", commands });
+  const b = toolCallWorkKey("BROWSER.OPERATE", { commands, capability: "browser-operate" });
+
+  assert.equal(a, b);
+  assert.ok(a.length <= 512, `expected compact key, got ${a.length} chars`);
+  assert.match(a, /^tool:browser\.operate:sha256:[a-f0-9]{64}/);
 });
 
 test("sanitizeMetadata recursively redacts secret-shaped keys", () => {
@@ -234,6 +250,156 @@ test("InMemoryEvidenceLedgerStore filters by run/thread/work-item/artifact/sourc
   assert.equal((await store.listByWorkItem("work-1")).length, 1);
   assert.equal((await store.listByArtifact("artifact-1")).length, 1);
   assert.equal((await store.listBySourceUrl("https://example.com/article")).length, 1);
+});
+
+test("evidence reuse policy rejects weak search evidence", () => {
+  const item: WorkLedgerItem = {
+    id: "work-weak-search",
+    kind: "search",
+    status: "completed",
+    workKey: "search:web:any:any:best laptop",
+    title: "Web search",
+    inputSummary: "latest best laptop for local LLM and gaming",
+    outputSummary: "Found results but no usable URLs. Review failed: ungrounded model claims.",
+    sourceUrls: [],
+    artifactIds: [],
+    evidenceIds: [],
+    createdAt: "2026-06-04T10:00:00.000Z",
+    updatedAt: "2026-06-04T10:00:00.000Z",
+  };
+
+  const result = evaluateEvidenceReusePolicy({
+    item,
+    taskSummary: item.inputSummary,
+  });
+
+  assert.equal(result.reusable, false);
+  assert.match(result.reason, /blocker|mismatch|hallucination|source URL/i);
+});
+
+test("evidence reuse policy revalidates stale search quality versions", () => {
+  const item: WorkLedgerItem = {
+    id: "work-old-search-quality",
+    kind: "search",
+    status: "completed",
+    workKey: "search:web:any:any:best laptop",
+    title: "Web search",
+    inputSummary: "best laptop under 2500 USD Spain",
+    outputSummary: "https://example.com/best-laptops\nBest laptops under $2500.",
+    sourceUrls: ["https://example.com/best-laptops"],
+    artifactIds: [],
+    evidenceIds: [],
+    createdAt: "2026-06-04T10:00:00.000Z",
+    updatedAt: "2026-06-04T10:00:00.000Z",
+    metadata: { evidenceQualityVersion: 1 },
+  };
+
+  const result = evaluateEvidenceReusePolicy({
+    item,
+    taskSummary: item.inputSummary,
+    metadata: { evidenceQualityVersion: 2, marketHints: ["Spain", "USD"] },
+  });
+
+  assert.equal(result.reusable, false);
+  assert.match(result.reason, /quality policy/i);
+});
+
+test("evidence reuse policy rejects search evidence missing requested market hints", () => {
+  const item: WorkLedgerItem = {
+    id: "work-market-mismatch",
+    kind: "search",
+    status: "completed",
+    workKey: "search:web:any:any:best laptop",
+    title: "Web search",
+    inputSummary: "best laptop under 2500 USD Spain",
+    outputSummary: "https://kp.ru/best-laptops\nЛучшие ноутбуки до 250000 рублей.",
+    sourceUrls: ["https://kp.ru/best-laptops"],
+    artifactIds: [],
+    evidenceIds: [],
+    createdAt: "2026-06-04T10:00:00.000Z",
+    updatedAt: "2026-06-04T10:00:00.000Z",
+    metadata: { evidenceQualityVersion: 2 },
+  };
+
+  const result = evaluateEvidenceReusePolicy({
+    item,
+    taskSummary: item.inputSummary,
+    metadata: { evidenceQualityVersion: 2, marketHints: ["Spain", "USD"] },
+  });
+
+  assert.equal(result.reusable, false);
+  assert.match(result.reason, /market\/context hints/i);
+});
+
+test("claim coordinator revalidates completed search work with failed evidence", async () => {
+  const workStore = new InMemoryWorkLedgerStore();
+  const evidenceStore = new InMemoryEvidenceLedgerStore();
+  const coordinator = createWorkLedgerClaimCoordinator({
+    workLedgerStore: workStore,
+    evidenceLedgerStore: evidenceStore,
+  });
+
+  const completed = await workStore.createItem({
+    kind: "search",
+    status: "completed",
+    workKey: searchQueryWorkKey({ query: "latest best laptop under 2500", provider: "web.search" }),
+    title: "Web search",
+    inputSummary: "latest best laptop under 2500",
+    outputSummary: "https://example.com/loading",
+    sourceUrls: ["https://example.com/loading"],
+  });
+  await evidenceStore.createEvidence({
+    kind: "limitation",
+    title: "Search evidence rejected",
+    workItemId: completed.id,
+    qaStatus: "failed",
+    limitations: ["insufficient evidence; source mismatch"],
+  });
+
+  const decision = await coordinator.claimWork({
+    runId: "run-2",
+    ownerSpanId: "span-2",
+    kind: "search",
+    workKey: completed.workKey,
+    taskSummary: "latest best laptop under 2500",
+    requestedBy: "test",
+  });
+
+  assert.equal(decision.decision, "revalidate");
+  assert.match(decision.reason, /blocker|mismatch|hallucination|positive reusable evidence/i);
+  assert.notEqual(decision.workItem?.id, completed.id);
+});
+
+test("claim coordinator revalidates completed search work from an older evidence quality policy", async () => {
+  const workStore = new InMemoryWorkLedgerStore();
+  const coordinator = createWorkLedgerClaimCoordinator({
+    workLedgerStore: workStore,
+  });
+
+  const completed = await workStore.createItem({
+    kind: "search",
+    status: "completed",
+    workKey: searchQueryWorkKey({ query: "best laptop under 2500 USD Spain", provider: "web.search" }),
+    title: "Web search",
+    inputSummary: "best laptop under 2500 USD Spain",
+    outputSummary: "https://example.com/best-laptops",
+    sourceUrls: ["https://example.com/best-laptops"],
+    metadata: { evidenceQualityVersion: 1 },
+  });
+
+  const decision = await coordinator.claimWork({
+    runId: "run-3",
+    ownerSpanId: "span-3",
+    kind: "search",
+    workKey: completed.workKey,
+    taskSummary: "best laptop under 2500 USD Spain",
+    requestedBy: "test",
+    metadata: { evidenceQualityVersion: 2, marketHints: ["Spain", "USD"] },
+  });
+
+  assert.equal(decision.decision, "revalidate");
+  assert.match(decision.reason, /quality policy/i);
+  assert.notEqual(decision.workItem?.id, completed.id);
 });
 
 test("InMemoryRunRetrospectiveStore tracks proposals and status updates", async () => {

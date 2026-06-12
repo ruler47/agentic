@@ -5,24 +5,18 @@ import {
   useRunRetrospectives,
   useWorkLedger,
 } from "@/api/ledger";
-import { useCancelRun, useRestartRun, useResumeRun, useRun, useRunWaits } from "@/api/runs";
-import {
-  useAutoRetryReworkWait,
-  useResumeReworkWait,
-} from "@/api/reworkWaits";
+import { useCancelRun, useRestartRun, useResumeRun, useRun } from "@/api/runs";
 import { useRunStream } from "@/api/sse";
 import { ArtifactGallery } from "@/components/ArtifactPreview";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
-import type { AgentEvent, AgentRunRecord, ToolReworkWaitRecord } from "@/api/types";
-import { retryRunLabel } from "@/features/tool-builds/reworkWaitPresentation";
+import type { AgentEvent, AgentRunRecord } from "@/api/types";
 
 export function RunWorkspacePage() {
   const params = useParams<{ runId: string }>();
   const runId = params.runId;
   const run = useRun(runId);
-  const waits = useRunWaits(runId);
   const workLedger = useWorkLedger({ runId });
   const evidenceLedger = useEvidenceLedger({ runId });
   const retrospectives = useRunRetrospectives({ runId });
@@ -51,9 +45,6 @@ export function RunWorkspacePage() {
     );
 
   const data = run.data;
-  const activeWaits = (waits.data ?? []).filter(
-    (wait) => wait.status !== "resumed" && wait.status !== "cancelled" && wait.status !== "failed",
-  );
   const isLive = data.status === "queued" || data.status === "running";
   // Phase 12 follow-up: detect runs that look "stuck" — i.e. status=running
   // but no event arrived in the last 5 minutes. Operators commonly hit this
@@ -186,10 +177,7 @@ export function RunWorkspacePage() {
           </div>
         </header>
 
-        <ToolBuildContextPanel run={data} />
         <ChannelSourcePanel run={data} />
-
-        {activeWaits.length > 0 ? <RunWaitPanel waits={activeWaits} runId={data.id} /> : null}
 
         <RunLedgerPanel
           runId={data.id}
@@ -236,101 +224,6 @@ export function RunWorkspacePage() {
         </article>
       </aside>
     </section>
-  );
-}
-
-/**
- * Tool-build runs carry a structured `toolBuildContext` on the
- * run-started event (name / description / qaCriteria / bugContext /
- * referenceDocs). Without surfacing it, the operator only sees the
- * run.task headline and has no way to recall "what did I actually
- * ask for in the rework form?". Render it as a dedicated panel when
- * present.
- */
-function ToolBuildContextPanel({ run }: { run: AgentRunRecord }) {
-  const startedEvent = (run.events ?? []).find((event) => event.type === "run-started");
-  const payload = startedEvent?.payload as Record<string, unknown> | undefined;
-  const ctx = payload && typeof payload === "object"
-    ? (payload as { toolBuildContext?: Record<string, unknown> }).toolBuildContext
-    : undefined;
-  if (!ctx || typeof ctx !== "object") return null;
-
-  const name = typeof ctx.name === "string" ? ctx.name : undefined;
-  const description = typeof ctx.description === "string" ? ctx.description : undefined;
-  const bugContext = typeof ctx.bugContext === "string" ? ctx.bugContext : undefined;
-  const existingToolName = typeof ctx.existingToolName === "string" ? ctx.existingToolName : undefined;
-  const qaCriteria = Array.isArray(ctx.qaCriteria)
-    ? (ctx.qaCriteria as unknown[]).filter((entry): entry is string => typeof entry === "string")
-    : [];
-  const referenceDocs = Array.isArray(ctx.referenceDocs)
-    ? (ctx.referenceDocs as unknown[]).filter(
-        (entry): entry is { filename: string; mimeType: string; content: string } =>
-          Boolean(entry) &&
-          typeof entry === "object" &&
-          typeof (entry as { filename?: unknown }).filename === "string",
-      )
-    : [];
-
-  const isRework = Boolean(existingToolName);
-
-  return (
-    <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
-      <div className="flex flex-col gap-3">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-app-accent">
-            Council {isRework ? "rework" : "build"} request
-          </p>
-          <h3 className="text-sm font-semibold">
-            {isRework ? `Rework ${existingToolName}` : `Build ${name ?? "(unknown)"}`}
-          </h3>
-        </div>
-        {isRework ? (
-          <div className="rounded-md border border-app-warning/30 bg-app-warning-soft/30 p-3 text-xs">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-app-warning">
-              What should change
-            </p>
-            <p className="mt-1 whitespace-pre-wrap break-words">
-              {bugContext || "(none provided)"}
-            </p>
-          </div>
-        ) : null}
-        {description ? (
-          <div className="text-xs">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">
-              {isRework ? "Original tool description (unchanged)" : "Description"}
-            </p>
-            <p className="mt-1 whitespace-pre-wrap break-words">{description}</p>
-          </div>
-        ) : null}
-        {qaCriteria.length > 0 ? (
-          <div className="text-xs">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">
-              QA acceptance criteria
-            </p>
-            <ul className="mt-1 list-disc space-y-0.5 pl-4">
-              {qaCriteria.map((criterion, idx) => (
-                <li key={idx}>{criterion}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        {referenceDocs.length > 0 ? (
-          <div className="text-xs">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">
-              Reference docs ({referenceDocs.length})
-            </p>
-            <ul className="mt-1 flex flex-col gap-1">
-              {referenceDocs.map((doc, idx) => (
-                <li key={idx} className="font-mono text-[11px]">
-                  {doc.filename}{" "}
-                  <span className="text-app-text-muted">({doc.mimeType})</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-      </div>
-    </article>
   );
 }
 
@@ -451,9 +344,6 @@ function RunLedgerPanel({
 function runStatusMessage(run: AgentRunRecord): string {
   if (run.status === "failed") return run.error ?? "Run failed.";
   if (run.status === "cancelled") return run.error ?? "Run cancelled.";
-  if (run.status === "waiting_tool_rework") {
-    return run.error ?? "Run is waiting for a tool upgrade. See the panel above for details.";
-  }
   return run.result?.finalAnswer ?? "Agent is working…";
 }
 
@@ -479,140 +369,5 @@ function TimelineRow({ event }: { event: AgentEvent }) {
         <p className="mt-0.5 text-[11px] text-app-text-muted">{truncate(event.detail, 160)}</p>
       ) : null}
     </li>
-  );
-}
-
-function RunWaitPanel({ waits, runId }: { waits: ToolReworkWaitRecord[]; runId: string }) {
-  const resume = useResumeReworkWait();
-  const autoRetry = useAutoRetryReworkWait();
-  const resumeRun = useResumeRun();
-  const allPromoted = waits.length > 0 && waits.every((w) => w.status === "promoted" || w.status === "resumed");
-  return (
-    <section className="rounded-[var(--radius-card)] border border-app-warning/40 bg-app-warning-soft p-5">
-      <header className="mb-2 flex items-baseline justify-between">
-        <div>
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-app-warning">
-            Tool rework wait
-          </span>
-          <h3 className="text-base font-semibold">Waiting for tool upgrade</h3>
-        </div>
-        <Link to="/tool-builds" className="text-xs text-app-warning underline">
-          Open Tool Builds
-        </Link>
-      </header>
-      <p className="text-xs text-app-text-muted">
-        This run paused because a registered tool needs to be improved or rebuilt before continuing. When all required tools
-        are promoted the run resumes automatically — picking up where it stopped, reusing classifier output, plan, and any
-        completed subtask. You can also force an auto-retry pass per wait, or trigger a manual resume from above.
-      </p>
-      {allPromoted ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-app-accent/40 bg-app-accent-soft/40 p-2 text-xs">
-          <span className="font-semibold text-app-accent">All waits promoted.</span>
-          <span className="text-app-text-muted">Resume should fire automatically — click below if it does not.</span>
-          <button
-            type="button"
-            onClick={() => {
-              resumeRun.mutate(runId, {
-                onSuccess: (response) => {
-                  window.location.assign(`/run/${response.resume.id}`);
-                },
-              });
-            }}
-            disabled={resumeRun.isPending}
-            className="ml-auto rounded-md bg-app-accent px-3 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
-          >
-            {resumeRun.isPending ? "Resuming…" : "Resume now"}
-          </button>
-        </div>
-      ) : null}
-      <ul className="mt-3 flex flex-col gap-2">
-        {waits.map((wait) => (
-          <li
-            key={wait.id}
-            className="rounded-md border border-app-warning/30 bg-app-surface-2 p-3 text-xs"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-[10px] text-app-text-muted">{wait.id}</span>
-              <span className="rounded-full bg-app-warning-soft px-2 py-0.5 text-[10px] uppercase text-app-warning">
-                {wait.status}
-              </span>
-            </div>
-            <p className="mt-1 text-[11px] text-app-text-muted">
-              {wait.toolName ? (
-                <>
-                  Tool: <code>{wait.toolName}</code>
-                  {wait.toolVersion ? <> v{wait.toolVersion}</> : null}
-                  {wait.promotedVersion ? <> → v{wait.promotedVersion}</> : null}
-                </>
-              ) : (
-                "Tool: not matched (manual ticket)"
-              )}
-            </p>
-            <p className="mt-1 text-[11px]">{truncate(wait.reason, 220)}</p>
-            {wait.retryRunId ? (
-              <p className="mt-1 text-[11px] text-app-text-muted">
-                {retryRunLabel(wait)}:{" "}
-                <Link to={`/run/${wait.retryRunId}`} className="text-app-accent underline">
-                  {wait.retryRunId}
-                </Link>
-              </p>
-            ) : null}
-            <div className="mt-2 flex flex-wrap gap-2">
-              {/* Phase 12 follow-up: a single «Force auto retry» button now triggers the
-                  auto-retry coordinator which prefers RESUMING the parent run over
-                  creating a separate retry run. The legacy «Create retry run» action
-                  has been removed in favour of resume + the per-run «Resume now»
-                  button at the top of the panel. */}
-              {wait.status === "promoted" || wait.status === "waiting" || wait.status === "build_running" ? (
-                <button
-                  type="button"
-                  onClick={() => autoRetry.mutate({ id: wait.id })}
-                  disabled={autoRetry.isPending}
-                  className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
-                  title="Re-run the auto-retry policy decision for this wait. If all run waits are promoted, the parent run will resume from where it stopped."
-                >
-                  {autoRetry.isPending ? "Checking…" : "Force auto retry"}
-                </button>
-              ) : null}
-              {wait.retryRunId ? (
-                <Link
-                  to={`/run/${wait.retryRunId}`}
-                  className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
-                >
-                  Open resumed run
-                </Link>
-              ) : null}
-              {wait.status === "promoted" ? (
-                <button
-                  type="button"
-                  onClick={() => resume.mutate({ id: wait.id })}
-                  disabled={resume.isPending}
-                  className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
-                  title="Close this wait without triggering a resume. Use only when you want to abandon this rework."
-                >
-                  {resume.isPending ? "Closing…" : "Close wait"}
-                </button>
-              ) : null}
-              <Link
-                to="/tool-builds"
-                className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
-              >
-                Open Tool Builds
-              </Link>
-            </div>
-            {resume.isError ? (
-              <p className="mt-1 text-[11px] text-app-danger">{resume.error.message}</p>
-            ) : null}
-            {[autoRetry.error]
-              .filter((error): error is Error => Boolean(error))
-              .map((error, index) => (
-                <p key={index} className="mt-1 text-[11px] text-app-danger">
-                  {error.message}
-                </p>
-              ))}
-          </li>
-        ))}
-      </ul>
-    </section>
   );
 }

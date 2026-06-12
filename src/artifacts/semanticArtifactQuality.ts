@@ -150,6 +150,34 @@ export function inspectBrowserScreenshotEvidence(input: SemanticArtifactQualityI
     };
   }
 
+  if (isExternalActionProofTask(input.task) && isBusinessOrAdminLandingEvidence(evidenceText)) {
+    return {
+      ok: false,
+      decision: "semantic_mismatch",
+      reason:
+        "Browser artifact is on a provider business/admin/software landing page, not a customer-facing external-action form or blocker.",
+      visual,
+      expectedSignals,
+      matchedSignals,
+      blockerSignals,
+      evidenceTextLength: evidenceText.length,
+    };
+  }
+
+  if (isExternalActionProofTask(input.task) && isUnavailableOrErrorPageEvidence(evidenceText)) {
+    return {
+      ok: false,
+      decision: "semantic_mismatch",
+      reason:
+        "Browser artifact is on an unavailable/not-found/error page, not a customer-facing external-action form or useful provider blocker.",
+      visual,
+      expectedSignals,
+      matchedSignals,
+      blockerSignals,
+      evidenceTextLength: evidenceText.length,
+    };
+  }
+
   if (expectedSignals.length >= 3 && evidenceText.length >= 120 && matchedSignals.length === 0) {
     return {
       ok: false,
@@ -213,6 +241,26 @@ function extractExpectedSignals(task: string): string[] {
   const handles = [...task.matchAll(/[@#]([a-zA-Z0-9_.-]{3,})/g)].map((match) => normalize(match[1] ?? ""));
   const hosts = [...task.matchAll(/https?:\/\/([^/\s)]+)/g)].flatMap((match) => tokenize(match[1] ?? ""));
   return [...new Set([...handles, ...hosts, ...tokens])].filter((token) => token.length >= 4).slice(0, 24);
+}
+
+function isExternalActionProofTask(task: string): boolean {
+  return /(?:external action|pre-submit|before submission|booking|appointment|reservation|schedule|запис|брон|перед отправк|до отправк)/i.test(
+    task,
+  );
+}
+
+function isBusinessOrAdminLandingEvidence(evidenceText: string): boolean {
+  return (
+    /https?:\/\/[^\s]+\/(?:for-business|business|businesses|partners|partner|software)(?:\/|\s|$)/i.test(evidenceText) ||
+    /\b(?:salon|spa|barber|booking|appointment)\s+(?:software|management software|pos|crm)\b/i.test(evidenceText) ||
+    /\b(?:for businesses|business software|provider dashboard|admin dashboard)\b/i.test(evidenceText)
+  );
+}
+
+function isUnavailableOrErrorPageEvidence(evidenceText: string): boolean {
+  return /\b404\b|page\s+(?:is\s+)?(?:not\s+found|unavailable)|not\s+found|p[aá]gina\s+(?:que\s+buscas\s+)?no\s+est[aá]\s+disponible|страниц[аы]\s+не\s+найден/i.test(
+    evidenceText,
+  );
 }
 
 function tokenize(value: string): string[] {

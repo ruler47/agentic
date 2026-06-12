@@ -21,21 +21,7 @@ services:
       # instead of running them in-process.
       BROWSER_OPERATE_RUNNER: docker
       BROWSER_OPERATE_BASE_URL: http://browser-operate:8080
-      CHART_GENERATE_RUNNER: docker
-      CHART_GENERATE_BASE_URL: http://chart-generate:8080
-      MARKET_TIMESERIES_RUNNER: docker
-      MARKET_TIMESERIES_BASE_URL: http://market-timeseries:8080
-      TELEGRAM_BOT_RUNNER: docker
-      TELEGRAM_BOT_BASE_URL: http://telegram-bot:8080
-      # Pure-council registry: skip hard-coded built-ins. The only tools
-      # visible to the agent are the ones the council has built itself.
-      BUILTIN_TOOLS: disabled
-      # Phase 17: pass through the optional research-delegation flag.
-      # When set to `enabled`, council LLM calls (brainstorm /
-      # implement / repair) may emit <request_research> blocks that
-      # spawn a fresh UniversalAgent sub-run to fetch current facts.
-      # Defaults to unset (feature off).
-      COUNCIL_RESEARCH_ENABLED: ${COUNCIL_RESEARCH_ENABLED:-}
+      CHANNEL_TELEGRAM_BASE_URL: http://channel-telegram:8080
     ports:
       - "3000:3000"
     volumes:
@@ -59,6 +45,8 @@ services:
         condition: service_healthy
       searxng:
         condition: service_started
+      browser-operate:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -131,35 +119,13 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    ports:
+      - "18080:8080"
 
-  # Phase 13: dockerized chart.generate tool service.
-  chart-generate:
-    build:
-      context: ./tools/chart-generate-service
-    environment:
-      PORT: "8080"
-    restart: on-failure
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-
-  # Phase 13: dockerized market.timeseries tool service.
-  market-timeseries:
-    build:
-      context: ./tools/market-timeseries-service
-    environment:
-      PORT: "8080"
-    restart: on-failure
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-
-  # Phase 13: dockerized telegram.bot tool service skeleton.
-  telegram-bot:
+  # Dockerized channel.telegram bridge. The implementation package is still the
+  # extracted Telegram service, but the compose service is named after the active
+  # registry tool instead of the retired telegram.bot module.
+  channel-telegram:
     build:
       context: ./tools/telegram-bot-service
     environment:
@@ -170,6 +136,8 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+    ports:
+      - "18081:8080"
 
 volumes:
   postgres-data:

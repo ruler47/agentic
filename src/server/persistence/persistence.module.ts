@@ -27,14 +27,6 @@ import { PostgresSkillMemory } from "../../memory/postgresSkillMemory.js";
 import { createTextEmbeddingProviderFromEnv } from "../../memory/textEmbedding.js";
 import { InMemoryToolMetadataStore } from "../../tools/toolMetadataStore.js";
 import { PostgresToolMetadataStore } from "../../tools/postgresToolMetadataStore.js";
-import { InMemoryToolBuildRequestStore } from "../../tools/toolBuildRequestStore.js";
-import { PostgresToolBuildRequestStore } from "../../tools/postgresToolBuildRequestStore.js";
-import { InMemoryToolInvestigationStore } from "../../tools/toolInvestigationStore.js";
-import { PostgresToolInvestigationStore } from "../../tools/postgresToolInvestigationStore.js";
-import { InMemoryToolReworkWaitStore } from "../../runs/toolReworkWaitStore.js";
-import { PostgresToolReworkWaitStore } from "../../runs/postgresToolReworkWaitStore.js";
-import { InMemoryToolMigrationStore } from "../../tools/toolMigrationStore.js";
-import { PostgresToolMigrationStore } from "../../tools/postgresToolMigrationStore.js";
 import { InMemoryToolPromotionStore } from "../../tools/toolPromotionStore.js";
 import { PostgresToolPromotionStore } from "../../tools/postgresToolPromotionStore.js";
 import { InMemoryToolServiceStatusStore } from "../../tools/toolServiceStatusStore.js";
@@ -56,15 +48,7 @@ import type { AppEnv } from "../config/env.js";
 import { UniversalAgent } from "../../agents/universalAgent.js";
 import { LlmClient, readLlmConfigFromEnv } from "../../llm/client.js";
 import { ToolRegistry } from "../../tools/registry.js";
-import { FileReadTool, FileWriteTool } from "../../tools/fileTools.js";
-import { WebSearchTool } from "../../tools/webSearchTool.js";
-// Phase 13 follow-up: the in-process tool classes have been
-// removed in favour of dockerized tool services. The runtime
-// always wires the HttpToolAdapter / BrowserOperateHttpTool
-// instances below so every browser.operate / chart.generate /
-// market.timeseries / telegram.bot call goes to a container.
-import { BrowserOperateHttpTool } from "../../tools/browserOperateHttpTool.js";
-import { HttpToolAdapter } from "../../tools/httpToolAdapter.js";
+import { createCoreToolbelt } from "../../tools/coreToolbelt.js";
 import { createScopedToolDbClient } from "../../tools/toolScopedDb.js";
 import type { SecretHandleStore } from "../../secrets/secretHandleStore.js";
 import type { ToolMetadataStore } from "../../tools/toolMetadataStore.js";
@@ -89,15 +73,10 @@ import {
   SECRET_HANDLE_STORE,
   SKILL_MEMORY,
   TEXT_EMBEDDING_PROVIDER,
-  TOOL_BUILD_MIGRATION_QA_POOL,
-  TOOL_BUILD_REQUEST_STORE,
-  TOOL_INVESTIGATION_STORE,
   TOOL_METADATA_STORE,
-  TOOL_MIGRATION_STORE,
   TOOL_PROMOTION_STORE,
   TOOL_REGISTRY,
   TOOL_CALLBACK_TOKEN_ISSUER,
-  TOOL_REWORK_WAIT_STORE,
   TOOL_RUNTIME_SETTINGS,
   CODING_COUNCIL_STORE,
   TOOL_SERVICE_EVENT_STORE,
@@ -109,17 +88,55 @@ import {
 } from "./tokens.js";
 import { ToolCallbackTokenIssuer } from "../../tools/toolCallbackToken.js";
 
+export async function withStartupRetry<T>(
+  label: string,
+  operation: () => Promise<T>,
+  options: { attempts?: number; delayMs?: number } = {},
+): Promise<T> {
+  const attempts = Math.max(1, options.attempts ?? 5);
+  const delayMs = Math.max(0, options.delayMs ?? 500);
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts || !isTransientStartupError(error)) break;
+      console.warn(
+        `[startup] ${label} failed with ${formatStartupError(error)}; retrying ${attempt + 1}/${attempts}`,
+      );
+      await sleep(delayMs * attempt);
+    }
+  }
+
+  throw lastError;
+}
+
+function isTransientStartupError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
+  return ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN"].includes(code);
+}
+
+function formatStartupError(error: unknown): string {
+  if (error instanceof Error) {
+    const code = "code" in error ? ` ${(error as Error & { code?: unknown }).code}` : "";
+    return `${error.message}${code}`;
+  }
+  return String(error);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const providers: Provider[] = [
   {
     provide: PG_POOL,
     inject: [APP_ENV],
     useFactory: (env: AppEnv): PgPool | undefined => (env.databaseUrl ? createPool(env.databaseUrl) : undefined),
-  },
-  {
-    provide: TOOL_BUILD_MIGRATION_QA_POOL,
-    inject: [APP_ENV],
-    useFactory: (env: AppEnv): PgPool | undefined =>
-      env.toolBuildMigrationQaDatabaseUrl ? createPool(env.toolBuildMigrationQaDatabaseUrl) : undefined,
   },
   {
     provide: TEXT_EMBEDDING_PROVIDER,
@@ -199,30 +216,6 @@ const providers: Provider[] = [
       pool ? new PostgresToolMetadataStore(pool) : new InMemoryToolMetadataStore(),
   },
   {
-    provide: TOOL_BUILD_REQUEST_STORE,
-    inject: [PG_POOL],
-    useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresToolBuildRequestStore(pool) : new InMemoryToolBuildRequestStore(),
-  },
-  {
-    provide: TOOL_INVESTIGATION_STORE,
-    inject: [PG_POOL],
-    useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresToolInvestigationStore(pool) : new InMemoryToolInvestigationStore(),
-  },
-  {
-    provide: TOOL_REWORK_WAIT_STORE,
-    inject: [PG_POOL],
-    useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresToolReworkWaitStore(pool) : new InMemoryToolReworkWaitStore(),
-  },
-  {
-    provide: TOOL_MIGRATION_STORE,
-    inject: [PG_POOL],
-    useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresToolMigrationStore(pool) : new InMemoryToolMigrationStore(),
-  },
-  {
     provide: TOOL_PROMOTION_STORE,
     inject: [PG_POOL],
     useFactory: (pool: PgPool | undefined) =>
@@ -293,87 +286,11 @@ const providers: Provider[] = [
       env: import("../config/env.js").AppEnv,
     ) => {
       const registry = new ToolRegistry();
-      // The hard-coded built-ins (web.search, file.read/write, chart.generate,
-      // market.timeseries, telegram.bot, browser.operate) skip registration
-      // when BUILTIN_TOOLS=disabled — operators running a "pure council"
-      // registry want only the council-built tools visible. The metadata
-      // rows for previously-synced built-ins are cleaned up below via the
-      // explicit DELETE in db/migrate.ts (one-shot, idempotent).
-      if (env.builtinToolsEnabled) {
-      registry.register(new WebSearchTool());
-      // Phase 13: every built-in tool is now backed by a dockerized
-      // tool service. The runtime forwards each call to the matching
-      // container via HttpToolAdapter / BrowserOperateHttpTool — see
-      // docker-compose.yml `*_RUNNER=docker` env vars.
-      registry.register(new HttpToolAdapter({
-        name: "telegram.bot",
-        version: "1.0.0",
-        description: "Receives Telegram bot messages and bridges them to generic Agentic inbound/outbox APIs.",
-        capabilities: ["messaging-channel", "telegram-bridge", "background-service"],
-        startupMode: "always-on",
-        // Always-on bridge driven by the runtime's inbound/outbox APIs;
-        // /run is a noop so the schema is intentionally empty.
-        inputSchema: { type: "object", properties: {} },
-        outputSchema: { type: "object", properties: { ok: { type: "boolean" }, content: { type: "string" } } },
-      }));
-      registry.register(new FileReadTool());
-      registry.register(new FileWriteTool());
-      registry.register(new HttpToolAdapter({
-        name: "chart.generate",
-        version: "1.0.0",
-        description: "Generates an SVG line-chart artifact from time-series text or JSON.",
-        capabilities: ["chart-generation", "artifact-generation", "data-visualization"],
-        startupMode: "on-demand",
-        // Mirrors the docker chart-generate-service /describe schema.
-        inputSchema: {
-          type: "object",
-          properties: {
-            task: { type: "string", minLength: 1 },
-            text: { type: "string", minLength: 1 },
-            title: { type: "string" },
-            filename: { type: "string" },
-          },
-          required: ["task", "text"],
-        },
-        outputSchema: {
-          type: "object",
-          properties: {
-            ok: { type: "boolean" },
-            content: { type: "string" },
-            data: { type: "object", properties: { artifact: { type: "object" }, points: { type: "number" } } },
-          },
-          required: ["ok", "content"],
-        },
-      }));
-      registry.register(new HttpToolAdapter({
-        name: "market.timeseries",
-        version: "1.0.0",
-        description: "Fetches structured crypto market time-series data and returns a CSV artifact.",
-        capabilities: ["market-timeseries", "crypto-timeseries", "structured-market-data"],
-        startupMode: "on-demand",
-        inputSchema: {
-          type: "object",
-          properties: {
-            symbol: { type: "string", minLength: 1 },
-            vsCurrency: { type: "string", default: "usd" },
-            days: { type: "number", minimum: 1, maximum: 3650, default: 30 },
-          },
-          required: ["symbol"],
-        },
-        outputSchema: {
-          type: "object",
-          properties: {
-            ok: { type: "boolean" },
-            content: { type: "string" },
-            data: { type: "object" },
-          },
-          required: ["ok", "content"],
-        },
-      }));
-      registry.register(new BrowserOperateHttpTool());
-      } // end if (env.builtinToolsEnabled)
+      for (const tool of createCoreToolbelt({ enabled: env.builtinToolsEnabled })) {
+        registry.register(tool);
+      }
       if (metadata) {
-        await metadata.syncBuiltins(registry.list());
+        await withStartupRetry("tool metadata builtin sync", () => metadata.syncBuiltins(registry.list()));
         registry.setUsageReporter((event) =>
           metadata.recordUsage(event.toolName, event.outcome, event.at),
         );

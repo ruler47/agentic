@@ -11,7 +11,7 @@ import {
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
 import type { ModelProviderInput, ModelProviderRecord, ModelTier, ModelTierSettings } from "@/api/types";
-import type { ModelCatalogResponse } from "@/api/models";
+import type { CatalogModel, ModelCapability, ModelCatalogResponse } from "@/api/models";
 
 const TIERS: ModelTier[] = ["S", "M", "L", "XL"];
 
@@ -71,11 +71,7 @@ function CatalogPanel({ catalog }: { catalog: ReturnType<typeof useModelCatalog>
                 No /models response. Configure providers below.
               </span>
             ) : (
-              chatModels.map((model) => (
-                <span key={model.id} className="rounded-full bg-app-surface px-2 py-0.5 font-mono">
-                  {model.id}
-                </span>
-              ))
+              chatModels.map((model) => <ModelChip key={model.id} model={model} />)
             )}
           </div>
         </article>
@@ -98,17 +94,38 @@ function CatalogPanel({ catalog }: { catalog: ReturnType<typeof useModelCatalog>
                 No embedding model catalog from the configured endpoint.
               </span>
             ) : (
-              embeddingModels.map((model) => (
-                <span key={model.id} className="rounded-full bg-app-surface px-2 py-0.5 font-mono">
-                  {model.id}
-                </span>
-              ))
+              embeddingModels.map((model) => <ModelChip key={model.id} model={model} />)
             )}
           </div>
         </article>
       </div>
     </article>
   );
+}
+
+function ModelChip({ model }: { model: CatalogModel }) {
+  return (
+    <span className="inline-flex max-w-full flex-wrap items-center gap-1 rounded-full bg-app-surface px-2 py-0.5 font-mono">
+      <span className="truncate">{model.id}</span>
+      {(model.capabilities ?? []).map((capability) => (
+        <span
+          key={capability}
+          className={`rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wide ${capabilityTone(capability)}`}
+          title={`${capability} · ${model.capabilitySource ?? "unknown"} capability`}
+        >
+          {capability}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function capabilityTone(capability: ModelCapability): string {
+  if (capability === "vision") return "bg-app-accent/20 text-app-accent";
+  if (capability === "coding") return "bg-blue-500/20 text-blue-200";
+  if (capability === "reasoning") return "bg-amber-500/20 text-amber-200";
+  if (capability === "embedding") return "bg-purple-500/20 text-purple-200";
+  return "bg-app-surface-2 text-app-text-muted";
 }
 
 function TiersPanel({
@@ -319,7 +336,7 @@ function collectChatModelOptions(
     if (!model.id) continue;
     options.set(model.id, {
       id: model.id,
-      label: `${model.id} · local catalog`,
+      label: `${model.id} · ${formatCapabilities(model.capabilities)} · local catalog`,
       source: "local catalog",
     });
   }
@@ -336,6 +353,11 @@ function collectChatModelOptions(
     }
   }
   return [...options.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function formatCapabilities(capabilities: ModelCapability[] | undefined): string {
+  const relevant = (capabilities ?? []).filter((capability) => capability !== "chat");
+  return relevant.length > 0 ? relevant.join("+") : "chat";
 }
 
 function mergeCurrentModelOptions(options: ModelOption[], current: string[]): ModelOption[] {

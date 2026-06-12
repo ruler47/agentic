@@ -16,12 +16,10 @@ type NestFixture = {
 };
 
 async function createNestFixture(): Promise<NestFixture> {
-  process.env.TOOL_BUILD_WORKER = "disabled";
   process.env.LLM_BASE_URL = "http://127.0.0.1:65000/v1";
   process.env.LLM_MODEL = "offline";
   process.env.SWAGGER_DISABLED = "false";
   process.env.DATABASE_URL = "";
-  process.env.TOOL_BUILD_MIGRATION_QA_DATABASE_URL = "";
 
   const app = await NestFactory.create(AppModule, { abortOnError: false, logger: false });
   app.use(json());
@@ -92,7 +90,7 @@ async function closeFixture(fixture: NestFixture): Promise<void> {
   await fixture.app.close();
 }
 
-test("Nest API serves health, OpenAPI, static UI, and tool rework/retry endpoints", async () => {
+test("Nest API serves health, OpenAPI, static UI, and run creation", async () => {
   const fixture = await createNestFixture();
   try {
     const health = await requestJson<{ ok: boolean }>(fixture.baseUrl, "/api/health");
@@ -123,74 +121,6 @@ test("Nest API serves health, OpenAPI, static UI, and tool rework/retry endpoint
       },
     );
     assert.match(runCreated.run.id, /^run_/);
-
-    const investigation = await requestJson<{ investigation: { id: string; contextBundle: unknown } }>(
-      fixture.baseUrl,
-      "/api/tool-investigations",
-      {
-        method: "POST",
-        expectedStatus: 201,
-        body: JSON.stringify({
-          source: "trace_span",
-          status: "open",
-          runId: runCreated.run.id,
-          spanId: "span-nest-e2e",
-          toolName: "browser.operate",
-          title: "Browser operate needs deterministic rework",
-          description: "Nested API e2e canary",
-          contextBundle: {
-            apiKey: "DO-NOT-LEAK-NEST-E2E",
-            span: { id: "span-nest-e2e" },
-          },
-        }),
-      },
-    );
-    assert.match(investigation.investigation.id, /^inv_/);
-    assert.equal(JSON.stringify(investigation).includes("DO-NOT-LEAK-NEST-E2E"), false);
-
-    const promoted = await requestJson<{
-      request: { id: string; capability: string; replacesToolName?: string };
-      wait: { id: string; status: string; runId: string };
-    }>(fixture.baseUrl, `/api/tool-investigations/${investigation.investigation.id}/promote`, {
-      method: "POST",
-      expectedStatus: 201,
-      body: JSON.stringify({}),
-    });
-    assert.equal(promoted.request.capability, "browser-operate");
-    assert.equal(promoted.request.replacesToolName, "browser.operate");
-    assert.equal(promoted.wait.status, "waiting");
-    assert.equal(promoted.wait.runId, runCreated.run.id);
-
-    const buildAfterRegistration = await requestJson<{ request: { id: string; status: string } }>(
-      fixture.baseUrl,
-      `/api/tool-build-requests/${promoted.request.id}`,
-      {
-        method: "PATCH",
-        body: JSON.stringify({ status: "registered", registeredVersion: "1.1.0" }),
-      },
-    );
-    assert.equal(buildAfterRegistration.request.status, "registered");
-
-    const waitAfterRegistration = await requestJson<{ wait: { id: string; status: string; retryRunId?: string } }>(
-      fixture.baseUrl,
-      `/api/tool-rework-waits/${promoted.wait.id}`,
-    );
-    assert.equal(waitAfterRegistration.wait.status, "resumed");
-    assert.match(waitAfterRegistration.wait.retryRunId ?? "", /^run_/);
-
-    const retry = await requestJson<{
-      status: string;
-      alreadyExists?: boolean;
-      retryRun: { id: string; parentRunId: string };
-    }>(
-      fixture.baseUrl,
-      `/api/tool-rework-waits/${promoted.wait.id}/retry-run`,
-      { method: "POST", expectedStatus: 201, body: JSON.stringify({}) },
-    );
-    assert.equal(retry.status, "already_exists");
-    assert.equal(retry.alreadyExists, true);
-    assert.equal(retry.retryRun.id, waitAfterRegistration.wait.retryRunId);
-    assert.equal(retry.retryRun.parentRunId, runCreated.run.id);
 
     const audit = await requestJson<{ events: unknown[] }>(fixture.baseUrl, "/api/audit-events?limit=100");
     assert.equal(JSON.stringify(audit).includes("DO-NOT-LEAK-NEST-E2E"), false);
@@ -264,37 +194,44 @@ test("Nest API validates memory requests and exposes joined review queue data", 
   }
 });
 
-test("Nest API validates tool build inputs and stores inline credentials as secret handles", async () => {
+test("Nest API no longer exposes legacy tool builder endpoints", async () => {
   const fixture = await createNestFixture();
   try {
-    const request = await requestJson<{
-      request: { id: string; capability: string; credentialHandles: string[]; reason: string };
-    }>(fixture.baseUrl, "/api/tool-build-requests", {
+    const buildRequest = await fetch(`${fixture.baseUrl}/api/tool-build-requests`, {
       method: "POST",
-      expectedStatus: 201,
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         displayName: "Generic API smoke",
         reason: "Create an API tool. api key: NEST-RAW-SECRET-12345",
         qaCriteria: ["smoke call passes"],
       }),
     });
-    assert.equal(request.request.reason.includes("NEST-RAW-SECRET-12345"), false);
-    assert.equal(request.request.credentialHandles.some((handle) => handle.startsWith("secret.")), true);
+    assert.equal(buildRequest.status, 404);
 
-    const secrets = await requestJson<{ secrets: unknown[] }>(fixture.baseUrl, "/api/secret-handles");
-    assert.equal(JSON.stringify(secrets).includes("NEST-RAW-SECRET-12345"), false);
-
-    const wrongTarget = await fetch(`${fixture.baseUrl}/api/tool-build-requests`, {
+    const investigation = await fetch(`${fixture.baseUrl}/api/tool-investigations`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        displayName: "Telegram bot rework",
-        reason: "Improve Telegram bot message delivery",
-        replacesToolName: "browser.operate",
+        source: "trace_span",
+        title: "Legacy investigation should not be accepted",
       }),
     });
-    assert.equal(wrongTarget.status, 400);
-    assert.match(await wrongTarget.text(), /target|selected|tool/i);
+    assert.equal(investigation.status, 404);
+
+    const reworkWait = await fetch(`${fixture.baseUrl}/api/tool-rework-waits/legacy`);
+    assert.equal(reworkWait.status, 404);
+
+    const generatedModule = await fetch(`${fixture.baseUrl}/api/tools/generated-modules`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "legacy.manual.generated",
+        version: "0.1.0",
+        description: "Should not be registered through the old public route.",
+        capabilities: ["legacy"],
+      }),
+    });
+    assert.equal(generatedModule.status, 404);
   } finally {
     await closeFixture(fixture);
   }

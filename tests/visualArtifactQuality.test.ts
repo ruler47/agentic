@@ -86,6 +86,57 @@ test("semantic artifact QA accepts visually valid relevant browser proof", () =>
   assert.ok(report.matchedSignals.includes("deadp47"));
 });
 
+test("semantic artifact QA rejects external action proof on provider business landing pages", () => {
+  const png = contentHeavyPng();
+
+  const report = inspectBrowserScreenshotEvidence({
+    artifact: {
+      filename: "external-action-pre-submit-proof-www-fresha-com-for-business-screenshot.png",
+      mimeType: "image/png",
+      content: PNG.sync.write(png),
+      description: "Browser screenshot captured from https://www.fresha.com/for-business.",
+    },
+    task: "Prepare external action booking appointment proof before final submit.",
+    browser: {
+      finalUrl: "https://www.fresha.com/for-business",
+      title: "Fresha | Top Salon Software | Salon Management Software",
+      extractedText: [{ label: "page", text: "Top salon software and barber booking management software for businesses." }],
+    },
+    toolContent: "Final URL: https://www.fresha.com/for-business",
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.decision, "semantic_mismatch");
+});
+
+test("semantic artifact QA rejects external action proof on unavailable provider pages", () => {
+  const png = contentHeavyPng();
+
+  const report = inspectBrowserScreenshotEvidence({
+    artifact: {
+      filename: "external-action-pre-submit-proof-booksy-screenshot.png",
+      mimeType: "image/png",
+      content: PNG.sync.write(png),
+      description: "Browser screenshot captured from https://booksy.com/es-es/148702_memento.",
+    },
+    task: "Prepare external action booking appointment proof before final submit.",
+    browser: {
+      finalUrl: "https://booksy.com/es-es/148702_memento",
+      title: "Booksy",
+      extractedText: [
+        {
+          label: "page",
+          text: "404 ¡Vaya! La página que buscas no está disponible. Regresa a nuestra página principal.",
+        },
+      ],
+    },
+    toolContent: "Final URL: https://booksy.com/es-es/148702_memento",
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.decision, "semantic_mismatch");
+});
+
 function fill(png: PNG, r: number, g: number, b: number) {
   drawRect(png, 0, 0, png.width, png.height, r, g, b);
 }

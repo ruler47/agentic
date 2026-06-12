@@ -66,15 +66,33 @@ export class WebSearchTool implements Tool {
     url.searchParams.set("format", "json");
     url.searchParams.set("language", "en");
 
-    const response = await fetch(url, {
-      headers: { accept: "application/json" },
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: { accept: "application/json" },
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        content: `Search provider is unreachable: ${error instanceof Error ? error.message : "request failed"}.`,
+        data: [],
+      };
+    }
 
     if (!response.ok) {
       return { ok: false, content: `Search failed with HTTP ${response.status}.` };
     }
 
-    const data = (await response.json()) as SearxngResponse;
+    let data: SearxngResponse;
+    try {
+      data = (await response.json()) as SearxngResponse;
+    } catch (error) {
+      return {
+        ok: false,
+        content: `Search provider returned invalid JSON: ${error instanceof Error ? error.message : "parse failed"}.`,
+        data: [],
+      };
+    }
     const results = (data.results ?? []).slice(0, limit);
 
     if (results.length === 0) {

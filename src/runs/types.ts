@@ -5,8 +5,7 @@ export type RunStatus =
   | "running"
   | "completed"
   | "failed"
-  | "cancelled"
-  | "waiting_tool_rework";
+  | "cancelled";
 
 export type AgentRunRecord = {
   id: string;
@@ -53,8 +52,6 @@ export type RunStore = {
   complete(id: string, result: AgentRunResult): Promise<void>;
   fail(id: string, error: string): Promise<void>;
   cancel(id: string, reason: string): Promise<void>;
-  markWaitingForToolRework(id: string, reason: string): Promise<void>;
-  resumeFromToolRework(id: string, reason: string): Promise<void>;
   /**
    * Sweep runs left in `queued` / `running` after a process restart and mark
    * them `failed` with the supplied reason. `staleAfterMs` (optional) filters

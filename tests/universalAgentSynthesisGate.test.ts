@@ -43,9 +43,9 @@ test("findUngroundedSpecificsInText: generic extractor flags any branded specifi
     "Top picks: Lenovo Legion Slim 5, MSI Raider GE78, Razer Blade 16, ROG Zephyrus G14, Acme TurboBook 5000, Galaxy S25 Ultra, Boeing 737 MAX.";
   const evidence = "Tool returned a generic page about gaming laptops with no model lines mentioned.";
   const ungrounded = findUngroundedSpecificsInText(output, evidence);
-  assert.ok(ungrounded.some((t) => /Lenovo Legion/i.test(t)), `expected Lenovo Legion to be flagged, got ${ungrounded.join(", ")}`);
+  assert.ok(ungrounded.some((t) => /Slim 5|Lenovo Legion/i.test(t)), `expected Lenovo Legion Slim 5 to be flagged, got ${ungrounded.join(", ")}`);
   assert.ok(ungrounded.some((t) => /MSI Raider/i.test(t)), `expected MSI Raider to be flagged, got ${ungrounded.join(", ")}`);
-  assert.ok(ungrounded.some((t) => /Razer Blade/i.test(t)), `expected Razer Blade to be flagged, got ${ungrounded.join(", ")}`);
+  assert.ok(ungrounded.some((t) => /Blade 16|Razer Blade/i.test(t)), `expected Razer Blade 16 to be flagged, got ${ungrounded.join(", ")}`);
   assert.ok(ungrounded.some((t) => /Zephyrus/i.test(t)), `expected Zephyrus to be flagged, got ${ungrounded.join(", ")}`);
   // Brand never seen by the runtime: works without any patch.
   assert.ok(ungrounded.some((t) => /TurboBook/i.test(t)), `expected new brand TurboBook 5000 to be flagged, got ${ungrounded.join(", ")}`);

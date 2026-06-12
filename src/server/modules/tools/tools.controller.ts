@@ -3,7 +3,6 @@ import {
   Controller,
   Delete,
   Get,
-  HttpCode,
   Inject,
   Param,
   Post,
@@ -66,75 +65,5 @@ export class ToolsController {
   @Get("tool-package-runners")
   async listPackageRunners() {
     return { runners: await this.tools.listPackageRunners() };
-  }
-
-  @Post("tools/generated-modules")
-  @HttpCode(201)
-  async registerGenerated(@Body() body: unknown) {
-    return { tool: await this.tools.registerGenerated(body) };
-  }
-
-  @Post("tools/package-manifests")
-  @HttpCode(201)
-  async importPackageManifest(@Body() body: unknown) {
-    return { tool: await this.tools.importPackageManifest(body) };
-  }
-
-  @Get("tools/generated-modules/:name/versions")
-  async listVersions(@Param("name") name: string) {
-    return { versions: await this.tools.listVersions(decodeURIComponent(name)) };
-  }
-
-  @Get("tools/generated-modules/:name/package-manifest")
-  async getPackageManifest(@Param("name") name: string) {
-    return { manifest: await this.tools.getPackageManifest(decodeURIComponent(name)) };
-  }
-
-  /**
-   * Phase 13 — per-tool usage stats. Returns derived metrics
-   * (success rate, total runs, per-version aggregates) for the UI
-   * tools page; numbers come from the metadata store's existing
-   * successCount / failureCount / lastSuccessAt / lastFailureAt.
-   */
-  @Get("tools/:name/stats")
-  async getStats(@Param("name") name: string) {
-    return await this.tools.getToolStats(decodeURIComponent(name));
-  }
-
-  /**
-   * Phase 13 — export the package manifest as a JSON download. Pair
-   * with POST /api/tools/package-manifests on a target instance to
-   * import the same blueprint there. The OCI image referenced by
-   * the manifest must be published / pulled separately (e.g. via
-   * `docker save | docker load`).
-   */
-  @Get("tools/:name/export")
-  async exportPackage(@Param("name") name: string) {
-    return await this.tools.exportPackageManifest(decodeURIComponent(name));
-  }
-
-  @Delete("tools/generated-modules/:name")
-  async deleteGenerated(@Param("name") name: string) {
-    return this.tools.deleteGenerated(decodeURIComponent(name));
-  }
-
-  @Delete("tools/generated-modules/:name/versions/:version")
-  async deleteVersion(@Param("name") name: string, @Param("version") version: string) {
-    return this.tools.deleteVersion(decodeURIComponent(name), decodeURIComponent(version));
-  }
-
-  @Post("tools/generated-modules/:name/versions/:version/mark-available")
-  async markVersionAvailable(@Param("name") name: string, @Param("version") version: string) {
-    return this.tools.markVersionAvailable(decodeURIComponent(name), decodeURIComponent(version));
-  }
-
-  @Post("tools/generated-modules/:name/promote-replacement")
-  async promoteReplacement(@Param("name") name: string, @Body() body: unknown) {
-    return { tool: await this.tools.promoteReplacement(decodeURIComponent(name), body) };
-  }
-
-  @Post("tools/generated-modules/:name/activate-version")
-  async activateVersion(@Param("name") name: string, @Body() body: unknown) {
-    return { tool: await this.tools.activateVersion(decodeURIComponent(name), body) };
   }
 }

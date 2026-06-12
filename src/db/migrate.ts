@@ -536,8 +536,8 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
         output_schema jsonb,
         module_path text,
         test_path text,
-        source text not null check (source in ('generated')),
-        status text not null check (status in ('available', 'disabled', 'failed')),
+        source text not null check (source in ('builtin', 'generated')),
+        status text not null check (status in ('available', 'loaded', 'disabled', 'failed')),
         last_health_ok boolean,
         last_health_detail text,
         required_configuration_keys text[] not null default '{}',
@@ -560,6 +560,16 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
     await pool.query(`alter table tool_module_versions add column if not exists change_summary text;`);
     await pool.query(`alter table tool_module_versions add column if not exists promotion_evidence jsonb;`);
     await pool.query(`alter table tool_module_versions add column if not exists package_manifest jsonb;`);
+    await pool.query(`
+      alter table tool_module_versions drop constraint if exists tool_module_versions_source_check;
+      alter table tool_module_versions add constraint tool_module_versions_source_check
+        check (source in ('builtin', 'generated'));
+    `);
+    await pool.query(`
+      alter table tool_module_versions drop constraint if exists tool_module_versions_status_check;
+      alter table tool_module_versions add constraint tool_module_versions_status_check
+        check (status in ('available', 'loaded', 'disabled', 'failed'));
+    `);
 
     await pool.query(`
       insert into tool_module_versions (
@@ -860,8 +870,11 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       on work_ledger_items(run_id, created_at desc) where run_id is not null;
     `);
     await pool.query(`
-      create index if not exists work_ledger_items_work_key_idx
-      on work_ledger_items(work_key, created_at desc);
+      drop index if exists work_ledger_items_work_key_idx;
+    `);
+    await pool.query(`
+      create index if not exists work_ledger_items_work_key_hash_idx
+      on work_ledger_items(md5(work_key), created_at desc);
     `);
     await pool.query(`
       create index if not exists work_ledger_items_status_idx

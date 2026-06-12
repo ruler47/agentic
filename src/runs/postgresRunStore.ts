@@ -104,12 +104,19 @@ export class PostgresRunStore implements RunStore {
   }
 
   async markRunning(id: string): Promise<void> {
-    await this.updateStatus(id, "running", { skipCancelled: true });
+    await this.pool.query(
+      `
+        update runs
+        set status = 'running', updated_at = $1
+        where id = $2 and status = 'queued'
+      `,
+      [new Date(), id],
+    );
   }
 
   async appendEvent(id: string, event: AgentEvent): Promise<void> {
     const run = await this.get(id);
-    if (run?.status === "cancelled") return;
+    if (!run || run.status === "completed" || run.status === "failed" || run.status === "cancelled") return;
 
     await this.pool.query(
       `
@@ -138,7 +145,10 @@ export class PostgresRunStore implements RunStore {
       ],
     );
 
-    await this.pool.query("update runs set updated_at = $1 where id = $2", [event.timestamp, id]);
+    await this.pool.query("update runs set updated_at = $1 where id = $2 and status in ('queued', 'running')", [
+      event.timestamp,
+      id,
+    ]);
   }
 
   async complete(id: string, result: AgentRunResult): Promise<void> {
@@ -146,7 +156,7 @@ export class PostgresRunStore implements RunStore {
       `
         update runs
         set status = 'completed', result = $1, updated_at = $2, error = null
-        where id = $3 and status not in ('cancelled', 'waiting_tool_rework')
+        where id = $3 and status in ('queued', 'running')
       `,
       [JSON.stringify(result), new Date(), id],
     );
@@ -157,7 +167,7 @@ export class PostgresRunStore implements RunStore {
       `
         update runs
         set status = 'failed', error = $1, updated_at = $2
-        where id = $3 and status not in ('cancelled', 'waiting_tool_rework')
+        where id = $3 and status in ('queued', 'running')
       `,
       [error, new Date(), id],
     );
@@ -169,28 +179,6 @@ export class PostgresRunStore implements RunStore {
         update runs
         set status = 'cancelled', error = $1, updated_at = $2
         where id = $3 and status in ('queued', 'running')
-      `,
-      [reason, new Date(), id],
-    );
-  }
-
-  async markWaitingForToolRework(id: string, reason: string): Promise<void> {
-    await this.pool.query(
-      `
-        update runs
-        set status = 'waiting_tool_rework', error = $1, updated_at = $2
-        where id = $3 and status not in ('completed', 'cancelled')
-      `,
-      [reason, new Date(), id],
-    );
-  }
-
-  async resumeFromToolRework(id: string, reason: string): Promise<void> {
-    await this.pool.query(
-      `
-        update runs
-        set status = 'failed', error = $1, updated_at = $2
-        where id = $3 and status = 'waiting_tool_rework'
       `,
       [reason, new Date(), id],
     );

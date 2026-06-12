@@ -54,15 +54,8 @@ import {
 } from "../artifacts/artifactQualityMetadata.js";
 import { inspectBrowserScreenshotEvidence } from "../artifacts/semanticArtifactQuality.js";
 import { isChartToolData } from "../tools/chartGenerateTool.js";
-import { isBrowserOperateData } from "../tools/browserOperateTool.js";
+import { isBrowserOperateData, type BrowserOperateData } from "../tools/browserOperateTool.js";
 import { isMarketTimeseriesData } from "../tools/marketTimeseriesTool.js";
-import { ToolBuildRequest, ToolBuildRequestInput } from "../tools/toolBuildRequestStore.js";
-import {
-  ToolImprovementCoordinator,
-  ToolImprovementRequest,
-  ToolImprovementResult,
-} from "../tools/toolImprovementCoordinator.js";
-import { ToolReworkWaitRecord } from "../runs/toolReworkWaitStore.js";
 import {
   EvidenceKind,
   EvidenceLedgerStore,
@@ -70,11 +63,9 @@ import {
   WorkLedgerKind,
   WorkLedgerStore,
 } from "../work-ledger/types.js";
-import { searchQueryWorkKey, toolCallWorkKey } from "../work-ledger/workKey.js";
+import { compactWorkKey, searchQueryWorkKey, toolCallWorkKey } from "../work-ledger/workKey.js";
 import { RuntimeLedgerCoordinator } from "../work-ledger/runtimeLedgerCoordinator.js";
 import { Tool, ToolExecutionContext, ToolInput, ToolResult } from "../tools/tool.js";
-
-type AgentImproveToolFn = (request: ToolImprovementRequest) => Promise<ToolImprovementResult>;
 import { extractJson } from "../utils/json.js";
 import {
   classifyPrompt,
@@ -108,8 +99,53 @@ import {
 } from "./recursiveAgentLoop.js";
 import { runRecursiveAgentExecutor } from "./recursiveAgentExecutor.js";
 
+type AgentImproveToolFn = (request: ToolImprovementRequest) => Promise<ToolImprovementResult>;
+
 type PlanResponse = {
   subtasks: Subtask[];
+};
+
+type ToolBuildRequestInput = {
+  capability: string;
+  displayName?: string;
+  reason: string;
+  sourceSpanId?: string;
+  taskSummary?: string;
+  desiredToolName?: string;
+  replacesToolName?: string;
+  replacesVersion?: string;
+  feedback?: string;
+  requiredInputs?: string[];
+  requiredOutputs?: string[];
+  qaCriteria?: string[];
+};
+
+type ToolBuildRequest = {
+  id: string;
+  contract: {
+    toolName: string;
+    modulePath?: string;
+    testPath?: string;
+  };
+};
+
+type ToolImprovementRequest = {
+  source?: string;
+  spanId?: string;
+  toolName?: string;
+  toolVersion?: string;
+  title?: string;
+  contextBundle?: Record<string, unknown>;
+  buildRequestInput?: ToolBuildRequestInput;
+};
+
+type ToolImprovementResult = {
+  status: "failed_to_request" | "requested" | "waiting" | "completed" | "failed";
+  error?: string;
+  errorCode?: string;
+  buildRequest?: ToolBuildRequest;
+  investigation?: { id?: string };
+  wait?: { id: string; runId?: string; buildRequestId?: string; toolName?: string; status?: string };
 };
 
 type LearningResponse = {
@@ -148,21 +184,10 @@ type RunOptions = {
   allowSensitiveMemory?: boolean;
   allowPrivateMemory?: boolean;
   saveArtifact?: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>;
-  requestToolBuild?: (request: ToolBuildRequestInput) => Promise<ToolBuildRequest>;
-  toolImprovementCoordinator?: ToolImprovementCoordinator;
   toolExecutionContext?: Partial<Omit<ToolExecutionContext, "toolName" | "now">>;
   workLedgerStore?: WorkLedgerStore;
   evidenceLedgerStore?: EvidenceLedgerStore;
   runRetrospectiveStore?: RunRetrospectiveStore;
-  /**
-   * Phase 14: when present, the agent dispatches to the tool-build
-   * council pipeline (`runToolBuildCouncil`) instead of the standard
-   * classify→plan→delegate flow. `toolBuildCouncil` carries the
-   * injected helpers (model resolution, registration, QA runner) that
-   * the council needs but the agent itself shouldn't own.
-   */
-  toolBuildContext?: import("./toolBuildCouncil.js").ToolBuildContext;
-  toolBuildCouncil?: ToolBuildCouncilAdapter;
   now?: Date;
   timeZone?: string;
   /**
@@ -275,106 +300,19 @@ export type EvidenceRecord =
     };
 
 const promptBudget = {
-  taskContextChars: 8_000,
-  memoryEntryChars: 1_200,
-  memoryEvidenceChars: 800,
-  toolEvidenceChars: 7_000,
-  dependencyContextChars: 6_000,
-  workerUserPromptChars: 16_000,
-  reviewWorkerOutputChars: 8_000,
-  synthesisWorkerOutputChars: 14_000,
+  classificationContextChars: 1_200,
+  taskContextChars: 3_000,
+  memoryEntryChars: 220,
+  memoryEvidenceChars: 80,
+  toolEvidenceChars: 1_500,
+  dependencyContextChars: 1_800,
+  workerUserPromptChars: 4_500,
+  reviewWorkerOutputChars: 1_200,
+  synthesisTaskContextChars: 1_200,
+  synthesisStructuredEvidenceChars: 600,
+  synthesisWorkerOutputChars: 900,
+  synthesisReviewChars: 180,
   learningWorkerOutputChars: 10_000,
-};
-
-/**
- * Phase 14: collaborators the tool-build council needs from outside
- * the agent class (we keep the agent slim — no direct dependencies on
- * stores or tool registries). The RunsService wires these in for
- * production; tests supply stubs.
- */
-export type ToolBuildCouncilAdapter = {
-  resolveConfig: () => Promise<{
-    tier: import("../settings/codingCouncilStore.js").CodingCouncilConfig["tier"];
-    maxRevisionAttempts: number;
-    maxQaRepairAttempts: number;
-    qaTimeoutMs: number;
-    brainstormSystemPrompt?: string;
-  }>;
-  /** Return the list of model ids registered for the given tier. */
-  resolveCouncilModels: (tier: string) => Promise<string[]>;
-  /**
-   * Register / re-register the freshly-generated tool source bundle and
-   * return its tool name + active version. Called once after the
-   * implement step and again after each repair iteration.
-   */
-  registerToolFromFiles: (
-    toolName: string,
-    files: ReadonlyArray<{ path: string; content: string }>,
-    metadata: {
-      description: string;
-      version?: string;
-      secretHandle?: string;
-      /** QA-synthesized sample input, persisted as a metadata example. */
-      sampleInput?: Record<string, unknown>;
-      /** Extra capability tags the registered tool must declare. */
-      requiredCapabilities?: string[];
-    },
-  ) => Promise<{ toolName: string; version: string; previousVersion?: string }>;
-  /**
-   * Phase 16 Slice F: undo a registration whose QA loop never passed.
-   *
-   * For reworks the previous (known-working) version is re-activated
-   * via `metadataStore.activateVersion`. For fresh builds where there
-   * is no prior version, the just-registered row is dropped via
-   * `metadataStore.deleteGenerated`. Either way the runtime registry
-   * is reloaded so the active in-memory tool matches the post-rollback
-   * DB state. Without this hook, a failed QA loop left the broken
-   * just-built version active and the operator's previously-working
-   * tool effectively disappeared.
-   */
-  rollbackRegistration?: (
-    toolName: string,
-    previousVersion: string | undefined,
-  ) => Promise<void>;
-  /**
-   * Phase 16 Slice G: flip the just-registered version's metadata
-   * status from "disabled" to "available" once QA has actually
-   * passed. The Tools page reads `status` directly from
-   * `tool_modules`, so without this step the UI shows
-   * green-runtime-but-red-status for every successfully built tool.
-   * Best-effort: failures are logged but do not fail the run, since
-   * the in-memory registry already has the tool by the time we get
-   * here.
-   */
-  markActive?: (toolName: string, version: string) => Promise<void>;
-  /**
-   * Replace the `changeSummary` on an already-registered version. The
-   * council synthesizes this after the QA/repair loop ends because the
-   * "what changed" line wants to describe the final state, not the
-   * initial draft. Best-effort: caller should not fail the run if the
-   * update can't reach the metadata store.
-   */
-  updateChangeSummary?: (toolName: string, version: string, changeSummary: string) => Promise<void>;
-  /**
-   * Replace the canonical `description` for the active version. The
-   * council regenerates this from the FINAL source after every build
-   * / rework so other agents see an accurate shape-aware description
-   * when discovering tools. The operator's form input is only the
-   * initial hint; the LLM-written description is authoritative.
-   */
-  updateDescription?: (toolName: string, version: string, description: string) => Promise<void>;
-  /** Invoke the registered tool with a QA-synthesized input. */
-  runToolForQa: (toolName: string, input: Record<string, unknown>) => Promise<{
-    ok: boolean;
-    content: string;
-    data?: unknown;
-  }>;
-  /**
-   * Read the active version's Tool body source so the council can use
-   * it as a rework starting point AND as the "previous code" baseline
-   * the changeSummary synthesizer diffs against.
-   */
-  readCurrentToolSource?: (toolName: string, version?: string) => Promise<string | undefined>;
 };
 
 export class UniversalAgent {
@@ -502,7 +440,7 @@ export class UniversalAgent {
 
   private async finalizeRunLedger(
     ledger: RuntimeLedgerCoordinator | undefined,
-    runOutcome: "completed" | "failed" | "cancelled" | "waiting_tool_rework",
+    runOutcome: "completed" | "failed" | "cancelled",
     runId: string | undefined,
     parentSpanId: string,
   ): Promise<void> {
@@ -521,1214 +459,6 @@ export class UniversalAgent {
   }
 
   /**
-   * Phase 14: tool-build council pipeline. Treats the run as a
-   * brainstorm → vote → implement → review → revise → QA → repair
-   * loop. All side-effectful work (model listing, file write,
-   * registration, QA invocation) goes through the injected
-   * `ToolBuildCouncilAdapter` so the agent stays slim.
-   *
-   * Every step emits a normal `AgentEvent` so the run timeline UI
-   * works without changes. Returns an `AgentRunResult` with the
-   * registered tool name + version in `finalAnswer` and the source
-   * files as artifacts.
-   */
-  private async runToolBuildCouncil(
-    context: import("./toolBuildCouncil.js").ToolBuildContext,
-    adapter: ToolBuildCouncilAdapter,
-    options: RunOptions,
-  ): Promise<AgentRunResult> {
-    const emit = createEmitter(options.onEvent);
-    const runSpanId = createSpanId("run");
-    const runStartedAt = options.now ?? new Date();
-    try {
-      return await this.runToolBuildCouncilInner(context, adapter, options, emit, runSpanId, runStartedAt);
-    } catch (error) {
-      // Close out the root span as `failed` so the Trace view doesn't
-      // keep it ticking forever while RunsService records the run as
-      // failed. Re-throw so the outer catch handles the actual error.
-      await emit({
-        spanId: runSpanId,
-        type: "run-started",
-        actor: "coordinator",
-        activity: "coordination",
-        status: "failed",
-        title: "Tool-build council run",
-        detail: error instanceof Error ? error.message : String(error),
-        startedAt: runStartedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(runStartedAt),
-        payload: { kind: "tool_build_council", toolBuildContext: context, error: error instanceof Error ? error.message : String(error) },
-      }).catch(() => undefined);
-      throw error;
-    }
-  }
-
-  private async runToolBuildCouncilInner(
-    context: import("./toolBuildCouncil.js").ToolBuildContext,
-    adapter: ToolBuildCouncilAdapter,
-    options: RunOptions,
-    emit: ReturnType<typeof createEmitter>,
-    runSpanId: string,
-    runStartedAt: Date,
-  ): Promise<AgentRunResult> {
-
-    await emit({
-      spanId: runSpanId,
-      type: "run-started",
-      actor: "coordinator",
-      activity: "coordination",
-      status: "started",
-      title: "Tool-build council run",
-      detail: `Building tool: ${context.name}`,
-      startedAt: runStartedAt.toISOString(),
-      payload: { kind: "tool_build_council", toolBuildContext: context },
-    });
-
-    const config = await adapter.resolveConfig();
-    const councilModels = await adapter.resolveCouncilModels(config.tier);
-
-    // Phase 17: optional research delegation. When enabled, council
-    // LLM calls in brainstorm / implement / repair can emit
-    // <request_research>...</request_research> blocks that get
-    // resolved by spawning a fresh UniversalAgent.run as a
-    // sub-agent. The sub-agent uses its full tool catalog
-    // (web.search, browser.operate, file.read, …) to answer. Off
-    // by default to avoid surprise cost; opt-in via env flag.
-    // `researchDisabled` on the parent run (set when THIS run was
-    // itself spawned as a research sub-run) hard-disables the
-    // feature to prevent recursive sub-spawning.
-    const researchFeatureEnabled =
-      process.env.COUNCIL_RESEARCH_ENABLED === "enabled" && !options.researchDisabled;
-    const councilResearchDelegate: import("./researchDelegate.js").ResearchDelegate | undefined =
-      researchFeatureEnabled
-        ? async (question, signal) =>
-            this.spawnResearch(question, {
-              instanceId: options.instanceId,
-              requesterUserId: options.requesterUserId,
-              threadId: options.threadId,
-              memoryScopes: options.memoryScopes,
-              signal: signal ?? options.signal,
-            })
-        : undefined;
-    // Phase 17 Slice D follow-up: emit research events as PAIRED
-    // started/completed spans (same spanId) so the Trace Lab shows
-    // one card per request that transitions from blue → green/red
-    // with input AND output visible in the Inspector. Previously
-    // each ResearchEvent emit produced a separate 0-ms card and the
-    // payload used non-standard keys (`question`/`findings`) that
-    // the Inspector did not recognise, leaving cards looking empty.
-    const researchSpans = new Map<string, { spanId: string; startedAt: string }>();
-    const emitResearchEvent = (
-      phase: string,
-      parentSpanId: string,
-      event: import("./researchDelegate.js").ResearchEvent,
-    ) => {
-      const key = `${parentSpanId}:${phase}:${event.iteration}`;
-      if (event.kind === "request") {
-        const spanId = createSpanId(`research-${phase}-${event.iteration}`);
-        const startedAt = new Date().toISOString();
-        researchSpans.set(key, { spanId, startedAt });
-        void emit({
-          spanId,
-          parentSpanId,
-          type: "tool-build-research-request",
-          actor: "research-delegate",
-          activity: "coordination",
-          status: "started",
-          title: `Research request: ${event.question.slice(0, 80)}`,
-          startedAt,
-          payload: {
-            phase,
-            iteration: event.iteration,
-            // Use `prompt` + `output` keys so the Inspector's
-            // standard buildPayloadSummary picks them up without
-            // event-type-specific code.
-            prompt: event.question,
-          },
-        });
-        return;
-      }
-      const tracked = researchSpans.get(key);
-      const spanId = tracked?.spanId ?? createSpanId(`research-${phase}-${event.iteration}`);
-      const startedAt = tracked?.startedAt ?? new Date().toISOString();
-      const completedAt = new Date().toISOString();
-      const durationMs = tracked ? elapsedMs(new Date(tracked.startedAt)) : 0;
-      researchSpans.delete(key);
-      if (event.kind === "result") {
-        void emit({
-          spanId,
-          parentSpanId,
-          type: "tool-build-research-request",
-          actor: "research-delegate",
-          activity: "coordination",
-          status: "completed",
-          title: `Research findings (${event.findings.length} chars)`,
-          startedAt,
-          completedAt,
-          durationMs,
-          payload: {
-            phase,
-            iteration: event.iteration,
-            prompt: event.question,
-            output: event.findings.slice(0, 4000),
-          },
-        });
-        return;
-      }
-      // delegate-failed
-      void emit({
-        spanId,
-        parentSpanId,
-        type: "tool-build-research-request",
-        actor: "research-delegate",
-        activity: "coordination",
-        status: "failed",
-        title: `Research delegate failed: ${event.error.slice(0, 80)}`,
-        startedAt,
-        completedAt,
-        durationMs,
-        payload: {
-          phase,
-          iteration: event.iteration,
-          prompt: event.question,
-          error: event.error,
-        },
-      });
-    };
-
-    // On rework, pull the active version's source so brainstorm /
-    // implement / changeSummary prompts all see "here is the current
-    // implementation, edit it" instead of "here's an empty canvas".
-    // Without this the model rebuilt the tool from scratch on every
-    // rework and silently lost prior fixes.
-    let previousToolSource: string | undefined;
-    if (context.existingToolName && adapter.readCurrentToolSource) {
-      try {
-        // Phase 16 Slice I: when the operator pinned a specific
-        // version (via the per-row "Request changes" button), read
-        // THAT version's source as the rework starting point.
-        // Without it the adapter falls back to the active version,
-        // which is the legacy default.
-        previousToolSource = await adapter.readCurrentToolSource(
-          context.existingToolName,
-          context.existingToolVersion,
-        );
-      } catch {
-        previousToolSource = undefined;
-      }
-    }
-    // Mutate the context so every prompt builder sees it without a
-    // separate threading parameter. Safe to mutate — `context` here
-    // is a per-run object created by RunsService.
-    if (previousToolSource) {
-      context = { ...context, existingToolSource: previousToolSource };
-    }
-    if (councilModels.length < 2) {
-      throw new Error(
-        `Coding council requires at least 2 models in tier ${config.tier}; got ${councilModels.length}.`,
-      );
-    }
-
-    const {
-      brainstormPrompt,
-      votePrompt,
-      implementPrompt,
-      reviewPrompt,
-      revisePrompt,
-      qaOraclePrompt,
-      repairPrompt,
-      pickCouncilWinner,
-    } = await import("./toolBuildCouncil.js");
-
-    // Parent-tracking: every council event chains to the previous one
-    // (or to the root) so the Trace Graph can draw the call edges. We
-    // keep three rolling anchors:
-    //   - winnerSpanId           → parent of code-drafted
-    //   - currentCodeSpanId      → parent of reviews / revises / QA
-    //   - lastQaSpanId           → parent of repair
-    // and reassign them as the council moves through its phases.
-
-    // Helper used between phases to bail out as soon as the operator
-    // cancels the run. Each LLM call also gets the same signal so an
-    // in-flight HTTP request to the model unblocks immediately.
-    const ensureNotCancelled = () => {
-      if (options.signal?.aborted) {
-        throw new Error("Tool-build council run cancelled by operator");
-      }
-    };
-
-    // ── Step 1: BRAINSTORM ────────────────────────────────────────────
-    ensureNotCancelled();
-    const proposals = await Promise.all(
-      councilModels.map(async (modelId) => {
-        // Build the prompt BEFORE emitting `started` so the in-progress
-        // card already has Input visible — the operator doesn't have
-        // to wait for the LLM to finish to see what was sent.
-        const spanId = createSpanId("council-proposal");
-        const startedAtDate = new Date();
-        const startedAt = startedAtDate.toISOString();
-        const messages = brainstormPrompt(context, councilModels.length, config.brainstormSystemPrompt);
-        const promptText = messagesToPromptText(messages);
-        await emit({
-          spanId,
-          parentSpanId: runSpanId,
-          type: "tool-build-brainstorm-proposal",
-          actor: modelId,
-          activity: "llm",
-          status: "started",
-          title: `Brainstorming proposal with ${modelId}`,
-          startedAt,
-          payload: { modelId, prompt: promptText },
-        });
-        const text = await runLLMWithResearch(this.llm, messages, councilResearchDelegate, {
-          model: modelId,
-          signal: options.signal,
-          onResearch: (event) => emitResearchEvent("brainstorm", spanId, event),
-        });
-        const parsed = parseProposalTail(text);
-        await emit({
-          spanId,
-          parentSpanId: runSpanId,
-          type: "tool-build-brainstorm-proposal",
-          actor: modelId,
-          activity: "llm",
-          status: "completed",
-          title: `Council proposal from ${modelId}`,
-          startedAt,
-          completedAt: new Date().toISOString(),
-          durationMs: elapsedMs(startedAtDate),
-          payload: {
-            modelId,
-            content: text,
-            packageList: parsed.packages,
-            externalDependencies: parsed.externalDependencies,
-            prompt: promptText,
-            output: text,
-          },
-        });
-        return {
-          modelId,
-          content: text,
-          packageList: parsed.packages,
-          externalDependencies: parsed.externalDependencies,
-        };
-      }),
-    );
-
-    // ── Step 2: VOTE ─────────────────────────────────────────────────
-    ensureNotCancelled();
-    const ballots = await Promise.all(
-      councilModels.map(async (voterId) => {
-        const spanId = createSpanId("council-vote-cast");
-        const startedAtDate = new Date();
-        const startedAt = startedAtDate.toISOString();
-        const messages = votePrompt(context, proposals);
-        const promptText = messagesToPromptText(messages);
-        await emit({
-          spanId,
-          parentSpanId: runSpanId,
-          type: "tool-build-vote-cast",
-          actor: voterId,
-          activity: "llm",
-          status: "started",
-          title: `Voting with ${voterId}`,
-          startedAt,
-          payload: { voterModelId: voterId, prompt: promptText },
-        });
-        const text = await this.llm.complete(messages, { model: voterId, signal: options.signal });
-        const ranking = parseRankingJson(text, proposals.length);
-        await emit({
-          spanId,
-          parentSpanId: runSpanId,
-          type: "tool-build-vote-cast",
-          actor: voterId,
-          activity: "llm",
-          status: "completed",
-          title: `Vote from ${voterId}`,
-          startedAt,
-          completedAt: new Date().toISOString(),
-          durationMs: elapsedMs(startedAtDate),
-          payload: {
-            voterModelId: voterId,
-            ranking,
-            prompt: promptText,
-            output: text,
-          },
-        });
-        return { voterModelId: voterId, ranking };
-      }),
-    );
-
-    let winner = pickCouncilWinner(proposals, ballots);
-    let winnerSpanId = createSpanId("council-winner");
-    await emit({
-      spanId: winnerSpanId,
-      parentSpanId: runSpanId,
-      type: "tool-build-council-winner-selected",
-      actor: "coordinator",
-      activity: "coordination",
-      status: "completed",
-      title: `Winner: ${winner.winnerModelId}`,
-      detail: `Tie-break: ${winner.tieBrokenBy}`,
-      startedAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
-      durationMs: 0,
-      payload: winner,
-    });
-
-    // ── Step 3: IMPLEMENT ────────────────────────────────────────────
-    // Try the winner first; on transient LLM failure (empty content,
-    // context overflow, model not loaded) fall back to the next-best
-    // proposal by Borda score and keep going. The winner is reassigned
-    // so subsequent steps (review, revise, repair) target the model
-    // that actually produced the code.
-    let codeText: string;
-    let files: ReadonlyArray<{ path: string; content: string }>;
-    const rankedAlternatives = proposals
-      .map((p, i) => ({ p, i }))
-      .filter((entry) => entry.p.modelId !== winner.winnerModelId);
-    const implementCandidates = [winner, ...rankedAlternatives.map((entry) => ({
-      ...winner,
-      winnerIndex: entry.i,
-      winnerModelId: entry.p.modelId,
-      proposal: entry.p,
-    }))];
-    // Pre-allocate the implement span so we can emit a `started` event
-    // before the (possibly long-running) LLM call. The final code-drafted
-    // emit below reuses this same spanId so the Trace Graph shows one
-    // implement node transitioning from blue → green.
-    let currentCodeSpanId = createSpanId("council-implement");
-    const implementStartedAtDate = new Date();
-    const implementStartedAt = implementStartedAtDate.toISOString();
-    const implementPromptPreview = messagesToPromptText(implementPrompt(context, winner.proposal));
-    await emit({
-      spanId: currentCodeSpanId,
-      parentSpanId: winnerSpanId,
-      type: "tool-build-code-drafted",
-      actor: winner.winnerModelId,
-      activity: "llm",
-      status: "started",
-      title: `Drafting code with ${winner.winnerModelId}`,
-      startedAt: implementStartedAt,
-      payload: { modelId: winner.winnerModelId, prompt: implementPromptPreview },
-    });
-
-    let implementError: unknown;
-    let lastImplementPromptText = "";
-    for (let candidateIdx = 0; candidateIdx < implementCandidates.length; candidateIdx += 1) {
-      ensureNotCancelled();
-      const candidate = implementCandidates[candidateIdx]!;
-      try {
-        const implementMessages = implementPrompt(context, candidate.proposal);
-        lastImplementPromptText = messagesToPromptText(implementMessages);
-        codeText = await runLLMWithResearch(this.llm, implementMessages, councilResearchDelegate, {
-          model: candidate.winnerModelId,
-          signal: options.signal,
-          onResearch: (event) => emitResearchEvent("implement", currentCodeSpanId, event),
-        });
-        const parsed = parseFilesJson(codeText);
-        if (parsed.length === 0) throw new Error("Implement step returned no parsable files.");
-        files = parsed;
-        if (candidate.winnerModelId !== winner.winnerModelId) {
-          const fallbackSpanId = createSpanId("council-winner-fallback");
-          await emit({
-            spanId: fallbackSpanId,
-            parentSpanId: winnerSpanId,
-            type: "tool-build-council-winner-selected",
-            actor: "coordinator",
-            activity: "coordination",
-            status: "completed",
-            title: `Implement re-assigned to ${candidate.winnerModelId} (next-best by Borda)`,
-            detail:
-              `Original winner ${winner.winnerModelId} could not produce code ` +
-              `(LLM returned empty / failed twice). Falling back to next-best ` +
-              `proposal by Borda score and continuing the pipeline.`,
-            startedAt: new Date().toISOString(),
-            completedAt: new Date().toISOString(),
-            durationMs: 0,
-            payload: { ...candidate, fallbackFrom: winner.winnerModelId },
-          });
-          winner = candidate;
-          winnerSpanId = fallbackSpanId;
-        }
-        implementError = undefined;
-        break;
-      } catch (error) {
-        implementError = error;
-      }
-    }
-    if (implementError !== undefined) throw implementError;
-    files = files!;
-    codeText = codeText!;
-    await emit({
-      spanId: currentCodeSpanId,
-      parentSpanId: winnerSpanId,
-      type: "tool-build-code-drafted",
-      actor: winner.winnerModelId,
-      activity: "llm",
-      status: "completed",
-      title: `Code drafted by ${winner.winnerModelId}`,
-      startedAt: implementStartedAt,
-      completedAt: new Date().toISOString(),
-      durationMs: elapsedMs(implementStartedAtDate),
-      payload: { files, raw: codeText, prompt: lastImplementPromptText, output: codeText },
-    });
-
-    // ── Step 4-5: REVIEW + REVISE ────────────────────────────────────
-    // Reviews are best-effort per peer model. If a reviewer LLM dies
-    // (empty content, timeout, etc.) we skip that voter and continue
-    // with whoever responded. If ALL reviewers fail we treat the code
-    // as unreviewed and break the loop — the QA stage still gates
-    // whether the tool is usable.
-    const reviewerIds = councilModels.filter((id) => id !== winner.winnerModelId);
-    for (let attempt = 0; attempt < config.maxRevisionAttempts; attempt += 1) {
-      ensureNotCancelled();
-      const codeAnchor = currentCodeSpanId;
-      const reviews = (
-        await Promise.all(
-          reviewerIds.map(async (reviewerId) => {
-            // Status semantic: `completed` means the reviewer agent did
-            // its job (returned a verdict — pass OR needs_revision).
-            // `failed` is reserved for the agent itself breaking (LLM
-            // empty / timeout / aborted). The verdict lives in payload
-            // + title so the operator sees "Review: needs_revision" as
-            // a green node — that's the reviewer succeeding at finding
-            // real problems, not failing.
-            const spanId = createSpanId("council-review");
-            const startedAtDate = new Date();
-            const startedAt = startedAtDate.toISOString();
-            const messages = reviewPrompt(context, winner.proposal, formatFilesForPrompt(files));
-            const promptText = messagesToPromptText(messages);
-            await emit({
-              spanId,
-              parentSpanId: codeAnchor,
-              type: "tool-build-code-review-cast",
-              actor: reviewerId,
-              activity: "llm",
-              status: "started",
-              title: `Reviewing code with ${reviewerId}`,
-              startedAt,
-              payload: { reviewerModelId: reviewerId, prompt: promptText },
-            });
-            try {
-              const text = await this.llm.complete(messages, { model: reviewerId, signal: options.signal });
-              const verdict = parseReviewVerdict(text);
-              await emit({
-                spanId,
-                parentSpanId: codeAnchor,
-                type: "tool-build-code-review-cast",
-                actor: reviewerId,
-                activity: "llm",
-                status: "completed",
-                title: `Review from ${reviewerId}: ${verdict.verdict}`,
-                startedAt,
-                completedAt: new Date().toISOString(),
-                durationMs: elapsedMs(startedAtDate),
-                payload: {
-                  reviewerModelId: reviewerId,
-                  ...verdict,
-                  prompt: promptText,
-                  output: text,
-                },
-              });
-              return verdict;
-            } catch (error) {
-              await emit({
-                spanId,
-                parentSpanId: codeAnchor,
-                type: "tool-build-code-review-cast",
-                actor: reviewerId,
-                activity: "llm",
-                status: "failed",
-                title: `Reviewer ${reviewerId} broke (skipped)`,
-                detail: error instanceof Error ? error.message : String(error),
-                startedAt,
-                completedAt: new Date().toISOString(),
-                durationMs: elapsedMs(startedAtDate),
-                payload: {
-                  reviewerModelId: reviewerId,
-                  skipped: true,
-                  prompt: promptText,
-                  error: error instanceof Error ? error.message : String(error),
-                },
-              });
-              return undefined;
-            }
-          }),
-        )
-      ).filter((entry): entry is { verdict: "pass" | "needs_revision"; findings: string[] } => Boolean(entry));
-      if (reviews.length === 0) break; // no usable reviewers — proceed to QA
-      if (reviews.every((r) => r.verdict === "pass")) break;
-      const findings = reviews.flatMap((r) => r.findings);
-      if (attempt + 1 >= config.maxRevisionAttempts) break;
-      const reviseSpanId = createSpanId("council-revise");
-      const reviseStartedAtDate = new Date();
-      const reviseStartedAt = reviseStartedAtDate.toISOString();
-      const reviseMessages = revisePrompt(context, winner.proposal, formatFilesForPrompt(files), findings);
-      const revisePromptText = messagesToPromptText(reviseMessages);
-      await emit({
-        spanId: reviseSpanId,
-        parentSpanId: codeAnchor,
-        type: "tool-build-code-revised",
-        actor: winner.winnerModelId,
-        activity: "llm",
-        status: "started",
-        title: `Revising code (attempt ${attempt + 1}) with ${winner.winnerModelId}`,
-        startedAt: reviseStartedAt,
-        payload: { attempt: attempt + 1, prompt: revisePromptText },
-      });
-      try {
-        codeText = await this.llm.complete(reviseMessages, { model: winner.winnerModelId, signal: options.signal });
-        const parsed = parseFilesJson(codeText);
-        if (parsed.length > 0) files = parsed;
-      } catch (error) {
-        // Revise call failed — keep current code, proceed to QA so the
-        // run still terminates instead of hard-crashing.
-        await emit({
-          spanId: reviseSpanId,
-          parentSpanId: codeAnchor,
-          type: "tool-build-code-revised",
-          actor: winner.winnerModelId,
-          activity: "llm",
-          status: "failed",
-          title: `Revise attempt ${attempt + 1} broke`,
-          detail: error instanceof Error ? error.message : String(error),
-          startedAt: reviseStartedAt,
-          completedAt: new Date().toISOString(),
-          durationMs: elapsedMs(reviseStartedAtDate),
-          payload: {
-            attempt: attempt + 1,
-            skipped: true,
-            prompt: revisePromptText,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        });
-        break;
-      }
-      await emit({
-        spanId: reviseSpanId,
-        parentSpanId: codeAnchor,
-        type: "tool-build-code-revised",
-        actor: winner.winnerModelId,
-        activity: "llm",
-        status: "completed",
-        title: `Code revised (attempt ${attempt + 1})`,
-        startedAt: reviseStartedAt,
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(reviseStartedAtDate),
-        payload: {
-          attempt: attempt + 1,
-          files,
-          findings,
-          prompt: revisePromptText,
-          output: codeText,
-        },
-      });
-      currentCodeSpanId = reviseSpanId;
-    }
-
-    // ── Step 5.5: QA INPUT SYNTHESIS ─────────────────────────────────
-    // We synthesize the QA input BEFORE registering so we can pass it
-    // through to the adapter — that lets `registerGenerated` persist
-    // the sample as a tool example. Manual Run on the Tools page then
-    // pre-fills the JSON input field with this sample instead of `{}`,
-    // so the operator can hit Run immediately without guessing the
-    // tool's input shape.
-    const { synthesizeQaInputPrompt } = await import("./toolBuildCouncil.js");
-    const toolBodyExcerpt = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
-    let qaInput: Record<string, unknown> = synthesizeQaInput(context);
-    const qaInputSpanId = createSpanId("council-qa-input");
-    const qaInputStartedAtDate = new Date();
-    const qaInputStartedAt = qaInputStartedAtDate.toISOString();
-    const qaInputMessages = synthesizeQaInputPrompt(context, toolBodyExcerpt);
-    const qaInputPromptText = messagesToPromptText(qaInputMessages);
-    await emit({
-      spanId: qaInputSpanId,
-      parentSpanId: currentCodeSpanId,
-      type: "tool-build-qa-attempt",
-      actor: "qa-input-synthesizer",
-      activity: "llm",
-      status: "started",
-      title: "Synthesizing QA tool input from schema",
-      startedAt: qaInputStartedAt,
-      payload: { prompt: qaInputPromptText },
-    });
-    try {
-      const qaInputText = await this.llm.complete(qaInputMessages, {
-        modelTier: "S",
-        signal: options.signal,
-      });
-      const parsed = extractFirstJson<Record<string, unknown>>(qaInputText);
-      if (parsed && typeof parsed === "object") qaInput = parsed;
-      await emit({
-        spanId: qaInputSpanId,
-        parentSpanId: currentCodeSpanId,
-        type: "tool-build-qa-attempt",
-        actor: "qa-input-synthesizer",
-        activity: "llm",
-        status: "completed",
-        title: "QA tool input synthesized",
-        startedAt: qaInputStartedAt,
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(qaInputStartedAtDate),
-        payload: {
-          prompt: qaInputPromptText,
-          output: qaInputText,
-          qaInput,
-        },
-      });
-    } catch (error) {
-      await emit({
-        spanId: qaInputSpanId,
-        parentSpanId: currentCodeSpanId,
-        type: "tool-build-qa-attempt",
-        actor: "qa-input-synthesizer",
-        activity: "llm",
-        status: "failed",
-        title: "QA input synthesizer broke — falling back to stub",
-        detail: error instanceof Error ? error.message : String(error),
-        startedAt: qaInputStartedAt,
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(qaInputStartedAtDate),
-        payload: { prompt: qaInputPromptText, error: error instanceof Error ? error.message : String(error), qaInput },
-      });
-    }
-
-    // ── Step 6: REGISTER ─────────────────────────────────────────────
-    // Pass the just-synthesized sample input to the adapter so it
-    // persists as a metadata example — the Tools-page Manual Run form
-    // pre-fills it.
-    let registered = await adapter.registerToolFromFiles(context.name, files, {
-      description: context.description,
-      secretHandle: context.secretHandle,
-      sampleInput: qaInput,
-      requiredCapabilities: context.requiredCapabilities,
-    });
-
-    // Phase 16 Slice F: remember the previous active version on the
-    // FIRST register call so we can roll back if every QA attempt
-    // fails. Repair iterations later in the loop re-call
-    // registerToolFromFiles, but at that point the row in
-    // tool_modules already points at one of OUR new versions — only
-    // the original `previousVersion` (the rework's starting point)
-    // is a safe fallback. Stays undefined for fresh builds.
-    const originalPreviousVersion = registered.previousVersion;
-
-    // ── Step 7-8: QA + REPAIR ────────────────────────────────────────
-    // Status semantic in this section:
-    //   `completed` = the agent for this step (tool / oracle / repair
-    //     model) finished its task and produced a result. The result
-    //     itself may be a failing verdict — that is still a success for
-    //     the agent (e.g. oracle correctly caught that the tool returned
-    //     ok=false). The verdict lives in payload + title.
-    //   `failed` = the agent itself broke (LLM exception, tool runtime
-    //     crashed, cancellation) and no useful result came back.
-
-    let qaPassed = false;
-    // Phase 16 Slice E: track the actual number of QA attempts the
-    // loop performed. Previously the run summary read "QA failed
-    // after `config.maxQaRepairAttempts` repair attempts" regardless
-    // of how many cycles actually ran, because the inner `break` on
-    // "repair returned no parsable files" exited the loop early. The
-    // trace then showed a single broken-repair event paired with a
-    // summary that lied about the count. We now record the real
-    // count and surface it in every downstream message.
-    let attemptsRun = 0;
-    let repairBrokenEarly = false;
-    for (let attempt = 0; attempt < config.maxQaRepairAttempts; attempt += 1) {
-      ensureNotCancelled();
-      // Tool call span: visible separately from the oracle so the
-      // operator can see whether the tool actually ran (`completed`,
-      // ok=true/false) or crashed at startup (`failed`).
-      const toolCallSpanId = createSpanId("council-qa-tool-call");
-      const toolCallStartedAtDate = new Date();
-      const toolCallStartedAt = toolCallStartedAtDate.toISOString();
-      await emit({
-        spanId: toolCallSpanId,
-        parentSpanId: currentCodeSpanId,
-        type: "tool-build-qa-attempt",
-        actor: registered.toolName,
-        activity: "tool",
-        status: "started",
-        title: `Calling ${registered.toolName} for QA attempt ${attempt + 1}`,
-        startedAt: toolCallStartedAt,
-        payload: { attempt: attempt + 1, qaInput },
-      });
-      const output = await adapter.runToolForQa(registered.toolName, qaInput);
-      await emit({
-        spanId: toolCallSpanId,
-        parentSpanId: currentCodeSpanId,
-        type: "tool-build-qa-attempt",
-        actor: registered.toolName,
-        activity: "tool",
-        // Status mirrors `output.ok`: a tool returning `ok: false`
-        // IS the tool failing at its job — runtime crash, invalid
-        // input, missing module, etc. — and the operator wants the
-        // node to flash red so it's obvious where the build broke.
-        // The reviewer/oracle exception remains the only path that
-        // produces `failed` for a different reason (the judge itself
-        // breaking) and that's handled on the qa-oracle span below.
-        status: output.ok ? "completed" : "failed",
-        title: `${registered.toolName} returned ok=${output.ok}`,
-        startedAt: toolCallStartedAt,
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(toolCallStartedAtDate),
-        payload: { attempt: attempt + 1, qaInput, output },
-      });
-
-      // Oracle span: judges whether the tool output meets the
-      // acceptance criteria. Status reflects the oracle's success at
-      // producing a verdict — the verdict (passed / failed) is in the
-      // title + payload so the user sees both signals.
-      const qaSpanId = createSpanId("council-qa");
-      const qaStartedAtDate = new Date();
-      const qaStartedAt = qaStartedAtDate.toISOString();
-      const qaMessages = qaOraclePrompt(context, output);
-      const qaPromptText = messagesToPromptText(qaMessages);
-      await emit({
-        spanId: qaSpanId,
-        parentSpanId: toolCallSpanId,
-        type: "tool-build-qa-attempt",
-        actor: "qa-oracle",
-        activity: "llm",
-        status: "started",
-        title: `QA oracle judging attempt ${attempt + 1}`,
-        startedAt: qaStartedAt,
-        payload: { attempt: attempt + 1, qaInput, output, prompt: qaPromptText },
-      });
-      let oracle: { verdict: "passed" | "failed"; failures: string[] };
-      let qaOracleText = "";
-      try {
-        qaOracleText = await this.llm.complete(qaMessages, { modelTier: "M", signal: options.signal });
-        oracle = parseQaOracle(qaOracleText);
-      } catch (error) {
-        await emit({
-          spanId: qaSpanId,
-          parentSpanId: toolCallSpanId,
-          type: "tool-build-qa-attempt",
-          actor: "qa-oracle",
-          activity: "llm",
-          status: "failed",
-          title: `QA oracle broke on attempt ${attempt + 1}`,
-          detail: error instanceof Error ? error.message : String(error),
-          startedAt: qaStartedAt,
-          completedAt: new Date().toISOString(),
-          durationMs: elapsedMs(qaStartedAtDate),
-          payload: {
-            attempt: attempt + 1,
-            qaInput,
-            output,
-            oracleFailed: true,
-            prompt: qaPromptText,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        });
-        break;
-      }
-      await emit({
-        spanId: qaSpanId,
-        parentSpanId: toolCallSpanId,
-        type: "tool-build-qa-attempt",
-        actor: "qa-oracle",
-        activity: "llm",
-        // Oracle returned a verdict → it did its job. `completed`
-        // regardless of pass/fail; the verdict lives in title + payload.
-        status: "completed",
-        title: `QA attempt ${attempt + 1}: ${oracle.verdict}`,
-        startedAt: qaStartedAt,
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(qaStartedAtDate),
-        payload: {
-          attempt: attempt + 1,
-          qaInput,
-          output,
-          ...oracle,
-          prompt: qaPromptText,
-          oracleOutput: qaOracleText,
-        },
-      });
-      // Phase 16 Slice E: count this QA cycle as run before we
-      // decide whether to repair or stop. Every iteration of the
-      // outer loop either passed QA, hit the cap, or attempted a
-      // repair — that's three terminal paths and we want all of
-      // them reflected in `attemptsRun`.
-      attemptsRun = attempt + 1;
-      if (oracle.verdict === "passed") {
-        qaPassed = true;
-        break;
-      }
-      if (attempt + 1 >= config.maxQaRepairAttempts) break;
-
-      const repairSpanId = createSpanId("council-repair");
-      const repairStartedAtDate = new Date();
-      const repairStartedAt = repairStartedAtDate.toISOString();
-      // Pass the actual tool output (`output`) into the repair prompt
-      // so the model sees the literal runtime error (stack trace,
-      // missing-module, SyntaxError) instead of just the oracle's
-      // summary. Without this the loop has historically wedged on
-      // import-of-non-existent-symbol bugs because the oracle only
-      // saw ok=false.
-      const repairMessages = repairPrompt(
-        context,
-        winner.proposal,
-        formatFilesForPrompt(files),
-        oracle.failures,
-        output,
-      );
-      const repairPromptText = messagesToPromptText(repairMessages);
-      await emit({
-        spanId: repairSpanId,
-        parentSpanId: qaSpanId,
-        type: "tool-build-code-repaired",
-        actor: winner.winnerModelId,
-        activity: "llm",
-        status: "started",
-        title: `Repairing code (attempt ${attempt + 1}) with ${winner.winnerModelId}`,
-        startedAt: repairStartedAt,
-        payload: { attempt: attempt + 1, failures: oracle.failures, prompt: repairPromptText },
-      });
-      try {
-        codeText = await runLLMWithResearch(this.llm, repairMessages, councilResearchDelegate, {
-          model: winner.winnerModelId,
-          signal: options.signal,
-          onResearch: (event) => emitResearchEvent("repair", repairSpanId, event),
-        });
-        const parsed = parseFilesJson(codeText);
-        if (parsed.length === 0) throw new Error("Repair step returned no parsable files.");
-        files = parsed;
-        registered = await adapter.registerToolFromFiles(context.name, files, {
-          description: context.description,
-          secretHandle: context.secretHandle,
-          sampleInput: qaInput,
-        });
-        await emit({
-          spanId: repairSpanId,
-          parentSpanId: qaSpanId,
-          type: "tool-build-code-repaired",
-          actor: winner.winnerModelId,
-          activity: "llm",
-          status: "completed",
-          title: `Code repaired (attempt ${attempt + 1})`,
-          startedAt: repairStartedAt,
-          completedAt: new Date().toISOString(),
-          durationMs: elapsedMs(repairStartedAtDate),
-          payload: {
-            attempt: attempt + 1,
-            files,
-            failures: oracle.failures,
-            prompt: repairPromptText,
-            output: codeText,
-          },
-        });
-        currentCodeSpanId = repairSpanId;
-      } catch (error) {
-        await emit({
-          spanId: repairSpanId,
-          parentSpanId: qaSpanId,
-          type: "tool-build-code-repaired",
-          actor: winner.winnerModelId,
-          activity: "llm",
-          status: "failed",
-          title: `Repair attempt ${attempt + 1} broke`,
-          detail: error instanceof Error ? error.message : String(error),
-          startedAt: repairStartedAt,
-          completedAt: new Date().toISOString(),
-          durationMs: elapsedMs(repairStartedAtDate),
-          payload: {
-            attempt: attempt + 1,
-            skipped: true,
-            prompt: repairPromptText,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        });
-        // Phase 16 Slice E: record that we stopped because the repair
-        // step itself broke (no parsable files, LLM exception). The
-        // distinction matters in the final run summary because
-        // "QA failed after N attempts; repair gave up" is a different
-        // operator story than "QA failed after N attempts, all
-        // parsable, no improvement". The outer `attemptsRun` was
-        // already advanced to `attempt + 1` above before the repair
-        // started.
-        repairBrokenEarly = true;
-        break;
-      }
-    }
-
-    // Phase 16 Slice F: roll back the registration when QA never
-    // passed. For reworks (`originalPreviousVersion` set) we
-    // re-activate the prior known-working version so the operator
-    // doesn't lose their working tool to a failed rework. For fresh
-    // builds we drop the broken just-built tool outright. Either
-    // way the registry is reloaded so subsequent `runToolManually`
-    // calls hit the post-rollback state. Best-effort: failures here
-    // are warnings, not run-fatal — the run is already failing for
-    // the operator-visible reason (QA never passed).
-    if (!qaPassed && adapter.rollbackRegistration) {
-      try {
-        await adapter.rollbackRegistration(registered.toolName, originalPreviousVersion);
-      } catch (error) {
-        // Already logged inside rollbackRegistration; do not let a
-        // secondary failure mask the QA outcome.
-        void error;
-      }
-    }
-
-    // Phase 16 Slice G: flip the just-built version's status from
-    // "disabled" (the initial post-promoteReplacement state) to
-    // "available" so the Tools page shows the tool as healthy and
-    // matches the in-memory registry state. Only runs on the happy
-    // path — failure paths went through rollback above.
-    if (qaPassed && adapter.markActive) {
-      try {
-        await adapter.markActive(registered.toolName, registered.version);
-      } catch (error) {
-        // The adapter logs its own warning. Don't fail the run for
-        // a metadata-label discrepancy.
-        void error;
-      }
-    }
-
-    // ── Step 8.5: CHANGE SUMMARY ─────────────────────────────────────
-    // Synthesize a 1-2 sentence changelog entry so the Tools-page
-    // version history is actually useful instead of every row reading
-    // "Council-built version X". Best-effort: if the synth fails we
-    // keep the default summary the adapter wrote at register time.
-    const { changeSummaryPrompt } = await import("./toolBuildCouncil.js");
-    let changeSummary = "";
-    const changeSummarySpanId = createSpanId("council-change-summary");
-    const changeSummaryStartedAt = new Date();
-    try {
-      const summaryToolBody = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
-      const repairFailures = collectRepairFailuresFromEvents(options.onEvent);
-      const summaryMessages = changeSummaryPrompt({
-        context,
-        toolBodyExcerpt: summaryToolBody,
-        previousToolSource,
-        repairFailures,
-        qaPassed,
-        isRework: Boolean(context.existingToolName),
-      });
-      await emit({
-        spanId: changeSummarySpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "change-summary-synthesizer",
-        activity: "llm",
-        status: "started",
-        title: "Synthesizing change summary",
-        startedAt: changeSummaryStartedAt.toISOString(),
-        payload: { prompt: messagesToPromptText(summaryMessages) },
-      });
-      const summaryRaw = await this.llm.complete(summaryMessages, {
-        modelTier: "S",
-        signal: options.signal,
-      });
-      changeSummary = sanitizeChangeSummary(summaryRaw);
-      if (changeSummary && adapter.updateChangeSummary) {
-        await adapter.updateChangeSummary(registered.toolName, registered.version, changeSummary);
-      }
-      await emit({
-        spanId: changeSummarySpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "change-summary-synthesizer",
-        activity: "llm",
-        status: "completed",
-        title: "Change summary synthesized",
-        startedAt: changeSummaryStartedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(changeSummaryStartedAt),
-        payload: {
-          prompt: messagesToPromptText(summaryMessages),
-          output: summaryRaw,
-          changeSummary,
-        },
-      });
-    } catch (error) {
-      await emit({
-        spanId: changeSummarySpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "change-summary-synthesizer",
-        activity: "llm",
-        status: "failed",
-        title: "Change summary synthesis failed — keeping default",
-        detail: error instanceof Error ? error.message : String(error),
-        startedAt: changeSummaryStartedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(changeSummaryStartedAt),
-        payload: { error: error instanceof Error ? error.message : String(error) },
-      });
-    }
-
-    // ── Step 8.7: DESCRIPTION ────────────────────────────────────────
-    // Synthesize the canonical tool description from the FINAL source.
-    // Every other agent reads metadata.description when discovering
-    // tools — leaving the operator's hint in there means downstream
-    // agents see stale shape information after every rework. The
-    // description LLM call follows changeSummary so they share the
-    // same body excerpt.
-    const { descriptionPrompt } = await import("./toolBuildCouncil.js");
-    const descSpanId = createSpanId("council-description");
-    const descStartedAt = new Date();
-    try {
-      const descBody = files.find((f) => /Tool\.ts$/i.test(f.path))?.content ?? formatFilesForPrompt(files);
-      const descMessages = descriptionPrompt({ context, toolBodyExcerpt: descBody });
-      await emit({
-        spanId: descSpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "description-synthesizer",
-        activity: "llm",
-        status: "started",
-        title: "Synthesizing canonical description",
-        startedAt: descStartedAt.toISOString(),
-        payload: { prompt: messagesToPromptText(descMessages) },
-      });
-      const descRaw = await this.llm.complete(descMessages, {
-        modelTier: "S",
-        signal: options.signal,
-      });
-      const description = sanitizeChangeSummary(descRaw);
-      if (description && adapter.updateDescription) {
-        await adapter.updateDescription(registered.toolName, registered.version, description);
-      }
-      await emit({
-        spanId: descSpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "description-synthesizer",
-        activity: "llm",
-        status: "completed",
-        title: "Description synthesized",
-        startedAt: descStartedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(descStartedAt),
-        payload: {
-          prompt: messagesToPromptText(descMessages),
-          output: descRaw,
-          description,
-        },
-      });
-    } catch (error) {
-      await emit({
-        spanId: descSpanId,
-        parentSpanId: runSpanId,
-        type: "tool-build-registered",
-        actor: "description-synthesizer",
-        activity: "llm",
-        status: "failed",
-        title: "Description synthesis failed — keeping operator hint",
-        detail: error instanceof Error ? error.message : String(error),
-        startedAt: descStartedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(descStartedAt),
-        payload: { error: error instanceof Error ? error.message : String(error) },
-      });
-    }
-
-    // ── Step 9: FINALIZE ─────────────────────────────────────────────
-    // Phase 16 Slice C: use distinct event types for happy-path
-    // registration vs. registration-without-passing-QA. The Trace
-    // Graph and Run timeline now show
-    // `tool-build-registration-aborted` instead of a green
-    // "Registered" pill that contradicts the failed run-level
-    // status. The payload still carries `qaPassed` so consumers can
-    // distinguish if needed.
-    // Phase 16 Slice E: report the actual number of attempts the loop
-    // ran, with a tail clause when the repair LLM broke before we
-    // exhausted the cap. The old summary always read
-    // "after `maxQaRepairAttempts` repair attempts" even when the
-    // loop only ran once and bailed on a non-parsable repair
-    // response — see `run_1778537976034_gyr3a62p`.
-    const attemptsLabel = attemptsRun === 1 ? "attempt" : "attempts";
-    const qaFailureDetail = `QA failed after ${attemptsRun} ${attemptsLabel}` +
-      (repairBrokenEarly ? "; repair step returned no parsable files" : "");
-    await emit({
-      spanId: createSpanId("council-registered"),
-      parentSpanId: runSpanId,
-      type: qaPassed ? "tool-build-registered" : "tool-build-registration-aborted",
-      actor: "coordinator",
-      activity: "coordination",
-      status: qaPassed ? "completed" : "failed",
-      title: qaPassed
-        ? `Tool registered: ${registered.toolName} v${registered.version}`
-        : `Tool registration aborted (${qaFailureDetail})`,
-      startedAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
-      durationMs: elapsedMs(runStartedAt),
-      payload: {
-        ...registered,
-        qaPassed,
-        attemptsRun,
-        repairBrokenEarly,
-        councilSize: councilModels.length,
-        winner: winner.winnerModelId,
-        changeSummary,
-      },
-    });
-
-    // Close out the root coordinator span. Without this the Trace view
-    // shows the council run as `started` (with a live ticking timer)
-    // even after RunsService has already marked the run as `completed`
-    // in the database. Re-emitting with the same spanId is an in-place
-    // status update via buildTraceNodes' last-event-wins merge.
-    await emit({
-      spanId: runSpanId,
-      type: "run-started",
-      actor: "coordinator",
-      activity: "coordination",
-      status: qaPassed ? "completed" : "failed",
-      title: "Tool-build council run",
-      detail: qaPassed
-        ? `Built ${registered.toolName} v${registered.version} (winner: ${winner.winnerModelId}); QA passed.`
-        : `Built ${registered.toolName} v${registered.version}; ${qaFailureDetail}.`,
-      startedAt: runStartedAt.toISOString(),
-      completedAt: new Date().toISOString(),
-      durationMs: elapsedMs(runStartedAt),
-      payload: {
-        kind: "tool_build_council",
-        toolBuildContext: context,
-        qaPassed,
-        attemptsRun,
-        repairBrokenEarly,
-      },
-    });
-
-    const finalAnswer = qaPassed
-      ? `Tool **${registered.toolName}** v${registered.version} built by council (winner: ${winner.winnerModelId}). QA passed.`
-      : `Tool **${registered.toolName}** v${registered.version} registered, but ${qaFailureDetail}. Inspect logs.`;
-
-    // Phase 16 Slice D: the run trace already records the final
-    // `run-started` span as `failed` when QA never passed, but the
-    // run record itself was being marked `completed` because we
-    // returned normally. The runs.complete() vs runs.fail() decision
-    // sits in RunsService, which now respects `runStatus` here so
-    // the Runs page chips a QA-failed council run as `failed` and
-    // the operator sees one consistent label across trace + list.
-    const runStatus: "completed" | "failed" = qaPassed ? "completed" : "failed";
-    const runFailureReason = qaPassed
-      ? undefined
-      : `Tool ${registered.toolName} v${registered.version} built but ${qaFailureDetail}.`;
-
-    return {
-      finalAnswer,
-      complexity: {
-        mode: "direct",
-        domains: ["tool-build"],
-        riskLevel: "medium",
-        sensitivity: "normal",
-      } as never,
-      subtasks: [],
-      workerResults: [],
-      reviews: [],
-      artifacts: [],
-      runStatus,
-      runFailureReason,
-    };
-  }
-
-  /**
    * Phase 13 follow-up (TB-005b): expose the run-scoped user tool
    * policy so deep helpers can pass it to `findByCapability`.
    */
@@ -1739,7 +469,7 @@ export class UniversalAgent {
    * calls. The sub-run inherits scope (instanceId, requesterUserId,
    * signal) from the parent so cancel propagates and audit lineage
    * is preserved, but starts with a clean classify→plan flow
-   * (no toolBuildContext, no toolBuildCouncil). The child run is
+   * The child run is
    * marked `researchDisabled` so it cannot recursively spawn more
    * research — keeps the call tree bounded.
    *
@@ -1767,13 +497,6 @@ export class UniversalAgent {
   }
 
   async run(task: string, options: RunOptions = {}): Promise<AgentRunResult> {
-    // Phase 14: tool-build runs are routed to the council pipeline. The
-    // adapter must be present too — without it the agent can't reach
-    // the coding-council config / tool registrar / QA runner.
-    if (options.toolBuildContext && options.toolBuildCouncil) {
-      return this.runToolBuildCouncil(options.toolBuildContext, options.toolBuildCouncil, options);
-    }
-
     const emit = createEmitter(options.onEvent);
     const runSpanId = createSpanId("run");
     const memorySpanId = createSpanId("memory");
@@ -1812,31 +535,8 @@ export class UniversalAgent {
     if (ledger && options.runId) {
       this.runScopedLedgers.set(options.runId, ledger);
     }
-    const pendingToolImprovements: ToolReworkWaitRecord[] = [];
-    const improveTool: AgentImproveToolFn | undefined = options.toolImprovementCoordinator
-      ? async (request) => {
-          const result = await options.toolImprovementCoordinator!.requestImprovement({
-            ...request,
-            runId: request.runId ?? options.runId,
-          });
-          if (result.status === "waiting" && result.wait) {
-            pendingToolImprovements.push(result.wait);
-          }
-          return result;
-        }
-      : undefined;
-    const appendPendingImprovements = (answer: string): string => {
-      if (pendingToolImprovements.length === 0) return answer;
-      const lines = pendingToolImprovements.map((wait) =>
-        `- ${wait.id}: build ${wait.buildRequestId ?? "(unknown)"}, ` +
-          `tool ${wait.toolName ?? "(unknown)"} [status: ${wait.status}]`,
-      );
-      return `${answer}\n\n---\n` +
-        `Note: this run is waiting for tool improvements and cannot be fully retried yet. ` +
-        `Operator (or the future recursive retry engine in Phase 2) can mark these waits ready ` +
-        `for retry once the new tool versions are promoted.\n\n` +
-        `Pending tool rework waits:\n${lines.join("\n")}`;
-    };
+    const improveTool: AgentImproveToolFn | undefined = undefined;
+    const appendPendingImprovements = (answer: string): string => answer;
 
     try {
     await emit({
@@ -1904,8 +604,9 @@ export class UniversalAgent {
     // classifier call entirely if the prior run already produced a
     // `TaskComplexity`. We still emit the `classification-completed`
     // event so the new run's trace shows what it inherited.
+    const classificationContext = buildClassificationContext(task, options, runStartedAt);
     let complexity: TaskComplexity = options.resumeFrom?.complexity
-      ?? (await this.classify(taskContext, memories, classificationTier));
+      ?? (await this.classify(classificationContext, memories, classificationTier));
     if (complexity.mode === "direct" && hasActionableApiToolRequest(taskContext, this.tools.list())) {
       complexity = {
         ...complexity,
@@ -1941,7 +642,7 @@ export class UniversalAgent {
       memories,
       tools: this.tools.list(),
       hasWorkLedger: Boolean(ledger),
-      pendingToolImprovements: pendingToolImprovements.length,
+      pendingToolImprovements: 0,
     });
     // Phase 13 follow-up (TB-005b): stash the user-driven tool policy so
     // deep `findByCapability` callsites in the worker loop respect
@@ -2039,7 +740,7 @@ export class UniversalAgent {
       strategy,
       rootInvocation,
       Boolean(ledger),
-      pendingToolImprovements.length,
+      0,
       recursiveLoopPlan,
     );
 
@@ -2105,12 +806,12 @@ export class UniversalAgent {
             }),
             answerSelf: async () => {
               const generatedArtifact = await this.createRequestedArtifact(
-                agentTaskContext,
+                task,
                 [],
                 emit,
                 rootInvocation.spanId,
                 options.saveArtifact,
-                options.requestToolBuild,
+                undefined,
                 improveTool,
               );
               if (generatedArtifact) {
@@ -2131,8 +832,9 @@ export class UniversalAgent {
                 startedAt: synthesisStartedAt.toISOString(),
                 payload: { modelTier: synthesisTier, invocationId: rootInvocation.id },
               });
+              const directSynthesisContext = appendInternalProjectKnowledgeContextIfNeeded(agentTaskContext, task);
               const synthesisUserPrompt = synthesizePrompt(
-                limitText(agentTaskContext, promptBudget.taskContextChars),
+                limitText(directSynthesisContext, promptBudget.taskContextChars),
                 complexity,
                 [],
                 [],
@@ -2143,7 +845,7 @@ export class UniversalAgent {
                 { role: "system", content: coordinatorSystemPrompt },
                 { role: "user", content: synthesisUserPrompt },
               ], { modelTier: synthesisTier });
-              const synthesisCorpus = buildSynthesisEvidenceCorpus(agentTaskContext, [], artifacts);
+              const synthesisCorpus = buildSynthesisEvidenceCorpus(directSynthesisContext, [], artifacts);
               const guardedSynthesis = await enforceUngroundedSpecificsOnSynthesis({
                 llm: this.llm,
                 modelTier: synthesisTier,
@@ -2176,6 +878,7 @@ export class UniversalAgent {
                 activity: "llm",
                 status: "completed",
                 title: "Direct answer synthesized",
+                detail: limitText(output, 1_200),
                 startedAt: synthesisStartedAt.toISOString(),
                 completedAt: new Date().toISOString(),
                 durationMs: elapsedMs(synthesisStartedAt),
@@ -2203,12 +906,12 @@ export class UniversalAgent {
         finalAnswer = recursiveResult.output;
       } else {
         const generatedArtifact = await this.createRequestedArtifact(
-          agentTaskContext,
+          task,
           [],
           emit,
           runSpanId,
           options.saveArtifact,
-          options.requestToolBuild,
+          undefined,
           improveTool,
         );
         if (generatedArtifact) {
@@ -2229,8 +932,9 @@ export class UniversalAgent {
           startedAt: synthesisStartedAt.toISOString(),
           payload: { modelTier: synthesisTier, invocationId: rootInvocation.id },
         });
+        const directSynthesisContext = appendInternalProjectKnowledgeContextIfNeeded(agentTaskContext, task);
         const synthesisUserPrompt = synthesizePrompt(
-          limitText(agentTaskContext, promptBudget.taskContextChars),
+          limitText(directSynthesisContext, promptBudget.taskContextChars),
           complexity,
           [],
           [],
@@ -2241,7 +945,7 @@ export class UniversalAgent {
           { role: "system", content: coordinatorSystemPrompt },
           { role: "user", content: synthesisUserPrompt },
         ], { modelTier: synthesisTier });
-        const synthesisCorpus = buildSynthesisEvidenceCorpus(agentTaskContext, [], artifacts);
+        const synthesisCorpus = buildSynthesisEvidenceCorpus(directSynthesisContext, [], artifacts);
         const guardedSynthesis = await enforceUngroundedSpecificsOnSynthesis({
           llm: this.llm,
           modelTier: synthesisTier,
@@ -2270,6 +974,7 @@ export class UniversalAgent {
           activity: "llm",
           status: "completed",
           title: "Direct answer synthesized",
+          detail: limitText(finalAnswer, 1_200),
           startedAt: synthesisStartedAt.toISOString(),
           completedAt: new Date().toISOString(),
           durationMs: elapsedMs(synthesisStartedAt),
@@ -2286,7 +991,7 @@ export class UniversalAgent {
           rootInvocation,
           finalAnswer,
           artifacts,
-          artifacts.length + pendingToolImprovements.length,
+          artifacts.length,
           emit,
           synthesisSpanId,
         );
@@ -2337,12 +1042,67 @@ export class UniversalAgent {
     const planningSpanId = createSpanId("planning");
     const planningStartedAt = new Date();
     const planningTier = selectModelTier("planning", complexity);
+    await emit({
+      spanId: planningSpanId,
+      parentSpanId: runSpanId,
+      type: "planning-started",
+      actor: "planner",
+      activity: "planning",
+      status: "started",
+      title: "Planning started",
+      detail: `Model tier: ${planningTier}`,
+      startedAt: planningStartedAt.toISOString(),
+      payload: { modelTier: planningTier },
+    });
     // Phase 12 follow-up: skip the planner LLM call too when the resumed
     // run already has a subtasks array. The planner is the second-most
     // expensive coordinator phase after worker execution; a resume must
     // not pay for it twice.
-    const rawSubtasks = options.resumeFrom?.subtasks
-      ?? (await this.plan(withCouncilNotes(agentTaskContext, councilNotes), complexity, memories, planningTier));
+    const deterministicToolPlan =
+      options.resumeFrom?.subtasks === undefined
+        ? buildInternalProjectKnowledgeFastPathSubtasks(task) ??
+          buildLocalUtilityToolchainFastPathSubtasks(task, (toolName) => Boolean(this.tools.get(toolName))) ??
+          (this.tools.get("http.request") ? buildExplicitHttpFastPathSubtasks(task) : undefined) ??
+          (this.tools.get("browser.operate")
+            ? buildExternalActionFastPathSubtasks(
+                task,
+                (toolName) => Boolean(this.tools.get(toolName)),
+                agentTaskContext,
+              ) ??
+              buildExplicitBrowserFastPathSubtasks(task) ??
+              (this.tools.findByCapability("web-search")[0]
+                ? buildCurrentFactProofFastPathSubtasks(task)
+                : undefined)
+            : undefined)
+        : undefined;
+    let planningFallbackReason: string | undefined;
+    let rawSubtasks: Subtask[];
+    if (options.resumeFrom?.subtasks) {
+      rawSubtasks = options.resumeFrom.subtasks;
+    } else if (deterministicToolPlan) {
+      rawSubtasks = deterministicToolPlan;
+    } else {
+      try {
+        rawSubtasks = await this.plan(withCouncilNotes(agentTaskContext, councilNotes), complexity, memories, planningTier);
+      } catch (error) {
+        planningFallbackReason = error instanceof Error ? error.message : "Planner LLM failed";
+        rawSubtasks = buildFallbackResearchSubtasks(task, (toolName) => Boolean(this.tools.get(toolName)));
+        await emit({
+          spanId: createSpanId("planning-fallback"),
+          parentSpanId: planningSpanId,
+          type: "planning-fallback-created",
+          actor: "planner",
+          activity: "planning",
+          status: "completed",
+          title: "Fallback research plan created",
+          detail: planningFallbackReason,
+          payload: {
+            reason: planningFallbackReason,
+            subtasks: rawSubtasks,
+          },
+        });
+      }
+    }
     const executionPlan = createExecutionPlan(rawSubtasks);
     const subtasks = executionPlan.subtasks;
     await emit({
@@ -2362,6 +1122,8 @@ export class UniversalAgent {
         executionLevels: executionPlan.levels.map((level) => level.map((subtask) => subtask.id)),
         dependencyWarnings: executionPlan.warnings,
         modelTier: planningTier,
+        deterministicFastPath: Boolean(deterministicToolPlan),
+        fallbackReason: planningFallbackReason,
       },
     });
 
@@ -2373,7 +1135,7 @@ export class UniversalAgent {
       emit,
       planningSpanId,
       options.saveArtifact,
-      options.requestToolBuild,
+      undefined,
       improveTool,
       toolExecutionContext,
       options.resumeFrom,
@@ -2388,12 +1150,12 @@ export class UniversalAgent {
     const collectedArtifacts: AgentArtifact[] = [...artifacts];
     pushUniqueArtifacts(collectedArtifacts, getAllWorkerArtifacts(reviewedWorkerResults));
     const generatedArtifact = await this.createRequestedArtifact(
-      agentTaskContext,
+      task,
       workerResults,
       emit,
       runSpanId,
       options.saveArtifact,
-      options.requestToolBuild,
+      undefined,
       improveTool,
       toolExecutionContext,
     );
@@ -2420,35 +1182,53 @@ export class UniversalAgent {
     const aggregatedRecords = aggregateEvidenceRecords(workerResults);
     const structuredEvidenceText = formatEvidenceRecordsForPrompt(
       aggregatedRecords,
-      promptBudget.synthesisWorkerOutputChars,
+      promptBudget.synthesisStructuredEvidenceChars,
     );
     const synthesisUserPrompt = synthesizePrompt(
-      limitText(agentTaskContext, promptBudget.taskContextChars),
+      limitText(agentTaskContext, promptBudget.synthesisTaskContextChars),
       complexity,
       compactWorkerResultsForPrompt(workerResults, promptBudget.synthesisWorkerOutputChars),
-      reviews,
+      compactReviewsForPrompt(reviews),
       compactMemoriesForPrompt(memories),
       artifacts,
       structuredEvidenceText,
     );
-    const rawFinalAnswer = await this.llm.complete([
-      { role: "system", content: coordinatorSystemPrompt },
-      { role: "user", content: synthesisUserPrompt },
-    ], { modelTier: synthesisTier });
+    let rawFinalAnswer: string;
+    let usedCompactFallback = false;
+    try {
+      rawFinalAnswer = await this.llm.complete([
+        { role: "system", content: coordinatorSystemPrompt },
+        { role: "user", content: synthesisUserPrompt },
+      ], { modelTier: synthesisTier, maxTokens: 1_000 });
+    } catch (error) {
+      if (!isContextWindowError(error)) throw error;
+      usedCompactFallback = true;
+      rawFinalAnswer = buildCompactSynthesisFallback(task, workerResults, reviews, artifacts, error);
+    }
     // Phase 12 follow-up: deterministic gate against ungrounded specifics
     // at the synthesis layer too. Workers are already gated by
     // hardGateReview, but the synthesis LLM call can re-introduce model
     // numbers / versions / prices from training memory.
     const synthesisCorpus = buildSynthesisEvidenceCorpus(agentTaskContext, workerResults, artifacts);
-    const guardedSynthesis = await enforceUngroundedSpecificsOnSynthesis({
-      llm: this.llm,
-      modelTier: synthesisTier,
-      systemPrompt: coordinatorSystemPrompt,
-      userPrompt: synthesisUserPrompt,
-      rawAnswer: rawFinalAnswer,
-      evidenceCorpus: synthesisCorpus,
-    });
-    const finalAnswer = appendPendingImprovements(withArtifactLinks(guardedSynthesis.answer, artifacts));
+    const guardedSynthesis = usedCompactFallback
+      ? {
+          answer: rawFinalAnswer,
+          ungroundedFirstPass: [],
+          ungroundedAfterRetry: [],
+          disclaimerApplied: false,
+        }
+      : await enforceUngroundedSpecificsOnSynthesis({
+          llm: this.llm,
+          modelTier: synthesisTier,
+          systemPrompt: coordinatorSystemPrompt,
+          userPrompt: synthesisUserPrompt,
+          rawAnswer: rawFinalAnswer,
+          evidenceCorpus: synthesisCorpus,
+        });
+    const externalActionBlockerAnswer = buildExternalActionBlockerFinalAnswer(task, workerResults, artifacts);
+    const finalAnswer = appendPendingImprovements(
+      withArtifactLinks(externalActionBlockerAnswer ?? guardedSynthesis.answer, artifacts),
+    );
     await emit({
       spanId: synthesisSpanId,
       parentSpanId: runSpanId,
@@ -2457,6 +1237,7 @@ export class UniversalAgent {
       activity: "llm",
       status: "completed",
       title: "Final answer synthesized",
+      detail: limitText(finalAnswer, 1_200),
       startedAt: synthesisStartedAt.toISOString(),
       completedAt: new Date().toISOString(),
       durationMs: elapsedMs(synthesisStartedAt),
@@ -2625,11 +1406,11 @@ export class UniversalAgent {
     modelTier: ReturnType<typeof selectModelTier>,
   ): Promise<TaskComplexity> {
     const promptTask = limitText(task, promptBudget.taskContextChars);
-    const promptMemories = compactMemoriesForPrompt(memories);
+    const promptMemories = compactMemoriesForClassification(memories);
     const output = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
       { role: "user", content: classifyPrompt(promptTask, promptMemories) },
-    ], { modelTier });
+    ], { modelTier, maxTokens: 512 });
 
     const parsed = extractJson<TaskComplexity>(output);
     // Phase 12 Slice A (full): normalize the new `intent` field. Older
@@ -2660,7 +1441,7 @@ export class UniversalAgent {
     const output = await this.llm.complete([
       { role: "system", content: coordinatorSystemPrompt },
       { role: "user", content: planPrompt(promptTask, complexity, promptMemories, this.tools.list()) },
-    ], { modelTier });
+    ], { modelTier, maxTokens: 1_500 });
 
     return extractJson<PlanResponse>(output).subtasks;
   }
@@ -2746,6 +1527,51 @@ export class UniversalAgent {
           const dependencyContext = formatDependencyContext(dependencyResults);
           const dependencyArtifacts = dependencyResults.flatMap((result) => result.workerResult.artifacts ?? []);
           const parentSpanId = dependencySpanIds.at(-1) ?? planningSpanId;
+          const failedDependencies = dependencyResults.filter((result) => result.review.verdict !== "pass");
+          if (failedDependencies.length > 0 && isExternalActionBoundarySubtask(subtask)) {
+            const spanId = createSpanId(`worker-blocked-${subtask.id}`);
+            const notes = `Blocked: ${failedDependencies
+              .map((result) => `${result.workerResult.subtask.id}: ${result.review.notes}`)
+              .join("; ")}`;
+            const workerResult: WorkerResult = {
+              subtask,
+              output:
+                `Cannot prepare or commit an external action because required upstream work did not pass review.\n${notes}`,
+              traceSpanId: spanId,
+              modelTier: selectModelTier("worker", complexity, subtask),
+              artifacts: [],
+              toolEvidence: [],
+              dependencyContextSnapshot: dependencyContext,
+            };
+            const review: ReviewResult = {
+              subtaskId: subtask.id,
+              verdict: "needs_revision",
+              notes,
+            };
+            await emit({
+              spanId,
+              parentSpanId,
+              type: "worker-completed",
+              actor: `worker:${subtask.role}`,
+              activity: "worker",
+              status: "failed",
+              title: `Worker blocked: ${subtask.title}`,
+              detail: workerResult.output,
+              payload: { output: workerResult.output, subtask, dependencySpanIds },
+            });
+            await emit({
+              spanId: createSpanId(`review-blocked-${subtask.id}`),
+              parentSpanId: spanId,
+              type: "review-completed",
+              actor: "reviewer",
+              activity: "review",
+              status: "failed",
+              title: `Review blocked: ${subtask.title}`,
+              detail: review.notes,
+              payload: { ...review, deterministic: true },
+            });
+            return { workerResult, review, attempts: [workerResult], reviews: [review] };
+          }
 
           return this.runWorkerAndRequestReview(
             originalTask,
@@ -2820,6 +1646,7 @@ export class UniversalAgent {
     });
 
     let collectedEvidence: CollectedToolEvidence | undefined;
+    let toolEvidenceCollected = false;
     let output = "";
     try {
       collectedEvidence = await this.collectToolEvidence(
@@ -2834,6 +1661,7 @@ export class UniversalAgent {
         improveTool,
         toolExecutionContext,
       );
+      toolEvidenceCollected = true;
 
       output = await this.llm.complete([
         { role: "system", content: workerSystemPrompt(subtask, compactMemoriesForPrompt(memories), this.tools.list()) },
@@ -2862,32 +1690,68 @@ export class UniversalAgent {
         }
       }
     } catch (error) {
-      await emit({
-        spanId,
-        parentSpanId,
-        type: "worker-failed",
-        actor,
-        activity: "worker",
-        status: "failed",
-        title: isRevision ? `Worker revision failed: ${subtask.title}` : `Worker failed: ${subtask.title}`,
-        detail: formatErrorMessage(error),
-        startedAt: startedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        durationMs: elapsedMs(startedAt),
-        payload: {
-          subtask,
-          modelTier,
-          dependencySpanIds,
-          error: formatErrorMessage(error),
-          evidencePreview: collectedEvidence ? limitText(collectedEvidence.text, 2000) : undefined,
-          callFrame: completeCallFrame(callFrame, {
-            status: "failed",
-            completedAt: new Date().toISOString(),
-            outputSummary: formatErrorMessage(error),
-          }),
-        },
-      });
-      throw error;
+      if (
+        toolEvidenceCollected &&
+        collectedEvidence &&
+        isRecoverableWorkerModelError(error) &&
+        hasCollectedToolEvidence(collectedEvidence)
+      ) {
+        output = buildWorkerModelFailureFallbackOutput(subtask, collectedEvidence, error);
+        const completedAt = new Date().toISOString();
+        await emit({
+          spanId: createSpanId(`worker-synthesis-degraded-${subtask.id}`),
+          parentSpanId: spanId,
+          type: "worker-synthesis-degraded",
+          actor,
+          activity: "llm",
+          status: "completed",
+          title: `Worker synthesis degraded: ${subtask.title}`,
+          detail: formatErrorMessage(error),
+          startedAt: startedAt.toISOString(),
+          completedAt,
+          durationMs: elapsedMs(startedAt),
+          payload: {
+            subtask,
+            modelTier,
+            dependencySpanIds,
+            error: formatErrorMessage(error),
+            evidencePreview: limitText(collectedEvidence.text, 2000),
+            callFrame: completeCallFrame(callFrame, {
+              status: "completed",
+              completedAt,
+              outputSummary: "Worker returned a degraded evidence handoff after model synthesis failed.",
+            }),
+          },
+        });
+      } else {
+        const completedAt = new Date().toISOString();
+        await emit({
+          spanId,
+          parentSpanId,
+          type: "worker-failed",
+          actor,
+          activity: "worker",
+          status: "failed",
+          title: isRevision ? `Worker revision failed: ${subtask.title}` : `Worker failed: ${subtask.title}`,
+          detail: formatErrorMessage(error),
+          startedAt: startedAt.toISOString(),
+          completedAt,
+          durationMs: elapsedMs(startedAt),
+          payload: {
+            subtask,
+            modelTier,
+            dependencySpanIds,
+            error: formatErrorMessage(error),
+            evidencePreview: collectedEvidence ? limitText(collectedEvidence.text, 2000) : undefined,
+            callFrame: completeCallFrame(callFrame, {
+              status: "failed",
+              completedAt,
+              outputSummary: formatErrorMessage(error),
+            }),
+          },
+        });
+        throw error;
+      }
     }
 
     const workerResult: WorkerResult = {
@@ -2907,6 +1771,7 @@ export class UniversalAgent {
     };
     const selfCheckStartedAt = new Date();
     const selfCheck = buildWorkerSelfCheck(workerResult, selfCheckStartedAt, this.tools.list());
+    workerResult.selfCheck = selfCheck;
     await emit({
       spanId: createSpanId(`self-check-${subtask.id}`),
       parentSpanId: spanId,
@@ -2981,6 +1846,19 @@ export class UniversalAgent {
     const onEvidence = (record: EvidenceRecord) => {
       evidenceRecords.push(record);
     };
+    if (
+      Array.isArray(subtask.requiredTools) &&
+      subtask.requiredTools.length === 0 &&
+      Object.keys(subtask.toolInputs ?? {}).length === 0 &&
+      (subtask.requiredArtifacts ?? []).length === 0
+    ) {
+      return {
+        text: "No external tool evidence was collected for this subtask because its plan explicitly requires no tools.",
+        evidence: [],
+        records: [],
+        artifacts: [],
+      };
+    }
     // Phase 13 follow-up (TB-005a/b): user-driven tool policy applies
     // here. `findByCapability("web-search", policy)` returns the
     // built-in `web.search` first if present, but a user instruction
@@ -2988,7 +1866,31 @@ export class UniversalAgent {
     // built-in and promotes the user's preferred tool to [0].
     const webSearchPolicy = this.getToolPolicy(toolExecutionContext?.runId);
     const webSearch = this.tools.findByCapability("web-search", webSearchPolicy)[0];
-    const toolNeedText = `${originalTask}\n${subtask.title}\n${subtask.role}\n${subtask.prompt}\n${subtask.expectedOutput}\n${subtask.reviewCriteria.join("\n")}`;
+    const webRead = this.tools.get("web.read") ?? this.tools.findByCapability("web-read")[0];
+    const originalUserTask = stripRuntimeContext(originalTask);
+    const toolNeedText = `${originalUserTask}\n${subtask.title}\n${subtask.role}\n${subtask.prompt}\n${subtask.expectedOutput}\n${subtask.reviewCriteria.join("\n")}`;
+
+    const apiEvidence = await this.collectApiToolEvidence(
+      subtask,
+      toolNeedText,
+      emit,
+      parentSpanId,
+      toolExecutionContext,
+    );
+    evidence.push(...apiEvidence.evidence);
+    artifacts.push(...apiEvidence.artifacts);
+
+    const webReadEvidence = await this.collectWebReadEvidence(
+      webRead,
+      subtask,
+      toolNeedText,
+      apiEvidence.evidence.length > 0,
+      emit,
+      parentSpanId,
+      toolExecutionContext,
+    );
+    evidence.push(...webReadEvidence.evidence);
+    artifacts.push(...webReadEvidence.artifacts);
 
     if (webSearch && shouldCollectWebSearch(subtask, toolNeedText, dependencyContext)) {
       evidence.push(await this.runWebSearch(webSearch, subtask, toolNeedText, emit, parentSpanId, toolExecutionContext, originalTask));
@@ -3020,16 +1922,6 @@ export class UniversalAgent {
       artifacts.push(...marketEvidence.artifacts);
     }
 
-    const apiEvidence = await this.collectApiToolEvidence(
-      subtask,
-      toolNeedText,
-      emit,
-      parentSpanId,
-      toolExecutionContext,
-    );
-    evidence.push(...apiEvidence.evidence);
-    artifacts.push(...apiEvidence.artifacts);
-
     const declaredToolEvidence = await this.collectDeclaredToolInputs(
       subtask,
       [dependencyContext, ...evidence].filter((item): item is string => Boolean(item)),
@@ -3045,8 +1937,34 @@ export class UniversalAgent {
     evidence.push(...declaredToolEvidence.evidence);
     artifacts.push(...declaredToolEvidence.artifacts);
 
+    const canPrepareExternalAction = subtaskCanPrepareExternalAction(subtask);
+    const interactiveProofRequired = subtaskExpectsInteractiveBrowserProof(subtask);
+    const hasCurrentInteractiveProof = declaredToolEvidence.artifacts.some((artifact) =>
+      subtask.requiredArtifacts?.some((requirement) => artifactMatchesRequirement(artifact, requirement)),
+    );
+    if (canPrepareExternalAction && interactiveProofRequired && !hasCurrentInteractiveProof) {
+      evidence.push(
+        "external.action.prepare skipped: interactive browser preparation did not produce a QA-passed proof artifact. Retry a different provider/action URL before creating an approval draft.",
+      );
+    } else if (canPrepareExternalAction) {
+      const externalActionEvidence = await this.collectExternalActionPrepareEvidence(
+        originalUserTask,
+        subtask,
+        toolNeedText,
+        [dependencyContext, ...evidence].filter((item): item is string => Boolean(item)),
+        emit,
+        parentSpanId,
+        toolExecutionContext,
+      );
+      evidence.push(...externalActionEvidence.evidence);
+      artifacts.push(...externalActionEvidence.artifacts);
+    }
+
     for (const requirement of subtask.requiredArtifacts ?? []) {
       if (requirement.required === false) continue;
+      const needsInteractiveProof =
+        (requirement.kind === "screenshot" || requirement.capability === "browser-screenshot") &&
+        subtaskExpectsInteractiveBrowserProof(subtask);
 
       const alreadyCreatedArtifact = artifacts.find((artifact) => artifactMatchesRequirement(artifact, requirement));
       if (alreadyCreatedArtifact) {
@@ -3057,7 +1975,7 @@ export class UniversalAgent {
       }
 
       const inheritedArtifact = dependencyArtifacts.find((artifact) => artifactMatchesRequirement(artifact, requirement));
-      if (inheritedArtifact) {
+      if (inheritedArtifact && !needsInteractiveProof) {
         artifacts.push(inheritedArtifact);
         evidence.push(
           `Existing dependency artifact satisfies ${requirement.kind}: ${inheritedArtifact.filename}\n${inheritedArtifact.url}`,
@@ -3129,7 +2047,10 @@ export class UniversalAgent {
       `${subtask.title}\n${subtask.prompt}\n${contextText}`,
       toolExecutionContext?.runId,
     );
-    const queries = buildSearchQueries(subtask, contextText, searchIntents);
+    const explicitSearchQuery = getExplicitToolInputString(subtask, "web.search", "query");
+    const queries = explicitSearchQuery
+      ? [explicitSearchQuery]
+      : buildSearchQueries(subtask, `${contextText}\n${originalTask}`, searchIntents);
     // Phase 12 follow-up: pre-call ungrounded-specifics gate. The
     // planner sometimes writes hallucinated brand/model tokens
     // ("RTX 4080 with 12GB VRAM") into `subtask.prompt`, and they
@@ -3139,7 +2060,15 @@ export class UniversalAgent {
     // call so the search reflects the user's task, not the planner's
     // guess. Grounding source is the original user task only — the
     // planner's prompt is exactly what we are policing.
-    const query = guardSearchQueryAgainstUngroundedSpecifics(queries.join(" | "), originalTask);
+    const executableQueries = uniqueStrings(
+      queries
+        .map((candidate) => guardSearchQueryAgainstUngroundedSpecifics(candidate, originalTask) || candidate)
+        .map((candidate) => cleanSearchQuery(candidate))
+        .filter(Boolean),
+    ).slice(0, 3);
+    const query = executableQueries.join(" | ");
+    const searchEvidenceQualityVersion = 2;
+    const marketHints = inferMarketSearchHints(`${query}\n${originalTask}\n${contextText}`);
 
     // Work Ledger claim: a sibling subtask in the same run/thread that asks for the
     // same merged query string can reuse our completed evidence instead of issuing
@@ -3161,7 +2090,13 @@ export class UniversalAgent {
         // blip). The trigger word "retry" tells `decideWorkReuse` to
         // skip the 30-minute blocked-by-recent-failure window.
         reason: `retry search via ${webSearch.name}`,
-        metadata: { tool: webSearch.name, role: subtask.role },
+        metadata: {
+          tool: webSearch.name,
+          role: subtask.role,
+          evidenceQualityVersion: searchEvidenceQualityVersion,
+          marketHints,
+          queryCount: executableQueries.length,
+        },
       },
       parentSpanId,
     );
@@ -3197,7 +2132,7 @@ export class UniversalAgent {
     });
 
     const results = await Promise.all(
-      queries.map((candidate) =>
+      executableQueries.map((candidate) =>
         this.executeTool(webSearch, { query: candidate, limit: 5 }, toolExecutionContext, {
           spanId,
           parentSpanId,
@@ -3224,8 +2159,17 @@ export class UniversalAgent {
 
     if (claim) {
       if (result.ok) {
+        const searchEvidenceQuality = assessSearchEvidenceForReuse(result.content, query);
         await ledger?.markCompleted(claim.item.id, {
           outputSummary: limitText(result.content, 4_000),
+          sourceUrls: searchEvidenceQuality.sourceUrls,
+          confidence: searchEvidenceQuality.confidence,
+          metadata: {
+            evidenceQualityVersion: searchEvidenceQualityVersion,
+            marketHints,
+            queryCount: executableQueries.length,
+            distinctSourceCount: searchEvidenceQuality.distinctSourceCount,
+          },
         });
         ledger?.trackWhatWorked(`Web search returned evidence for "${query.slice(0, 80)}"`);
         await ledger?.recordEvidence(
@@ -3234,11 +2178,19 @@ export class UniversalAgent {
             title: `Web search: ${query.slice(0, 96)}`,
             summary: limitText(result.content, 600),
             contentPreview: limitText(result.content, 2_000),
+            sourceUrl: searchEvidenceQuality.sourceUrls[0],
             provider: webSearch.name,
             toolName: webSearch.name,
             workItemId: claim.item.id,
-            qaStatus: "unchecked",
-            metadata: { query, role: subtask.role },
+            qaStatus: searchEvidenceQuality.qaStatus,
+            confidence: searchEvidenceQuality.confidence,
+            limitations: searchEvidenceQuality.limitations,
+            metadata: {
+              query,
+              role: subtask.role,
+              sourceCount: searchEvidenceQuality.sourceUrls.length,
+              distinctSourceCount: searchEvidenceQuality.distinctSourceCount,
+            },
           },
           parentSpanId,
         );
@@ -3266,6 +2218,54 @@ export class UniversalAgent {
     return result.ok
       ? `External tool evidence from ${webSearch.name}:\n${limitText(result.content, promptBudget.toolEvidenceChars)}`
       : `External tool ${webSearch.name} failed:\n${limitText(result.content, 3000)}`;
+  }
+
+  private async collectWebReadEvidence(
+    webRead: Tool | undefined,
+    subtask: Subtask,
+    text: string,
+    apiEvidenceCollected: boolean,
+    emit: AgentEventEmitter,
+    parentSpanId: string,
+    toolExecutionContext?: BaseToolExecutionContext,
+  ): Promise<CollectedToolEvidence> {
+    if (apiEvidenceCollected && shouldPreferHttpRequestForUrls(subtask, text)) {
+      return {
+        text: "Skipped web.read because the explicit URL was handled as an HTTP/API request.",
+        evidence: [],
+        artifacts: [],
+      };
+    }
+    if (!webRead || !shouldCollectWebRead(subtask, text)) {
+      return { text: "No explicit URL page-read evidence was needed.", evidence: [], artifacts: [] };
+    }
+
+    const urls = extractHttpUrls(text).slice(0, requiresMultipleSources(subtask) ? 3 : 2);
+    const evidence: string[] = [];
+
+    for (const url of urls) {
+      const { result } = await this.runLedgeredToolOperation({
+        tool: webRead,
+        input: { url, format: "text", maxBytes: 250_000 },
+        capability: "web-read",
+        caller: `worker:${subtask.role}`,
+        detail: `Read explicit URL: ${url}`,
+        emit,
+        parentSpanId,
+        toolExecutionContext,
+        workKind: "data_fetch",
+        evidenceKind: "source_url",
+        metadata: { role: subtask.role, url, inferred: true, source: "explicit-url" },
+        reuseCompletedOutput: true,
+      });
+      evidence.push(formatDeclaredToolEvidence(webRead.name, result, []));
+    }
+
+    return {
+      text: evidence.length > 0 ? evidence.join("\n\n") : "No explicit URL page-read evidence was collected.",
+      evidence,
+      artifacts: [],
+    };
   }
 
   private async runMarketTimeseries(
@@ -3351,7 +2351,12 @@ export class UniversalAgent {
     const artifacts: AgentArtifact[] = [];
     const declaredToolNames = new Set(Object.keys(subtask.toolInputs ?? {}));
     const apiTools = this.tools
-      .findByCapability("api-http-json")
+      .list()
+      .filter((tool) =>
+        tool.capabilities.some((capability) =>
+          ["api-http-json", "http-request", "api-client", "json-api", "webhook-client"].includes(capability),
+        ),
+      )
       .filter((tool) => !declaredToolNames.has(tool.name));
 
     for (const tool of apiTools) {
@@ -3396,6 +2401,9 @@ export class UniversalAgent {
       const normalized = toolName.toLowerCase();
       return normalized === "browser.operate" || normalized === "browser-operate";
     });
+    if (isLocalUtilityToolchainSubtask(subtask)) {
+      return { text: "No browser discovery evidence was needed for local toolchain execution.", evidence: [], artifacts: [] };
+    }
     const discoveryIntents = this.resolveTaskIntents(
       `${subtask.title}\n${subtask.prompt}\n${text}`,
       toolExecutionContext?.runId,
@@ -3423,13 +2431,21 @@ export class UniversalAgent {
       Math.max(limit * 2, 6),
       discoveryIntents,
       extraPatterns,
+      [],
+      `${subtask.title}\n${subtask.prompt}\n${text}`,
     );
-    const candidatePool =
+    const unfilteredCandidatePool =
       scoredCandidates.length > 0
         ? scoredCandidates
         : extractHttpUrls(evidenceText)
             .filter((url) => !isLowValueProofUrl(url))
             .slice(0, 8);
+    const anchorTerms = extractGeographicAnchorTerms(text);
+    const anchoredCandidatePool =
+      anchorTerms.length > 0
+        ? unfilteredCandidatePool.filter((url) => evidenceUrlMatchesAnchor(evidenceText, url, anchorTerms))
+        : unfilteredCandidatePool;
+    const candidatePool = anchoredCandidatePool.length > 0 ? anchoredCandidatePool : unfilteredCandidatePool;
     if (candidatePool.length === 0) {
       return { text: "No browser discovery URLs were available.", evidence: [], artifacts: [] };
     }
@@ -3582,7 +2598,17 @@ export class UniversalAgent {
         continue;
       }
 
+      const rawRecord = isRecord(input) ? input : {};
+      const guardedRecord = isRecord(guardedInput) ? guardedInput : {};
       const runnableRecord = isRecord(runnableInput) ? runnableInput : {};
+      const browserOperateScope =
+        tool.name === "browser.operate"
+          ? isInteractiveBrowserOperateInput(rawRecord) ||
+            isInteractiveBrowserOperateInput(guardedRecord) ||
+            isInteractiveBrowserOperateInput(runnableRecord)
+            ? "attempt"
+            : "run"
+          : undefined;
       const operation = await this.runLedgeredToolOperation({
         tool,
         input: runnableRecord,
@@ -3593,14 +2619,12 @@ export class UniversalAgent {
         parentSpanId,
         toolExecutionContext,
         metadata: { role: subtask.role, declaredToolName: toolName },
-        // Phase 13 follow-up: when a sibling subtask in the same run already
-        // exercised this exact (tool, capability, input) tuple, the ledger
-        // returns `reuse_completed` with the previous `outputSummary`. For
-        // browser.operate that summary is the formatted evidence + artifact
-        // ids — so reusing it is strictly better than re-driving Chromium
-        // through the same navigation. Was `false`; flipping to `true`
-        // saves the `duplicatedWork` flagged by retrospective.
-        reuseCompletedOutput: true,
+        // Browser state is not a pure data fetch. Static read/screenshot
+        // discovery can reuse only within the current run; interactive
+        // form/navigation attempts must execute freshly so a later booking
+        // run never inherits stale page state or an old screenshot.
+        reuseCompletedOutput: tool.name !== "browser.operate" || browserOperateScope === "run",
+        workKeyScope: browserOperateScope,
         recordLedgerOutcome: tool.name !== "browser.operate",
       });
       const { result, spanId, claim } = operation;
@@ -3616,7 +2640,16 @@ export class UniversalAgent {
             toolContent: result.content,
           });
           if (!artifactQa.ok) {
-            evidence.push(`Rejected screenshot artifact ${artifactInput.filename}: ${artifactQa.reason}`);
+            const candidateUrls = extractExternalActionCandidateLinksFromBrowserData(result.data);
+            const rejectionEvidence = [
+              `Rejected screenshot artifact ${artifactInput.filename}: ${artifactQa.reason}`,
+              result.data.finalUrl ? `Rejected browser URL: ${result.data.finalUrl}` : "",
+              result.data.title ? `Rejected browser title: ${result.data.title}` : "",
+              ...candidateUrls.map((url) => `Candidate action URL from rejected page: ${url}`),
+            ].filter(Boolean).join("\n");
+            evidence.push(
+              rejectionEvidence,
+            );
             const artifactRejectedSpanId = createSpanId("artifact-rejected");
             await emit({
               spanId: artifactRejectedSpanId,
@@ -3626,11 +2659,17 @@ export class UniversalAgent {
               activity: "tool",
               status: "failed",
               title: "Browser artifact rejected by semantic QA",
-              detail: `${artifactInput.filename}\n${artifactQa.reason}`,
+              detail: rejectionEvidence,
               startedAt: artifactStartedAt.toISOString(),
               completedAt: new Date().toISOString(),
               durationMs: elapsedMs(artifactStartedAt),
-              payload: { artifact: sanitizeArtifactInput(artifactInput), artifactQa },
+              payload: {
+                artifact: sanitizeArtifactInput(artifactInput),
+                artifactQa,
+                finalUrl: result.data.finalUrl,
+                title: result.data.title,
+                rejectionEvidence,
+              },
             });
             if (artifactQa.decision === "blocked_or_loader") {
               await this.recordExternalArtifactBlocker(
@@ -3745,6 +2784,73 @@ export class UniversalAgent {
     };
   }
 
+  private async collectExternalActionPrepareEvidence(
+    originalTask: string,
+    subtask: Subtask,
+    text: string,
+    priorEvidence: string[],
+    emit: AgentEventEmitter,
+    parentSpanId: string,
+    toolExecutionContext?: BaseToolExecutionContext,
+  ): Promise<CollectedToolEvidence> {
+    const declaredToolNames = new Set(Object.keys(subtask.toolInputs ?? {}).map((name) => name.toLowerCase()));
+    if (declaredToolNames.has("external.action.prepare") || declaredToolNames.has("external-action-prepare")) {
+      return { text: "external.action.prepare was already declared.", evidence: [], artifacts: [] };
+    }
+
+    if (!shouldPrepareExternalAction(subtask, text)) {
+      return { text: "No external action preparation was needed.", evidence: [], artifacts: [] };
+    }
+
+    const tool = this.tools.get("external.action.prepare") ?? this.tools.findByCapability("external-action-prepare")[0];
+    if (!tool) {
+      return {
+        text: "external.action.prepare is not registered.",
+        evidence: ["external.action.prepare is not registered."],
+        artifacts: [],
+      };
+    }
+
+    const evidenceText = priorEvidence.join("\n\n");
+    const blocker = detectExternalActionPreparationBlocker(evidenceText);
+    if (blocker) {
+      const message =
+        `external.action.prepare skipped: ${blocker}. ` +
+        "This is not approval-ready; report the blocker or retry another concrete provider/action URL before asking for approval.";
+      return {
+        text: message,
+        evidence: [message],
+        artifacts: [],
+      };
+    }
+
+    const input = buildExternalActionPrepareInput(originalTask, subtask, text, evidenceText);
+    const { result } = await this.runLedgeredToolOperation({
+      tool,
+      input,
+      capability: "external-action-prepare",
+      caller: `worker:${subtask.role}`,
+      detail: summarizeToolInput(input),
+      emit,
+      parentSpanId,
+      toolExecutionContext,
+      workKind: "tool_call",
+      evidenceKind: "other",
+      metadata: { role: subtask.role, inferred: true, boundary: "prepare" },
+      // External-action drafts are approval state, not reusable data.
+      // Reusing an older draft can attach a stale/failed browser proof to a
+      // new run after the current preparation evidence changed.
+      reuseCompletedOutput: false,
+      workKeyScope: "run",
+    });
+
+    return {
+      text: formatDeclaredToolEvidence(tool.name, result, []),
+      evidence: [formatDeclaredToolEvidence(tool.name, result, [])],
+      artifacts: [],
+    };
+  }
+
   private async createSubtaskArtifact(
     requirement: ArtifactRequirement,
     originalTask: string,
@@ -3768,6 +2874,31 @@ export class UniversalAgent {
     if (!saveArtifact) return undefined;
 
     if (requirement.kind === "screenshot" || requirement.capability === "browser-screenshot") {
+      if (subtaskExpectsInteractiveBrowserProof(subtask)) {
+        await emit({
+          spanId: createSpanId("interactive-proof-missing"),
+          parentSpanId,
+          type: "tool-missing",
+          actor: "screenshot-artifact",
+          activity: "tool",
+          status: "failed",
+          title: "Interactive proof skipped: no prepared browser session",
+          detail:
+            "This subtask needs proof of a prepared interactive action (filled form, selected appointment, or pre-submit state). " +
+            "A generic screenshot of a source URL is not valid proof for that requirement; the proof must come from browser.operate after the interactive steps succeed.",
+          payload: {
+            capability: "browser-screenshot",
+            reason: "interactive-proof-requires-browser-operate-session",
+            requirement,
+            subtask: {
+              id: subtask.id,
+              title: subtask.title,
+              requiredTools: subtask.requiredTools,
+            },
+          },
+        });
+        return undefined;
+      }
       return this.createScreenshotArtifact(
         [dependencyContext, evidence.join("\n\n"), subtask.prompt, originalTask].filter(Boolean).join("\n\n"),
         emit,
@@ -3899,6 +3030,15 @@ export class UniversalAgent {
       return { workerResult, review, attempts: [workerResult], reviews: [review] };
     }
 
+    const revisionDependencyArtifacts = [...dependencyArtifacts];
+    pushUniqueArtifacts(revisionDependencyArtifacts, workerResult.artifacts ?? []);
+    const revisionDependencyContext = [
+      dependencyContext,
+      "Previous failed attempt tool evidence:",
+      ...(workerResult.toolEvidence ?? []),
+      "Previous review notes:",
+      review.notes,
+    ].filter(Boolean).join("\n\n");
     const revisedWorkerResult = await this.runWorker(
       originalTask,
       complexity,
@@ -3906,9 +3046,9 @@ export class UniversalAgent {
       memories,
       emit,
       workerResult.traceSpanId ?? parentSpanId,
-      dependencyContext,
+      revisionDependencyContext,
       dependencySpanIds,
-      dependencyArtifacts,
+      revisionDependencyArtifacts,
       review.notes,
       saveArtifact,
       requestToolBuild,
@@ -4284,6 +3424,7 @@ export class UniversalAgent {
       metadata?: Record<string, unknown>;
       reuseCompletedOutput?: boolean;
       recordLedgerOutcome?: boolean;
+      workKeyScope?: "global" | "run" | "attempt";
     },
   ): Promise<{
     result: ToolResult;
@@ -4296,7 +3437,11 @@ export class UniversalAgent {
     const startedAt = new Date();
     const ledger = this.resolveLedgerFromContext(options.toolExecutionContext);
     const workKind = options.workKind ?? workLedgerKindForTool(options.tool, options.capability);
-    const workKey = options.workKey ?? workKeyForLedgeredTool(options.tool, options.capability, options.input);
+    const baseWorkKey = options.workKey ?? workKeyForLedgeredTool(options.tool, options.capability, options.input);
+    const workKey = scopedToolWorkKey(baseWorkKey, options.workKeyScope, {
+      runId: options.toolExecutionContext?.runId,
+      spanId,
+    });
     const claim = await ledger?.claim(
       {
         kind: workKind,
@@ -5315,7 +4460,7 @@ export class UniversalAgent {
     let review: ReviewResult;
     try {
       const output = await this.llm.complete([
-        { role: "system", content: reviewerSystemPrompt(compactWorkerResultForPrompt(workerResult, promptBudget.reviewWorkerOutputChars), this.tools.list()) },
+        { role: "system", content: reviewerSystemPrompt(compactWorkerResultForPrompt(workerResult, promptBudget.reviewWorkerOutputChars), []) },
         { role: "user", content: "Review the worker result now." },
       ], { modelTier });
       review = extractJson<ReviewResult>(output);
@@ -5389,29 +4534,34 @@ export class UniversalAgent {
     return review;
   }
 
-  private async learn(
-    task: string,
-    finalAnswer: string,
-    workerResults: WorkerResult[],
-    modelTier: ReturnType<typeof selectModelTier>,
-    options: RunOptions,
-  ): Promise<SkillMemoryEntry | undefined> {
-    const output = await this.llm.complete([
-      { role: "system", content: "You extract compact reusable operational knowledge." },
-      {
-        role: "user",
-        content: learningPrompt(
-          limitText(task, promptBudget.taskContextChars),
-          limitText(finalAnswer, 8_000),
-          compactWorkerResultsForPrompt(workerResults, promptBudget.learningWorkerOutputChars),
-        ),
-      },
-    ], { modelTier });
-    const learning = extractJson<LearningResponse>(output);
+	  private async learn(
+	    task: string,
+	    finalAnswer: string,
+	    workerResults: WorkerResult[],
+	    modelTier: ReturnType<typeof selectModelTier>,
+	    options: RunOptions,
+	  ): Promise<SkillMemoryEntry | undefined> {
+	    let learning: LearningResponse;
+	    try {
+	      const output = await this.llm.complete([
+	        { role: "system", content: "You extract compact reusable operational knowledge." },
+	        {
+	          role: "user",
+	          content: learningPrompt(
+	            limitText(task, promptBudget.taskContextChars),
+	            limitText(finalAnswer, 8_000),
+	            compactWorkerResultsForPrompt(workerResults, promptBudget.learningWorkerOutputChars),
+	          ),
+	        },
+	      ], { modelTier, signal: learningAbortSignal() });
+	      learning = extractJson<LearningResponse>(output);
+	    } catch {
+	      return undefined;
+	    }
 
-    if (!learning.shouldStore || !learning.title || !learning.summary || !learning.reusableProcedure) {
-      return undefined;
-    }
+	    if (!learning.shouldStore || !learning.title || !learning.summary || !learning.reusableProcedure) {
+	      return undefined;
+	    }
 
     const memoryScope = normalizeMemoryScope(learning.scope);
     const sensitivity = normalizeMemorySensitivity(learning.sensitivity);
@@ -5462,6 +4612,14 @@ function resolveMemoryScopeId(scope: SkillMemoryEntry["scope"], options: RunOpti
   return undefined;
 }
 
+function learningAbortSignal(): AbortSignal | undefined {
+  const raw = process.env.LEARNING_TIMEOUT_MS;
+  const timeoutMs = raw === undefined ? 8_000 : Number(raw);
+  if (!Number.isFinite(timeoutMs)) return AbortSignal.timeout(8_000);
+  if (timeoutMs <= 0) return AbortSignal.abort("Learning disabled by LEARNING_TIMEOUT_MS");
+  return AbortSignal.timeout(timeoutMs);
+}
+
 function normalizeLearningEvidence(
   evidence: unknown,
   task: string,
@@ -5477,6 +4635,728 @@ function normalizeLearningEvidence(
     ...workerResults.slice(0, 3).map((result) => `Worker ${result.subtask.id}: ${limitText(result.output, 500)}`),
   ];
   return [...explicit, ...generated].map((item) => limitText(item, promptBudget.memoryEvidenceChars)).slice(0, 8);
+}
+
+function buildExplicitBrowserFastPathSubtasks(task: string): Subtask[] | undefined {
+  const urls = extractHttpUrls(task).filter((url) => !isLowValueProofUrl(url));
+  const url = urls[0];
+  if (!url) return undefined;
+
+  const text = task.toLowerCase();
+  const asksForBrowserRead =
+    asksForScreenshot(task) ||
+    /\b(open|navigate|visit|read|title|visible|page)\b|открой|перейди|прочитай|заголов|видн|страниц/i.test(
+      text,
+    );
+  const looksLikeExternalSubmit =
+    /\b(submit|send|book|reserve|checkout|pay|purchase|commit|approve|sign in|login)\b|отправ|заброн|запиш|оплат|куп|логин|войти/i.test(
+      text,
+    );
+
+  if (!asksForBrowserRead || looksLikeExternalSubmit) return undefined;
+
+  const needsScreenshot = asksForScreenshot(task);
+  const hostLabel = safeLabel(normalizedHost(url));
+  const commands: Array<Record<string, unknown>> = [
+    { type: "navigate", url },
+    { type: "dismissDialogs" },
+    { type: "extractText", label: `page-${hostLabel}`, maxLength: 6000 },
+    { type: "extractLinks", label: `links-${hostLabel}`, limit: 30 },
+  ];
+  if (needsScreenshot) {
+    commands.push({
+      type: "screenshot",
+      label: `proof-${hostLabel}`,
+      fullPage: false,
+      maxHeight: 1200,
+    });
+  }
+
+  return [
+    {
+      id: "explicit-browser-source",
+      title: "Open explicit source URL and collect browser evidence",
+      role: "browser evidence worker",
+      prompt:
+        `Open the explicit URL from the user task (${url}), collect the visible page title/text, ` +
+        `${needsScreenshot ? "capture a proof screenshot, " : ""}` +
+        "and answer only from the collected browser evidence.",
+      expectedOutput:
+        "A concise answer grounded in the visible browser evidence, with any saved proof artifact URL if one was captured.",
+      reviewCriteria: [
+        "The answer uses the explicit URL requested by the user.",
+        "The answer is grounded in browser evidence returned by the tool.",
+        ...(needsScreenshot ? ["A real saved screenshot artifact is attached."] : []),
+      ],
+      requiredTools: ["browser-operate", ...(needsScreenshot ? ["browser-screenshot"] : [])],
+      requiredArtifacts: needsScreenshot
+        ? [
+            {
+              kind: "screenshot",
+              capability: "browser-screenshot",
+              description: `Proof screenshot for ${url}.`,
+              required: true,
+            },
+          ]
+        : [],
+      toolInputs: {
+        "browser.operate": {
+          defaultTimeoutMs: 12000,
+          commands,
+        },
+      },
+    },
+  ];
+}
+
+function buildExplicitHttpFastPathSubtasks(task: string): Subtask[] | undefined {
+  const url = extractHttpUrls(task)[0];
+  if (!url) return undefined;
+  if (!shouldPreferHttpRequestForUrls({ requiredTools: [] }, task)) return undefined;
+  if (/\b(?:submit|send|book|reserve|checkout|pay|purchase|commit|delete)\b|отправ|заброн|запиш|оплат|куп|удали/i.test(task)) {
+    return undefined;
+  }
+
+  const method = inferHttpMethod(task);
+  return [
+    {
+      id: "explicit-http-api-request",
+      title: "Call explicit HTTP API and summarize response",
+      role: "api integration worker",
+      prompt:
+        `Call the explicit HTTP endpoint from the user task (${url}) with ${method}, ` +
+        "then answer only from the returned status and response body.",
+      expectedOutput:
+        "A concise summary of the HTTP status and returned response fields, grounded only in the http.request result.",
+      reviewCriteria: [
+        "The worker called the explicit URL requested by the user.",
+        "The worker used http.request rather than browser page reading for the API endpoint.",
+        "The answer summarizes only fields present in the HTTP response.",
+      ],
+      requiredTools: ["http.request"],
+      requiredArtifacts: [],
+      toolInputs: {
+        "http.request": {
+          url,
+          method,
+          responseType: /\bjson\b|джсон|api|апи|эйпиай/i.test(task) ? "json" : "auto",
+          maxBytes: 1_000_000,
+        },
+      },
+    },
+  ];
+}
+
+function buildLocalUtilityToolchainFastPathSubtasks(
+  task: string,
+  hasTool: (toolName: string) => boolean,
+): Subtask[] | undefined {
+  const plan = inferLocalUtilityToolchainPlan(task);
+  if (!plan) return undefined;
+  if (plan.requiredTools.some((toolName) => !hasTool(toolName))) return undefined;
+
+  return [
+    {
+      id: "local-utility-toolchain",
+      title: "Run local document/data/file toolchain",
+      role: "toolchain worker",
+      prompt:
+        "Execute only the declared local toolchain from the user task. " +
+        "Do not search the web or open a browser unless the user explicitly requested external discovery.",
+      expectedOutput:
+        "A concise report listing the tools called, transformed result, and written file path when a file is written.",
+      reviewCriteria: [
+        "The worker used the declared local tools rather than web search/browser discovery.",
+        "The transformation matches the user-requested filter, sort, template, or serialization.",
+        "If a file path was requested, the file.write result confirms the path.",
+      ],
+      requiredTools: plan.requiredTools,
+      requiredArtifacts: [],
+      toolInputs: plan.toolInputs,
+    },
+  ];
+}
+
+function inferLocalUtilityToolchainPlan(task: string): { requiredTools: string[]; toolInputs: Record<string, ToolInput> } | undefined {
+  const lower = task.toLowerCase();
+  const explicitLocalTools = ["document.extract", "data.transform", "file.read", "file.write"].filter((toolName) =>
+    lower.includes(toolName),
+  );
+  const inlineContent = extractInlineDocumentContent(task);
+  const jsonValue = extractFirstJsonValue(task);
+  const outputPath = extractWorkspaceOutputPath(task);
+  const asksForTransform = /\b(?:filter|sort|transform|convert|template|serialize|parse)\b|фильтр|сортир|преобраз|шаблон|распарс|вытащи|извлек/i.test(
+    task,
+  );
+  const hasLocalDataShape = Boolean(inlineContent) || jsonValue !== undefined || Boolean(outputPath);
+  if (explicitLocalTools.length === 0 && !(hasLocalDataShape && asksForTransform)) return undefined;
+
+  const requiredTools: string[] = [];
+  const toolInputs: Record<string, ToolInput> = {};
+
+  if (inlineContent) {
+    requiredTools.push("document.extract");
+    toolInputs["document.extract"] = {
+      content: inlineContent.content,
+      mimeType: inlineContent.mimeType,
+      maxChars: 200_000,
+    };
+  }
+
+  const transformInput = buildDataTransformInput(task, jsonValue ?? inlineContent?.jsonValue);
+  if (transformInput) {
+    requiredTools.push("data.transform");
+    toolInputs["data.transform"] = transformInput;
+  }
+
+  if (outputPath) {
+    requiredTools.push("file.write");
+    toolInputs["file.write"] = {
+      path: outputPath,
+      content: transformInput ? previewDataTransformContent(transformInput) ?? "" : extractExplicitFileContent(task) ?? "",
+    };
+  }
+
+  for (const toolName of explicitLocalTools) {
+    if (!requiredTools.includes(toolName)) requiredTools.push(toolName);
+  }
+
+  return requiredTools.length > 0 ? { requiredTools, toolInputs } : undefined;
+}
+
+function extractInlineDocumentContent(task: string): { content: string; mimeType: string; jsonValue?: unknown } | undefined {
+  const html =
+    task.match(/<html[\s\S]*?<\/html>/i)?.[0] ??
+    task.match(/<(?:script|table|div|section|article)\b[\s\S]*?<\/(?:script|table|div|section|article)>/i)?.[0];
+  if (html) return { content: html, mimeType: "text/html", jsonValue: extractJsonFromHtml(html) };
+
+  const jsonValue = extractFirstJsonValue(task);
+  if (jsonValue !== undefined) return { content: JSON.stringify(jsonValue), mimeType: "application/json", jsonValue };
+  return undefined;
+}
+
+function extractJsonFromHtml(html: string): unknown | undefined {
+  for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
+    const parsed = safeJsonParse(match[1]?.trim() ?? "");
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+}
+
+function extractFirstJsonValue(text: string): unknown | undefined {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+  const fencedParsed = fenced ? safeJsonParse(fenced.trim()) : undefined;
+  if (fencedParsed !== undefined) return fencedParsed;
+
+  const candidates = text.match(/(?:\[[\s\S]*?\]|\{[\s\S]*?\})/g) ?? [];
+  for (const candidate of candidates) {
+    const parsed = safeJsonParse(candidate);
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+}
+
+function safeJsonParse(text: string): unknown | undefined {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function extractWorkspaceOutputPath(task: string): string | undefined {
+  const explicit = task.match(/\b(?:workspace\/)?((?:reports|artifacts|outputs|tmp|files)\/[^\s"'<>]+)\b/i)?.[1];
+  return explicit?.replace(/[),.;:]+$/g, "");
+}
+
+function buildDataTransformInput(task: string, input: unknown): ToolInput | undefined {
+  if (input === undefined) return undefined;
+  const operations: Array<Record<string, unknown>> = [];
+  const rows = Array.isArray(input) ? input.filter(isRecord) : [];
+  const sample = rows[0] ?? (isRecord(input) ? input : undefined);
+
+  const paidField = sample ? findFirstKey(sample, ["status", "state", "paid", "paymentStatus", "payment_status"]) : undefined;
+  if (paidField && /\bpaid\b|оплач/i.test(task)) {
+    const value = sample[paidField];
+    operations.push({
+      type: "filter",
+      path: paidField,
+      ...(typeof value === "boolean" ? { equals: true } : { equals: inferPaidValue(rows, paidField) ?? "paid" }),
+    });
+  }
+
+  const sortField = sample ? inferSortField(task, sample) : undefined;
+  if (sortField) {
+    operations.push({
+      type: "sort",
+      path: sortField,
+      direction: /\b(?:desc|descending|highest|largest|biggest)\b|убыв|сначала\s+больш|по\s+больш/i.test(task)
+        ? "desc"
+        : "asc",
+    });
+  }
+
+  const template = inferTemplate(task, sample);
+  if (template) operations.push({ type: "template", template });
+
+  return { input, format: "json", operations, outputFormat: template ? "text" : "json" };
+}
+
+function findFirstKey(record: Record<string, unknown>, keys: string[]): string | undefined {
+  const lowerMap = new Map(Object.keys(record).map((key) => [key.toLowerCase(), key]));
+  for (const key of keys) {
+    const found = lowerMap.get(key.toLowerCase());
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function inferPaidValue(rows: Array<Record<string, unknown>>, path: string): unknown {
+  return rows.map((row) => row[path]).find((value) => typeof value === "string" && /^paid$/i.test(value));
+}
+
+function inferSortField(task: string, sample: Record<string, unknown>): string | undefined {
+  const explicitSort = task.match(/\b(?:sort|order)\s+by\s+([a-zA-Z0-9_.-]+)/i)?.[1] ??
+    task.match(/сортир\w*\s+по\s+([a-zA-Z0-9_.-]+)/i)?.[1];
+  if (explicitSort) {
+    const explicitKey = findFirstKey(sample, [explicitSort]);
+    if (explicitKey) return explicitKey;
+  }
+  if (/total|amount|sum|price|стоим|сумм|итог/i.test(task) && /sort|сортир|убыв|возраст|highest|largest|biggest/i.test(task)) {
+    const numericKey = findFirstKey(sample, ["total", "amount", "sum", "price", "value"]);
+    if (numericKey) return numericKey;
+  }
+  const mentioned = Object.keys(sample).find((key) => new RegExp(`\\b${escapeRegExp(key)}\\b`, "i").test(task));
+  if (mentioned && /sort|сортир|убыв|возраст|highest|largest|biggest/i.test(task)) return mentioned;
+  return undefined;
+}
+
+function inferTemplate(task: string, sample?: Record<string, unknown>): string | undefined {
+  const literal = task.match(/template\s+["'`]([^"'`]+)["'`]/i)?.[1] ?? task.match(/шаблон\s+["'`]([^"'`]+)["'`]/i)?.[1];
+  if (literal) return literal;
+  if (!sample) return undefined;
+  const nameKey = findFirstKey(sample, ["name", "title", "label"]);
+  const valueKey = inferSortField(task, sample) ?? findFirstKey(sample, ["total", "amount", "sum", "price", "value"]);
+  if (nameKey && valueKey && /name|title|имя|назван|total|amount|сумм|итог|:/i.test(task)) return `{${nameKey}}: {${valueKey}}`;
+  return undefined;
+}
+
+function previewDataTransformContent(input: ToolInput): string | undefined {
+  const data = input.input;
+  if (data === undefined) return undefined;
+  const operations = Array.isArray(input.operations) ? input.operations : [];
+  let current: unknown = data;
+  for (const operation of operations) {
+    if (isRecord(operation)) current = applyPreviewTransformOperation(current, operation);
+  }
+  return input.outputFormat === "text" && typeof current === "string" ? current : JSON.stringify(current, null, 2);
+}
+
+function applyPreviewTransformOperation(value: unknown, operation: Record<string, unknown>): unknown {
+  switch (operation.type) {
+    case "filter":
+      return Array.isArray(value)
+        ? value.filter((item) => isRecord(item) && getPreviewPath(item, String(operation.path ?? "")) === operation.equals)
+        : value;
+    case "sort":
+      return Array.isArray(value)
+        ? [...value].sort((a, b) => {
+            const path = String(operation.path ?? "");
+            const compared = String(getPreviewPath(a, path) ?? "").localeCompare(String(getPreviewPath(b, path) ?? ""), undefined, {
+              numeric: true,
+              sensitivity: "base",
+            });
+            return operation.direction === "desc" ? -compared : compared;
+          })
+        : value;
+    case "template":
+      return Array.isArray(value)
+        ? value.map((item) => applyPreviewTemplate(String(operation.template ?? ""), item)).join("\n")
+        : applyPreviewTemplate(String(operation.template ?? ""), value);
+    default:
+      return value;
+  }
+}
+
+function applyPreviewTemplate(template: string, value: unknown): string {
+  return template.replace(/\{([^}]+)\}/g, (_, path: string) => String(getPreviewPath(value, path.trim()) ?? ""));
+}
+
+function getPreviewPath(value: unknown, path: string): unknown {
+  if (!path) return value;
+  return path.split(".").reduce<unknown>((current, segment) => (isRecord(current) ? current[segment] : undefined), value);
+}
+
+function extractExplicitFileContent(task: string): string | undefined {
+  return task.match(/content\s+["'`]([^"'`]+)["'`]/i)?.[1] ?? task.match(/текст\s+["'`]([^"'`]+)["'`]/i)?.[1];
+}
+
+function buildCurrentFactProofFastPathSubtasks(task: string): Subtask[] | undefined {
+  if (extractHttpUrls(task).some((url) => !isLowValueProofUrl(url))) return undefined;
+
+  const text = task.toLowerCase();
+  const asksForProof = asksForScreenshot(task) || /\bproof|source|evidence|screenshot\b|пруф|источник|доказ|скрин/i.test(text);
+  const asksForFreshFact =
+    /\b(current|now|today|latest|live|price|rate|quote|status|weather|score)\b|сейчас|текущ|сегодня|последн|актуальн|цена|курс|котиров|погода|счет/i.test(
+      text,
+    );
+  const looksLikeExternalSubmit =
+    /\b(submit|send|book|reserve|checkout|pay|purchase|commit|approve|sign in|login)\b|отправ|заброн|запиш|оплат|куп|логин|войти/i.test(
+      text,
+    );
+
+  if (!asksForFreshFact || looksLikeExternalSubmit) return undefined;
+
+  return [
+    {
+      id: "current-fact-with-proof",
+      title: "Find current fact and capture proof evidence",
+      role: "research evidence worker",
+      prompt:
+        `User question: ${task}\n` +
+        "Search the web for the current answer to that user question, prefer a primary or reputable source, " +
+        `${asksForProof ? "open the best source and capture a proof screenshot, " : "open the best source when useful, "}` +
+        "then answer only from collected tool evidence. Use the current date/time context from the task.",
+      expectedOutput:
+        "A concise current answer with source name, source URL, and saved proof artifact URL when captured.",
+      reviewCriteria: [
+        "The answer is based on fresh web/search/browser evidence, not model memory.",
+        "The source URL is visible in tool evidence.",
+        ...(asksForProof ? ["A real saved screenshot artifact is attached or a precise blocker is reported."] : []),
+      ],
+      requiredTools: ["web-search", "browser-operate", ...(asksForProof ? ["browser-screenshot"] : [])],
+      toolInputs: {
+        "web.search": {
+          query: task,
+          limit: 5,
+        },
+      },
+      requiredArtifacts: asksForProof
+        ? [
+            {
+              kind: "screenshot",
+              capability: "browser-screenshot",
+              description: "Proof screenshot for the current factual answer source.",
+              required: true,
+            },
+          ]
+        : [],
+    },
+  ];
+}
+
+function buildExternalActionFastPathSubtasks(
+  task: string,
+  hasTool: (toolName: string) => boolean,
+  contextText = "",
+): Subtask[] | undefined {
+  if (!looksLikeExternalActionTask(task)) return undefined;
+  if (!hasTool("web.search") || !hasTool("browser.operate")) return undefined;
+
+  const query = buildExternalActionSearchQuery(task, contextText);
+  const approvalRequiredTools = hasTool("external.action.prepare") ? ["external-action-prepare"] : [];
+
+  return [
+    {
+      id: "external-action-source-discovery",
+      title: "Find a concrete provider page for the requested external action",
+      role: "researcher",
+      prompt:
+        `Search objective: ${query}\n` +
+        "The original user request is an external action preparation task. Do not submit externally and do not collect proof in this discovery step. " +
+        "Find concrete provider pages that can satisfy the requested external action. Prefer direct booking, appointment, reservation, checkout, or contact-form pages over directories, maps, ads, or generic listicles. Return source URLs, provider names, visible location/contact details, and why the best candidate is actionable.",
+      expectedOutput:
+        "A ranked shortlist of concrete provider/action URLs with enough evidence to pick one page for browser preparation.",
+      reviewCriteria: [
+        "Uses fresh web evidence rather than model memory.",
+        "Prefers a direct provider/action page over a generic directory or map when available.",
+        "Reports uncertainty or blockers instead of inventing availability, addresses, prices, or confirmation details.",
+      ],
+      requiredTools: ["web-search", "web-read"],
+      toolInputs: {
+        "web.search": {
+          query,
+          limit: 8,
+        },
+      },
+      requiredArtifacts: [],
+    },
+    {
+      id: "external-action-browser-preparation",
+      title: "Prepare the external action in the browser without final submit",
+      role: "browser action preparer",
+      prompt:
+        "Use the best concrete provider/action URL from upstream evidence. Open it in browser.operate, dismiss generic consent dialogs, inspect visible action controls, and try only safe pre-submit preparation steps. Stop before any provider-side final submit, payment, login, account creation, CAPTCHA bypass, or irreversible confirmation. If the site blocks preparation, capture the blocker state and explain exactly what is missing.",
+      expectedOutput:
+        "Prepared browser state or a precise blocker, with a saved screenshot of the pre-submit/preparation state or blocker.",
+      reviewCriteria: [
+        "Uses a URL from upstream discovery evidence.",
+        "Does not submit, reserve, pay, send, confirm, or mutate external state.",
+        "Attaches a screenshot from browser.operate showing the prepared form/action state or the exact blocker.",
+      ],
+      dependsOn: ["external-action-source-discovery"],
+      requiredTools: ["browser-operate"],
+      toolInputs: {
+        "browser.operate": {
+          defaultTimeoutMs: 12_000,
+          maxCommands: 40,
+          commands: [
+            { type: "navigate", url: "URL_FROM_UPSTREAM_DISCOVERY" },
+            { type: "dismissDialogs", timeoutMs: 4_000 },
+            { type: "extractText", label: "initial-action-page", maxLength: 8_000 },
+            { type: "extractLinks", label: "initial-action-links", limit: 60 },
+            { type: "observe", label: "initial-visible-controls", limit: 80, enabledOnly: true },
+            { type: "clickVisible", text: "Book", optional: true, timeoutMs: 1_500, externalActionSafe: true },
+            { type: "clickVisible", text: "Reserve", optional: true, timeoutMs: 1_500, externalActionSafe: true },
+            { type: "clickVisible", text: "Appointment", optional: true, timeoutMs: 1_500, externalActionSafe: true },
+            { type: "clickVisible", text: "Reservar", optional: true, timeoutMs: 1_500, externalActionSafe: true },
+            { type: "clickVisible", text: "Cita", optional: true, timeoutMs: 1_500, externalActionSafe: true },
+            { type: "clickVisible", text: "Continuar", optional: true, timeoutMs: 1_500, externalActionSafe: true },
+            { type: "dismissDialogs", timeoutMs: 2_000 },
+            {
+              type: "fillFormSemantically",
+              label: "external-action-safe-form-prep",
+              goal: task,
+              valuesText: task,
+              allowContinue: true,
+              allowPolicyConsent: false,
+              submit: false,
+              maxRounds: 3,
+              timeoutMs: 3_000,
+            },
+            { type: "observe", label: "prepared-visible-controls", limit: 100, enabledOnly: true },
+            { type: "extractText", label: "prepared-action-page", maxLength: 12_000 },
+            { type: "extractLinks", label: "prepared-action-links", limit: 80 },
+            { type: "screenshot", label: "external-action-pre-submit-proof", fullPage: false, maxHeight: 1200 },
+          ],
+        },
+      },
+      requiredArtifacts: [
+        {
+          kind: "screenshot",
+          capability: "browser-screenshot",
+          description:
+            "Screenshot proof of the prepared external action state before submission, or the visible blocker that prevents preparation.",
+          required: true,
+        },
+      ],
+    },
+    {
+      id: "external-action-approval-draft",
+      title: "Create auditable external action approval draft",
+      role: "approval drafter",
+      prompt:
+        "Create an external.action.prepare draft from the browser preparation evidence. Summarize target, target URL, intended action, data that would be sent, proof artifacts, blocker/commit boundary, and what final approval would commit. Do not submit externally.",
+      expectedOutput:
+        "An approval-ready external action draft with target, data summary, proof status, and explicit final-submit boundary.",
+      reviewCriteria: [
+        "Draft is based on upstream browser evidence and proof artifacts.",
+        "Commit boundary is explicit and no external submission has occurred.",
+        "If preparation was blocked, the draft says what user/operator action or provider requirement is missing.",
+      ],
+      dependsOn: ["external-action-browser-preparation"],
+      requiredTools: approvalRequiredTools,
+      requiredArtifacts: [],
+    },
+    {
+      id: "external-action-final-report",
+      title: "Report preparation result and next step",
+      role: "analyst",
+      prompt:
+        "Use only upstream evidence. Give the user a concise report: selected provider, why it was selected, exact page URL, what data would be submitted, what is still required before final submit, how to cancel/change if known, where to go/contact if known, and proof artifact or blocker proof. Be explicit if the task could not be prepared.",
+      expectedOutput: "A user-readable report with provider, data, proof, blocker/approval status, and next step.",
+      reviewCriteria: [
+        "Does not claim that an external action was submitted unless commit evidence proves it.",
+        "Does not invent confirmation ids, addresses, policies, or availability.",
+        "Mentions proof artifact or explains why only blocker proof is available.",
+      ],
+      dependsOn: ["external-action-source-discovery", "external-action-browser-preparation", "external-action-approval-draft"],
+    },
+  ];
+}
+
+function looksLikeExternalActionTask(task: string): boolean {
+  return /\b(?:book|reserve|schedule|appointment|submit|send|purchase|order|checkout|fill|form|commit|cancel|confirm)\b|заброни|брон|запис|запиши|заполн|отправ|подтверд|куп|закаж|оформ|форма|столик|стриж/i.test(
+    task,
+  );
+}
+
+function buildExternalActionSearchQuery(task: string, contextText = ""): string {
+  const stripped = stripSearchExecutionDetails(task)
+    .replace(/\b(?:do not|don't|without|before|after|final|submit|approval|approve|proof|screenshot)\b.*$/gi, " ")
+    .replace(/\b(?:не\s+отправ\w*|без\s+подтвержд\w*|пруф|скриншот|доказательств\w*)\b.*$/gi, " ");
+  const anchors = inferMarketSearchHints(`${task}\n${contextText}`).filter((hint) => !/^(?:USD|EUR)$/i.test(hint));
+  const normalized = normalizeAnchorTerm(task);
+  const serviceTerms = new Set<string>();
+  for (const [pattern, terms] of EXTERNAL_ACTION_SEARCH_TERMS) {
+    if (pattern.test(normalized)) terms.forEach((term) => serviceTerms.add(term));
+  }
+  if (serviceTerms.size === 0) {
+    if (/\b(?:appointment|schedule|запис|форма|form)\b/i.test(task)) serviceTerms.add("appointment");
+    if (/\b(?:book|reserve|reservation|заброни|брон|столик)\b/i.test(task)) serviceTerms.add("reservation");
+  }
+  const actionTerms = /(?:\bappointment\b|\bschedule\b|запис|стриж)/i.test(task)
+    ? ["online booking", "appointment"]
+    : ["online booking", "reservation"];
+  const baseTerms =
+    serviceTerms.size > 0 || anchors.length > 0
+      ? [...serviceTerms, ...anchors, ...actionTerms]
+      : [...actionTerms, stripped];
+  return cleanSearchQuery(
+    baseTerms
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
+const EXTERNAL_ACTION_SEARCH_TERMS: Array<[RegExp, string[]]> = [
+  [/\bbarber|барбер|стриж/, ["barbershop", "haircut"]],
+  [/\brestaurant|ресторан|столик/, ["restaurant"]],
+  [/\bsalon|салон/, ["salon"]],
+  [/\bdoctor|clinic|dentist|врач|клиник|стоматолог/, ["clinic"]],
+  [/\bvilla|hotel|отел|вилл/, ["venue"]],
+];
+
+function buildInternalProjectKnowledgeFastPathSubtasks(task: string): Subtask[] | undefined {
+  if (!isInternalProjectKnowledgeQuestion(task)) return undefined;
+
+  return [
+    {
+      id: "internal-project-context-answer",
+      title: "Answer from Agentic project context",
+      role: "project context analyst",
+      prompt:
+        `User task: ${task}\n\n` +
+        "Use only the Agentic project context below. Do not use web search, browser discovery, or external docs.\n\n" +
+        `${buildInternalProjectKnowledgeContext()}\n\n` +
+        "Answer the user directly in the user's language. Preserve explicit formatting constraints such as 'one short sentence'. If the requested internal detail is not covered above, say that it is not available in the current project context.",
+      expectedOutput:
+        "A direct answer grounded only in the Agentic project context, with no external web claims.",
+      reviewCriteria: [
+        "Uses only the Agentic project context provided in the prompt.",
+        "Does not cite or rely on unrelated external products or generic web definitions.",
+        "Preserves the user's requested brevity and language.",
+      ],
+      requiredTools: [],
+      requiredArtifacts: [],
+    },
+  ];
+}
+
+function appendInternalProjectKnowledgeContextIfNeeded(taskContext: string, task: string): string {
+  if (!isInternalProjectKnowledgeQuestion(task)) return taskContext;
+  return `${buildInternalProjectKnowledgeContext()}\n\nFor this internal project question, answer from the Agentic project context above. Do not use unrelated external product definitions.\n\n${taskContext}`;
+}
+
+function buildInternalProjectKnowledgeContext(): string {
+  return [
+    "Agentic project context:",
+    "- Agentic Universal Agent is a TypeScript prototype of a coordinator agent.",
+    "- The active tool foundation is the preinstalled core toolbelt registry created by createCoreToolbelt().",
+    "- The preinstalled toolbelt means the built-in, versioned tools available to agents before the redesigned dynamic tool builder exists.",
+    "- Active preinstalled tools: web.search, web.read, browser.operate, browser.screenshot, http.request, file.read, file.write, document.extract, data.transform, external.action.prepare, external.action.commit, and channel.telegram.",
+    "- Legacy Tool Builder / tool-rework APIs are removed from the active server and UI; missing capabilities should surface as unsupported until the new builder lifecycle is redesigned.",
+    "- Future generated tools must use the same versioned registry/metadata contract and live as out-of-tree portable packages or services.",
+  ].join("\n");
+}
+
+function isInternalProjectKnowledgeQuestion(task: string): boolean {
+  const text = task.toLowerCase();
+  const asksQuestion =
+    /\?|что такое|что значит|объясни|расскажи|как у нас|как работает|что у нас|зачем|почему|what is|explain|how does|how do we/.test(
+      text,
+    );
+  if (!asksQuestion) return false;
+
+  const hasInternalAnchor =
+    /\bagentic\b|агентик|наш(?:а|у|ей|ем|их)?\s+(?:проект|платформ|систем|код|архитектур)|в\s+этой\s+платформ|в\s+наш(?:ем|ей)\s+(?:проект|платформ|систем)|this\s+(?:project|platform|codebase|system)|our\s+(?:project|platform|system|codebase)/i.test(
+      task,
+    );
+  const hasKnownInternalTerm =
+    /\bpreinstalled\s+toolbelt\b|\bcore\s+toolbelt\b|\bcreateCoreToolbelt\b|предустановленн\w+\s+тул|ядр\w+\s+тул|реестр\s+тул|tool\s+registry|toolbelt/i.test(
+      task,
+    );
+
+  return hasInternalAnchor || hasKnownInternalTerm;
+}
+
+function buildFallbackResearchSubtasks(task: string, hasTool: (toolName: string) => boolean): Subtask[] {
+  const requiredTools = [
+    hasTool("web.search") ? "web-search" : undefined,
+    hasTool("web.read") ? "web-read" : undefined,
+  ].filter((toolName): toolName is string => Boolean(toolName));
+  const screenshotTools = hasTool("browser.screenshot") ? ["browser-screenshot"] : [];
+
+  return [
+    {
+      id: "research-evidence",
+      title: "Collect current source evidence",
+      role: "researcher",
+      prompt:
+        `User task: ${task}\n` +
+        "Search for current, reputable sources that directly address the user task. " +
+        "Read the best result pages when possible. Return concrete candidates, URLs, dates, prices/specs when present, " +
+        "and explicitly mark any missing evidence.",
+      expectedOutput:
+        "A source-grounded research summary with candidate options, URLs, and the criteria each source supports.",
+      reviewCriteria: [
+        "Uses fresh tool evidence rather than model memory.",
+        "Includes source URLs for concrete claims.",
+        "Reports uncertainty instead of inventing specs, prices, dates, or model names.",
+      ],
+      requiredTools,
+      toolInputs: hasTool("web.search")
+        ? {
+            "web.search": {
+              query: task,
+              limit: 6,
+            },
+          }
+        : undefined,
+    },
+    {
+      id: "proof-screenshot",
+      title: "Capture proof screenshot from the best source",
+      role: "evidence worker",
+      prompt:
+        "Use the research output to identify the best source URL for the final recommendation. " +
+        "Capture a screenshot proof when browser screenshot capability is available. If proof cannot be captured, " +
+        "return the exact URL and blocker.",
+      expectedOutput: "A proof artifact URL or a precise explanation of why visual proof could not be captured.",
+      reviewCriteria: [
+        "Uses a source URL from the research output.",
+        "Does not capture generic search/home pages when a concrete source URL is available.",
+        "Reports blocker details if a screenshot is unavailable.",
+      ],
+      dependsOn: ["research-evidence"],
+      requiredTools: screenshotTools,
+      requiredArtifacts: hasTool("browser.screenshot")
+        ? [
+            {
+              kind: "screenshot",
+              capability: "browser-screenshot",
+              description: "Visual proof for the selected source or recommendation.",
+              required: false,
+            },
+          ]
+        : [],
+    },
+    {
+      id: "final-recommendation",
+      title: "Synthesize final recommendation",
+      role: "analyst",
+      prompt:
+        "Use only the research and proof evidence from upstream subtasks. Give the user a direct recommendation, " +
+        "explain the tradeoffs, cite source URLs, and mention proof artifacts or proof blockers.",
+      expectedOutput: "A concise final answer with recommendation, tradeoffs, source links, and proof status.",
+      reviewCriteria: [
+        "Every concrete product/model/price/spec claim is grounded in upstream evidence.",
+        "The answer addresses the user's actual constraints and tradeoffs.",
+        "Proof artifact or proof limitation is stated clearly.",
+      ],
+      dependsOn: ["research-evidence", "proof-screenshot"],
+    },
+  ];
 }
 
 function createExecutionPlan(rawSubtasks: Subtask[]): ExecutionPlan {
@@ -5671,6 +5551,8 @@ ${dependencyResults
   review: ${result.review.verdict} - ${result.review.notes}
   artifacts:
 ${indent(formatWorkerArtifacts(result.workerResult.artifacts))}
+  tool evidence:
+${indent(formatDependencyToolEvidence(result.workerResult.toolEvidence))}
   worker output:
 ${indent(result.workerResult.output)}`,
   )
@@ -5683,6 +5565,14 @@ function formatWorkerArtifacts(artifacts: AgentArtifact[] | undefined): string {
   return artifacts
     .map((artifact) => `- ${artifact.filename} (${artifact.mimeType}) ${artifact.url}`)
     .join("\n");
+}
+
+function formatDependencyToolEvidence(evidence: string[] | undefined): string {
+  if (!evidence || evidence.length === 0) return "No tool evidence.";
+  return evidence
+    .slice(0, 3)
+    .map((item) => limitText(item, 700))
+    .join("\n\n");
 }
 
 function buildWorkerUserPrompt(
@@ -5729,6 +5619,49 @@ function buildWorkerUserPrompt(
   );
 }
 
+const workerModelFailureFallbackMarker = "[runtime:model-synthesis-degraded]";
+
+function isRecoverableWorkerModelError(error: unknown): boolean {
+  const message = formatErrorMessage(error);
+  return /LLM request failed for all model candidates|LLM request timed out|timed out after \d+ms|model output was truncated/i.test(
+    message,
+  );
+}
+
+function hasCollectedToolEvidence(evidence: CollectedToolEvidence): boolean {
+  return evidence.evidence.some((item) => item.trim().length > 0) ||
+    (evidence.records ?? []).length > 0 ||
+    evidence.artifacts.length > 0;
+}
+
+function buildWorkerModelFailureFallbackOutput(
+  subtask: Subtask,
+  evidence: CollectedToolEvidence,
+  error: unknown,
+): string {
+  const evidencePreview = limitText(evidence.text, 2_500);
+  const legacyEvidence = summarizeEvidenceList(evidence.evidence, 1_500);
+  const artifactLines = evidence.artifacts
+    .slice(0, 5)
+    .map((artifact) => `- ${artifact.filename}: ${artifact.url}`)
+    .join("\n");
+  return [
+    workerModelFailureFallbackMarker,
+    "Runtime limitation: the worker model could not finish synthesis after the platform had already collected tool evidence.",
+    `Subtask: ${subtask.title}`,
+    `Model/runtime error: ${formatErrorMessage(error)}`,
+    "Available evidence for the parent agent:",
+    evidencePreview || "(no textual evidence preview)",
+    legacyEvidence ? `Tool evidence summaries:\n${legacyEvidence}` : undefined,
+    artifactLines ? `Artifacts:\n${artifactLines}` : undefined,
+    "Use this as a degraded evidence handoff. Do not invent missing facts; answer only from the evidence above and state the limitation when needed.",
+  ].filter((line): line is string => Boolean(line)).join("\n\n");
+}
+
+function isWorkerModelFailureFallback(workerResult: WorkerResult): boolean {
+  return workerResult.output.includes(workerModelFailureFallbackMarker);
+}
+
 /**
  * Phase 12 follow-up: pull the comma-separated list of ungrounded
  * tokens out of a `hardGateReview` notes string of the form:
@@ -5763,11 +5696,20 @@ function joinPromptSections(
 }
 
 function compactMemoriesForPrompt(memories: SkillMemoryEntry[]): SkillMemoryEntry[] {
-  return memories.map((memory) => ({
+  return memories.slice(0, 1).map((memory) => ({
     ...memory,
     summary: limitText(memory.summary, promptBudget.memoryEntryChars),
     reusableProcedure: limitText(memory.reusableProcedure, promptBudget.memoryEntryChars),
-    evidence: (memory.evidence ?? []).slice(0, 4).map((item) => limitText(item, promptBudget.memoryEvidenceChars)),
+    evidence: (memory.evidence ?? []).slice(0, 1).map((item) => limitText(item, promptBudget.memoryEvidenceChars)),
+  }));
+}
+
+function compactMemoriesForClassification(memories: SkillMemoryEntry[]): SkillMemoryEntry[] {
+  return memories.slice(0, 1).map((memory) => ({
+    ...memory,
+    summary: limitText(memory.summary, 120),
+    reusableProcedure: "",
+    evidence: [],
   }));
 }
 
@@ -5801,15 +5743,22 @@ function filterMemoriesForRuntime(
 }
 
 function compactWorkerResultsForPrompt(workerResults: WorkerResult[], maxTotalOutputChars: number): WorkerResult[] {
-  const perWorkerBudget = Math.max(1_500, Math.floor(maxTotalOutputChars / Math.max(1, workerResults.length)));
+  const perWorkerBudget = Math.max(500, Math.floor(maxTotalOutputChars / Math.max(1, workerResults.length)));
   return workerResults.map((workerResult) => compactWorkerResultForPrompt(workerResult, perWorkerBudget));
+}
+
+function compactReviewsForPrompt(reviews: ReviewResult[]): ReviewResult[] {
+  return reviews.slice(-4).map((review) => ({
+    ...review,
+    notes: limitText(review.notes, promptBudget.synthesisReviewChars),
+  }));
 }
 
 function compactWorkerResultForPrompt(workerResult: WorkerResult, outputBudget: number): WorkerResult {
   return {
     ...workerResult,
     output: limitText(workerResult.output, outputBudget),
-    toolEvidence: workerResult.toolEvidence?.slice(0, 6).map((item) => limitText(item, 1_500)),
+    toolEvidence: workerResult.toolEvidence?.slice(0, 2).map((item) => limitText(item, 350)),
     // Phase 28 follow-up — drop raw `toolEvidenceRecords` from the
     // serialized worker result so the synthesizer's `JSON.stringify`
     // doesn't print every `data.imageBase64` payload. The synthesizer
@@ -5819,7 +5768,7 @@ function compactWorkerResultForPrompt(workerResult: WorkerResult, outputBudget: 
     toolEvidenceRecords: undefined,
     artifacts: workerResult.artifacts?.map((artifact) => ({
       ...artifact,
-      contentPreview: artifact.contentPreview ? limitText(artifact.contentPreview, 1_000) : undefined,
+      contentPreview: artifact.contentPreview ? limitText(artifact.contentPreview, 500) : undefined,
     })),
   };
 }
@@ -6030,8 +5979,82 @@ function formatCouncilNote(invocation: AgentInvocation, output: string): string 
   ].join(":\n");
 }
 
+function buildClassificationContext(task: string, options: RunOptions, now: Date): string {
+  const lines: string[] = [`Task: ${limitText(task, promptBudget.classificationContextChars)}`];
+
+  const profile = options.instanceContext?.groupProfile;
+  if (profile) {
+    const profileParts = [
+      `group=${profile.name}`,
+      profile.description.trim() ? `description=${limitText(profile.description.trim(), 220)}` : undefined,
+    ].filter(Boolean);
+    if (profileParts.length > 0) lines.push(`Instance: ${profileParts.join("; ")}`);
+  }
+
+  const requester = options.instanceContext?.requesterUser;
+  if (requester) {
+    lines.push(`Requester: ${requester.displayName} (${requester.id})`);
+  }
+
+  if (options.threadContext?.summary) {
+    lines.push(`Thread summary: ${limitText(options.threadContext.summary, 220)}`);
+  }
+
+  const timeZone = options.timeZone ?? process.env.AGENT_TIME_ZONE ?? process.env.TZ ?? "Europe/Madrid";
+  const localDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+  lines.push(`Runtime: current_date=${localDate}; time_zone=${timeZone}`);
+
+  return lines.join("\n");
+}
+
 function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isContextWindowError(error: unknown): boolean {
+  const message = formatErrorMessage(error);
+  return /context (?:size|length)|context window|n_keep|n_ctx|maximum context/i.test(message);
+}
+
+function buildCompactSynthesisFallback(
+  task: string,
+  workerResults: WorkerResult[],
+  reviews: ReviewResult[],
+  artifacts: AgentArtifact[],
+  error: unknown,
+): string {
+  const passedWorkers = workerResults.filter((worker) =>
+    reviews.some((review) => review.subtaskId === worker.subtask.id && review.verdict === "pass"),
+  );
+  const failedReviews = reviews.filter((review) => review.verdict !== "pass").slice(-3);
+  const artifactLines = artifacts.slice(0, 5).map((artifact) =>
+    `- ${artifact.filename}: ${artifact.url}`,
+  );
+  const workerLines = (passedWorkers.length > 0 ? passedWorkers : workerResults).slice(-3).map((worker) =>
+    `- ${worker.subtask.title}: ${limitText(worker.output, 280).replace(/\s+/g, " ")}`,
+  );
+
+  return [
+    "Не удалось собрать полноценный финальный ответ: локальная модель не вместила финальный synthesis prompt.",
+    `Техническая причина: ${limitText(formatErrorMessage(error), 240)}`,
+    "",
+    `Исходная задача: ${limitText(task, 240)}`,
+    "",
+    workerLines.length > 0 ? `Что уже удалось выполнить:\n${workerLines.join("\n")}` : undefined,
+    failedReviews.length > 0
+      ? `Что не прошло проверку:\n${failedReviews.map((review) => `- ${limitText(review.notes, 220).replace(/\s+/g, " ")}`).join("\n")}`
+      : undefined,
+    artifactLines.length > 0 ? `Артефакты:\n${artifactLines.join("\n")}` : undefined,
+    "",
+    "Системный вывод: ран не должен падать на этом этапе; нужно еще сильнее дробить широкий research на короткие доказательные блоки и не тащить все evidence в один финальный LLM-вызов.",
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("\n");
 }
 
 function createEmitter(sink?: AgentEventSink): AgentEventEmitter {
@@ -6319,6 +6342,83 @@ function normalizeArtifactUrls(finalAnswer: string, artifacts: AgentArtifact[]):
   return normalized;
 }
 
+function buildExternalActionBlockerFinalAnswer(
+  task: string,
+  workerResults: WorkerResult[],
+  artifacts: AgentArtifact[],
+): string | undefined {
+  const hasExternalActionWork = workerResults.some((workerResult) =>
+    workerResult.subtask?.id?.startsWith("external-action") ||
+    /external action|appointment|reservation|booking|final submit|commit boundary|prepare/i.test(
+      [
+        workerResult.subtask?.title,
+        workerResult.subtask?.prompt,
+        workerResult.subtask?.expectedOutput,
+      ].join("\n"),
+    ),
+  );
+  if (!hasExternalActionWork) return undefined;
+
+  const evidenceText = buildSynthesisEvidenceCorpus(task, workerResults, artifacts);
+  const blocker = detectExternalActionPreparationBlocker(evidenceText);
+  if (!blocker) return undefined;
+
+  const providerUrl = pickExternalActionProviderUrl(evidenceText);
+  const proofArtifact = artifacts.find((artifact) => artifact.kind === "output") ?? artifacts[0];
+  const russian = /[а-яё]/i.test(task);
+  const blockerReason = formatExternalActionBlockerReason(blocker, russian);
+
+  if (!russian) {
+    return [
+      "I could not prepare the external action to a safe pre-submit state.",
+      "",
+      `Reason: ${blockerReason}.`,
+      providerUrl ? `Provider/page checked: ${providerUrl}` : undefined,
+      proofArtifact ? `Proof artifact: ${proofArtifact.filename} (${proofArtifact.url})` : "No usable proof artifact was created.",
+      "",
+      "Nothing was submitted externally. There is no booking/request confirmation.",
+      "Next step: sign in/create the required provider account, solve the provider challenge, or choose another provider/action page and retry preparation.",
+    ].filter(Boolean).join("\n");
+  }
+
+  return [
+    "Подготовить внешнее действие до безопасного pre-submit состояния не удалось.",
+    "",
+    `Причина: ${blockerReason}.`,
+    providerUrl ? `Проверенная страница: ${providerUrl}` : undefined,
+    proofArtifact ? `Пруф: ${proofArtifact.filename} (${proofArtifact.url})` : "Пруф-артефакт создать не удалось.",
+    "",
+    "Внешняя отправка не выполнялась. Подтверждения записи/заявки нет.",
+    "Следующий шаг: войти или создать аккаунт у провайдера, пройти проверку провайдера, либо выбрать другой сайт/провайдера и повторить подготовку.",
+  ].filter(Boolean).join("\n");
+}
+
+function formatExternalActionBlockerReason(blocker: string, russian: boolean): string {
+  if (!russian) return blocker;
+  if (/login|account|authentication|create an account|sign in/i.test(blocker)) {
+    return "провайдер требует вход, создание аккаунта или пользовательскую аутентификацию до состояния, где можно безопасно подготовить отправку";
+  }
+  if (/captcha|bot-check|robot|human/i.test(blocker)) {
+    return "провайдер показывает CAPTCHA или проверку на человека до состояния, где можно безопасно подготовить отправку";
+  }
+  if (/unavailable|not found/i.test(blocker)) {
+    return "страница провайдера недоступна или не найдена";
+  }
+  if (/unresolved fields|blockers/i.test(blocker)) {
+    return "подготовка формы обнаружила обязательные незаполненные поля или блокеры до финальной отправки";
+  }
+  if (/QA-passed proof artifact/i.test(blocker)) {
+    return "браузерная подготовка не дала пригодного proof-артефакта";
+  }
+  return blocker;
+}
+
+function pickExternalActionProviderUrl(evidenceText: string): string | undefined {
+  const urls = extractHttpUrls(evidenceText).filter((url) => !isLowValueProofUrl(url));
+  const directActionUrl = urls.find((url) => isActionableExternalActionUrl(url, evidenceText));
+  return directActionUrl ?? urls[0];
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -6369,23 +6469,180 @@ function asksForScreenshot(task: string): boolean {
   );
 }
 
+function stripRuntimeContext(task: string): string {
+  const marker = "\n\nRuntime context:";
+  const index = task.indexOf(marker);
+  return index >= 0 ? task.slice(0, index).trim() : task;
+}
+
 function shouldCollectWebSearch(subtask: Subtask, text: string, dependencyContext?: string): boolean {
+  if (isLocalUtilityToolchainSubtask(subtask)) return false;
   const requiredTools = subtask.requiredTools ?? [];
+  const hasExplicitUrls = extractHttpUrls(text).length > 0;
+  const onlyNeedsKnownUrl = hasExplicitUrls && !explicitlyRequestsDiscovery(text);
+  const hasDependencyUrls = extractHttpUrls(dependencyContext ?? "").length > 0;
+  const isDependent = Boolean(dependencyContext) && (subtask.dependsOn?.length ?? 0) > 0;
   const isDependentSynthesisOrReview =
-    Boolean(dependencyContext) &&
-    (subtask.dependsOn?.length ?? 0) > 0 &&
+    isDependent &&
     /(analyst|reviewer|synthesizer|audit|quality)/i.test(`${subtask.role} ${subtask.title}`) &&
     /using|provided|dependency|review|synthesize|audit|анализ|проверь|используя/i.test(text);
-  const explicitlyCollectsNewExternalData = /perform\s+(?:a\s+)?(?:real-time\s+)?(?:web\s+)?search|collect\s+(?:new\s+)?(?:web\s+)?data|use\s+at\s+least|check\s+(?:external|current)|найди\s+(?:нов|актуаль)|искать\s+(?:нов|актуаль)/i.test(
+  const explicitlyCollectsNewExternalData = /perform\s+(?:a\s+)?(?:real-time\s+)?(?:web\s+)?search|collect\s+(?:new|additional|more)\s+(?:web\s+)?data|find\s+(?:new|additional|more|alternative)|use\s+at\s+least|check\s+(?:external|current)|найди\s+(?:нов|актуаль|дополнительн|еще)|искать\s+(?:нов|актуаль|дополнительн)|дополнительн(?:ые|ых)?\s+источник/i.test(
     text,
   );
+  const usesPriorDependency = /\b(using|from|provided|previous|earlier|dependency|upstream|list from|urls from)\b|используя|из\s+(?:предыдущ|списк|найден)|полученн|зависим/i.test(
+    text,
+  );
+  if (isDependent && usesPriorDependency && !explicitlyCollectsNewExternalData) return false;
+  if (isDependent && hasDependencyUrls && !explicitlyCollectsNewExternalData) return false;
   if (isDependentSynthesisOrReview && !explicitlyCollectsNewExternalData) return false;
+  if (onlyNeedsKnownUrl) return false;
 
   return (
     shouldUseWebSearch(text) ||
     requiredTools.some((tool) =>
       ["web.search", "web-search", "research", "current-information"].includes(tool.toLowerCase()),
     )
+  );
+}
+
+function isLocalUtilityToolchainSubtask(subtask: Subtask): boolean {
+  const toolNames = new Set([
+    ...(subtask.requiredTools ?? []),
+    ...Object.keys(subtask.toolInputs ?? {}),
+  ].map((toolName) => toolName.toLowerCase()));
+  if (toolNames.size === 0) return false;
+  const localTools = ["document.extract", "data.transform", "file.read", "file.write"];
+  return [...toolNames].some((toolName) => localTools.includes(toolName)) &&
+    ![...toolNames].some((toolName) => ["web.search", "web-search", "browser.operate", "browser-operate"].includes(toolName));
+}
+
+function shouldPrepareExternalAction(subtask: Subtask, text: string): boolean {
+  if (!isExternalActionBoundarySubtask(subtask)) return false;
+
+  const requestedTools = (subtask.requiredTools ?? []).map((tool) => tool.toLowerCase());
+  if (
+    requestedTools.some((tool) =>
+      ["external.action.prepare", "external-action-prepare", "form-preparation", "commit-boundary"].includes(tool),
+    )
+  ) {
+    return true;
+  }
+  return /\bexternal\.action\.prepare\b|\bexternal action draft\b|\bcommit boundary\b|\bapproval boundary\b|черновик\s+действ|границ[ауы]\s+(?:апрув|одобр|отправ|commit)/i.test(
+    `${subtask.title}\n${subtask.prompt}\n${text}`,
+  );
+}
+
+function subtaskCanPrepareExternalAction(subtask: Subtask): boolean {
+  if (subtask.id === "external-action-approval-draft") return true;
+  const requestedTools = (subtask.requiredTools ?? []).map((tool) => tool.toLowerCase());
+  if (
+    requestedTools.some((tool) =>
+      ["external.action.prepare", "external-action-prepare", "form-preparation", "commit-boundary"].includes(tool),
+    )
+  ) {
+    return true;
+  }
+  return Object.keys(subtask.toolInputs ?? {}).some((toolName) =>
+    ["external.action.prepare", "external-action-prepare"].includes(toolName.toLowerCase()),
+  );
+}
+
+function isExternalActionBoundarySubtask(subtask: Subtask): boolean {
+  const requestedTools = (subtask.requiredTools ?? []).map((tool) => tool.toLowerCase());
+  if (
+    requestedTools.some((tool) =>
+      [
+        "external.action.prepare",
+        "external-action-prepare",
+        "external.action.commit",
+        "external-action-commit",
+        "form-preparation",
+        "commit-boundary",
+      ].includes(tool),
+    )
+  ) {
+    return true;
+  }
+
+  const localText = `${subtask.role} ${subtask.title} ${subtask.prompt}`.toLowerCase();
+  return (
+    /\b(external action|action draft|approval|commit boundary|commit|submit externally|final submit|prepare external)\b/.test(
+      localText,
+    ) || /\b(черновик\s+действ|одобр|апрув|границ|финальн\w*\s+отправ|внешн\w*\s+действ|подтвержд)\b/.test(localText)
+  );
+}
+
+function buildExternalActionPrepareInput(
+  originalTask: string,
+  subtask: Subtask,
+  text: string,
+  evidenceText: string,
+): Record<string, unknown> {
+  const sourceText = `${evidenceText}\n${text}`;
+  const urls = extractHttpUrls(sourceText).filter((url) => !isLowValueProofUrl(url));
+  const targetUrl = urls.find((url) => !isShallowLandingUrl(url)) ?? urls[0];
+  return {
+    goal: limitText(originalTask, 1_200),
+    targetName: inferExternalActionTargetName(subtask, sourceText),
+    targetUrl,
+    action: inferExternalActionDescription(subtask, text),
+    data: {
+      userRequest: limitText(originalTask, 1_200),
+      preparedFromEvidence: limitText(evidenceText, 2_000),
+    },
+    commitBoundary:
+      "Stop before any provider-side submit, confirm, payment, send, reserve, book, delete, or state-changing control. Final external submission requires explicit approval and external.action.commit.",
+    proofRequired: true,
+    approvalMode: /automode|auto mode|автомод/i.test(`${originalTask}\n${text}`) ? "automode" : "manual",
+  };
+}
+
+function inferExternalActionTargetName(subtask: Subtask, evidenceText: string): string {
+  const candidates = [
+    subtask.title,
+    ...evidenceText
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && line.length <= 120 && !/^https?:\/\//i.test(line)),
+  ];
+  return candidates.find(Boolean)?.replace(/\s+/g, " ").slice(0, 120) || "external provider";
+}
+
+function inferExternalActionDescription(subtask: Subtask, text: string): string {
+  const source = [subtask.expectedOutput, subtask.prompt, text].find((item) => item && item.trim().length > 0) ?? "";
+  const sentence = source
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((item) => item.trim())
+    .find(Boolean);
+  return limitText(sentence || `Prepare external action for ${subtask.title}`, 600);
+}
+
+function shouldCollectWebRead(subtask: Subtask, text: string): boolean {
+  if (extractHttpUrls(text).length === 0) return false;
+  const requestedTools = (subtask.requiredTools ?? []).map((tool) => tool.toLowerCase());
+  if (requestedTools.some((tool) => ["web.read", "web-read", "page-reading", "html-extraction"].includes(tool))) {
+    return true;
+  }
+  if (shouldPreferHttpRequestForUrls(subtask, text)) return false;
+  return !explicitlyRequestsDiscovery(text) || asksForScreenshot(text);
+}
+
+function shouldPreferHttpRequestForUrls(subtask: { requiredTools?: string[] }, text: string): boolean {
+  if (extractHttpUrls(text).length === 0) return false;
+  const requestedTools = (subtask.requiredTools ?? []).map((tool) => tool.toLowerCase());
+  if (
+    requestedTools.some((tool) =>
+      ["http.request", "http-request", "api-client", "json-api", "webhook-client"].includes(tool),
+    )
+  ) {
+    return true;
+  }
+  return /\b(?:http|api|json|endpoint|request|curl|webhook)\b|апи|эйпиай|джсон|запрос/i.test(text) && !asksForScreenshot(text);
+}
+
+function explicitlyRequestsDiscovery(text: string): boolean {
+  return /\b(?:search|find|research|discover|compare|rank|best|alternatives?|options?)\b|найди|искать|исслед|подбери|сравн|лучши|вариант/i.test(
+    text,
   );
 }
 
@@ -6398,6 +6655,7 @@ function shouldCollectBrowserDiscovery(
   if (requestedTools.some((tool) => ["browser-operate", "browser.operate", "dom-extraction"].includes(tool))) {
     return true;
   }
+  if (isExternalActionBoundarySubtask(subtask)) return false;
   // Phase 12 Slice E: domain-specific anchors moved into intentInference.ts.
   // Discovery fires on generic discovery + interactive-source signals OR when
   // the classifier (or its regex fallback) reported any known task intent.
@@ -6420,6 +6678,24 @@ function hasActionableApiToolRequest(text: string, tools: Tool[]): boolean {
 }
 
 function inferApiToolInput(tool: Tool, text: string): ToolInput | undefined {
+  const isGenericHttpTool =
+    tool.name === "http.request" ||
+    tool.capabilities.some((capability) =>
+      ["http-request", "api-client", "json-api", "webhook-client"].includes(capability),
+    );
+  if (isGenericHttpTool) {
+    const url = extractHttpUrls(text)[0];
+    if (!url || !/\b(?:http|api|json|endpoint|request|curl|webhook)\b|апи|эйпиай|джсон|запрос/i.test(text)) {
+      return undefined;
+    }
+    return {
+      url,
+      method: inferHttpMethod(text),
+      responseType: /\bjson\b|джсон|api|апи|эйпиай/i.test(text) ? "json" : "auto",
+      maxBytes: 1_000_000,
+    };
+  }
+
   if (!tool.capabilities.includes("api-http-json")) return undefined;
   const descriptor = `${tool.name} ${tool.displayName ?? ""} ${tool.description} ${tool.capabilities.join(" ")}`;
   const isAmlTool = /(?:aml|anti[-\s]?money|risk|score|скор|риск|санкц|gl[-\s]?aml|global\s+ledger)/i.test(descriptor);
@@ -6440,6 +6716,14 @@ function inferApiToolInput(tool: Tool, text: string): ToolInput | undefined {
   const secretHandle = tool.requiredSecretHandles?.[0];
   if (secretHandle) input.secretHandle = secretHandle;
   return input;
+}
+
+function inferHttpMethod(text: string): string {
+  const upper = text.toUpperCase();
+  for (const method of ["DELETE", "PATCH", "POST", "PUT", "HEAD", "GET"]) {
+    if (new RegExp(`\\b${method}\\b`).test(upper)) return method;
+  }
+  return "GET";
 }
 
 function inferApiNetwork(text: string): string {
@@ -6502,7 +6786,7 @@ function clampMarketDays(days: number): number {
 
 function buildSearchQueries(
   subtask: Subtask,
-  _contextText = "",
+  contextText = "",
   _intents: string[] = [],
 ): string[] {
   // Phase 12 final: a single search query from the planner-produced
@@ -6512,11 +6796,236 @@ function buildSearchQueries(
   // is preserved verbatim in `subtask.title` / `subtask.prompt`.
   const promptLines = subtask.prompt
     .split(/\n+/)
-    .map((line) => line.replace(/^[-*\d.\s:]+/, "").trim())
+    .flatMap((line) => line.split(/(?<=[.!?])\s+/))
+    .map((line) => stripSearchExecutionDetails(line.replace(/^[-*\d.\s:]+/, "").trim()))
     .filter(Boolean);
   const leadLine = promptLines.find((line) => /search|find|найди|искать|research/i.test(line)) ?? promptLines[0] ?? "";
-  const primary = cleanSearchQuery(`${subtask.title} ${leadLine}`);
-  return primary ? [primary] : [];
+  const title = stripSearchExecutionDetails(subtask.title);
+  const primary = cleanSearchQuery(`${title} ${leadLine}`);
+  if (!primary) return [];
+  const marketQuery = buildMarketAwareSearchQuery(primary, `${subtask.title}\n${subtask.prompt}\n${contextText}`);
+  const domainQuery = buildDomainAwareSearchQuery(primary, `${subtask.title}\n${subtask.prompt}\n${contextText}`);
+  return uniqueStrings([primary, marketQuery, domainQuery].filter((query): query is string => Boolean(query)));
+}
+
+function getExplicitToolInputString(subtask: Subtask, toolName: string, key: string): string | undefined {
+  const input = subtask.toolInputs?.[toolName];
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const value = (input as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stripSearchExecutionDetails(value: string): string {
+  return value
+    .replace(/\b(?:must|you must|need to|once|after that|then)\b.*$/gi, " ")
+    .replace(/\b(?:verify|check)\s+(?:specific\s+)?availability\b/gi, " ")
+    .replace(/\b(?:available|availability|time slots?|slot)\b.*$/gi, " ")
+    .replace(/\b(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday),?\s+[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b/gi, " ")
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, " ")
+    .replace(/\b(?:after|before|at)\s+\d{1,2}[:.]\d{2}\b/gi, " ")
+    .replace(/\b[A-Z][a-z]+ Test\b/g, " ")
+    .replace(/[+]?[\d\s().-]{8,}/g, " ")
+    .replace(/\b[\w.+-]+@[\w.-]+\.\w+\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildMarketAwareSearchQuery(primary: string, contextText: string): string | undefined {
+  if (!isMarketSensitiveSearch(`${primary}\n${contextText}`)) return undefined;
+  const hints = inferMarketSearchHints(contextText);
+  if (hints.length === 0) return undefined;
+  const normalizedPrimary = normalizeAnchorTerm(primary);
+  const missingHints = hints.filter((hint) => !normalizedPrimary.includes(normalizeAnchorTerm(hint)));
+  if (missingHints.length === 0) return undefined;
+  return cleanSearchQuery(`${primary} ${missingHints.join(" ")}`);
+}
+
+function buildDomainAwareSearchQuery(primary: string, contextText: string): string | undefined {
+  const domains = extractSearchDomains(contextText).slice(0, 3);
+  if (domains.length === 0) return undefined;
+  const normalizedPrimary = normalizeAnchorTerm(primary);
+  const missingDomains = domains.filter((domain) => !normalizedPrimary.includes(normalizeAnchorTerm(domain)));
+  if (missingDomains.length === 0) return undefined;
+  const siteClauses = missingDomains.map((domain) => `site:${domain}`);
+  return cleanSearchQuery(`${primary} ${siteClauses.join(" OR ")}`);
+}
+
+function extractSearchDomains(text: string): string[] {
+  const domains = new Set<string>();
+  for (const match of text.matchAll(/\b(?:site:)?((?:[a-z0-9-]+\.)+[a-z]{2,})(?:\/[^\s),.;]*)?/gi)) {
+    const rawDomain = match[1];
+    const domainStart = match.index + match[0].indexOf(rawDomain ?? "");
+    const domainEnd = domainStart + (rawDomain?.length ?? 0);
+    if (text[domainEnd] === "@" || text[Math.max(0, domainStart - 1)] === "@") continue;
+    const domain = match[1]?.replace(/^www\./i, "").toLowerCase();
+    if (!domain || isLowValueSearchDomain(domain)) continue;
+    domains.add(domain);
+  }
+  return [...domains].slice(0, 8);
+}
+
+function isLowValueSearchDomain(domain: string): boolean {
+  const tld = domain.split(".").at(-1) ?? "";
+  return [
+    "example.com",
+    "localhost",
+    "127.0.0.1",
+    "web.search",
+    "web.read",
+    "web.write",
+    "browser.operate",
+    "browser.screenshot",
+    "http.request",
+    "data.transform",
+    "document.extract",
+    "external.action",
+    "external.action.prepare",
+    "external.action.commit",
+    "channel.telegram",
+  ].includes(domain) ||
+    [
+      "test",
+      "local",
+      "search",
+      "read",
+      "write",
+      "operate",
+      "screenshot",
+      "request",
+      "transform",
+      "extract",
+      "telegram",
+      "prepare",
+      "commit",
+    ].includes(tld);
+}
+
+function isMarketSensitiveSearch(text: string): boolean {
+  return /\b(?:best|recommend|compare|buy|purchase|price|budget|under|available|availability|book|booking|appointment|reserve|reservation|schedule|near|local)\b|лучши|рекоменд|сравн|купить|покуп|цена|бюджет|доступн|заброни|брон|запис|рядом|локальн/i.test(
+    text,
+  );
+}
+
+function inferMarketSearchHints(text: string): string[] {
+  const hints = new Set<string>();
+  const explicitLocationTerms = extractGeographicAnchorTerms(text);
+  for (const term of explicitLocationTerms) {
+    if (!isGenericAnchorTerm(term)) hints.add(capitalizeSearchHint(term));
+  }
+  for (const phrase of extractProfileLocationPhrases(text)) hints.add(phrase);
+  if (/\b(?:usd|dollars?)\b|доллар/i.test(text)) hints.add("USD");
+  if (/\b(?:eur|euros?)\b|евро/i.test(text)) hints.add("EUR");
+  return [...hints].slice(0, 5);
+}
+
+function extractProfileLocationPhrases(text: string): string[] {
+  const phrases = new Set<string>();
+  const patterns = [
+    /\b(?:lives?|located|based)\s+in\s+([\p{Lu}][\p{L}\p{M}' -]{2,40})(?:,\s*([\p{Lu}][\p{L}\p{M}' -]{2,40}))?/gu,
+    /\b(?:живет|живут|находится|базируется)\s+(?:в|во)\s+([\p{Lu}][\p{L}\p{M}' -]{2,40})(?:,\s*([\p{Lu}][\p{L}\p{M}' -]{2,40}))?/gu,
+  ];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      for (const group of [match[1], match[2]]) {
+        const value = group?.trim();
+        if (!value) continue;
+        const normalized = normalizeAnchorTerm(value);
+        if (normalized.length < 3 || isGenericAnchorTerm(normalized)) continue;
+        phrases.add(value);
+      }
+    }
+  }
+  if (/time_zone=Europe\/Madrid|Europe\/Madrid/i.test(text)) {
+    phrases.add("Spain");
+  }
+  return [...phrases];
+}
+
+function capitalizeSearchHint(value: string): string {
+  if (!value) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function extractGeographicAnchorTerms(text: string): string[] {
+  const terms = new Set<string>();
+  const patterns = [
+    /\b(?:in|near|around|located\s+in|within)\s+([\p{Lu}][\p{L}\p{M}' -]{2,50})/gu,
+    /(?:^|[\s,.;:])(?:в|во|около|рядом\s+с|внутри)\s+([\p{Lu}][\p{L}\p{M}' -]{2,50})/gu,
+  ];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      const phrase = match[1] ?? "";
+      for (const term of phrase.split(/[^\p{L}\p{M}]+/u)) {
+        const normalized = normalizeAnchorTerm(term);
+        if (isAnchorConnectorTerm(normalized)) break;
+        if (normalized.length >= 4 && !isGenericAnchorTerm(normalized)) terms.add(normalized);
+      }
+    }
+  }
+  return [...terms].slice(0, 6);
+}
+
+function evidenceUrlMatchesAnchor(evidenceText: string, url: string, anchorTerms: string[]): boolean {
+  const normalizedUrl = normalizeAnchorTerm(url);
+  if (anchorTerms.some((term) => normalizedUrl.includes(term))) return true;
+  const lines = evidenceText.split(/\n/);
+  const lineIndex = lines.findIndex((line) => line.includes(url));
+  const context = lineIndex >= 0
+    ? lines
+        .slice(Math.max(0, lineIndex - 1), Math.min(lines.length, lineIndex + 3))
+        .join("\n")
+    : "";
+  const normalizedContext = normalizeAnchorTerm(context);
+  return anchorTerms.some((term) => normalizedContext.includes(term));
+}
+
+function normalizeAnchorTerm(value: string): string {
+  return value.toLowerCase().replace(/ё/g, "е").normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function isGenericAnchorTerm(term: string): boolean {
+  return [
+    "online",
+    "booking",
+    "available",
+    "availability",
+    "under",
+    "converted",
+    "friday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "saturday",
+    "sunday",
+    "список",
+    "онлайн",
+  ].includes(term);
+}
+
+function isAnchorConnectorTerm(term: string): boolean {
+  return [
+    "that",
+    "which",
+    "with",
+    "where",
+    "and",
+    "when",
+    "after",
+    "before",
+    "from",
+    "который",
+    "которая",
+    "которые",
+    "где",
+    "и",
+    "что",
+    "после",
+    "перед",
+    "для",
+  ].includes(term);
 }
 
 function cleanSearchQuery(value: string): string {
@@ -6524,10 +7033,50 @@ function cleanSearchQuery(value: string): string {
     .replace(/[`*_#>]/g, " ")
     .replace(/\bIMPORTANT\b:?/gi, " ")
     .replace(/\bmust\b|\byou\b|\busing\b|\bextract\b|\bprovide\b|\bcapture\b/gi, " ")
-    .replace(/[^\p{L}\p{N}\s().,-]/gu, " ")
+    .replace(/[^\p{L}\p{N}\s().,:\-]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 220);
+}
+
+function assessSearchEvidenceForReuse(
+  evidenceText: string,
+  query: string,
+): {
+  sourceUrls: string[];
+  distinctSourceCount: number;
+  confidence: number;
+  qaStatus: "passed" | "partial" | "failed";
+  limitations: string[];
+} {
+  const sourceUrls = extractHttpUrls(evidenceText).filter((url) => !isLowValueProofUrl(url));
+  const distinctSourceCount = new Set(sourceUrls.map((url) => normalizedHost(url)).filter(Boolean)).size;
+  const limitations: string[] = [];
+  if (sourceUrls.length === 0) limitations.push("Search result did not expose reusable source URLs.");
+  const normalizedEvidence = normalizeAnchorTerm(evidenceText);
+  for (const hint of inferMarketSearchHints(query)) {
+    const normalizedHint = normalizeAnchorTerm(hint);
+    if (normalizedHint && !normalizedEvidence.includes(normalizedHint)) {
+      limitations.push(`Search result does not visibly support market/context hint: ${hint}.`);
+    }
+  }
+  if (/\b(?:usd|dollars?)\b|доллар/i.test(query) && /\b(?:rub|rur|руб(?:\.|л|лей)?)\b/i.test(evidenceText) && !/\b(?:usd|dollars?)\b|доллар/i.test(evidenceText)) {
+    limitations.push("Search result appears to use a different currency than the requested USD budget.");
+  }
+  const broadOrCurrent = /\b(?:current|latest|fresh|today|now|recent|best|compare|recommend|availability|price|book|appointment|reserve)\b|сейчас|сегодня|актуальн|последн|лучши|сравн|рекоменд|цена|доступн|заброни|запис/i.test(
+    query,
+  );
+  if (broadOrCurrent && distinctSourceCount < 2) {
+    limitations.push("Broad/current search result has fewer than two distinct source hosts.");
+  }
+  const confidence = sourceUrls.length === 0 ? 0.2 : limitations.length > 0 ? 0.45 : distinctSourceCount >= 3 ? 0.85 : 0.72;
+  return {
+    sourceUrls: sourceUrls.slice(0, 8),
+    distinctSourceCount,
+    confidence,
+    qaStatus: limitations.length === 0 ? "passed" : sourceUrls.length > 0 ? "partial" : "failed",
+    limitations,
+  };
 }
 
 function mergeToolResults(results: Awaited<ReturnType<Tool["run"]>>[]): Awaited<ReturnType<Tool["run"]>> {
@@ -6615,14 +7164,121 @@ function formatDeclaredToolEvidence(
       : "";
 
   if (isBrowserOperateData(result.data)) {
+    const structuredEvidence = formatBrowserOperateStructuredEvidence(result.data);
     const extractedText = result.data.extractedText
       .map((item) => `\n[${item.label}]\n${item.text.slice(0, 2500)}`)
       .join("\n");
-    return limitText(`Declared tool evidence from ${toolName}:\n${result.content}${artifactText}${extractedText}`, promptBudget.toolEvidenceChars);
+    return limitText(
+      `Declared tool evidence from ${toolName}:\n${result.content}${artifactText}${structuredEvidence}${extractedText}`,
+      promptBudget.toolEvidenceChars,
+    );
   }
 
   const dataText = formatToolDataEvidence(result.data);
   return limitText(`Declared tool evidence from ${toolName}:\n${result.content}${dataText}${artifactText}`, promptBudget.toolEvidenceChars);
+}
+
+function formatBrowserOperateStructuredEvidence(data: BrowserOperateData): string {
+  const sections: string[] = [];
+  const actionState = summarizeBrowserActionState(data);
+  if (actionState) {
+    sections.push(`\nExternal action state:\n${actionState}`);
+  }
+  if (data.steps.length > 0) {
+    sections.push(
+      `\nBrowser steps:\n${data.steps
+        .slice(0, 24)
+        .map((step) => `- ${step.index}. ${step.type}: ${step.status} - ${limitText(step.summary, 220)}`)
+        .join("\n")}`,
+    );
+  }
+
+  const formFills = data.formFills ?? [];
+  if (formFills.length > 0) {
+    sections.push(
+      `\nSemantic form-fill reports:\n${formFills
+        .map((report) => {
+          const changed = [
+            ...report.filled.map((item) => `filled ${item.field}=${item.valuePreview}`),
+            ...report.selected.map((item) => `selected ${item.field}=${item.valuePreview}`),
+            ...report.checked.map((item) => `checked ${item.field}`),
+            ...report.clicked.map((item) => `clicked ${item.text}`),
+          ];
+          const blockers = report.blockers.length > 0 ? ` blockers: ${report.blockers.join("; ")}` : "";
+          const beforeSubmit = report.beforeSubmit.length > 0 ? ` before-submit controls: ${report.beforeSubmit.join(", ")}` : "";
+          return `- ${report.label}: ${report.status}; ${changed.join("; ") || "no field changes"}.${blockers}${beforeSubmit}`;
+        })
+        .join("\n")}`,
+    );
+  }
+
+  const observations = data.observations ?? [];
+  const observationLines = observations
+    .map((group) => {
+      const controls = uniqueStrings(
+        group.elements
+          .filter((element) => element.enabled && element.text.trim().length > 0)
+          .map((element) => limitText(element.text.replace(/\s+/g, " ").trim(), 90)),
+      )
+        .slice(0, 40)
+        .join("; ");
+      return controls ? `[${group.label}] ${controls}` : undefined;
+    })
+    .filter((line): line is string => Boolean(line));
+  if (observationLines.length > 0) {
+    sections.push(`\nVisible browser controls/text:\n${observationLines.join("\n")}`);
+  }
+
+  return sections.join("\n");
+}
+
+function summarizeBrowserActionState(data: BrowserOperateData): string | undefined {
+  const texts = [
+    data.title,
+    data.finalUrl,
+    ...(data.formFills ?? []).flatMap((report) => [
+      report.status,
+      ...report.filled.map((item) => `${item.field} ${item.valuePreview}`),
+      ...report.selected.map((item) => `${item.field} ${item.valuePreview}`),
+      ...report.checked.map((item) => item.field),
+      ...report.clicked.map((item) => item.text),
+      ...report.skipped.map((item) => `${item.field} ${item.reason}`),
+      ...report.blockers,
+      ...report.beforeSubmit,
+    ]),
+    ...(data.observations ?? []).flatMap((group) => group.elements.map((element) => `${element.text} ${element.ariaLabel ?? ""}`)),
+    ...data.extractedText.map((item) => item.text.slice(0, 4000)),
+  ]
+    .filter((item): item is string => Boolean(item))
+    .join("\n");
+  if (!texts.trim()) return undefined;
+
+  const normalized = texts.toLowerCase();
+  const hasUnavailable = /(?:404|not found|page unavailable|p[aá]gina no est[aá] disponible|страниц[аы] не найден)/i.test(texts);
+  const hasCaptcha = /(?:captcha|i'?m not a robot|no soy un robot|robot check|bot check|verify you are human|verifica que eres humano)/i.test(texts);
+  const hasLogin = /(?:log in|sign in|iniciar sesi[oó]n|registrarse|create account|account required|войдите|авториз)/i.test(texts);
+  const hasSelectedOrder = /(?:tu pedido|your order|order summary|total|corte de pelo|haircut|service:|servicio:)/i.test(texts);
+  const hasTimeSlot = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b/.test(texts);
+  const hasSafeProgress = /(?:continuar|continue|siguiente|next)/i.test(texts);
+  const hasFinalBoundary = /(?:stopped before final submit|before-submit controls|confirmar|confirm|pagar|pay|submit|enviar)/i.test(texts);
+
+  if (hasUnavailable) return "- blocker: provider page is unavailable/not-found; do not report successful preparation.";
+  if (hasCaptcha) return "- blocker: CAPTCHA/bot-check is visible in browser evidence.";
+  if (hasLogin) return "- blocker: login/account requirement is visible in browser evidence.";
+
+  if (hasSelectedOrder || hasTimeSlot || hasSafeProgress || hasFinalBoundary) {
+    const facts: string[] = ["- browser preparation is on a live provider/action page; no CAPTCHA/login/not-found blocker is visible in structured evidence."];
+    if (hasSelectedOrder) facts.push("- selected service/order summary is visible.");
+    if (hasTimeSlot) facts.push("- appointment time slot text is visible.");
+    if (hasSafeProgress) facts.push("- safe progress control is visible; this is not evidence of final external submission.");
+    if (hasFinalBoundary) facts.push("- final-submit boundary exists or is near; do not claim external submission without external.action.commit evidence.");
+    if (normalized.includes("privacy") || normalized.includes("terms") || normalized.includes("política")) {
+      facts.push("- legal/privacy consent may still require explicit operator approval before final submit.");
+    }
+    return facts.join("\n");
+  }
+
+  return undefined;
 }
 
 function formatToolDataEvidence(data: unknown): string {
@@ -6663,6 +7319,69 @@ function workKeyForLedgeredTool(tool: Tool, capability: string, input: Record<st
     return toolCallWorkKey(tool.name, { capability: "browser-operate", ...input });
   }
   return toolCallWorkKey(tool.name, { capability, ...input });
+}
+
+function scopedToolWorkKey(
+  baseWorkKey: string,
+  scope: "global" | "run" | "attempt" | undefined,
+  ids: { runId?: string; spanId: string },
+): string {
+  if (!scope || scope === "global") return baseWorkKey;
+  if (scope === "run") {
+    return compactWorkKey("tool-scope-run", JSON.stringify({
+      baseWorkKey,
+      runId: ids.runId ?? "unknown-run",
+    }));
+  }
+  return compactWorkKey("tool-scope-attempt", JSON.stringify({
+    baseWorkKey,
+    runId: ids.runId ?? "unknown-run",
+    spanId: ids.spanId,
+  }));
+}
+
+function isInteractiveBrowserOperateInput(input: Record<string, unknown>): boolean {
+  const commands = Array.isArray(input.commands) ? input.commands : [];
+  return commands.some((command) => {
+    if (!isRecord(command)) return false;
+    const type = typeof command.type === "string" ? command.type.toLowerCase() : "";
+    return [
+      "click",
+      "clickvisible",
+      "fill",
+      "select",
+      "check",
+      "uncheck",
+      "type",
+      "press",
+      "submit",
+      "waitfornavigation",
+    ].includes(type);
+  });
+}
+
+function subtaskExpectsInteractiveBrowserProof(subtask: Subtask): boolean {
+  const declaredInputs = Object.entries(subtask.toolInputs ?? {});
+  const hasInteractiveBrowserInput = declaredInputs.some(([toolName, input]) => {
+    const normalized = toolName.toLowerCase();
+    return (
+      (normalized === "browser.operate" || normalized === "browser-operate") &&
+      isRecord(input) &&
+      isInteractiveBrowserOperateInput(input)
+    );
+  });
+  if (hasInteractiveBrowserInput) return true;
+
+  const text = [
+    subtask.title,
+    subtask.prompt,
+    subtask.expectedOutput,
+    ...(subtask.reviewCriteria ?? []),
+    ...(subtask.requiredArtifacts ?? []).map((requirement) => requirement.description),
+  ].join("\n");
+  return /(?:filled|fill(?:ed)?\s+form|form fields|before submission|pre-submit|submit boundary|booking draft|appointment|reservation|schedule an appointment|заполн|форма|перед отправк|до отправк|запис[ьи]|брон)/i.test(
+    text,
+  );
 }
 
 function workLedgerKindForTool(tool: Tool, capability: string): WorkLedgerKind {
@@ -6762,14 +7481,15 @@ function improveDeclaredToolInput(
   // pattern hit, anything is a better target than the placeholder
   // homepage the planner wrote.
   if (evidenceUrls.length === 0) {
+    const placeholderUrl = firstNavigationUrl && /^https?:\/\//i.test(firstNavigationUrl) ? firstNavigationUrl : undefined;
     evidenceUrls = extractHttpUrls(evidenceText)
       .filter((url) => !isLowValueProofUrl(url))
       .filter((url) => {
         // Skip the same shallow placeholder we are trying to escape from.
         try {
           const parsed = new URL(url);
-          if (firstNavigationUrl) {
-            const placeholder = new URL(firstNavigationUrl);
+          if (placeholderUrl) {
+            const placeholder = new URL(placeholderUrl);
             if (parsed.hostname === placeholder.hostname && isShallowLandingUrl(url)) return false;
           }
           return !isShallowLandingUrl(url);
@@ -6779,7 +7499,53 @@ function improveDeclaredToolInput(
       })
       .slice(0, wantSources);
   }
+  if (subtaskExpectsInteractiveBrowserProof(subtask)) {
+    const actionUrls = rankExternalActionCandidateUrls(
+      extractHttpUrls(evidenceText).filter((url) => !isLowValueProofUrl(url)),
+      evidenceText,
+      `${subtask.title}\n${subtask.prompt}\n${subtask.expectedOutput}`,
+    );
+    if (actionUrls.length > 0) {
+      evidenceUrls = actionUrls.slice(0, wantSources);
+    } else {
+      const rejectedUrls = extractRejectedBrowserUrls(evidenceText);
+      evidenceUrls = evidenceUrls.filter(
+        (url) => !isRejectedExternalActionUrl(url, rejectedUrls) && !isExternalActionIneligibleUrl(url),
+      );
+      if (evidenceUrls.length === 0) {
+        evidenceUrls = extractHttpUrls(evidenceText)
+          .filter((url) => !isLowValueProofUrl(url))
+          .filter((url) => !isRejectedExternalActionUrl(url, rejectedUrls))
+          .filter((url) => !isExternalActionIneligibleUrl(url))
+          .filter((url) => !isExternalActionListingUrl(url))
+          .filter((url) => !isExternalActionEditorialEvidence(url, extractUrlEvidenceContext(evidenceText, url)))
+          .slice(0, wantSources);
+      }
+    }
+  }
   if (evidenceUrls.length === 0) return input;
+
+  if (isInteractiveBrowserOperateInput(input)) {
+    const originalCommands = commands.filter(isRecord);
+    return {
+      ...input,
+      commands: evidenceUrls.flatMap((url, index) =>
+        originalCommands.map((command) => {
+          if (isNavigateCommand(command) && command.url === firstNavigationUrl) {
+            return { ...command, url };
+          }
+          if (
+            evidenceUrls.length > 1 &&
+            (command.type === "screenshot" || command.type === "extractText" || command.type === "extractLinks" || command.type === "observe") &&
+            typeof command.label === "string"
+          ) {
+            return { ...command, label: `${command.label}-${index + 1}` };
+          }
+          return command;
+        }),
+      ),
+    };
+  }
 
   return {
     ...input,
@@ -6794,6 +7560,176 @@ function improveDeclaredToolInput(
       ];
     }),
   };
+}
+
+function rankExternalActionCandidateUrls(urls: string[], evidenceText: string, context: string): string[] {
+  const unique = uniqueStrings(urls);
+  const rejected = extractRejectedBrowserUrls(evidenceText);
+  const ranked = unique
+    .filter((url) => !isRejectedExternalActionUrl(url, rejected))
+    .filter((url) => !isExternalActionIneligibleUrl(url))
+    .map((url) => {
+      const urlText = normalizeAnchorTerm(url);
+      const nearby = normalizeAnchorTerm(extractUrlEvidenceContext(evidenceText, url));
+      const combined = `${urlText}\n${nearby}\n${normalizeAnchorTerm(context)}`;
+      const listing = isExternalActionListingUrl(url);
+      const editorial = isExternalActionEditorialEvidence(url, nearby);
+      let score = 0;
+      if (/(?:book|booking|appointment|reserve|reservation|reservar|cita|schedule|checkout|contact|form|formulario)/i.test(combined)) {
+        score += 8;
+      }
+      if (/(?:online|available|availability|open appointments|appointments online|disponible|reservas? online)/i.test(combined)) {
+        score += 4;
+      }
+      if (classifyEvidenceUrlShape(url) === "detail") score += 2;
+      if (classifyEvidenceUrlShape(url) === "listing") score -= 3;
+      if (listing) score -= 6;
+      if (editorial) score -= 20;
+      if (/(?:instagram|facebook|tiktok|youtube|twitter|x\.com|linkedin|pinterest|maps\.|\/maps\/|\/search\/|\/category\/)/i.test(url)) {
+        score -= 6;
+      }
+      return { url, score, listing, editorial };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+  const directActionPages = ranked.filter((item) => !item.listing && !item.editorial);
+  return (directActionPages.length > 0 ? directActionPages : ranked).map((item) => item.url);
+}
+
+function extractExternalActionCandidateLinksFromBrowserData(data: BrowserOperateData): string[] {
+  const evidenceLines: string[] = [];
+  const urls: string[] = [];
+  for (const group of data.extractedLinks ?? []) {
+    for (const link of group.links ?? []) {
+      const href = cleanExtractedHttpUrl(link.href);
+      if (!href || !/^https?:\/\//i.test(href)) continue;
+      if (isLowValueProofUrl(href) || isExternalActionIneligibleUrl(href)) continue;
+      urls.push(href);
+      evidenceLines.push(`${link.text || "link"} ${href}`);
+    }
+  }
+  if (urls.length === 0) return [];
+  return rankExternalActionCandidateUrls(
+    urls,
+    evidenceLines.join("\n"),
+    "external action booking appointment reservation contact form provider page",
+  ).slice(0, 6);
+}
+
+function isRejectedExternalActionUrl(url: string, rejectedUrls: readonly string[]): boolean {
+  const comparable = normalizeComparableUrl(url);
+  if (rejectedUrls.includes(comparable)) return true;
+
+  for (const rejected of rejectedUrls) {
+    if (sameRejectedExternalActionBranch(url, rejected)) return true;
+  }
+  return false;
+}
+
+function sameRejectedExternalActionBranch(url: string, rejectedUrl: string): boolean {
+  try {
+    const candidate = new URL(url);
+    const rejected = new URL(rejectedUrl);
+    if (candidate.hostname.toLowerCase() !== rejected.hostname.toLowerCase()) return false;
+
+    const candidateFirst = firstPathSegment(candidate.pathname);
+    const rejectedFirst = firstPathSegment(rejected.pathname);
+    if (!candidateFirst || candidateFirst !== rejectedFirst) return false;
+
+    const candidateLooksLikeListing = isExternalActionListingUrl(url) || isExternalActionIneligibleUrl(url);
+    const rejectedLooksLikeListing = isExternalActionListingUrl(rejectedUrl) || isExternalActionIneligibleUrl(rejectedUrl);
+    return candidateLooksLikeListing && rejectedLooksLikeListing;
+  } catch {
+    return false;
+  }
+}
+
+function firstPathSegment(pathname: string): string {
+  return pathname.split("/").filter(Boolean)[0]?.toLowerCase() ?? "";
+}
+
+function extractRejectedBrowserUrls(text: string): string[] {
+  const rejected = new Set<string>();
+  for (const match of text.matchAll(/Rejected browser URL:\s*(https?:\/\/[^\s<>"'`]+)/gi)) {
+    const cleaned = cleanExtractedHttpUrl(match[1] ?? "");
+    if (cleaned) rejected.add(normalizeComparableUrl(cleaned));
+  }
+  return [...rejected];
+}
+
+function normalizeComparableUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    return url.trim().replace(/\/+$/, "");
+  }
+}
+
+function isExternalActionIneligibleUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname.toLowerCase();
+    const host = parsed.hostname.toLowerCase();
+    const haystack = `${host}${path}`;
+    return (
+      /(?:^|\/)(?:for-business|business|businesses|partners|partner|software|pricing|careers|about|blog|help|support)(?:\/|$)/i.test(
+        path,
+      ) ||
+      /(?:^|\/)(?:industries|industry|use-cases|usecases|solutions|features)(?:\/|$)/i.test(path) ||
+      /(?:salon|spa|barber|booking|appointment).{0,40}(?:software|management|pos|crm)/i.test(haystack)
+    );
+  } catch {
+    return true;
+  }
+}
+
+function isExternalActionListingUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname.toLowerCase();
+    return /(?:^|\/)(?:lp|directory|directories|near-me|nearby|search|find|category|categories)(?:\/|$)/i.test(path) ||
+      /(?:^|\/)(?:barbershops|restaurants|salons|clinics|doctors|dentists|hotels|villas|venues)(?:\/|$).*(?:^|\/)(?:in|near|city|location)(?:\/|$)/i.test(path) ||
+      /(?:best|top|near[-_]me|directory|compare|find[-_])/i.test(path);
+  } catch {
+    return false;
+  }
+}
+
+function isExternalActionEditorialEvidence(url: string, nearbyEvidence: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname.toLowerCase();
+    const host = parsed.hostname.toLowerCase();
+    if (/(?:booksy|fresha|opentable|thefork|treatwell|calendly|acuityscheduling|simplybook|setmore|squareup)/i.test(host)) {
+      return false;
+    }
+    const evidence = normalizeAnchorTerm(`${parsed.hostname} ${path} ${nearbyEvidence}`);
+    const rootOrBusinessHome = path === "/" || path === "";
+    const hasDirectActionSignal =
+      /\b(?:official|direct business|dedicated business|provider|book online|online booking|booking interface|booking widget|appointment|appointments|reserve|reservation|schedule|contact form|services)\b|записаться\s+онлайн|онлайн[-\s]?запис/i.test(
+        evidence,
+      );
+    if (rootOrBusinessHome && hasDirectActionSignal) {
+      return false;
+    }
+    return (
+      /(?:^|\/)(?:blog|article|guide|news|magazine|things-to-do|best|top)(?:\/|$)/i.test(path) ||
+      /\b(?:top|best|guide|discover|explore|compare|list|listicle|directory|near me|near you|offers and discounts|reviews and compare|recommended|recommendations)\b/i.test(
+        evidence,
+      )
+    );
+  } catch {
+    return true;
+  }
+}
+
+function extractUrlEvidenceContext(text: string, url: string): string {
+  const lines = text.split(/\n/);
+  const index = lines.findIndex((line) => line.includes(url));
+  if (index < 0) return "";
+  return lines.slice(Math.max(0, index - 2), Math.min(lines.length, index + 4)).join("\n");
 }
 
 /**
@@ -7011,6 +7947,7 @@ function selectBestUrlsForArtifact(
   intents: string[] = [],
   extraPatterns: readonly EvidencePattern[] = [],
   geoAnchors: string[] = [],
+  hostMentionText = text,
 ): string[] {
   // Phase 12 Slice C: combine built-in seed with operator-supplied patterns
   // (tool contracts and memory entries). Memory + tool patterns can override
@@ -7023,8 +7960,15 @@ function selectBestUrlsForArtifact(
   const urls = extractHttpUrls(text);
   if (urls.length === 0) return [];
   const sourceUrls = urls.filter((url) => !isLowValueProofUrl(url));
+  const selectionContext = `${hostMentionText}\n${intents.join(" ")}`;
   const ranked = sourceUrls
-    .map((url) => ({ url, score: scoreArtifactUrl(url, intents, patterns) + geoBiasScore(url, geoAnchors) }))
+    .map((url) => {
+      const baseScore = scoreArtifactUrl(url, intents, patterns) + geoBiasScore(url, geoAnchors);
+      return {
+        url,
+        score: baseScore > 0 ? baseScore + evidenceUrlShapeScore(url, selectionContext) : 0,
+      };
+    })
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score);
   const selected: string[] = [];
@@ -7059,7 +8003,7 @@ function selectBestUrlsForArtifact(
     // arxiv.org URL puts "arxiv" into the token set, then matches
     // itself). The remaining prose is what the planner / task /
     // dependency context actually said about sources.
-    const proseOnly = text
+    const proseOnly = hostMentionText
       .replace(/https?:\/\/[^\s"'<>(),\]\[`]+/gi, " ")
       .replace(/https?%3A%2F%2F[^\s"'<>(),\]\[`&]+/gi, " ");
     const taskTokens = new Set<string>();
@@ -7070,14 +8014,18 @@ function selectBestUrlsForArtifact(
       const dotIdx = token.indexOf(".");
       if (dotIdx > 2) taskTokens.add(token.slice(0, dotIdx));
     }
-    for (const url of sourceUrls) {
-      const host = normalizedHost(url);
-      const hostBase = host.split(".")[0] ?? host;
-      if (taskTokens.has(host) || taskTokens.has(hostBase)) {
-        if (selected.includes(url)) continue;
-        selected.push(url);
-        if (selected.length >= limit) return selected;
-      }
+    const hostMatchedUrls = sourceUrls
+      .filter((url) => {
+        const host = normalizedHost(url);
+        const hostBase = host.split(".")[0] ?? host;
+        return taskTokens.has(host) || taskTokens.has(hostBase);
+      })
+      .map((url) => ({ url, score: evidenceUrlShapeScore(url, selectionContext) + geoBiasScore(url, geoAnchors) }))
+      .sort((a, b) => b.score - a.score);
+    for (const item of hostMatchedUrls) {
+      if (selected.includes(item.url)) continue;
+      selected.push(item.url);
+      if (selected.length >= limit) return selected;
     }
     return selected;
   }
@@ -7091,6 +8039,51 @@ function selectBestUrlsForArtifact(
   }
 
   return selected.length > 0 ? selected : urls.slice(0, limit);
+}
+
+function evidenceUrlShapeScore(url: string, context: string): number {
+  if (!requiresConcretePageEvidence(context)) return 0;
+  const shape = classifyEvidenceUrlShape(url);
+  if (shape === "detail") return 2;
+  if (shape === "listing") return -2;
+  if (shape === "blocked_or_maintenance") return -3;
+  return 0;
+}
+
+function requiresConcretePageEvidence(context: string): boolean {
+  return /\b(?:best|recommend|compare|buy|purchase|price|budget|under|available|availability|book|booking|appointment|reserve|reservation|schedule|proof|screenshot|product|model|provider|restaurant|barbershop)\b|лучши|рекоменд|сравн|купить|цена|бюджет|доступн|заброни|брон|запис|пруф|скриншот|товар|модель/i.test(
+    context,
+  );
+}
+
+function classifyEvidenceUrlShape(url: string): "detail" | "listing" | "blocked_or_maintenance" | "unknown" {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname.toLowerCase();
+    const segments = path.split("/").filter(Boolean);
+    const query = parsed.search.toLowerCase();
+    if (/(?:maintenance|just-a-moment|captcha|challenge|verify|bot-check)/i.test(`${path} ${query}`)) {
+      return "blocked_or_maintenance";
+    }
+    if (
+      query ||
+      /(?:^|\/)(?:search|s|category|categories|collections|catalog|product-category|products|shop|store|deals?|discounts?|offers?|used|refurbished|traditional-laptops|laptops?|computers-laptops)(?:\/|$|-)/i.test(
+        path,
+      )
+    ) {
+      return "listing";
+    }
+    const last = segments.at(-1) ?? "";
+    if (segments.length >= 2 && last.length >= 12 && /[a-z]/i.test(last)) {
+      return "detail";
+    }
+    if (segments.length >= 1 && /(?:booking|booksy|appointment|reserve|reservation)/i.test(path)) {
+      return "detail";
+    }
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 function normalizedHost(url: string): string {
@@ -7294,12 +8287,14 @@ function isLowValueProofUrl(url: string): boolean {
   // Phase 12 final: structural filter only. The previous host blacklist
   // (facebook, reddit, quora, github, stanford, ...) was domain-specific
   // judgement that should live in the LLM URL ranker, not in runtime
-  // regex. Localhost and example placeholders stay because they are
-  // structurally invalid as evidence URLs; .pdf stays because the
-  // browser screenshot tool cannot meaningfully render PDFs as visual
-  // proof.
+  // regex. Localhost stays because it is structurally invalid as
+  // cross-run evidence; .pdf stays because the browser screenshot tool
+  // cannot meaningfully render PDFs as visual proof. `example.com` is
+  // intentionally not filtered here: it is a valid explicit target in
+  // smoke tests and operator diagnostics. Placeholder/fake proof links
+  // are still rejected later by `containsPlaceholderProof()`.
   if (
-    /(?:^|\/\/)(?:localhost|127\.0\.0\.1)(?:[/:?#]|$)|example\.com|placeholder|\.pdf(?:$|[?#])/i.test(
+    /(?:^|\/\/)(?:localhost|127\.0\.0\.1)(?:[/:?#]|$)|placeholder|\.pdf(?:$|[?#])/i.test(
       url,
     )
   ) {
@@ -7357,7 +8352,7 @@ function extractHttpUrls(text: string): string[] {
   const seen = new Set<string>();
   const urls: string[] = [];
   for (const match of matches) {
-    const url = match[0].replace(/[.;:!?`)\]]+$/, "");
+    const url = cleanExtractedHttpUrl(match[0]);
     if (!url) continue;
     if (seen.has(url)) continue;
     seen.add(url);
@@ -7378,7 +8373,7 @@ function extractHttpUrls(text: string): string[] {
   const encodedMatches = text.matchAll(/https?%3A%2F%2F[^\s"'<>(),\]\[`&]+/gi);
   for (const m of encodedMatches) {
     try {
-      const decoded = decodeURIComponent(m[0]).replace(/[.;:!?`)\]]+$/, "");
+      const decoded = cleanExtractedHttpUrl(decodeURIComponent(m[0]));
       if (!decoded || seen.has(decoded)) continue;
       if (!/^https?:\/\//i.test(decoded)) continue;
       seen.add(decoded);
@@ -7390,13 +8385,56 @@ function extractHttpUrls(text: string): string[] {
   return urls;
 }
 
+function cleanExtractedHttpUrl(value: string): string {
+  return value
+    .replace(/\\[nrt].*$/i, "")
+    .replace(/(?:%5C[nrt]).*$/i, "")
+    .replace(/[.;:!?`)\]}]+$/, "");
+}
+
 function hardGateReview(workerResult: WorkerResult): ReviewResult | undefined {
+  if (isWorkerModelFailureFallback(workerResult) && (workerResult.toolEvidence?.length || workerResult.artifacts?.length)) {
+    return {
+      subtaskId: workerResult.subtask.id,
+      verdict: "pass",
+      notes:
+        "Deterministic pass: worker model synthesis degraded after runtime tool evidence was collected. Parent synthesis should use the attached evidence and report limitations instead of re-running the same worker.",
+    };
+  }
+
+  if (hasPreparedExternalActionBoundary(workerResult)) {
+    return {
+      subtaskId: workerResult.subtask.id,
+      verdict: "pass",
+      notes:
+        "Deterministic fast-pass: external.action.prepare created an auditable no-submit boundary from current browser evidence. Parent synthesis should report the prepared/blocked state instead of revising free-form draft prose.",
+    };
+  }
+
+  if (hasBlockedExternalActionPreparationBoundary(workerResult)) {
+    return {
+      subtaskId: workerResult.subtask.id,
+      verdict: "pass",
+      notes:
+        "Deterministic fast-pass: browser preparation reached a real external-action blocker before approval. Parent synthesis should report the blocker and next operator/user action, not request final approval.",
+    };
+  }
+
   if (containsUnexecutedToolCall(workerResult.output)) {
     return {
       subtaskId: workerResult.subtask.id,
       verdict: "needs_revision",
       notes:
         "Output contains unexecuted tool-call or browser-command syntax. The worker must answer from actual runtime tool evidence and artifact URLs only.",
+    };
+  }
+
+  if (hasActionableExternalActionDiscoveryEvidence(workerResult)) {
+    return {
+      subtaskId: workerResult.subtask.id,
+      verdict: "pass",
+      notes:
+        "Deterministic fast-pass: external-action discovery returned runtime web evidence with actionable provider/action URLs. Browser preparation must verify availability/details instead of re-running discovery.",
     };
   }
 
@@ -7420,12 +8458,12 @@ function hardGateReview(workerResult: WorkerResult): ReviewResult | undefined {
   const requiredArtifacts = (workerResult.subtask.requiredArtifacts ?? []).filter(
     (r) => r.required !== false,
   );
-  if (requiredArtifacts.length > 0) {
-    const records = (workerResult.toolEvidenceRecords as EvidenceRecord[] | undefined) ?? [];
-    const allSatisfied = requiredArtifacts.every((req) => {
-      const matchingArtifact = (workerResult.artifacts ?? []).find((a) => artifactMatchesRequirement(a, req));
-      if (!matchingArtifact) return false;
-      if (isClearlyIrrelevantArtifact(matchingArtifact)) return false;
+	  if (requiredArtifacts.length > 0) {
+	    const records = (workerResult.toolEvidenceRecords as EvidenceRecord[] | undefined) ?? [];
+	    const allSatisfied = requiredArtifacts.every((req) => {
+	      const matchingArtifact = (workerResult.artifacts ?? []).find((a) => artifactMatchesRequirement(a, req));
+	      if (!matchingArtifact) return false;
+	      if (isClearlyIrrelevantArtifact(matchingArtifact)) return false;
       // We need at least one tool_call record with ok=true backing
       // the artifact. Match by capability when present, otherwise
       // by tool name in the artifact record kind.
@@ -7433,19 +8471,37 @@ function hardGateReview(workerResult: WorkerResult): ReviewResult | undefined {
         if (rec.kind !== "tool_call") return false;
         if (!rec.output.ok) return false;
         if (req.capability && rec.capability === req.capability) return true;
+        if (
+          req.capability === "browser-screenshot" &&
+          (rec.capability === "browser-operate" || rec.capability === "browser.operate")
+        ) {
+          return true;
+        }
         return false;
-      });
-      return backingTool;
-    });
-    if (allSatisfied) {
-      return {
-        subtaskId: workerResult.subtask.id,
-        verdict: "pass",
-        notes:
-          "Deterministic fast-pass: every required artifact is backed by a tool call that returned ok=true and a saved artifact is attached. No revision can improve a file the runtime already saved.",
-      };
-    }
-  }
+	      });
+	      return backingTool;
+	    });
+	    const runtimeSelfCheckSatisfied =
+	      workerResult.selfCheck?.readyToReturn === true &&
+	      workerResult.selfCheck.evidenceCount > 0 &&
+	      requiredArtifacts.every((req) =>
+	        workerResult.selfCheck?.checks.some(
+	          (check) =>
+	            check.ok &&
+	            check.name === `artifact_required:${req.kind}:${req.capability}`,
+	        ),
+	      );
+	    if (allSatisfied || runtimeSelfCheckSatisfied) {
+	      return {
+	        subtaskId: workerResult.subtask.id,
+	        verdict: "pass",
+	        notes:
+	          allSatisfied
+	            ? "Deterministic fast-pass: every required artifact is backed by a tool call that returned ok=true and a saved artifact is attached. No revision can improve a file the runtime already saved."
+	            : "Deterministic fast-pass: worker runtime self-check confirmed non-empty output, attached evidence, and every required artifact. No LLM review is needed for this runtime-verified proof handoff.",
+	      };
+	    }
+	  }
 
   // Phase 12 follow-up: deterministic ungrounded-specifics gate. The
   // soft prompt rules (workerSystemPrompt + reviewerSystemPrompt) tell
@@ -7550,13 +8606,118 @@ function hardGateReview(workerResult: WorkerResult): ReviewResult | undefined {
   return undefined;
 }
 
+function hasActionableExternalActionDiscoveryEvidence(workerResult: WorkerResult): boolean {
+  if (workerResult.subtask.id !== "external-action-source-discovery") return false;
+  const subtaskText = [
+    workerResult.subtask.title,
+    workerResult.subtask.prompt,
+    workerResult.subtask.expectedOutput,
+    ...(workerResult.subtask.reviewCriteria ?? []),
+  ].join("\n");
+  if (!/provider\/action URLs|concrete provider|direct booking|appointment|reservation|contact-form/i.test(subtaskText)) {
+    return false;
+  }
+
+  const evidenceText = (workerResult.toolEvidence ?? []).join("\n");
+  if (!evidenceText.trim()) return false;
+  const evidenceUrls = extractHttpUrls(evidenceText).filter((url) => !isLowValueProofUrl(url));
+  const actionableEvidenceUrls = evidenceUrls.filter((url) => isActionableExternalActionUrl(url, evidenceText));
+  if (actionableEvidenceUrls.length === 0) return false;
+
+  const outputText = workerResult.output ?? "";
+  if (containsUnsatisfiedDiscoveryFailure(workerResult) || containsPlaceholderProof(outputText)) return false;
+  const outputUrls = extractHttpUrls(outputText).filter((url) => !isLowValueProofUrl(url));
+  const outputNamesActionableUrl =
+    outputUrls.some((url) => actionableEvidenceUrls.includes(url)) ||
+    actionableEvidenceUrls.some((url) => outputText.includes(url) || outputText.includes(normalizedHost(url)));
+  const outputLooksLikeShortlist =
+    /ranked|shortlist|candidate|provider|actionable|book online|booking|appointment|reservation|reservar|cita|direct/i.test(
+      outputText,
+    );
+
+  return outputNamesActionableUrl && outputLooksLikeShortlist;
+}
+
+function hasPreparedExternalActionBoundary(workerResult: WorkerResult): boolean {
+  if (workerResult.subtask.id !== "external-action-approval-draft") return false;
+  const dependencyContext = workerResult.dependencyContextSnapshot ?? "";
+  const evidenceText = [(workerResult.toolEvidence ?? []).join("\n"), dependencyContext].join("\n");
+  if (detectExternalActionPreparationBlocker(evidenceText)) return false;
+  if (!/external\.action\.prepare/i.test(evidenceText)) return false;
+  if (!/Prepared external action/i.test(evidenceText)) return false;
+  if (!/Commit boundary/i.test(evidenceText)) return false;
+  const hasBrowserPreparationDependency =
+    /external-action-browser-preparation/i.test(dependencyContext) &&
+    /browser\.operate|browser action preparer|browser execution|browser artifact/i.test(dependencyContext);
+  const hasConcreteProofOrPage =
+    /https?:\/\//i.test(dependencyContext) ||
+    /artifact_|external-action-pre-submit-proof|screenshot/i.test(dependencyContext);
+  return hasBrowserPreparationDependency && hasConcreteProofOrPage;
+}
+
+function hasBlockedExternalActionPreparationBoundary(workerResult: WorkerResult): boolean {
+  if (workerResult.subtask.id !== "external-action-approval-draft") return false;
+  const evidenceText = [
+    workerResult.output,
+    ...(workerResult.toolEvidence ?? []),
+    workerResult.dependencyContextSnapshot ?? "",
+  ].join("\n");
+  return Boolean(detectExternalActionPreparationBlocker(evidenceText));
+}
+
+function detectExternalActionPreparationBlocker(evidenceText: string): string | undefined {
+  if (!evidenceText.trim()) return undefined;
+  if (
+    /External action state:\s*[\s\S]{0,500}?-\s*blocker:\s*login\/account requirement/i.test(evidenceText) ||
+    /blocker:log\\s\*in|blocker:login|log\s*in|sign\s*in|inicia sesi[oó]n|crea una cuenta|create an account/i.test(evidenceText)
+  ) {
+    return "the provider requires login, account creation, or user authentication before a usable pre-submit state";
+  }
+  if (/External action state:\s*[\s\S]{0,500}?-\s*blocker:\s*CAPTCHA|captcha|bot-check|robot check|verify you are human/i.test(evidenceText)) {
+    return "the provider shows a CAPTCHA or bot-check before a usable pre-submit state";
+  }
+  if (/External action state:\s*[\s\S]{0,500}?-\s*blocker:\s*provider page is unavailable|not-found|not found|page unavailable/i.test(evidenceText)) {
+    return "the provider page is unavailable or not found";
+  }
+  if (/Semantic form-fill reports:[\s\S]{0,1000}?-\s*[^:\n]+:\s*(?:partial|blocked);[\s\S]{0,500}?blockers:/i.test(evidenceText)) {
+    return "semantic form preparation reported required unresolved fields or blockers before final submit";
+  }
+  if (/before submit:\s*(?:login|sign in|captcha|account|not found|unavailable)/i.test(evidenceText)) {
+    return "browser preparation stopped at a blocker before final submit";
+  }
+  if (
+    /external\.action\.prepare\s+skipped:\s*interactive browser preparation did not produce a QA-passed proof artifact/i.test(
+      evidenceText,
+    )
+  ) {
+    return "interactive browser preparation did not produce a QA-passed proof artifact";
+  }
+  return undefined;
+}
+
+function isActionableExternalActionUrl(url: string, context: string): boolean {
+  const haystack = `${url}\n${extractUrlEvidenceContext(context, url)}`;
+  if (/(?:instagram\.com|facebook\.com|x\.com|twitter\.com|tiktok\.com|youtube\.com|maps\.google|google\.[^/]+\/maps)/i.test(url)) {
+    return false;
+  }
+  return /(?:booksy|fresha|calendly|opentable|resy|thefork|booking|appointment|reserve|reservation|reservar|cita|checkout|contact|form|book online|open appointments|appointments online)/i.test(
+    haystack,
+  );
+}
+
 function isClearlyIrrelevantArtifact(artifact: AgentArtifact): boolean {
   const haystack = `${artifact.filename}\n${artifact.description ?? ""}\n${artifact.url}`;
   return isLowValueProofUrl(haystack);
 }
 
 function containsPlaceholderProof(text: string): boolean {
-  return /https?:\/\/(?:www\.)?example\.com|placeholder|fake-|screenshot-capture\.placeholder|dummy|todo-url/i.test(text);
+  return /https?:\/\/(?:www\.)?example\.com|(?:^|[\s/._-])placeholder(?:$|[\s/._-])|fake-|screenshot-capture\.placeholder|(?:^|[\s/._-])dummy(?:$|[\s/._-])|todo-url/i.test(text);
+}
+
+function isProtocolStatusSpecific(phrase: string): boolean {
+  return /^(?:http|status|status\s+code|http\s+status|статус|код\s+состояния)\s+\d{3}$/i.test(
+    phrase.trim(),
+  );
 }
 
 function containsUnsatisfiedDiscoveryFailure(workerResult: WorkerResult): boolean {
@@ -7633,8 +8794,38 @@ function findUngroundedSpecifics(workerResult: WorkerResult): string[] {
     // rejected), so any specific surviving upstream is grounded data
     // the downstream worker is entitled to cite.
     workerResult.dependencyContextSnapshot ?? "",
+    buildRuntimeDateGroundingText(),
   ].join("\n");
   return findUngroundedSpecificsInText(output, evidenceText);
+}
+
+function buildRuntimeDateGroundingText(date = new Date()): string {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  const weekday = get("weekday");
+  const month = get("month");
+  const day = get("day");
+  const year = get("year");
+  const iso = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+  return [
+    `Runtime current date: ${iso}`,
+    `${weekday}, ${month} ${day}, ${year}`,
+    `${month} ${day}, ${year}`,
+    `${day} ${month} ${year}`,
+    `current year ${year}`,
+  ].join("\n");
 }
 
 /**
@@ -7752,11 +8943,20 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
         const previousEnd = wordMatches[i + len - 2]!.end;
         const currentStart = wordMatches[i + len - 1]!.start;
         const between = haystack.slice(previousEnd, currentStart);
-        if (/[.,;:!?\n\r()\[\]{}]/.test(between)) break;
+	        if (/[.,;:!?\n\r()\[\]{}$€£¥*]/.test(between)) break;
+	      }
+	      const windowWords = wordMatches.slice(i, i + len);
+	      const phrase = windowWords.map((w) => w.word).join(" ");
+	      if (!/\d/.test(phrase)) continue;
+	      if (phrase.length < 2) continue;
+	      if (containsLowercaseConnectorBeforeNumber(windowWords.map((w) => w.word))) {
+	        continue;
+	      }
+      if (containsLowercaseConnectorBeforeNumberInSource(haystack, windowWords)) {
+        continue;
       }
-      const phrase = wordMatches.slice(i, i + len).map((w) => w.word).join(" ");
-      if (!/\d/.test(phrase)) continue;
-      if (phrase.length < 2) continue;
+      if (isProtocolStatusSpecific(phrase)) continue;
+      if (isNumberedStructuralLabelSpecific(phrase)) continue;
       // Structural numeric-spec filter: phrases containing a known
       // measurement unit attached to a number ("8 GB", "12 ГБ",
       // "2.5 kg", "75 Wh") are quantitative specs, not branded
@@ -7867,6 +9067,10 @@ function findUngroundedSpecificsInText(output: string, evidenceText: string): st
   return ungrounded;
 }
 
+function isNumberedStructuralLabelSpecific(phrase: string): boolean {
+  return /^(?:evidence|source|result|step|item|artifact|claim|check|proof)\s+\d+$/i.test(phrase.trim());
+}
+
 /**
  * Phase 13 follow-up: pull every numeric value out of the evidence
  * corpus, returning a deduped sorted array. Handles:
@@ -7972,6 +9176,25 @@ function isCurrencyAmountGroundedNumerically(token: string, evidenceNumbers: num
   return false;
 }
 
+function containsLowercaseConnectorBeforeNumber(words: string[]): boolean {
+  const firstNumber = words.findIndex((word) => /^\d+$/.test(word));
+  if (firstNumber <= 1) return false;
+  return words.slice(1, firstNumber).some((word) => {
+    if (/\d/.test(word)) return false;
+    return word === word.toLocaleLowerCase() && /\p{L}/u.test(word);
+  });
+}
+
+function containsLowercaseConnectorBeforeNumberInSource(
+  source: string,
+  words: Array<{ start: number; end: number; word: string }>,
+): boolean {
+  const firstNumber = words.findIndex((word) => /^\d+$/.test(word.word));
+  if (firstNumber <= 0) return false;
+  const between = source.slice(words[0]!.end, words[firstNumber]!.start);
+  return /[\p{Ll}]{2,}/u.test(between);
+}
+
 /**
  * Phase 12 follow-up: structural numeric-spec detector. Returns true
  * when the phrase contains a number directly attached (with optional
@@ -8063,7 +9286,7 @@ function buildSynthesisEvidenceCorpus(
   workerResults: WorkerResult[],
   artifacts: AgentArtifact[],
 ): string {
-  const parts: string[] = [task ?? ""];
+  const parts: string[] = [task ?? "", buildRuntimeDateGroundingText()];
   for (const wr of workerResults ?? []) {
     parts.push(wr.subtask?.title ?? "");
     parts.push(wr.subtask?.prompt ?? "");
@@ -8356,8 +9579,15 @@ export const __testing__ = {
   scoreArtifactUrl,
   selectBestUrlsForArtifact,
   buildSearchQueries,
+  extractSearchDomains,
+  buildMarketAwareSearchQuery,
+  inferMarketSearchHints,
+  assessSearchEvidenceForReuse,
+  getExplicitToolInputString,
   findUngroundedSpecificsInText,
+  buildRuntimeDateGroundingText,
   buildSynthesisEvidenceCorpus,
+  buildExternalActionBlockerFinalAnswer,
   enforceUngroundedSpecificsOnSynthesis,
   guardSearchQueryAgainstUngroundedSpecifics,
   guardDeclaredToolInputAgainstUngroundedSpecifics,
@@ -8368,6 +9598,32 @@ export const __testing__ = {
   improveDeclaredToolInput,
   isShallowLandingUrl,
   isLowValueProofUrl,
+  containsPlaceholderProof,
+  buildInternalProjectKnowledgeFastPathSubtasks,
+  buildLocalUtilityToolchainFastPathSubtasks,
+  buildExternalActionFastPathSubtasks,
+  buildExternalActionSearchQuery,
+  hasActionableExternalActionDiscoveryEvidence,
+  hasPreparedExternalActionBoundary,
+  hasBlockedExternalActionPreparationBoundary,
+  detectExternalActionPreparationBlocker,
+  hardGateReview,
+  rankExternalActionCandidateUrls,
+  extractExternalActionCandidateLinksFromBrowserData,
+  extractHttpUrls,
+  isExternalActionIneligibleUrl,
+  buildFallbackResearchSubtasks,
+  buildClassificationContext,
+  buildCompactSynthesisFallback,
+  isContextWindowError,
+  isRecoverableWorkerModelError,
+  hasCollectedToolEvidence,
+  buildWorkerModelFailureFallbackOutput,
+  isWorkerModelFailureFallback,
+  subtaskExpectsInteractiveBrowserProof,
+  shouldCollectBrowserDiscovery,
+  inferLocalUtilityToolchainPlan,
+  isLocalUtilityToolchainSubtask,
   userExplicitlyAskedForUrl,
   pickReusableThreadScreenshot,
   parseFlexibleNumber,
@@ -8501,57 +9757,4 @@ function formatFilesForPrompt(files: ReadonlyArray<{ path: string; content: stri
   return files
     .map((file) => `// ===== ${file.path} =====\n${file.content}`)
     .join("\n\n");
-}
-
-/**
- * Pull repair-failure strings out of the in-process event stream so
- * the change-summary synthesizer can describe what was being fixed.
- * We don't actually re-read from a store — the run already emitted
- * qa-attempt events with payload.failures. The synthesizer reads
- * them via a closure-captured array on the emitter (best effort).
- *
- * Implementation note: we don't have access to the sink's internal
- * state here so we return [] for now. The synthesizer prompt still
- * gets the bugContext for reworks, which covers the "what changed"
- * case where it matters most. A follow-up could thread an event
- * buffer through.
- */
-function collectRepairFailuresFromEvents(_sink: unknown): string[] {
-  return [];
-}
-
-/**
- * Trim and sanitize the LLM's free-form summary into something safe
- * to render on the Tools page. The LLM occasionally wraps the line
- * in quotes / code fences / "Summary:" prefixes; strip those.
- */
-function sanitizeChangeSummary(raw: string): string {
-  if (!raw) return "";
-  let trimmed = raw.trim();
-  // Strip leading "Summary:", "Changelog:" etc.
-  trimmed = trimmed.replace(/^(?:summary|changelog|changes?)\s*[:\-]\s*/i, "");
-  // Strip surrounding code fences.
-  trimmed = trimmed.replace(/^```[a-z]*\s*|\s*```$/g, "");
-  // Strip surrounding single/double/back quotes.
-  if (/^["'`].*["'`]$/.test(trimmed)) trimmed = trimmed.slice(1, -1);
-  // Cap to ~280 chars to be safe.
-  if (trimmed.length > 280) trimmed = `${trimmed.slice(0, 277)}…`;
-  return trimmed.trim();
-}
-
-function messagesToPromptText(messages: ReadonlyArray<{ role: string; content: string }>): string {
-  // Joins the system + user messages we send to the LLM into a single
-  // human-readable string. Used to attach the actual prompt to each
-  // council event payload so the Trace inspector can show "what did
-  // this model see?" alongside its response.
-  return messages.map((m) => `[${m.role}]\n${m.content}`).join("\n\n");
-}
-
-function synthesizeQaInput(context: import("./toolBuildCouncil.js").ToolBuildContext): Record<string, unknown> {
-  // Lightweight stub: use the first qaCriterion as the input task, falling
-  // back to the description. The real QA oracle reads the actual tool
-  // output, so the input only has to be "plausible enough" to exercise the
-  // tool.
-  const firstCriterion = context.qaCriteria[0] ?? context.description;
-  return { task: firstCriterion, query: firstCriterion };
 }

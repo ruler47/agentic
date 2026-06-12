@@ -63,7 +63,7 @@ test("agent invocation return self-check enforces output and required evidence c
       domains: ["research"],
       riskLevel: "medium",
     },
-    tools: [tool("web.search", ["web-search"])],
+    tools: [tool("web.search", ["web-search"]), tool("browser.operate", ["browser-automation"])],
     hasWorkLedger: true,
   });
   const invocation = createRootAgentInvocation({
@@ -71,7 +71,7 @@ test("agent invocation return self-check enforces output and required evidence c
     spanId: "run-3",
     task: "Search the web and attach screenshot proof.",
     strategy,
-    tools: [tool("web.search", ["web-search"])],
+    tools: [tool("web.search", ["web-search"]), tool("browser.operate", ["browser-automation"])],
     createdAt: "2026-05-08T00:00:00.000Z",
   });
 

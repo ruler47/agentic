@@ -9,6 +9,11 @@ import type {
   ModelProviderRecord,
   ModelProviderStore,
 } from "../../../settings/modelProviderStore.js";
+import {
+  decorateCatalogModel,
+  filterCatalogModelsByCapability,
+  parseModelCapabilityOverrides,
+} from "../../../settings/modelCatalog.js";
 import type { ModelTierSettingsStore } from "../../../settings/modelTierSettings.js";
 import type { ModelTierSettings } from "../../../types.js";
 import { AuditService } from "../../common/services/audit.service.js";
@@ -142,10 +147,19 @@ export class ModelsService {
     const baseUrl = process.env.LLM_BASE_URL ?? DEFAULT_BASE_URL;
     const embeddingBaseUrl = process.env.EMBEDDING_BASE_URL ?? baseUrl;
     const providers = this.providers ? await this.providers.list() : [];
-    const [chatModels, embeddingModels] = await Promise.all([
+    const [allChatEndpointModels, allEmbeddingEndpointModels] = await Promise.all([
       this.listOpenAiCompatibleModels(baseUrl),
       this.listOpenAiCompatibleModels(embeddingBaseUrl),
     ]);
+    const capabilityOverrides = parseModelCapabilityOverrides(process.env.LLM_MODEL_CAPABILITIES);
+    const chatEndpointModels = allChatEndpointModels.map((model) =>
+      decorateCatalogModel(model, capabilityOverrides),
+    );
+    const embeddingEndpointModels = allEmbeddingEndpointModels.map((model) =>
+      decorateCatalogModel(model, capabilityOverrides),
+    );
+    const chatModels = filterCatalogModelsByCapability(chatEndpointModels, "chat");
+    const embeddingModels = filterCatalogModelsByCapability(embeddingEndpointModels, "embedding");
     return {
       chat: {
         baseUrl,

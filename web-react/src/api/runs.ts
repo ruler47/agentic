@@ -7,7 +7,6 @@ import type {
   RunCreateResponse,
   RunDetailResponse,
   RunListResponse,
-  ToolReworkWaitRecord,
 } from "@/api/types";
 
 export function useRuns() {
@@ -27,18 +26,6 @@ export function useRun(id: string | undefined) {
     // Refetch interval is short while we're waiting for SSE wiring; once we
     // hook EventSource the interval can drop to 0 (refetchInterval: false).
     refetchInterval: 5_000,
-  });
-}
-
-export function useRunWaits(runId: string | undefined) {
-  return useQuery({
-    queryKey: runId ? queryKeys.runWaits(runId) : queryKeys.runWaits("__none__"),
-    enabled: Boolean(runId),
-    queryFn: () =>
-      apiFetch<{ waits: ToolReworkWaitRecord[] }>(
-        `/api/runs/${encodeURIComponent(runId!)}/tool-rework-waits`,
-      ).then((data) => data.waits ?? []),
-    refetchInterval: 10_000,
   });
 }
 

@@ -38,7 +38,6 @@ export const navigation: NavGroup[] = [
     group: "Build",
     items: [
       { id: "tools", label: "Tools", description: "Registry, schemas, health, and credentials.", path: "/tools" },
-      { id: "tool-builds", label: "Tool Builds", description: "Build API, browser, file, bot, webhook, and service tools.", path: "/tool-builds" },
       { id: "models", label: "Models", description: "Providers, tiers, fallbacks, and health.", path: "/models" },
     ],
   },

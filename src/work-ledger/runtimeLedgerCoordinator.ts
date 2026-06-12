@@ -19,6 +19,7 @@ import {
   WorkLedgerStore,
   WorkReuseDecision,
 } from "./types.js";
+import { compactWorkKey } from "./workKey.js";
 
 export type RuntimeLedgerEventDraft = Omit<AgentEvent, "id" | "timestamp" | "spanId"> & {
   spanId?: string;
@@ -119,7 +120,7 @@ export class RuntimeLedgerCoordinator {
           ownerSpanId: claim.ownerSpanId ?? "unknown-span",
           kind: mapRuntimeKindToClaimKind(claim.kind),
           workKey: claim.workKey,
-          taskSummary: claim.title,
+          taskSummary: claim.inputSummary ?? claim.title,
           requestedBy: requestedByFromMetadata(claim.metadata, claim.ownerSpanId),
           metadata: claim.metadata,
           freshnessExpiresAt: claim.freshnessExpiresAt,
@@ -155,14 +156,19 @@ export class RuntimeLedgerCoordinator {
       outputSummary?: string;
       sourceUrls?: string[];
       freshnessExpiresAt?: string;
+      confidence?: number;
+      metadata?: Record<string, unknown>;
     },
   ): Promise<WorkLedgerItem | undefined> {
     if (!this.deps.workLedgerStore) return undefined;
+    const existing = this.observedWorkItems.get(itemId);
     const next = await this.deps.workLedgerStore.updateItemStatus(itemId, {
       status: "completed",
       outputSummary: update.outputSummary,
       sourceUrls: update.sourceUrls,
       freshnessExpiresAt: update.freshnessExpiresAt,
+      confidence: update.confidence,
+      metadata: update.metadata ? { ...(existing?.metadata ?? {}), ...update.metadata } : undefined,
     });
     this.observedWorkItems.set(next.id, next);
     return next;
@@ -445,7 +451,7 @@ export const RUNTIME_LEDGER_EVENT_TYPES: readonly RuntimeLedgerEventName[] = [
 ];
 
 export function workKeyForToolCall(toolName: string, kind: WorkLedgerKind, input: Record<string, unknown>): string {
-  return `${kind}:${toolName.toLowerCase()}:${stableKeyValue(input)}`;
+  return compactWorkKey(`${kind}:${toolName.toLowerCase()}`, stableKeyValue(input));
 }
 
 function mapRuntimeKindToClaimKind(kind: WorkLedgerKind): ClaimCoordinatorKind {

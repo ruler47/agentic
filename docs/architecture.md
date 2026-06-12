@@ -393,8 +393,10 @@ safe to promote.
 
 ### Browser Operation
 
-`browser.operate` is domain-neutral. It executes typed commands such as navigate, click,
-fill, select, wait, extract text/links, assert text/URL, dismiss dialogs, and screenshot.
+`browser.operate` is domain-neutral. It executes typed commands such as navigate, visible
+element observation/clicks, click, fill, select, wait, extract text/links, assert
+text/URL, dismiss dialogs, and screenshot. Visible observation and click commands inspect
+both the main document and embedded frames and return frame provenance for trace/debug UI.
 
 It also accepts screenshot-style `{ url, label?, filename?, fullPage? }` input and expands
 that into navigate/extract/screenshot commands. If a command fails after the page opens,

@@ -118,7 +118,31 @@ test("agent strategy routes external work through tools and the Work Ledger", ()
   assert.equal(decision.ledgerPolicy.waitForInFlight, true);
 });
 
-test("agent strategy requests reusable missing capabilities instead of private case patches", () => {
+test("agent strategy exposes prepare and commit tools for external action tasks", () => {
+  const decision = decideAgentStrategy({
+    task:
+      "Find a barber, prepare an appointment form before submit, attach proof, and only commit after explicit approval.",
+    complexity: {
+      mode: "delegated",
+      reason: "external action needs approval boundary",
+      domains: ["booking"],
+      riskLevel: "medium",
+    },
+    tools: [
+      tool("external.action.prepare", ["external-action-prepare", "form-preparation", "approval-required"]),
+      tool("external.action.commit", ["external-action-commit", "external-submit"]),
+    ],
+    hasWorkLedger: true,
+  });
+
+  assert.deepEqual(decision.toolPolicy.matchedToolNames.sort(), [
+    "external.action.commit",
+    "external.action.prepare",
+  ]);
+  assert.ok(decision.actions.includes("call_tool"));
+});
+
+test("agent strategy records capability gaps without waiting for the inactive builder", () => {
   const decision = decideAgentStrategy({
     task: "Create a PDF report with a chart and voice transcript from an uploaded audio file.",
     complexity: {
@@ -131,9 +155,11 @@ test("agent strategy requests reusable missing capabilities instead of private c
     hasWorkLedger: true,
   });
 
-  assert.equal(decision.primary, "tool_build_or_rework");
-  assert.ok(decision.actions.includes("request_tool_build"));
-  assert.ok(decision.actions.includes("request_tool_rework"));
+  assert.equal(decision.primary, "delegated_dag");
+  assert.equal(decision.actions.includes("request_tool_build"), false);
+  assert.equal(decision.actions.includes("request_tool_rework"), false);
+  assert.equal(decision.toolPolicy.mayRequestBuild, false);
+  assert.equal(decision.toolPolicy.mayRequestRework, false);
   assert.deepEqual(decision.toolPolicy.missingCapabilityHints.sort(), [
     "chart-generation",
     "document-generation",

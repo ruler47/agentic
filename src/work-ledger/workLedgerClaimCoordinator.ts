@@ -7,6 +7,7 @@ import {
   toolCallWorkKey,
   urlVisitWorkKey,
 } from "./workKey.js";
+import { evaluateEvidenceReusePolicy } from "./evidenceReusePolicy.js";
 import {
   EvidenceCreateInput,
   EvidenceLedgerStore,
@@ -207,6 +208,45 @@ export function createWorkLedgerClaimCoordinator(
           });
         } else if (deps.evidenceLedgerStore) {
           reusableEvidence = await deps.evidenceLedgerStore.listByWorkItem(item.id);
+          const reusePolicy = evaluateEvidenceReusePolicy({
+            item,
+            evidence: reusableEvidence,
+            taskSummary: input.taskSummary,
+            metadata: input.metadata,
+          });
+          if (!reusePolicy.reusable) {
+            finalDecision = "revalidate";
+            const revalidationItem = await createRevalidationClaim(deps.workLedgerStore, claim, item);
+            return buildClaimDecision({
+              decision: finalDecision,
+              item: revalidationItem,
+              reusableEvidence: undefined,
+              reason: reusePolicy.reason,
+              confidence: deriveConfidence(finalDecision, revalidationItem),
+              storeDecision: storeDecision.status,
+              workKey,
+            });
+          }
+        } else {
+          const reusePolicy = evaluateEvidenceReusePolicy({
+            item,
+            evidence: undefined,
+            taskSummary: input.taskSummary,
+            metadata: input.metadata,
+          });
+          if (!reusePolicy.reusable) {
+            finalDecision = "revalidate";
+            const revalidationItem = await createRevalidationClaim(deps.workLedgerStore, claim, item);
+            return buildClaimDecision({
+              decision: finalDecision,
+              item: revalidationItem,
+              reusableEvidence: undefined,
+              reason: reusePolicy.reason,
+              confidence: deriveConfidence(finalDecision, revalidationItem),
+              storeDecision: storeDecision.status,
+              workKey,
+            });
+          }
         }
       }
 

@@ -99,6 +99,39 @@ test("artifact requirement QA validates chart, document, image, and screenshot t
   );
 });
 
+test("artifact requirement QA rejects generic screenshots for filled form proof", () => {
+  const requirement: ArtifactRequirement = {
+    kind: "screenshot",
+    capability: "browser-screenshot",
+    description: "Screenshot of the filled booking form before submission.",
+    required: true,
+  };
+
+  const generic = inspectArtifactRequirement(
+    {
+      ...baseArtifact,
+      filename: "discovery-booksy-page.png",
+      mimeType: "image/png",
+      description: "Browser screenshot captured from https://booksy.example/shop.",
+    },
+    requirement,
+  );
+  assert.equal(generic.ok, false);
+  assert.equal(generic.decision, "semantic_mismatch");
+  assert.equal(artifactMatchesRequirement({ ...baseArtifact, filename: "discovery-booksy-page.png", mimeType: "image/png" }, requirement), false);
+
+  const filled = inspectArtifactRequirement(
+    {
+      ...baseArtifact,
+      filename: "filled_form_proof-booksy-page.png",
+      mimeType: "image/png",
+      description: "Browser screenshot captured after form fill.",
+    },
+    requirement,
+  );
+  assert.equal(filled.ok, true);
+});
+
 function dataRequirement(): ArtifactRequirement {
   return {
     kind: "data",

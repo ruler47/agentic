@@ -112,9 +112,9 @@ export function decideAgentStrategy(input: AgentStrategyInput): AgentStrategyDec
   }
 
   if (missingCapabilityHints.length > 0) {
-    actions.add("request_tool_build");
-    actions.add("request_tool_rework");
-    reasons.push(`Possible missing or insufficient capability: ${missingCapabilityHints.join(", ")}.`);
+    reasons.push(
+      `Possible capability gap with the current core toolbelt: ${missingCapabilityHints.join(", ")}. Use available tools when possible and surface the limitation instead of waiting for an inactive builder.`,
+    );
   }
 
   if (councilRecommended) {
@@ -123,10 +123,12 @@ export function decideAgentStrategy(input: AgentStrategyInput): AgentStrategyDec
     primary = "council";
     reasons.push("Risk, ambiguity, or domain breadth warrants independent agent opinions before execution.");
   } else if (input.pendingToolImprovements && input.pendingToolImprovements > 0) {
-    primary = "tool_build_or_rework";
-    reasons.push("A previous step opened tool improvement waits that should be resolved before a confident return.");
+    primary = input.complexity.mode === "direct" ? "direct_answer" : "delegated_dag";
+    if (primary === "direct_answer") actions.add("answer_directly");
+    reasons.push("Tool improvement waits are inactive in the core-toolbelt baseline; proceed with available capabilities.");
   } else if (missingCapabilityHints.length > 0) {
-    primary = "tool_build_or_rework";
+    primary = input.complexity.mode === "direct" ? "direct_answer" : "delegated_dag";
+    if (primary === "direct_answer") actions.add("answer_directly");
   } else if (ledgerRelevant) {
     primary = "ledger_reuse_or_wait";
   } else if (matchedTools.length > 0 && input.complexity.mode === "direct") {
@@ -169,8 +171,8 @@ export function decideAgentStrategy(input: AgentStrategyInput): AgentStrategyDec
     },
     toolPolicy: {
       mayCallTools: matchedTools.length > 0,
-      mayRequestBuild: missingCapabilityHints.length > 0,
-      mayRequestRework: missingCapabilityHints.length > 0 || matchedTools.length > 0,
+      mayRequestBuild: false,
+      mayRequestRework: false,
       matchedToolNames: matchedTools.map((tool) => tool.name),
       missingCapabilityHints,
       deniedToolNames: extractUserToolMentions(input.task, "deny", input.tools ?? []),
@@ -259,12 +261,37 @@ function matchTools(text: string, tools: Tool[]): Tool[] {
 function capabilityMatches(text: string, capability: string): boolean {
   const normalized = normalizeText(capability);
   if (normalized && text.includes(normalized)) return true;
+  if (normalized.includes("external-action-prepare") && isExternalActionPreparationText(text)) return true;
+  if (normalized.includes("form-preparation") && isExternalActionPreparationText(text)) return true;
+  if (normalized.includes("approval-required") && isExternalActionText(text)) return true;
+  if (normalized.includes("external-action-commit") && isExternalActionCommitText(text)) return true;
+  if (normalized.includes("external-submit") && isExternalActionCommitText(text)) return true;
   if (normalized.includes("browser") && /\b(browser|screenshot|web page|page)\b|скриншот|страниц/.test(text)) return true;
   if (normalized.includes("web") && /\b(web|search|research|find)\b|поиск|найди/.test(text)) return true;
   if (normalized.includes("chart") && /\b(chart|graph|plot)\b|график|диаграм/.test(text)) return true;
   if (normalized.includes("document") && /\b(pdf|document|report|docx)\b|документ|отчет/.test(text)) return true;
   const tokens = normalized.split(/[^a-z0-9]+/).filter((token) => token.length >= 4);
   return tokens.length > 0 && tokens.every((token) => text.includes(token));
+}
+
+function isExternalActionText(text: string): boolean {
+  return /\b(book|reserve|schedule|appointment|submit|send|purchase|order|cancel|confirm|form|approval|approve)\b|заброни|запис|отправ|подтверд|форма|апрув|одобр/i.test(
+    text,
+  );
+}
+
+function isExternalActionPreparationText(text: string): boolean {
+  return isExternalActionText(text) &&
+    /\b(prepare|draft|before submit|before approval|approval|approve|form|fill|review|without submitting|do not submit|not submit)\b|подготов|черновик|до\s+отправ|без\s+отправ|не\s+отправ|апрув|одобр|заполн/i.test(
+      text,
+    );
+}
+
+function isExternalActionCommitText(text: string): boolean {
+  return isExternalActionText(text) &&
+    /\b(commit|submit|send|confirm|finalize|approved|after approval|externally now)\b|отправ|подтверд|финаль|после\s+апрув|после\s+одобр/i.test(
+      text,
+    );
 }
 
 function inferMissingCapabilityHints(text: string, matchedTools: Tool[]): string[] {

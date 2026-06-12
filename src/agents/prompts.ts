@@ -102,6 +102,11 @@ Rules:
 - Common capability tags worth checking against the registry: \`web-search\`, \`browser-screenshot\`, \`chart-generation\`, \`file-read\`, \`file-write\`, \`pdf-generation\`, \`browser-operate\`. The actual registry may have a subset, a superset, or different names — read the catalog above.
 - Use "requiredArtifacts" when the worker must produce a real file. Do not hide artifact requirements in prose only. If a screenshot proof is required, declare requiredArtifacts with kind "screenshot" and the EXACT capability tag from a registered tool (read the catalog).
 - When a deterministic tool can be called before the worker thinks, include "toolInputs" keyed by the exact tool name. For "browser.operate", provide a generic command list, never site-specific code.
+- For browser interaction against modern pages or embedded widgets, prefer visible UI commands over brittle selectors: use "observe" to inspect visible candidates and "clickVisible" with human-facing text/role before falling back to raw "click"/"fill" selectors. This applies to embedded frames too; the tool returns frame provenance in observations.
+- For external state-changing tasks (booking, reservation, appointment, purchase, cancellation, sending a form/message, account/profile mutation), plan two boundaries:
+  1. preparation: use browser.operate/browser.screenshot to inspect, fill only safe pre-submit fields when enough user data is available, and capture proof screenshots of the visible draft/state;
+  2. commit: do not submit externally unless the task/context explicitly says approval was already granted. Otherwise use external.action.prepare to summarize target, action, data, proof requirements, and the exact commit boundary.
+- Never hide a real external submit inside browser.operate. The final submit belongs behind explicit approval and external.action.commit or a provider-specific commit executor.
 - For public search/result sites, prefer direct route/result/source URLs when they are known or can be inferred safely. Do not plan brittle form automation against generic homepages unless the task truly requires interaction.
 - Dependent analysis, synthesis, and review subtasks should use upstream worker outputs and artifacts. Do not add new web-search or screenshot requirements to those subtasks unless they must collect new external evidence.
 - If complexity.geoAnchors is non-empty, every discovery / search / verification subtask MUST mention those anchor tokens verbatim in its prompt and expectedOutput so the runtime stays inside the requested geography. Discovery URLs must use the matching country TLD (e.g. .es for Spain, .de for Germany) or domain-known equivalents (amazon.es, mediamarkt.es, pccomponentes.com) — never the US/global default of the same retailer.
@@ -124,6 +129,9 @@ Return only JSON:
         "browser.operate": {
           "commands": [
             { "type": "navigate", "url": "https://example.com" },
+            { "type": "dismissDialogs", "texts": ["Accept", "Allow all"] },
+            { "type": "observe", "text": "Book", "label": "visible booking controls" },
+            { "type": "clickVisible", "text": "Book", "optional": true },
             { "type": "extractText" },
             { "type": "screenshot", "label": "proof" }
           ]
@@ -318,6 +326,11 @@ Rules:
   is newest.
 - Before finalizing, self-check that the answer and artifacts are actually useful for the user request. If the available evidence is insufficient, state the limitation plainly instead of dressing a weak result as complete.
 - Do not include screenshot/browser artifacts as proof if the evidence indicates they are blank, still loading, blocked, login-only, bot-check pages, or unrelated to the requested content.
+- For external-action/browser tasks, do not infer CAPTCHA, login, no-slots, unavailable
+  page, or final submission unless the structured browser evidence explicitly says or
+  shows that state. If evidence says preparation is on a live provider page and no
+  CAPTCHA/login/not-found blocker is visible, report the actual prepared state and the
+  remaining submit/approval boundary instead.
 - Mention important assumptions or confidence limits.
 - If reviews found issues, resolve them or clearly state remaining uncertainty.
 - If useful artifacts exist, include their filenames and exact artifact URLs from the artifact list.
@@ -376,8 +389,8 @@ function formatMemories(memories: SkillMemoryEntry[]): string {
   confidence: ${Math.round((memory.confidence ?? 0.75) * 100)}%
   match: ${memory.match?.reason ?? "selected by memory search"}
   tags: ${memory.tags.join(", ")}
-  summary: ${truncatePromptText(memory.summary, 900)}
-  procedure: ${truncatePromptText(memory.reusableProcedure, 900)}`,
+  summary: ${truncatePromptText(memory.summary, 220)}
+  procedure: ${truncatePromptText(memory.reusableProcedure, 220)}`,
     )
     .join("\n");
 }

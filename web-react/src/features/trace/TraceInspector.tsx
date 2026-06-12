@@ -4,37 +4,19 @@ import type { TraceNode } from "@/features/trace/buildTraceNodes";
 import { modelTierForNode } from "@/features/trace/buildTraceNodes";
 import { ArtifactGallery } from "@/components/ArtifactPreview";
 import { GenericBadge } from "@/components/StatusBadge";
-import { readArtifactRefs } from "@/features/investigations/buildSpanInvestigationDraft";
 import { formatDuration, formatRelative, truncate } from "@/lib/format";
-import type { ToolReworkWaitRecord } from "@/api/types";
-import {
-  useAutoRetryReworkWait,
-  useCreateRetryRunForWait,
-  useResumeReworkWait,
-} from "@/api/reworkWaits";
 import { useCancelRun, useResumeRun } from "@/api/runs";
-import {
-  canCreateRetryRun,
-  retryRunLabel,
-} from "@/features/tool-builds/reworkWaitPresentation";
-import { Link } from "react-router-dom";
 
 type TraceInspectorProps = {
   node: TraceNode | undefined;
   runId?: string;
-  reworkWait: ToolReworkWaitRecord | undefined;
-  onCreateInvestigation?: (node: TraceNode) => void;
 };
 
-export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation }: TraceInspectorProps) {
-  const resume = useResumeReworkWait();
-  const createRetry = useCreateRetryRunForWait();
-  const autoRetry = useAutoRetryReworkWait();
-
+export function TraceInspector({ node, runId }: TraceInspectorProps) {
   if (!node) {
     return (
       <aside className="rounded-[var(--radius-card)] border border-dashed border-app-border bg-app-surface p-5 text-sm text-app-text-muted">
-        Select a span on the graph or in the timeline to inspect its call frame, evidence, and any linked tool rework wait.
+        Select a span on the graph or in the timeline to inspect its call frame and evidence.
       </aside>
     );
   }
@@ -212,95 +194,7 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
         </Section>
       ) : null}
 
-      {reworkWait ? (
-        <section className="rounded-md border border-app-warning/40 bg-app-warning-soft p-3 text-[11px]">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-app-warning">
-            Tool rework wait
-          </p>
-          <p className="mt-1 break-all font-mono">{reworkWait.id}</p>
-          <p className="mt-1">
-            Status: <span className="font-mono">{reworkWait.status}</span>
-            {reworkWait.toolName ? (
-              <>
-                {" · tool "}
-                <span className="font-mono">{reworkWait.toolName}</span>
-                {reworkWait.toolVersion ? <> v{reworkWait.toolVersion}</> : null}
-                {reworkWait.promotedVersion ? <> → v{reworkWait.promotedVersion}</> : null}
-              </>
-            ) : null}
-          </p>
-          {reworkWait.reason ? (
-            <p className="mt-1 break-words text-app-text-muted">{truncate(reworkWait.reason, 220)}</p>
-          ) : null}
-          {reworkWait.retryRunId ? (
-            <p className="mt-1 text-app-text-muted">
-              {retryRunLabel(reworkWait)}:{" "}
-              <Link to={`/run/${reworkWait.retryRunId}`} className="font-mono text-app-accent underline">
-                {reworkWait.retryRunId}
-              </Link>
-            </p>
-          ) : null}
-          {canCreateRetryRun(reworkWait) ? (
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => createRetry.mutate({ id: reworkWait.id })}
-                disabled={createRetry.isPending}
-                className="rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
-              >
-                {createRetry.isPending ? "Creating…" : "Create retry run"}
-              </button>
-              <button
-                type="button"
-                onClick={() => autoRetry.mutate({ id: reworkWait.id })}
-                disabled={autoRetry.isPending}
-                className="rounded-md border border-app-warning/40 bg-app-surface px-2.5 py-1 text-[11px] text-app-text"
-              >
-                {autoRetry.isPending ? "Checking…" : "Force auto retry"}
-              </button>
-            </div>
-          ) : null}
-          {reworkWait.retryRunId ? (
-            <Link
-              to={`/run/${reworkWait.retryRunId}`}
-              className="mt-2 inline-flex rounded-md border border-app-warning/40 bg-app-surface px-2.5 py-1 text-[11px] text-app-text hover:border-app-accent/40"
-            >
-              Open retry run
-            </Link>
-          ) : null}
-          {reworkWait.status === "promoted" ? (
-            <button
-              type="button"
-              onClick={() => resume.mutate({ id: reworkWait.id })}
-              disabled={resume.isPending}
-              className="mt-2 rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
-            >
-              {resume.isPending ? "Closing…" : "Mark ready for retry"}
-            </button>
-          ) : null}
-          {[createRetry.error, autoRetry.error, resume.error]
-            .filter((error): error is Error => Boolean(error))
-            .map((error, index) => (
-              <p key={index} className="mt-1 text-[11px] text-app-danger">
-                {error.message}
-              </p>
-            ))}
-        </section>
-      ) : null}
-
       <footer className="mt-2 flex flex-col gap-2 border-t border-app-border pt-3 text-[11px]">
-        <button
-          type="button"
-          className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-xs font-medium text-app-text transition-colors hover:border-app-accent/40 hover:text-app-accent disabled:opacity-50"
-          disabled={!onCreateInvestigation}
-          onClick={() => onCreateInvestigation?.(node)}
-          title={onCreateInvestigation ? "Open the Tool Investigation modal" : "Investigation creation is unavailable for this view"}
-        >
-          Create tool request / bug
-        </button>
-        <p className="text-[10px] text-app-text-muted">
-          Opens a Tool Investigation Ticket modal so the failure context is preserved before any rebuild.
-        </p>
         <p className="text-[10px] text-app-text-muted">
           First seen {formatRelative(node.firstTimestamp)} · last update {formatRelative(node.lastTimestamp)}
         </p>
@@ -401,6 +295,34 @@ function readToolEvidence(payload: unknown): string {
   }
   if (typeof record.content === "string") lines.push(truncate(record.content, 1200));
   return lines.join("\n");
+}
+
+function readArtifactRefs(
+  payload: unknown,
+  runId: string,
+): Array<{ id?: string; filename?: string; mimeType?: string; url?: string }> {
+  if (!payload || typeof payload !== "object") return [];
+  const refs: Array<{ id?: string; filename?: string; mimeType?: string; url?: string }> = [];
+  const record = payload as Record<string, unknown>;
+  const single = record.artifact;
+  const list = Array.isArray(record.artifacts) ? record.artifacts : [];
+  const all = [single, ...list].filter(
+    (entry): entry is Record<string, unknown> =>
+      Boolean(entry) &&
+      typeof entry === "object" &&
+      (typeof (entry as { url?: unknown }).url === "string" ||
+        typeof (entry as { filename?: unknown }).filename === "string"),
+  );
+  for (const artifact of all) {
+    const id = typeof artifact.id === "string" ? artifact.id : undefined;
+    refs.push({
+      id,
+      filename: typeof artifact.filename === "string" ? artifact.filename : undefined,
+      mimeType: typeof artifact.mimeType === "string" ? artifact.mimeType : undefined,
+      url: typeof artifact.url === "string" ? artifact.url : id ? `/api/runs/${runId}/artifacts/${id}` : undefined,
+    });
+  }
+  return refs;
 }
 
 function statusTone(status: string): "ok" | "running" | "danger" | "muted" {

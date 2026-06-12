@@ -104,12 +104,6 @@ export function ChannelsPage() {
           </div>
           <div className="flex flex-wrap gap-2 text-xs">
             <Link
-              to="/tool-builds"
-              className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 font-semibold hover:border-app-accent/50 hover:text-app-accent"
-            >
-              Build channel tool
-            </Link>
-            <Link
               to="/users"
               className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 font-semibold hover:border-app-accent/50 hover:text-app-accent"
             >
@@ -146,7 +140,7 @@ export function ChannelsPage() {
           {services.isLoading ? (
             <EmptyLine>Loading services…</EmptyLine>
           ) : serviceOptions.length === 0 ? (
-            <EmptyLine>No always-on services installed. Create one from Tool Builds.</EmptyLine>
+            <EmptyLine>No always-on services installed.</EmptyLine>
           ) : (
             <div className="mt-3 grid gap-3 2xl:grid-cols-2">
               {serviceOptions

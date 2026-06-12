@@ -18,7 +18,7 @@ export class BrowserOperateHttpTool implements Tool {
   readonly name = "browser.operate";
   readonly version = "1.0.0";
   readonly description =
-    "Runs a generic Playwright browser command sequence and returns DOM text plus screenshot artifacts (delegated to dockerized browser-operate service).";
+    "Runs a generic Playwright browser command sequence, observes visible UI state, and returns DOM text plus screenshot artifacts (delegated to dockerized browser-operate service).";
   readonly capabilities = [
     "browser-operate",
     "browser-automation",
@@ -39,7 +39,7 @@ export class BrowserOperateHttpTool implements Tool {
       commands: {
         type: "array",
         description:
-          "Sequence of browser commands to run (navigate, dismissDialogs, click, fill, screenshot, extractText, ...).",
+          "Sequence of browser commands to run (navigate, dismissDialogs, observe, clickVisible, click, fill, screenshot, extractText, ...).",
         items: { type: "object" },
         minItems: 1,
       },
@@ -68,6 +68,7 @@ export class BrowserOperateHttpTool implements Tool {
           title: { type: "string" },
           extractedText: { type: "array" },
           extractedLinks: { type: "array" },
+          observations: { type: "array" },
           screenshots: { type: "array" },
           steps: { type: "array" },
         },

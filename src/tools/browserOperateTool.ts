@@ -11,8 +11,32 @@ import { ArtifactCreateInput } from "../types.js";
 
 export type BrowserOperateCommand =
   | { type: "navigate"; url: string; waitUntil?: "load" | "domcontentloaded" | "networkidle"; timeoutMs?: number }
-  | { type: "click"; selector?: string; selectors?: string[]; text?: string; timeoutMs?: number; optional?: boolean }
+  | { type: "click"; selector?: string; selectors?: string[]; text?: string; x?: number; y?: number; timeoutMs?: number; optional?: boolean }
+  | {
+      type: "clickVisible";
+      selector?: string;
+      text?: string;
+      role?: string;
+      index?: number;
+      timeoutMs?: number;
+      optional?: boolean;
+      enabledOnly?: boolean;
+      viewportOnly?: boolean;
+      externalActionSafe?: boolean;
+    }
   | { type: "dismissDialogs"; selectors?: string[]; texts?: string[]; timeoutMs?: number }
+  | {
+      type: "fillFormSemantically";
+      goal?: string;
+      values?: Record<string, string>;
+      valuesText?: string;
+      label?: string;
+      allowContinue?: boolean;
+      allowPolicyConsent?: boolean;
+      submit?: boolean;
+      maxRounds?: number;
+      timeoutMs?: number;
+    }
   | { type: "fill" | "type"; selector: string; text: string; timeoutMs?: number }
   | { type: "selectOption"; selector: string; value?: string; label?: string; index?: number; timeoutMs?: number }
   | { type: "check" | "uncheck"; selector: string; timeoutMs?: number }
@@ -21,6 +45,7 @@ export type BrowserOperateCommand =
   | { type: "waitForText"; text: string; timeoutMs?: number }
   | { type: "wait"; ms: number }
   | { type: "scroll"; selector?: string; x?: number; y?: number }
+  | { type: "observe"; selector?: string; text?: string; role?: string; label?: string; limit?: number; enabledOnly?: boolean; viewportOnly?: boolean }
   | { type: "extractText"; selector?: string; label?: string; maxLength?: number }
   | { type: "extractLinks"; selector?: string; label?: string; limit?: number }
   | { type: "assertText"; selector?: string; text: string; timeoutMs?: number }
@@ -65,9 +90,43 @@ export type BrowserOperateData = {
   title?: string;
   extractedText: Array<{ label: string; text: string }>;
   extractedLinks: Array<{ label: string; links: Array<{ text: string; href: string }> }>;
+  observations?: Array<{ label: string; elements: BrowserObservedElement[] }>;
+  formFills?: BrowserFormFillReport[];
   screenshots: ArtifactCreateInput[];
   steps: BrowserOperateStep[];
   storageState?: unknown;
+};
+
+export type BrowserFormFillReport = {
+  label: string;
+  status: "completed" | "partial" | "blocked";
+  filled: Array<{ field: string; selector: string; valuePreview: string; reason: string }>;
+  selected: Array<{ field: string; selector: string; valuePreview: string; reason: string }>;
+  checked: Array<{ field: string; selector: string; reason: string }>;
+  skipped: Array<{ field: string; reason: string }>;
+  clicked: Array<{ text: string; reason: string }>;
+  blockers: string[];
+  beforeSubmit: string[];
+};
+
+export type BrowserObservedElement = {
+  index: number;
+  tag: string;
+  role?: string;
+  text: string;
+  ariaLabel?: string;
+  disabled: boolean;
+  enabled: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+  documentX: number;
+  documentY: number;
+  frameIndex: number;
+  frameUrl: string;
 };
 
 export function isBrowserOperateData(data: unknown): data is BrowserOperateData {

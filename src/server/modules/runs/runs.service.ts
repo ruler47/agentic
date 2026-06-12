@@ -35,8 +35,6 @@ import type {
   ArtifactUploadInput,
 } from "../../../types.js";
 import type { AuditEventInput } from "../../../audit/types.js";
-import type { ToolBuildRequestStore } from "../../../tools/toolBuildRequestStore.js";
-import type { ToolBuildWorkflow } from "../../../tools/toolBuildWorkflow.js";
 import type { ToolServiceSupervisor } from "../../../tools/toolServiceSupervisor.js";
 import type { ToolServiceEventStore } from "../../../tools/toolServiceEventStore.js";
 import type { SecretHandleStore } from "../../../secrets/secretHandleStore.js";
@@ -47,16 +45,12 @@ import type {
   WorkLedgerStore,
 } from "../../../work-ledger/types.js";
 import { AuditService } from "../../common/services/audit.service.js";
-import { ToolBuildInputFinalizerService } from "../../common/services/tool-build-input-finalizer.service.js";
-import { ToolReworkCoordinatorService } from "../../common/services/tool-rework-coordinator.service.js";
 import { ToolsService } from "../tools/tools.service.js";
-import { CouncilToolAdapter } from "../../../tools/councilToolAdapter.js";
 import {
   isRecord,
   parseOptionalReason,
   parseOptionalText,
   parseOptionalTextArray,
-  parseReferenceAttachments,
   sanitizeAuditMetadata,
 } from "../../common/parsers.js";
 import {
@@ -64,12 +58,9 @@ import {
   CONVERSATION_STORE,
   GROUP_PROFILE_STORE,
   EVIDENCE_LEDGER_STORE,
-  RELOAD_GENERATED_TOOLS,
   RUN_STORE,
   RUN_RETROSPECTIVE_STORE,
   SECRET_HANDLE_STORE,
-  TOOL_BUILD_REQUEST_STORE,
-  TOOL_BUILD_WORKFLOW,
   TOOL_RUNTIME_SETTINGS,
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_SUPERVISOR,
@@ -95,6 +86,14 @@ class RunContextError extends Error {
   }
 }
 
+function readRunIdleTimeoutMs(): number {
+  const raw = process.env.RUN_IDLE_TIMEOUT_MS;
+  if (!raw) return DEFAULT_RUN_IDLE_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_RUN_IDLE_TIMEOUT_MS;
+  return Math.max(0, parsed);
+}
+
 /**
  * Phase 12 follow-up: a Docker / process restart leaves any in-flight run
  * stuck at status=running forever — the originating coordinator promise died
@@ -105,6 +104,7 @@ class RunContextError extends Error {
 const ORPHAN_STALE_AFTER_MS = 5 * 60 * 1000; // 5 minutes
 const ORPHAN_RECOVERY_REASON =
   "Run was interrupted by an application restart and never resumed; restart it to retry.";
+const DEFAULT_RUN_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Phase 13 follow-up: collapse identical POST /api/runs submissions that
@@ -115,33 +115,6 @@ const ORPHAN_RECOVERY_REASON =
  * themselves" signal that should produce a fresh run.
  */
 const DEDUP_WINDOW_MS = 10 * 1000;
-
-/**
- * Phase 19 Slice A helper: pull the original `toolBuildContext` back
- * out of a council run's first event so `restart`/`resume` can
- * re-enter the council pipeline. Returns undefined for runs that
- * were not council runs (regular classify→plan flow needs no
- * re-thread).
- */
-function extractCouncilContext(
-  source: AgentRunRecord,
-): import("../../../agents/toolBuildCouncil.js").ToolBuildContext | undefined {
-  const events = source.events ?? [];
-  for (const event of events) {
-    if (event.type !== "run-started") continue;
-    const payload = event.payload as { kind?: string; toolBuildContext?: unknown } | undefined;
-    if (payload?.kind !== "tool_build_council") return undefined;
-    const ctx = payload.toolBuildContext;
-    if (ctx && typeof ctx === "object") {
-      // Cast the raw payload back to the structural type. The trace
-      // stores the same object we threaded in, so the shape is
-      // already correct — we only need TypeScript to accept it.
-      return ctx as import("../../../agents/toolBuildCouncil.js").ToolBuildContext;
-    }
-    return undefined;
-  }
-  return undefined;
-}
 
 @Injectable()
 export class RunsService implements OnApplicationBootstrap {
@@ -173,9 +146,6 @@ export class RunsService implements OnApplicationBootstrap {
     @Inject(CONVERSATION_STORE) private readonly threads: ConversationThreadStore | undefined,
     @Inject(GROUP_PROFILE_STORE) private readonly groupProfiles: GroupProfileStore | undefined,
     @Inject(USER_STORE) private readonly users: UserStore,
-    @Inject(TOOL_BUILD_REQUEST_STORE) private readonly toolBuildRequests: ToolBuildRequestStore | undefined,
-    @Inject(TOOL_BUILD_WORKFLOW) private readonly toolBuildWorkflow: ToolBuildWorkflow | undefined,
-    @Inject(RELOAD_GENERATED_TOOLS) private readonly reloadGeneratedTools: (() => Promise<void>) | undefined,
     @Inject(TOOL_SERVICE_SUPERVISOR) private readonly toolServiceSupervisor: ToolServiceSupervisor | undefined,
     @Inject(TOOL_SERVICE_EVENT_STORE) private readonly toolServiceEvents: ToolServiceEventStore | undefined,
     @Inject(SECRET_HANDLE_STORE) private readonly secrets: SecretHandleStore | undefined,
@@ -184,11 +154,6 @@ export class RunsService implements OnApplicationBootstrap {
     @Inject(EVIDENCE_LEDGER_STORE) private readonly evidenceLedger: EvidenceLedgerStore | undefined,
     @Inject(RUN_RETROSPECTIVE_STORE) private readonly retrospectives: RunRetrospectiveStore | undefined,
     @Inject(AuditService) private readonly audit: AuditService,
-    @Inject(ToolBuildInputFinalizerService) private readonly finalizer: ToolBuildInputFinalizerService,
-    @Inject(ToolReworkCoordinatorService) private readonly rework: ToolReworkCoordinatorService,
-    // Phase 14: deps for the council adapter. All optional so older
-    // wiring (CLI, fixtures, deployments without coding-council config)
-    // still constructs a working service.
     @Inject(CODING_COUNCIL_STORE) private readonly codingCouncil:
       | import("../../../settings/codingCouncilStore.js").CodingCouncilStore
       | undefined,
@@ -276,12 +241,6 @@ export class RunsService implements OnApplicationBootstrap {
     const reloaded = await this.runs.get(sourceId);
     if (!reloaded) throw new NotFoundException(`Run ${sourceId} disappeared during restart`);
 
-    if (reloaded.status === "waiting_tool_rework") {
-      throw new ConflictException(
-        `Run ${sourceId} is waiting for a tool rework; use the auto-retry / promote flow instead of restart.`,
-      );
-    }
-
     const context: RunCreateContext = {
       instanceId: reloaded.instanceId,
       requesterUserId: reloaded.requesterUserId,
@@ -314,13 +273,8 @@ export class RunsService implements OnApplicationBootstrap {
       },
     });
 
-    // Phase 19 Slice A: re-thread toolBuildContext if the source was
-    // a council run. Without this, restart of a council rework falls
-    // back to the regular classify→plan→worker flow and produces a
-    // nonsense run that has nothing to do with the original tool.
     void this.executeRun(restart.id, reloaded.task, [], {
       threadId: context.threadId,
-      toolBuildContext: extractCouncilContext(reloaded),
     });
 
     const updated = await this.runs.get(restart.id);
@@ -373,18 +327,6 @@ export class RunsService implements OnApplicationBootstrap {
 
     const reloaded = await this.runs.get(sourceId);
     if (!reloaded) throw new NotFoundException(`Run ${sourceId} disappeared during resume`);
-    // Phase 12 follow-up: resume from `waiting_tool_rework` is now the
-    // primary path the auto-retry coordinator uses when a tool rework
-    // promotes. Manual resume from this state is also fine — the
-    // operator is choosing to continue rather than wait for promotion.
-    // We move the source out of `waiting_tool_rework` first so the UI
-    // does not show two parallel lifecycles.
-    if (reloaded.status === "waiting_tool_rework") {
-      await this.runs
-        .resumeFromToolRework(sourceId, "Resume requested while run was waiting for tool rework")
-        .catch(() => undefined);
-    }
-
     const progress = reconstructProgress(reloaded.events ?? []);
     const passedSubtaskCount = [...progress.completedReviews.values()].filter((review) => review.verdict === "pass").length;
     const fallback: "resume" | "restart" = hasResumableProgress(progress) ? "resume" : "restart";
@@ -443,13 +385,9 @@ export class RunsService implements OnApplicationBootstrap {
     });
 
     const resumeFrom = toResumptionState(progress, sourceId);
-    // Phase 19 Slice A: same fix as restart — re-thread the council
-    // context so a council resume actually re-enters the council
-    // pipeline rather than the regular agent flow.
     void this.executeRun(resume.id, reloaded.task, [], {
       threadId: context.threadId,
       resumeFrom,
-      toolBuildContext: extractCouncilContext(reloaded),
     });
 
     const updated = await this.runs.get(resume.id);
@@ -644,323 +582,6 @@ export class RunsService implements OnApplicationBootstrap {
     });
     const cancelled = await this.runs.get(id);
     return cancelled ?? run;
-  }
-
-  /**
-   * Phase 14: create a "tool-build" run and dispatch the council
-   * pipeline. The run looks like any other in the runs table (so it
-   * shows up in the trace lab, run workspace, etc.) but the task
-   * body is a structured marker and the agent dispatches to
-   * `runToolBuildCouncil` thanks to `toolBuildContext` plumbing.
-   */
-  async createAndStartToolBuild(rawBody: unknown): Promise<{ run: AgentRunRecord | undefined }> {
-    const body = isRecord(rawBody) ? rawBody : {};
-    const name = typeof body.name === "string" ? body.name.trim() : "";
-    const description = typeof body.description === "string" ? body.description.trim() : "";
-    if (!name) throw new BadRequestException("name is required");
-    if (!description) throw new BadRequestException("description is required");
-    const qaCriteriaInput = Array.isArray(body.qaCriteria) ? body.qaCriteria : [];
-    const qaCriteria = qaCriteriaInput
-      .filter((entry): entry is string => typeof entry === "string")
-      .map((entry) => entry.trim())
-      .filter(Boolean);
-    const secretHandle =
-      typeof body.secretHandle === "string" && body.secretHandle.trim().length > 0
-        ? body.secretHandle.trim()
-        : undefined;
-    const existingToolName =
-      typeof body.existingToolName === "string" && body.existingToolName.trim().length > 0
-        ? body.existingToolName.trim()
-        : undefined;
-    // Phase 16 Slice I: optional version pin. The Tools-page
-    // per-version "Request changes" button forwards this so the
-    // council reads that specific source rather than whichever is
-    // currently active.
-    const existingToolVersion =
-      typeof body.existingToolVersion === "string" && body.existingToolVersion.trim().length > 0
-        ? body.existingToolVersion.trim()
-        : undefined;
-    const bugContext =
-      typeof body.bugContext === "string" && body.bugContext.trim().length > 0
-        ? body.bugContext.trim()
-        : undefined;
-    const referenceAttachments = parseReferenceAttachments(body.references);
-
-    // For reworks the operator's "what should change" lives in
-    // `bugContext`; `description` is the existing tool's unchanged
-    // purpose. Surface bugContext in the run headline so the operator
-    // doesn't see "Council rework for demo.echo: <original tool
-    // description>" with no trace of what they actually asked for.
-    const task = existingToolName
-      ? `Council rework for ${existingToolName}: ${bugContext || description}`
-      : `Council build for ${name}: ${description}`;
-
-    // Forward parentBuildRunId (cycle marker on sub-builds) onto the
-    // new run record so the Trace Lab header can render an "↑ Parent
-    // run" link. Without this the operator has no breadcrumb from a
-    // reader-tool sub-build back up to the parent that spawned it.
-    const parentBuildRunId =
-      typeof body.parentBuildRunId === "string" && body.parentBuildRunId.trim()
-        ? body.parentBuildRunId.trim()
-        : undefined;
-    const run = await this.runs.create(task, {
-      instanceId: "instance-local",
-      requesterUserId: "user-admin",
-      channel: "tool-build",
-      parentRunId: parentBuildRunId,
-    } as never);
-
-    await this.audit.record({
-      instanceId: "instance-local",
-      actorId: "user-admin",
-      actorType: "user",
-      action: "tool_build.requested",
-      targetType: "tool_build_request",
-      targetId: name,
-      status: "pending",
-      runId: run.id,
-      summary: `Tool-build council requested: ${name}${existingToolName ? ` (rework of ${existingToolName})` : ""}${referenceAttachments.length > 0 ? ` with ${referenceAttachments.length} reference doc(s)` : ""}`,
-    });
-
-    // Resolve reference docs into plain text before kicking the
-    // council. Text-like MIMEs (utf-8) decode directly; binary
-    // formats need a registered reader tool. When a reader is
-    // missing, Phase 2 kicks in: we auto-spawn a sub-build for the
-    // reader tool, mark this run `waiting_tool_rework`, and resume
-    // automatically once the reader registers.
-    let referenceDocs: import("../../../agents/toolBuildCouncil.js").ToolBuildContext["referenceDocs"] = undefined;
-    if (referenceAttachments.length > 0) {
-      const { resolveReferences } = await import("../../../agents/councilReferenceReader.js");
-      const registry = this.toolRegistry;
-      if (!registry) {
-        throw new ServiceUnavailableException(
-          "Reference docs were attached but the tool registry is not configured.",
-        );
-      }
-      const resolved = await resolveReferences({ attachments: referenceAttachments, registry });
-      if (resolved.missing.length > 0) {
-        // Phase 2: cycle protection. A sub-build is itself a tool-build
-        // run, and we DO NOT recurse — sub-builds reject attachments so
-        // an infinite "sub-build needs sub-sub-build" chain can't happen.
-        // We detect that by checking `body.parentBuildRunId` which the
-        // recursive call sets on its child requests. (Already extracted
-        // above as `parentBuildRunId` for the run-record link.)
-        if (parentBuildRunId) {
-          await this.runs.fail(
-            run.id,
-            `Sub-build refused: a sub-build cannot itself depend on another reader tool (would loop).`,
-          );
-          return { run: await this.runs.get(run.id) };
-        }
-        await this.spawnReaderSubBuildsAndWait({
-          parentRun: run,
-          parentBody: body,
-          missing: resolved.missing,
-          texts: resolved.texts,
-        });
-        return { run: await this.runs.get(run.id) };
-      }
-      referenceDocs = resolved.texts.map((doc) => ({
-        filename: doc.filename,
-        mimeType: doc.mimeType,
-        content: doc.content,
-      }));
-    }
-
-    void this.executeRun(run.id, task, [], {
-      toolBuildContext: {
-        name,
-        description,
-        qaCriteria,
-        secretHandle,
-        existingToolName,
-        existingToolVersion,
-        bugContext,
-        referenceDocs,
-      },
-    });
-
-    return { run: await this.runs.get(run.id) };
-  }
-
-  /**
-   * Phase 14: list of tool-build runs. Filters the global run list by
-   * channel="tool-build". Cheap because the runs table is already
-   * indexed by channel.
-   */
-  /**
-   * Phase 2: Reader sub-builds.
-   *
-   * The parent build attached one or more reference docs in a MIME
-   * type we can't decode in-process. We auto-spawn a tool-build run
-   * for each missing reader, mark the parent as `waiting_tool_rework`
-   * with structured payload describing what it's blocked on, and
-   * return — when the readers finish, `onToolRegisteredForCouncil`
-   * spots the matching capabilities and re-creates the parent build.
-   *
-   * Cycle protection: each sub-build's body carries
-   * `parentBuildRunId` so a sub-build that itself tries to attach
-   * references gets rejected immediately at the createAndStartToolBuild
-   * boundary.
-   */
-  private async spawnReaderSubBuildsAndWait(args: {
-    parentRun: AgentRunRecord;
-    parentBody: Record<string, unknown>;
-    missing: Array<{ filename: string; mimeType: string; capability: string; reason: string }>;
-    texts: Array<{ filename: string; mimeType: string; content: string }>;
-  }): Promise<void> {
-    const { parentRun, parentBody, missing } = args;
-    const subBuildRunIds: string[] = [];
-    for (const entry of missing) {
-      // Stable derived tool name so we don't spawn 5 copies of
-      // `file.application_pdf.read` when the same MIME comes up
-      // multiple times across reference batches.
-      const safeMime = entry.mimeType.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
-      const subBuildName = `file.${safeMime}.read`;
-      const subBuildBody = {
-        name: subBuildName,
-        description:
-          `Read content from a base64-encoded ${entry.mimeType} file. ` +
-          `Input is {filename: string, mimeType: string, contentBase64: string}. ` +
-          `Output must be {ok: true, content: <plain text extracted from the file>} ` +
-          `or {ok: false, content: <human-readable error message>} on failure. ` +
-          `Use Node built-ins or zod only — no other npm packages are guaranteed to resolve.`,
-        qaCriteria: [
-          "input has filename, mimeType, contentBase64 fields",
-          `mimeType equals "${entry.mimeType}"`,
-          "returns ok=true with content being a non-empty string when given a valid file",
-          "returns ok=false with a descriptive content string when given an invalid file",
-        ],
-        // Tells `findReaderTool` what this reader can read.
-        requiredCapabilities: [entry.capability],
-        // Cycle marker: child cannot itself spawn further sub-builds.
-        parentBuildRunId: parentRun.id,
-      };
-
-      const subRun = await this.createAndStartToolBuild(subBuildBody);
-      if (subRun.run) {
-        subBuildRunIds.push(subRun.run.id);
-      }
-    }
-
-    // Snapshot the parent's POST body on the run so we can replay it
-    // when the readers finish. Stripping `parentBuildRunId` defensively
-    // even though createAndStartToolBuild already ignores it on
-    // resume — keeps the replay body clean.
-    const blockedEvent = {
-      spanId: `tool-build-waiting-${parentRun.id}`,
-      timestamp: new Date().toISOString(),
-      type: "tool-build-waiting-for-reader" as const,
-      actor: "coordinator",
-      activity: "coordination" as const,
-      status: "started" as const,
-      title: `Waiting on ${missing.length} reader tool(s)`,
-      detail: `Blocked on capabilities: ${missing.map((m) => m.capability).join(", ")}.`,
-      startedAt: new Date().toISOString(),
-      payload: {
-        missingCapabilities: missing.map((m) => ({
-          capability: m.capability,
-          filename: m.filename,
-          mimeType: m.mimeType,
-        })),
-        subBuildRunIds,
-        // The replay body — minus the parent marker (so the next
-        // createAndStartToolBuild call goes through the normal path).
-        replayBody: { ...parentBody, parentBuildRunId: undefined },
-      },
-    } as unknown as AgentEvent;
-    await this.runs.appendEvent(parentRun.id, blockedEvent);
-    await this.runs.markWaitingForToolRework(
-      parentRun.id,
-      `Waiting on ${missing.length} reader tool(s): ${missing
-        .map((m) => `${m.capability} (${m.filename})`)
-        .join(", ")}.`,
-    );
-  }
-
-  /**
-   * Adapter callback: a council just registered a new tool with
-   * `capabilities`. Walk the list of waiting tool-build parent runs
-   * and re-issue any whose blocked-on capabilities are now all
-   * satisfied by the in-process tool registry. Best-effort — a
-   * failure here must not retroactively fail the registration.
-   */
-  async onToolRegisteredForCouncil(
-    _toolName: string,
-    capabilities: readonly string[],
-  ): Promise<void> {
-    if (!this.toolRegistry) return;
-    const waiting = (await this.runs.list()).filter(
-      (run) => run.channel === "tool-build" && run.status === "waiting_tool_rework",
-    );
-    for (const parent of waiting) {
-      const blockedEvent = (parent.events ?? [])
-        .filter((event) => event.type === "tool-build-waiting-for-reader")
-        .at(-1);
-      if (!blockedEvent) continue;
-      const payload = (blockedEvent.payload ?? {}) as {
-        missingCapabilities?: Array<{ capability: string; filename: string; mimeType: string }>;
-        replayBody?: Record<string, unknown>;
-      };
-      const blockedOn = payload.missingCapabilities ?? [];
-      if (blockedOn.length === 0) continue;
-      // Quick filter: does this registration even mention one of our
-      // blocked-on capabilities?
-      if (!blockedOn.some((b) => capabilities.includes(b.capability) || capabilities.includes("reads:*"))) {
-        continue;
-      }
-      // Strong check: is every capability now resolvable in-registry?
-      const stillMissing = blockedOn.filter(
-        (b) =>
-          !this.toolRegistry!.list().some(
-            (tool) => tool.capabilities?.includes(b.capability) || tool.capabilities?.includes("reads:*"),
-          ),
-      );
-      if (stillMissing.length > 0) continue;
-      // All resolvers exist → resume by replaying the original body
-      // as a fresh tool-build run. Mark the parent done with a
-      // pointer to its successor so the UI can navigate the chain.
-      const replayBody = payload.replayBody ?? {};
-      try {
-        await this.runs.resumeFromToolRework(
-          parent.id,
-          "All reader tools registered — replaying original build.",
-        );
-        const successor = await this.createAndStartToolBuild(replayBody);
-        const successorId = successor.run?.id;
-        await this.runs.appendEvent(parent.id, {
-          spanId: `tool-build-resumed-${parent.id}`,
-          timestamp: new Date().toISOString(),
-          type: "tool-build-waiting-for-reader",
-          actor: "coordinator",
-          activity: "coordination",
-          status: "completed",
-          title: "Reader tools ready — build replayed",
-          detail: successorId ? `Replayed as run ${successorId}` : "Replayed as a fresh build run.",
-          startedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-          durationMs: 0,
-          payload: { successorRunId: successorId },
-        } as unknown as AgentEvent);
-        // Move parent into a terminal state so it doesn't show as
-        // running. The successor carries the actual work.
-        await this.runs.complete(parent.id, {
-          finalAnswer: successorId
-            ? `Reader tools became available; build replayed as run ${successorId}.`
-            : `Reader tools became available; build replayed.`,
-          artifacts: [],
-        } as never);
-      } catch (error) {
-        this.logger.warn(
-          `Failed to auto-resume waiting council run ${parent.id}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-  }
-
-  async listToolBuildRuns(): Promise<AgentRunRecord[]> {
-    const all = await this.runs.list();
-    return all.filter((entry) => entry.channel === "tool-build");
   }
 
   async getArtifact(runId: string, artifactId: string) {
@@ -1257,15 +878,6 @@ export class RunsService implements OnApplicationBootstrap {
        * re-run.
        */
       resumeFrom?: import("../../../agents/runResumption.js").RunResumptionState;
-      /**
-       * Phase 14: when present, the agent dispatches to the tool-build
-       * council pipeline (see UniversalAgent.runToolBuildCouncil)
-       * instead of the standard classify→plan→delegate flow. The
-       * adapter is wired by Nest DI (CouncilToolAdapter) and reaches
-       * the model tier settings, metadata store, file system, and
-       * the manual-run path for QA.
-       */
-      toolBuildContext?: import("../../../agents/toolBuildCouncil.js").ToolBuildContext;
     } = {},
   ): Promise<void> {
     await this.runs.markRunning(id);
@@ -1297,48 +909,12 @@ export class RunsService implements OnApplicationBootstrap {
         this.groupProfiles?.get().catch(() => undefined) ?? Promise.resolve(undefined),
         run?.requesterUserId ? this.users.get(run.requesterUserId).catch(() => undefined) : Promise.resolve(undefined),
       ]);
-      // Phase 14: build the council adapter on demand when this run is
-      // a tool-build run. All deps optional → only fire if the
-      // operator wired every store + ToolsService through DI.
-      const councilAdapter =
-        context.toolBuildContext &&
-        this.codingCouncil &&
-        this.modelTierSettings &&
-        this.toolMetadata &&
-        this.toolsService
-          ? new CouncilToolAdapter({
-              instanceId: run?.instanceId ?? "instance-local",
-              codingCouncilStore: this.codingCouncil,
-              modelTierSettings: this.modelTierSettings,
-              metadataStore: this.toolMetadata,
-              reloadGeneratedTools: this.reloadGeneratedTools,
-              runToolManually: (name, body) => this.toolsService!.runToolManually(name, body),
-              getRegisteredTool: (name) => {
-                const t = this.toolRegistry?.get(name);
-                if (!t) return undefined;
-                return {
-                  inputSchema: t.inputSchema,
-                  outputSchema: t.outputSchema,
-                  examples: t.examples,
-                  requiredSecretHandles: t.requiredSecretHandles,
-                };
-              },
-              onToolRegistered: (toolName, capabilities) =>
-                this.onToolRegisteredForCouncil(toolName, capabilities),
-              // Forwarded down to the agent so the rework prompts can
-              // include the current source and changeSummary can diff.
-            })
-          : undefined;
 
       // Phase 28 — agent mode switch. The classic delegated_dag
-      // pipeline still drives every existing fixture, council
-      // tool-build run, and resume path; the recursive loop runs
-      // only when AGENT_MODE=recursive is set or the task body
-      // explicitly opts in. Tool-build runs (`toolBuildContext`)
-      // ALWAYS use the classic agent because the council pipeline
-      // lives there.
+      // pipeline still drives every existing fixture and resume path;
+      // the recursive loop runs only when AGENT_MODE=recursive is set
+      // or the task body explicitly opts in.
       const recursiveMode =
-        !context.toolBuildContext &&
         (process.env.AGENT_MODE === "recursive" || /\[recursive\]/i.test(task));
       if (recursiveMode) {
         const { RecursiveAgent } = await import("../../../agents/recursiveAgent.js");
@@ -1346,7 +922,7 @@ export class RunsService implements OnApplicationBootstrap {
           throw new Error("Recursive agent requires LLM_CLIENT, SKILL_MEMORY, and TOOL_REGISTRY to be wired");
         }
         const recursive = new RecursiveAgent(this.llm, this.skillMemory, this.toolRegistry);
-        const recursiveResult = await recursive.run(task, {
+        const recursiveResult = await this.withRunIdleGuard(id, runAbort, () => recursive.run(task, {
           signal: runAbort.signal,
           saveArtifact: this.artifacts
             ? async (artifact) => this.artifacts!.saveGenerated(id, artifact)
@@ -1395,7 +971,7 @@ export class RunsService implements OnApplicationBootstrap {
               console.warn(`[recursive] appendEvent failed:`, err instanceof Error ? err.message : err);
             }
           },
-        });
+        }));
         await this.runs.complete(id, {
           finalAnswer: recursiveResult.finalAnswer,
           complexity: recursiveResult.complexity,
@@ -1406,13 +982,11 @@ export class RunsService implements OnApplicationBootstrap {
         });
         return;
       }
-      const result = await this.agent.run(task, {
+      const result = await this.withRunIdleGuard(id, runAbort, () => this.agent.run(task, {
         inputArtifacts,
         threadContext: context.threadContext,
         instanceContext: { groupProfile, requesterUser },
         resumeFrom: context.resumeFrom,
-        toolBuildContext: context.toolBuildContext,
-        toolBuildCouncil: councilAdapter,
         workLedgerStore: this.workLedger,
         evidenceLedgerStore: this.evidenceLedger,
         runRetrospectiveStore: this.retrospectives,
@@ -1453,84 +1027,6 @@ export class RunsService implements OnApplicationBootstrap {
               return saved;
             }
           : undefined,
-        requestToolBuild: this.toolBuildRequests
-          ? async (request) => {
-              const finalized = await this.finalizer.finalize({ ...request, sourceRunId: id });
-              const buildRequest = await this.toolBuildRequests!.create(finalized);
-              await this.audit.record({
-                instanceId: run?.instanceId,
-                actorId: "coordinator",
-                actorType: "agent",
-                action: "tool_build.requested",
-                targetType: "tool_build_request",
-                targetId: buildRequest.id,
-                status: "pending",
-                runId: id,
-                threadId: run?.threadId,
-                requesterUserId: run?.requesterUserId,
-                channel: run?.channel,
-                summary: `Tool build requested for capability: ${buildRequest.capability}`,
-                metadata: sanitizeAuditMetadata({ capability: buildRequest.capability }),
-              });
-              if (!this.toolBuildWorkflow) return buildRequest;
-              const workflowResult = await this.toolBuildWorkflow.runOnce(buildRequest.id);
-              if (workflowResult.request.status === "registered") {
-                if (!workflowResult.activationReport) {
-                  await this.reloadGeneratedTools?.();
-                }
-                await this.audit.record({
-                  instanceId: run?.instanceId,
-                  actorId: "tool-registrar",
-                  actorType: "agent",
-                  action: "tool_build.registered",
-                  targetType: "tool",
-                  targetId:
-                    workflowResult.registeredToolName ??
-                    workflowResult.request.registeredToolName ??
-                    workflowResult.request.id,
-                  runId: id,
-                  threadId: run?.threadId,
-                  requesterUserId: run?.requesterUserId,
-                  channel: run?.channel,
-                  summary: `Tool build registered: ${workflowResult.registeredToolName ?? workflowResult.request.registeredToolName}`,
-                  metadata: sanitizeAuditMetadata({
-                    capability: workflowResult.request.capability,
-                    requestId: workflowResult.request.id,
-                  }),
-                });
-                await this.rework.notifyBuildRegistered(
-                  workflowResult.request.id,
-                  workflowResult.registeredToolName ?? workflowResult.request.registeredToolName,
-                  workflowResult.request.contract?.version,
-                  {
-                    actorId: "tool-registrar",
-                    actorType: "agent",
-                    instanceId: run?.instanceId,
-                    threadId: run?.threadId,
-                    requesterUserId: run?.requesterUserId,
-                    channel: run?.channel,
-                  },
-                  async (wait) => {
-                    await this.autoRetryPromotedWait(wait.id, run);
-                  },
-                );
-              }
-              return workflowResult.request;
-            }
-          : undefined,
-        toolImprovementCoordinator: this.rework.createImprovementCoordinator(
-          {
-            actorId: "coordinator",
-            actorType: "agent",
-            instanceId: run?.instanceId,
-            threadId: run?.threadId,
-            requesterUserId: run?.requesterUserId,
-            channel: run?.channel,
-          },
-          async (wait) => {
-            await this.autoRetryPromotedWait(wait.id, run);
-          },
-        ),
         toolExecutionContext: {
           resolveSecret: this.secrets?.resolve ? (handle) => this.secrets!.resolve!(handle) : undefined,
           resolveConfiguration: async (key, toolName) =>
@@ -1572,7 +1068,7 @@ export class RunsService implements OnApplicationBootstrap {
           await this.runs.appendEvent(id, event);
           await this.auditTraceEvent(id, event, run);
         },
-      });
+      }));
       const current = await this.runs.get(id);
       if (!current || current.status === "cancelled") return;
       // Phase 16 Slice D: respect the optional `runStatus` override
@@ -1589,28 +1085,6 @@ export class RunsService implements OnApplicationBootstrap {
         );
       } else {
         await this.runs.complete(id, result);
-      }
-      const completed = await this.runs.get(id);
-      if (completed?.status === "waiting_tool_rework") {
-        await this.audit.record({
-          instanceId: run?.instanceId,
-          actorId: "coordinator",
-          actorType: "agent",
-          action: "run.updated",
-          targetType: "run",
-          targetId: id,
-          status: "pending",
-          runId: id,
-          threadId: run?.threadId,
-          requesterUserId: run?.requesterUserId,
-          channel: run?.channel,
-          summary: `Run is waiting for autonomous tool improvement before final answer: ${task.slice(0, 160)}`,
-          metadata: {
-            reason: completed.error,
-            pendingToolRework: true,
-          },
-        });
-        return;
       }
       await this.auditLearnedMemory(id, result, run);
       // Phase 16 Slice D: keep the audit log honest. When the agent
@@ -1680,29 +1154,6 @@ export class RunsService implements OnApplicationBootstrap {
       if (!current || current.status === "cancelled") return;
       const message = error instanceof Error ? error.message : "Unknown run error";
       await this.runs.fail(id, message);
-      const failed = await this.runs.get(id);
-      if (failed?.status === "waiting_tool_rework") {
-        await this.audit.record({
-          instanceId: run?.instanceId,
-          actorId: "coordinator",
-          actorType: "agent",
-          action: "run.updated",
-          targetType: "run",
-          targetId: id,
-          status: "pending",
-          runId: id,
-          threadId: run?.threadId,
-          requesterUserId: run?.requesterUserId,
-          channel: run?.channel,
-          summary: `Run failure deferred while waiting for autonomous tool improvement: ${task.slice(0, 160)}`,
-          metadata: {
-            attemptedError: message,
-            reason: failed.error,
-            pendingToolRework: true,
-          },
-        });
-        return;
-      }
       await this.audit.record({
         instanceId: run?.instanceId,
         actorId: "coordinator",
@@ -1742,21 +1193,43 @@ export class RunsService implements OnApplicationBootstrap {
     }
   }
 
-  private async autoRetryPromotedWait(waitId: string, run: AgentRunRecord | undefined): Promise<void> {
-    const auto = this.rework.createAutoRetryCoordinator({
-      actorId: "auto-retry-orchestrator",
-      actorType: "agent",
-      instanceId: run?.instanceId,
-      threadId: run?.threadId,
-      requesterUserId: run?.requesterUserId,
-      channel: run?.channel,
+  private async withRunIdleGuard<T>(
+    runId: string,
+    controller: AbortController,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const timeoutMs = readRunIdleTimeoutMs();
+    if (timeoutMs <= 0) return work();
+
+    let timer: NodeJS.Timeout | undefined;
+    let settled = false;
+    const workPromise = work();
+    workPromise.catch(() => undefined);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setInterval(() => {
+        if (settled) return;
+        void this.runs.get(runId)
+          .then((run) => {
+            if (!run || TERMINAL.includes(run.status)) return;
+            const updatedAt = Date.parse(run.updatedAt);
+            const idleMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : 0;
+            if (idleMs < timeoutMs) return;
+            const message = `Run made no observable progress for ${Math.round(idleMs / 1000)}s; aborting stalled execution.`;
+            if (!controller.signal.aborted) controller.abort(new Error(message));
+            reject(new Error(message));
+          })
+          .catch((error) => {
+            reject(error instanceof Error ? error : new Error("Run idle guard failed"));
+          });
+      }, Math.min(Math.max(5_000, Math.floor(timeoutMs / 6)), 30_000));
     });
-    if (!auto) return;
-    const result = await auto.tryAutoRetry(waitId);
-    if (result.status === "created" && result.retryRun) {
-      void this.executeRun(result.retryRun.id, result.retryRun.task, [], {
-        threadId: result.retryRun.threadId,
-      });
+
+    try {
+      return await Promise.race([workPromise, timeoutPromise]);
+    } finally {
+      settled = true;
+      if (timer) clearInterval(timer);
     }
   }
 

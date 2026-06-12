@@ -92,7 +92,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     const updatedAt = new Date().toISOString();
 
     for (const tool of tools) {
-      await this.pool.query(
+      const rows = await this.pool.query<ToolModuleRow>(
         `
           insert into tool_modules (
             name, display_name, version, description, capabilities, startup_mode, input_schema,
@@ -117,6 +117,12 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               examples = excluded.examples,
               source = 'builtin',
               updated_at = excluded.updated_at
+          returning name, display_name, version, description, capabilities, startup_mode, input_schema,
+                    output_schema, module_path, test_path, source, status,
+                    last_health_ok, last_health_detail, required_configuration_keys,
+                    required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
+                    promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
+                    updated_at
         `,
         [
           tool.name,
@@ -137,6 +143,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
           updatedAt,
         ],
       );
+      await this.upsertBuiltinVersionRow(rows.rows[0]);
     }
 
     return this.list();
@@ -732,6 +739,78 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         row.last_success_at?.toISOString(),
         row.last_failure_at?.toISOString(),
         row.updated_at.toISOString(),
+      ],
+    );
+  }
+
+  private async upsertBuiltinVersionRow(row: ToolModuleRow): Promise<void> {
+    await this.pool.query("update tool_module_versions set active = false where name = $1", [row.name]);
+    await this.pool.query(
+      `
+        insert into tool_module_versions (
+          name, version, active, display_name, description, capabilities, startup_mode, input_schema,
+          output_schema, module_path, test_path, source, status, last_health_ok, last_health_detail,
+          required_configuration_keys, required_secret_handles, settings_schema, storage_contract,
+          docs_markdown, change_summary, promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at, updated_at
+        )
+        values ($1, $2, true, $3, $4, $5, $6, $7, $8, $9, $10, 'builtin', $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+        on conflict (name, version) do update
+        set active = true,
+            display_name = excluded.display_name,
+            description = excluded.description,
+            capabilities = excluded.capabilities,
+            startup_mode = excluded.startup_mode,
+            input_schema = excluded.input_schema,
+            output_schema = excluded.output_schema,
+            module_path = excluded.module_path,
+            test_path = excluded.test_path,
+            source = 'builtin',
+            status = excluded.status,
+            last_health_ok = excluded.last_health_ok,
+            last_health_detail = excluded.last_health_detail,
+            required_configuration_keys = excluded.required_configuration_keys,
+            required_secret_handles = excluded.required_secret_handles,
+            settings_schema = excluded.settings_schema,
+            storage_contract = excluded.storage_contract,
+            docs_markdown = excluded.docs_markdown,
+            change_summary = excluded.change_summary,
+            promotion_evidence = excluded.promotion_evidence,
+            examples = excluded.examples,
+            package_manifest = excluded.package_manifest,
+            success_count = excluded.success_count,
+            failure_count = excluded.failure_count,
+            last_success_at = excluded.last_success_at,
+            last_failure_at = excluded.last_failure_at,
+            updated_at = excluded.updated_at
+      `,
+      [
+        row.name,
+        row.version,
+        row.display_name,
+        row.description,
+        row.capabilities,
+        row.startup_mode,
+        row.input_schema,
+        row.output_schema,
+        row.module_path,
+        row.test_path,
+        row.status,
+        row.last_health_ok,
+        row.last_health_detail,
+        row.required_configuration_keys,
+        row.required_secret_handles,
+        row.settings_schema,
+        row.storage_contract,
+        row.docs_markdown,
+        row.change_summary,
+        row.promotion_evidence ? JSON.stringify(row.promotion_evidence) : null,
+        JSON.stringify(row.examples ?? []),
+        row.package_manifest ? JSON.stringify(row.package_manifest) : null,
+        row.success_count,
+        row.failure_count,
+        row.last_success_at,
+        row.last_failure_at,
+        row.updated_at,
       ],
     );
   }

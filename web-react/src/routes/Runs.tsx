@@ -2,10 +2,9 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { useRuns } from "@/api/runs";
-import { useToolReworkWaits } from "@/api/queries";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
-import type { AgentRunRecord, RunStatus, ToolReworkWaitRecord } from "@/api/types";
+import type { AgentRunRecord, RunStatus } from "@/api/types";
 
 const STATUS_FILTERS: Array<RunStatus | "all"> = [
   "all",
@@ -14,16 +13,12 @@ const STATUS_FILTERS: Array<RunStatus | "all"> = [
   "completed",
   "failed",
   "cancelled",
-  "waiting_tool_rework",
 ];
 
 export function RunsPage() {
   const runs = useRuns();
-  const waits = useToolReworkWaits();
   const [filter, setFilter] = useState<(typeof STATUS_FILTERS)[number]>("all");
   const [search, setSearch] = useState("");
-
-  const waitsByRun = useMemo(() => indexWaitsByRun(waits.data ?? []), [waits.data]);
 
   const visible = useMemo(() => {
     const list = runs.data ?? [];
@@ -87,7 +82,7 @@ export function RunsPage() {
         ) : (
           <ul className="divide-y divide-app-border">
             {visible.map((run) => (
-              <RunRow key={run.id} run={run} waits={waitsByRun.get(run.id) ?? []} />
+              <RunRow key={run.id} run={run} />
             ))}
           </ul>
         )}
@@ -100,12 +95,9 @@ export function RunsPage() {
   );
 }
 
-function RunRow({ run, waits }: { run: AgentRunRecord; waits: ToolReworkWaitRecord[] }) {
+function RunRow({ run }: { run: AgentRunRecord }) {
   const toolCalls = (run.events ?? []).filter((event) => event.activity === "tool").length;
   const artifactCount = run.result?.artifacts?.length ?? 0;
-  const activeWait = waits.find(
-    (wait) => wait.status !== "resumed" && wait.status !== "cancelled" && wait.status !== "failed",
-  );
   return (
     <li>
       <Link
@@ -128,27 +120,6 @@ function RunRow({ run, waits }: { run: AgentRunRecord; waits: ToolReworkWaitReco
         </span>
         <span className="text-[11px] text-app-text-muted">{formatRelative(run.createdAt)}</span>
       </Link>
-      {activeWait ? (
-        <div className="border-t border-app-border bg-app-warning-soft/40 px-4 py-1.5 text-[11px] text-app-warning">
-          Waiting for tool upgrade · wait <code>{activeWait.id}</code>
-          {activeWait.toolName ? (
-            <>
-              {" · tool "}
-              <code>{activeWait.toolName}</code>
-            </>
-          ) : null}
-        </div>
-      ) : null}
     </li>
   );
-}
-
-function indexWaitsByRun(waits: ToolReworkWaitRecord[]) {
-  const map = new Map<string, ToolReworkWaitRecord[]>();
-  for (const wait of waits) {
-    const existing = map.get(wait.runId);
-    if (existing) existing.push(wait);
-    else map.set(wait.runId, [wait]);
-  }
-  return map;
 }

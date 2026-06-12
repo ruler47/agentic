@@ -56,3 +56,37 @@ test("WebSearchTool exposes module metadata and healthcheck", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("WebSearchTool reports network failures as tool results", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new TypeError("fetch failed");
+  };
+
+  try {
+    const tool = new WebSearchTool("http://search.local");
+    const result = await tool.run({ query: "Barcelona IT sector", limit: 1 });
+
+    assert.equal(result.ok, false);
+    assert.match(result.content, /Search provider is unreachable/);
+    assert.deepEqual(result.data, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("WebSearchTool reports invalid JSON as tool results", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("not-json", { status: 200 });
+
+  try {
+    const tool = new WebSearchTool("http://search.local");
+    const result = await tool.run({ query: "Barcelona IT sector", limit: 1 });
+
+    assert.equal(result.ok, false);
+    assert.match(result.content, /invalid JSON/);
+    assert.deepEqual(result.data, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

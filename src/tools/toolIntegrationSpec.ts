@@ -1,5 +1,17 @@
 import type { ToolSchema, ToolStartupMode } from "./tool.js";
-import type { ToolBuildRequestInput } from "./toolBuildRequestStore.js";
+
+export type ToolIntegrationSpecInput = {
+  capability: string;
+  displayName?: string;
+  reason?: string;
+  taskSummary?: string;
+  desiredToolName?: string;
+  credentialNotes?: string;
+  credentialHandles?: string[];
+  requiredInputs?: string[];
+  requiredOutputs?: string[];
+  startupMode?: ToolStartupMode;
+};
 
 export type ToolIntegrationMode =
   | "on-demand-api"
@@ -48,7 +60,7 @@ export type ToolIntegrationSpec = {
   notes: string[];
 };
 
-export function inferToolIntegrationSpec(input: ToolBuildRequestInput): ToolIntegrationSpec | undefined {
+export function inferToolIntegrationSpec(input: ToolIntegrationSpecInput): ToolIntegrationSpec | undefined {
   const text = [
     input.capability,
     input.displayName,

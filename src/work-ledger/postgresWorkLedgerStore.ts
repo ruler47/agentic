@@ -191,7 +191,13 @@ export class PostgresWorkLedgerStore implements WorkLedgerStore {
 
   async listByWorkKey(workKey: string, limit = 50): Promise<WorkLedgerItem[]> {
     const rows = await this.pool.query<WorkLedgerRow>(
-      `select ${SELECT_COLUMNS} from work_ledger_items where work_key = $1 order by created_at desc limit $2`,
+      `
+        select ${SELECT_COLUMNS}
+        from work_ledger_items
+        where md5(work_key) = md5($1) and work_key = $1
+        order by created_at desc
+        limit $2
+      `,
       [workKey, limit],
     );
     return rows.rows.map(mapRow);

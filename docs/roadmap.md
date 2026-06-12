@@ -1,5 +1,26 @@
 # Roadmap
 
+## Current Product Decision
+
+The active product path is the core-toolbelt reset. The old Tool Builder and tool-rework
+queue are intentionally removed from the active server/UI path. The platform should first
+make a reliable base of preinstalled, versioned, observable tools; only after that should
+generated tools return as an out-of-tree builder layer.
+
+See [Agentic Handoff](agent-handoff.md) for the current philosophy, active gaps, and
+handoff notes for another AI coding agent.
+
+The core principles are:
+
+- solve failures systemically, not with private task-specific patches;
+- agents receive only enabled/available registry tools;
+- missing capabilities are honest unsupported states for now;
+- generated tools later become portable packages/services outside tracked app source;
+- external actions must have a no-submit preparation/proof boundary and a clear approval
+  or automode commit boundary;
+- model routing should use tier plus capability requirements such as vision, reasoning,
+  coding, and tool-calling.
+
 ## Current Runtime
 
 The current system is a coordinator-led DAG:
@@ -165,13 +186,15 @@ different model tiers or providers, to propose plans or critique a solution. A s
 agent merges those proposals into a DAG and the Work Ledger keeps the council branches
 from doing the same evidence-gathering twice.
 
-The Tool Builder should be framed as a general **Technical Capability Builder**, not an
-API-only builder. The agent should classify technical instructions/documentation into the
-needed capability family first: API client, SDK wrapper, CLI adapter, browser workflow,
-webhook/listener, always-on messaging service, file/media processor, protocol adapter,
-database/schema workflow, or another reusable tool family. API docs are only one input
-format among OpenAPI, Markdown/PDF docs, SDK docs, CLI docs, webhook docs, examples, and
-plain operator instructions.
+The future Tool Builder should be reframed as a general **Technical Capability Builder**,
+but it is not part of the active runtime path today. When it returns, it should classify
+technical instructions/documentation into the needed capability family first: API client,
+SDK wrapper, CLI adapter, browser workflow, webhook/listener, always-on messaging service,
+file/media processor, protocol adapter, database/schema workflow, or another reusable
+tool family. API docs are only one input format among OpenAPI, Markdown/PDF docs, SDK
+docs, CLI docs, webhook docs, examples, and plain operator instructions. The output
+should be an out-of-tree package/service registered through the same versioned tool
+registry as the core toolbelt.
 
 ## Product Direction: Group Assistant Platform
 
@@ -2925,4 +2948,3 @@ The legacy `UniversalAgent` waterfall stays in place for tool-build council runs
 during the transition; we'll fold tool-build into the recursive loop in a
 follow-up phase once `RecursiveAgent` has a working track record on simple
 user tasks.
-

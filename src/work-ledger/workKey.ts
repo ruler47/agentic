@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isSecretKey } from "./sanitize.js";
 
 /**
@@ -41,7 +42,7 @@ export function searchQueryWorkKey(input: SearchQueryWorkKeyInput): string {
   const provider = normalizeText(input.provider) ?? "any";
   const locale = normalizeText(input.locale) ?? "any";
   const scope = normalizeText(input.scope) ?? "any";
-  return `search:${provider}:${locale}:${scope}:${normalizeText(input.query) ?? ""}`;
+  return compactWorkKey(`search:${provider}:${locale}:${scope}`, normalizeText(input.query) ?? "");
 }
 
 export function urlVisitWorkKey(rawUrl: string): string {
@@ -68,7 +69,7 @@ export function urlVisitWorkKey(rawUrl: string): string {
 export function toolCallWorkKey(toolName: string, input: Record<string, unknown> | undefined): string {
   const normalizedName = normalizeText(toolName) ?? "tool";
   const sanitized = stableJson(redactSecrets(input ?? {}));
-  return `tool:${normalizedName}:${sanitized}`;
+  return compactWorkKey(`tool:${normalizedName}`, sanitized);
 }
 
 export function apiCallWorkKey(input: ApiCallWorkKeyInput): string {
@@ -76,14 +77,24 @@ export function apiCallWorkKey(input: ApiCallWorkKeyInput): string {
   const method = (normalizeText(input.method) ?? "GET").toUpperCase();
   const endpoint = canonicalizeEndpoint(input.endpoint);
   const sanitized = stableJson(redactSecrets(input.params ?? {}));
-  return `api:${provider}:${method}:${endpoint}:${sanitized}`;
+  return compactWorkKey(`api:${provider}:${method}:${endpoint}`, sanitized);
 }
 
 export function artifactIntentWorkKey(input: ArtifactIntentWorkKeyInput): string {
   const kind = normalizeText(input.kind) ?? "artifact";
   const scope = normalizeText(input.scope) ?? "any";
   const descriptor = normalizeText(input.descriptor) ?? "";
-  return `artifact:${kind}:${scope}:${descriptor}`;
+  return compactWorkKey(`artifact:${kind}:${scope}`, descriptor);
+}
+
+export function compactWorkKey(prefix: string, payload: string, maxLength = 512): string {
+  const normalizedPrefix = normalizeText(prefix)?.replace(/\s*:\s*/g, ":") ?? "work";
+  const candidate = `${normalizedPrefix}:${payload}`;
+  if (candidate.length <= maxLength) return candidate;
+  const digest = createHash("sha256").update(candidate).digest("hex");
+  const previewBudget = Math.max(0, Math.min(96, maxLength - normalizedPrefix.length - digest.length - 16));
+  const preview = payload.slice(0, previewBudget).replace(/\s+/g, " ").trim();
+  return `${normalizedPrefix}:sha256:${digest}${preview ? `:${preview}` : ""}`;
 }
 
 function normalizeText(value: unknown): string | undefined {

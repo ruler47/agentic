@@ -53,9 +53,32 @@ export class ToolsService {
   ) {}
 
   async listTools(): Promise<ToolModuleMetadata[]> {
-    const tools = this.registry?.list() ?? [];
-    if (this.metadata) return this.metadata.list();
-    return tools.map((tool) => toolToMetadata(tool));
+    const registryTools = (this.registry?.list() ?? []).map((tool) => toolToMetadata(tool));
+    if (!this.metadata) return registryTools;
+
+    const persisted = await this.metadata.list();
+    const persistedByName = new Map(persisted.map((tool) => [tool.name, tool]));
+
+    return registryTools
+      .map((registryTool) => {
+        const stored = persistedByName.get(registryTool.name);
+        if (!stored) return registryTool;
+
+        return {
+          ...stored,
+          ...registryTool,
+          source: stored.source,
+          status: stored.status,
+          successCount: stored.successCount,
+          failureCount: stored.failureCount,
+          lastSuccessAt: stored.lastSuccessAt,
+          lastFailureAt: stored.lastFailureAt,
+          lastHealthOk: stored.lastHealthOk,
+          lastHealthDetail: stored.lastHealthDetail,
+          updatedAt: stored.updatedAt,
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async toolHealth(): Promise<Array<{ name: string; ok: boolean; detail?: string }>> {
@@ -176,7 +199,7 @@ export class ToolsService {
       status: "success",
       summary: "Generated tools reloaded by operator.",
     });
-    return { tools: this.metadata ? await this.metadata.list() : [] };
+    return { tools: await this.listTools() };
   }
 
   async listSettings(toolName?: string): Promise<ToolRuntimeSettingRecord[]> {

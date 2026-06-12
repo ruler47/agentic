@@ -101,3 +101,22 @@ test("HttpToolAdapter healthcheck reports unreachable services as ok=false", asy
   assert.equal(h.ok, false);
   assert.match(h.detail!, /unreachable/);
 });
+
+test("HttpToolAdapter healthcheck treats service degraded as not ok", async () => {
+  const fetchMock = fakeFetch(async () =>
+    new Response(JSON.stringify({ status: "degraded", detail: "Service not started." }), { status: 200 }),
+  );
+  const tool = new HttpToolAdapter({
+    name: "channel.telegram",
+    version: "1.0.0",
+    description: "x",
+    capabilities: ["messaging-channel"],
+    baseUrl: "http://telegram:8080",
+    fetchImpl: fetchMock,
+  });
+
+  const h = await tool.healthcheck();
+
+  assert.equal(h.ok, false);
+  assert.equal(h.detail, "Service not started.");
+});
