@@ -43,19 +43,15 @@ test("recoverInterrupted: staleAfterMs spares fresh runs and only recovers stale
   assert.equal((await store.get(stale.id))!.status, "failed", "stale run must be marked failed");
 });
 
-test("recoverInterrupted: leaves cancelled and waiting_tool_rework alone", async () => {
+test("recoverInterrupted: leaves cancelled runs alone", async () => {
   const store = new InMemoryRunStore();
   const cancelled = await store.create("x");
-  const waiting = await store.create("w");
   await store.markRunning(cancelled.id);
   await store.cancel(cancelled.id, "user cancelled");
-  await store.markRunning(waiting.id);
-  await store.markWaitingForToolRework(waiting.id, "needs tool rework");
 
   const recovered = await store.recoverInterrupted("interrupted");
   assert.equal(recovered, 0);
   assert.equal((await store.get(cancelled.id))!.status, "cancelled");
-  assert.equal((await store.get(waiting.id))!.status, "waiting_tool_rework");
 });
 
 test("recoverInterrupted: zero staleAfterMs disables the threshold (legacy)", async () => {

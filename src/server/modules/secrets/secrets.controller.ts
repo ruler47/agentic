@@ -22,6 +22,14 @@ export class SecretsController {
     return { secretHandles: await this.secrets.list() };
   }
 
+  @Post("status")
+  async status(@Body() body: unknown) {
+    const handles = body && typeof body === "object" && !Array.isArray(body)
+      ? (body as { handles?: unknown }).handles
+      : undefined;
+    return this.secrets.status(Array.isArray(handles) ? handles.filter((handle): handle is string => typeof handle === "string") : []);
+  }
+
   @Post()
   @HttpCode(201)
   async create(@Body() dto: CreateSecretHandleDto, @Req() request: Request) {

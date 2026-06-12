@@ -1,22 +1,13 @@
 import { Subtask } from "../types.js";
 
 /**
- * Phase 12 final: the universal agent does not regex-match the task text
- * for specific domain words. Task intent comes from the classifier model
- * via `TaskComplexity.intent[]` (see `classifyPrompt` in `prompts.ts`).
- * The runtime caches that list per run in
- * `UniversalAgent.runScopedIntents` and reads it through
- * `resolveTaskIntents(text, runId)`.
- *
- * The functions exported here remain only as compatibility shims so
- * legacy callers (CLI smokes, fixtures, recursive child invocations
- * that bypass `classify()`) get a defined value instead of a runtime
- * crash. They return empty results — the runtime then runs without any
- * domain-specific behaviour, which is the correct universal default.
+ * The base runtime does not regex-match the task text for specific domain
+ * words. These helpers intentionally return empty generic intent hints until a
+ * new LLM-driven intent layer is rebuilt.
  *
  * Future contributors: do NOT add regex here. If the model is not
- * available, intent stays empty and tier-2 LLM URL ranking + memory
- * patterns + tool contracts cover the actual decision.
+ * available, intent stays empty and LLM/tool contracts cover the actual
+ * decision.
  */
 
 export const KNOWN_INTENTS = [] as const;

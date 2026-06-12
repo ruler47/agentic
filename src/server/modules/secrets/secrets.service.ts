@@ -16,6 +16,16 @@ import type { CreateSecretHandleDto } from "./dto/create-secret-handle.dto.js";
 
 export type PublicSecretHandleRecord = SecretHandleRecord;
 
+export type SecretHandleStatus = {
+  handle: string;
+  registered: boolean;
+  resolvable: boolean;
+  provider?: SecretHandleRecord["provider"];
+  secretRef?: string;
+  scopes?: string[];
+  reason?: "not_registered" | "unresolved" | "resolved";
+};
+
 @Injectable()
 export class SecretsService {
   constructor(
@@ -70,6 +80,35 @@ export class SecretsService {
     const record = await this.store.get(handle);
     if (!record) throw new NotFoundException("Secret handle not found");
     return toPublicSecretHandle(record);
+  }
+
+  async status(handles: string[]): Promise<{ handles: SecretHandleStatus[] }> {
+    if (!this.store) {
+      throw new ServiceUnavailableException("Secret handle store is not configured");
+    }
+    const uniqueHandles = [...new Set(handles.map((handle) => handle.trim()).filter(Boolean))].slice(0, 50);
+    const statuses = await Promise.all(uniqueHandles.map(async (handle): Promise<SecretHandleStatus> => {
+      const record = await this.store!.get(handle);
+      if (!record) {
+        return {
+          handle,
+          registered: false,
+          resolvable: false,
+          reason: "not_registered",
+        };
+      }
+      const resolved = this.store!.resolve ? await this.store!.resolve(handle) : undefined;
+      return {
+        handle,
+        registered: true,
+        resolvable: resolved !== undefined,
+        provider: record.provider,
+        secretRef: publicSecretRef(record),
+        scopes: [...record.scopes],
+        reason: resolved !== undefined ? "resolved" : "unresolved",
+      };
+    }));
+    return { handles: statuses };
   }
 
   async delete(handle: string): Promise<{ deleted: true; secretHandle: PublicSecretHandleRecord }> {

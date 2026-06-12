@@ -21,6 +21,27 @@ test("tool package manifest normalizes portable out-of-tree tool metadata", () =
     inputSchema: { type: "object", properties: {} },
     outputSchema: { type: "object", properties: {} },
     requiredSecretHandles: ["secret.telegram.bot"],
+    integration: {
+      schemaVersion: "agentic.tool-integration.v1",
+      mode: "always-on-service",
+      protocol: "messaging-bot",
+      provider: "telegram",
+      auth: {
+        type: "bot-token",
+        requiredSecretHandles: ["secret.telegram.bot"],
+      },
+      operations: [
+        {
+          name: "receive_update",
+          direction: "inbound-event",
+        },
+        {
+          name: "service_lifecycle",
+          direction: "lifecycle",
+        },
+      ],
+      callbackStrategy: "runtime-callbacks",
+    },
     qa: {
       summary: "QA passed.",
       checks: ["unit tests", "service smoke"],
@@ -31,6 +52,8 @@ test("tool package manifest normalizes portable out-of-tree tool metadata", () =
   assert.equal(manifest.startupMode, "always-on");
   assert.equal(manifest.package.type, "oci-image");
   assert.deepEqual(manifest.requiredSecretHandles, ["secret.telegram.bot"]);
+  assert.equal(manifest.integration?.mode, "always-on-service");
+  assert.equal(manifest.integration?.provider, "telegram");
   assert.match(serializeToolPackageManifest(manifest), /agentic.tool-package.v1/);
 });
 

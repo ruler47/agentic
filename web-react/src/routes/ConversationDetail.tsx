@@ -6,8 +6,25 @@ import { useRuns } from "@/api/runs";
 import { useToolServiceEvents } from "@/api/toolServices";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { GenericBadge, RunStatusBadge } from "@/components/StatusBadge";
+import {
+  artifactsForMessage,
+  hydrateMarkdownArtifactLinks,
+  unreferencedArtifacts,
+} from "@/features/conversations/conversationArtifacts";
+import {
+  applyExternalActionRunMode,
+  externalActionRunModeFromTask,
+  type ExternalActionRunMode,
+} from "@/features/runs/externalActionMode";
+import { ExternalActionModeSelector } from "@/features/runs/ExternalActionModeSelector";
+import { RunActionApprovalPanel } from "@/features/run-workspace/RunActionApprovalPanel";
 import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
-import type { ConversationThreadMessage, ToolServiceEventRecord } from "@/api/types";
+import type {
+  AgentArtifact,
+  AgentRunRecord,
+  ConversationThreadMessage,
+  ToolServiceEventRecord,
+} from "@/api/types";
 
 export function ConversationDetailPage() {
   const params = useParams<{ threadId: string }>();
@@ -18,6 +35,8 @@ export function ConversationDetailPage() {
   const create = useCreateContinuationRun();
   const remove = useDeleteConversation();
   const [task, setTask] = useState("");
+  const [externalActionMode, setExternalActionMode] =
+    useState<ExternalActionRunMode>("approval");
 
   if (!threadId) return <p className="text-sm text-app-text-muted">Thread id is missing.</p>;
   if (conversation.isLoading) return <p className="text-sm text-app-text-muted">Loading…</p>;
@@ -36,6 +55,8 @@ export function ConversationDetailPage() {
   const thread = conversation.data;
   const threadRuns = (runs.data ?? []).filter((run) => run.threadId === thread.id);
   const threadRunIds = new Set(threadRuns.map((run) => run.id));
+  const latestThreadRun =
+    threadRuns.find((run) => run.id === thread.latestRunId) ?? threadRuns.at(-1);
   const linkedChannelEvents = (channelEvents.data ?? []).filter(
     (event) => event.threadId === thread.id || (event.runId ? threadRunIds.has(event.runId) : false),
   );
@@ -44,7 +65,7 @@ export function ConversationDetailPage() {
     event.preventDefault();
     if (!task.trim() || create.isPending) return;
     create.mutate(
-      { threadId: thread.id, task: task.trim() },
+      { threadId: thread.id, task: applyExternalActionRunMode(task, externalActionMode) },
       { onSuccess: () => setTask("") },
     );
   };
@@ -65,6 +86,9 @@ export function ConversationDetailPage() {
               >
                 <div className="flex items-center justify-between gap-2">
                   <RunStatusBadge status={run.status} />
+                  {externalActionRunModeFromTask(run.task) === "auto" ? (
+                    <GenericBadge tone="ok">automode</GenericBadge>
+                  ) : null}
                   <span className="font-mono text-[10px] text-app-text-muted">
                     {formatDuration(runDurationMs(run))}
                   </span>
@@ -113,12 +137,18 @@ export function ConversationDetailPage() {
         </header>
         <div className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
           {(thread.messages ?? []).map((message) => (
-            <MessageBubble key={message.id} message={message} />
+            <MessageBubble
+              key={message.id}
+              message={message}
+              artifacts={message.role === "user" ? [] : artifactsForMessage(message, threadRuns)}
+              run={message.runId ? threadRuns.find((run) => run.id === message.runId) : undefined}
+            />
           ))}
           {(thread.messages ?? []).length === 0 ? (
             <p className="text-xs text-app-text-muted">No messages yet. Submit a continuation below.</p>
           ) : null}
         </div>
+        {latestThreadRun ? <RunActionApprovalPanel run={latestThreadRun} /> : null}
         <form onSubmit={submit} className="mt-2 flex flex-col gap-2 border-t border-app-border pt-3">
           <label className="flex flex-col gap-1 text-xs">
             <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
@@ -132,6 +162,11 @@ export function ConversationDetailPage() {
               className="resize-y rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-sm outline-none focus:border-app-accent/60"
             />
           </label>
+          <ExternalActionModeSelector
+            value={externalActionMode}
+            onChange={setExternalActionMode}
+            compact
+          />
           <div className="flex items-center justify-end gap-2">
             {create.isError ? (
               <p className="text-[11px] text-app-danger">{create.error.message}</p>
@@ -167,13 +202,23 @@ export function ConversationDetailPage() {
   );
 }
 
-function MessageBubble({ message }: { message: ConversationThreadMessage }) {
+function MessageBubble({
+  message,
+  artifacts,
+  run,
+}: {
+  message: ConversationThreadMessage;
+  artifacts: AgentArtifact[];
+  run?: AgentRunRecord;
+}) {
   const tone =
     message.role === "user"
       ? "border-app-info/30 bg-[rgba(110,168,255,0.06)]"
       : message.role === "assistant"
         ? "border-app-accent/30 bg-app-accent-soft/40"
         : "border-app-border bg-app-surface-2";
+  const hydratedContent = hydrateMarkdownArtifactLinks(message.content, artifacts);
+  const extraArtifacts = unreferencedArtifacts(hydratedContent, artifacts);
   return (
     <article className={["rounded-md border p-3 text-xs", tone].join(" ")}>
       <div className="flex items-baseline justify-between gap-2">
@@ -183,10 +228,80 @@ function MessageBubble({ message }: { message: ConversationThreadMessage }) {
         <span className="text-[10px] text-app-text-muted">{formatRelative(message.createdAt)}</span>
       </div>
       <div className="mt-1">
-        <MarkdownContent value={message.content} />
+        <MarkdownContent value={hydratedContent} />
       </div>
+      {extraArtifacts.length > 0 ? (
+        <MessageArtifacts artifacts={extraArtifacts} run={run} />
+      ) : null}
     </article>
   );
+}
+
+function MessageArtifacts({
+  artifacts,
+  run,
+}: {
+  artifacts: AgentArtifact[];
+  run?: AgentRunRecord;
+}) {
+  return (
+    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+      {artifacts.map((artifact) => (
+        <MessageArtifactCard key={artifact.id} artifact={artifact} run={run} />
+      ))}
+    </div>
+  );
+}
+
+function MessageArtifactCard({
+  artifact,
+  run,
+}: {
+  artifact: AgentArtifact;
+  run?: AgentRunRecord;
+}) {
+  const isImage = artifact.mimeType.startsWith("image/");
+  const sizeKb = Math.max(0, Math.round(artifact.sizeBytes / 1024));
+  const downloadUrl = artifactDownloadUrl(artifact.url);
+  return (
+    <div className="rounded-md border border-app-border bg-app-surface-2 p-2 text-[11px]">
+      {isImage ? (
+        <a href={artifact.url} target="_blank" rel="noreferrer" className="block overflow-hidden rounded border border-app-border">
+          <img src={artifact.url} alt={artifact.filename} loading="lazy" className="h-32 w-full object-cover" />
+        </a>
+      ) : artifact.contentPreview ? (
+        <pre className="max-h-24 overflow-auto whitespace-pre-wrap rounded border border-app-border bg-app-surface px-2 py-1 font-mono text-[10px]">
+          {truncate(artifact.contentPreview, 400)}
+        </pre>
+      ) : null}
+      <div className="mt-2 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="break-all font-medium">{artifact.filename}</p>
+          <p className="font-mono text-[10px] text-app-text-muted">
+            {artifact.mimeType} · {sizeKb} KB
+          </p>
+        </div>
+        <GenericBadge tone={artifact.kind === "output" ? "ok" : "muted"}>{artifact.kind}</GenericBadge>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <a href={artifact.url} target="_blank" rel="noreferrer" className="rounded border border-app-border bg-app-surface px-2 py-0.5">
+          {isImage ? "Preview" : "Open"}
+        </a>
+        <a href={downloadUrl} download={artifact.filename} className="rounded border border-app-border bg-app-surface px-2 py-0.5">
+          Download
+        </a>
+        {run ? (
+          <Link to={`/run/${run.id}`} className="rounded border border-app-border bg-app-surface px-2 py-0.5">
+            Run
+          </Link>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function artifactDownloadUrl(url: string): string {
+  return url.includes("?") ? `${url}&download=1` : `${url}?download=1`;
 }
 
 function ContextBlock({ title, body }: { title: string; body: string }) {

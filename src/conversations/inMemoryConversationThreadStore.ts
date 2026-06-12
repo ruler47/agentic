@@ -74,7 +74,7 @@ export class InMemoryConversationThreadStore implements ConversationThreadStore 
     if (!thread) return undefined;
 
     const now = new Date().toISOString();
-    const artifactIds = input.artifacts?.map((artifact) => artifact.id) ?? [];
+    const artifactIds = input.failedError ? [] : input.artifacts?.map((artifact) => artifact.id) ?? [];
     thread.latestRunId = input.runId;
     thread.artifactIds = unique([...thread.artifactIds, ...artifactIds]);
     thread.updatedAt = now;
@@ -99,7 +99,7 @@ export class InMemoryConversationThreadStore implements ConversationThreadStore 
       artifactCount: artifactIds.length,
     });
 
-    if (input.finalAnswer) {
+    if (!input.failedError && input.finalAnswer) {
       await this.appendMessage({
         threadId: input.threadId,
         runId: input.runId,

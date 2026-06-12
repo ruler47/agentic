@@ -8,9 +8,8 @@ type PlaceholderPageProps = {
 };
 
 /**
- * Used while a real page is not ported yet. Shows what the page is meant for
- * and which endpoints it will hit, so the legacy/v2 comparison is honest:
- * an empty React page should not look like the legacy one is broken.
+ * Used while a real page is not implemented yet. Shows what the page is meant
+ * for and which endpoints it will hit, so unfinished areas are explicit.
  */
 export function PlaceholderPage({ title, description, apiHints, children }: PlaceholderPageProps) {
   return (
@@ -21,7 +20,7 @@ export function PlaceholderPage({ title, description, apiHints, children }: Plac
       </header>
 
       <div className="rounded-md border border-dashed border-app-border bg-app-surface-2 px-4 py-3 text-sm text-app-text-muted">
-        Not ported to React yet. Open the legacy console on the backend server for the same screen.
+        This product surface is planned, but not implemented in the React console yet.
       </div>
 
       {apiHints && apiHints.length > 0 ? (

@@ -1,7 +1,6 @@
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "@/app/Sidebar";
 import { TopHeader } from "@/app/TopHeader";
-import { InvestigationModalRoot } from "@/features/investigations/InvestigationModal";
 
 export function AppShell() {
   return (
@@ -13,7 +12,6 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
-      <InvestigationModalRoot />
     </div>
   );
 }

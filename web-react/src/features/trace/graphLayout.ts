@@ -11,6 +11,9 @@ import type { TraceNode } from "@/features/trace/buildTraceNodes";
 
 export type TraceGraphLayoutMode = "category" | "depth";
 
+export const TRACE_NODE_WIDTH = 240;
+export const TRACE_NODE_HEIGHT = 112;
+
 const COLUMN_WIDTH = 260;
 const NODE_HEIGHT = 116;
 const ROW_GAP = 28;

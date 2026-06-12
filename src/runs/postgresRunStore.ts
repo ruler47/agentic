@@ -107,6 +107,21 @@ export class PostgresRunStore implements RunStore {
     await this.updateStatus(id, "running", { skipCancelled: true });
   }
 
+  async waitForApproval(
+    id: string,
+    result: AgentRunResult,
+    reason: string,
+  ): Promise<void> {
+    await this.pool.query(
+      `
+        update runs
+        set status = 'waiting_approval', result = $1, error = $2, updated_at = $3
+        where id = $4 and status <> 'cancelled'
+      `,
+      [JSON.stringify(result), reason, new Date(), id],
+    );
+  }
+
   async appendEvent(id: string, event: AgentEvent): Promise<void> {
     const run = await this.get(id);
     if (run?.status === "cancelled") return;
@@ -146,7 +161,7 @@ export class PostgresRunStore implements RunStore {
       `
         update runs
         set status = 'completed', result = $1, updated_at = $2, error = null
-        where id = $3 and status not in ('cancelled', 'waiting_tool_rework')
+        where id = $3 and status <> 'cancelled'
       `,
       [JSON.stringify(result), new Date(), id],
     );
@@ -157,7 +172,7 @@ export class PostgresRunStore implements RunStore {
       `
         update runs
         set status = 'failed', error = $1, updated_at = $2
-        where id = $3 and status not in ('cancelled', 'waiting_tool_rework')
+        where id = $3 and status <> 'cancelled'
       `,
       [error, new Date(), id],
     );
@@ -169,28 +184,6 @@ export class PostgresRunStore implements RunStore {
         update runs
         set status = 'cancelled', error = $1, updated_at = $2
         where id = $3 and status in ('queued', 'running')
-      `,
-      [reason, new Date(), id],
-    );
-  }
-
-  async markWaitingForToolRework(id: string, reason: string): Promise<void> {
-    await this.pool.query(
-      `
-        update runs
-        set status = 'waiting_tool_rework', error = $1, updated_at = $2
-        where id = $3 and status not in ('completed', 'cancelled')
-      `,
-      [reason, new Date(), id],
-    );
-  }
-
-  async resumeFromToolRework(id: string, reason: string): Promise<void> {
-    await this.pool.query(
-      `
-        update runs
-        set status = 'failed', error = $1, updated_at = $2
-        where id = $3 and status = 'waiting_tool_rework'
       `,
       [reason, new Date(), id],
     );
@@ -231,6 +224,11 @@ export class PostgresRunStore implements RunStore {
     );
 
     return result.rowCount ?? 0;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    const result = await this.pool.query("delete from runs where id = $1", [id]);
+    return (result.rowCount ?? 0) > 0;
   }
 
   private async updateStatus(

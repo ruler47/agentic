@@ -250,8 +250,8 @@ test("InMemoryRunRetrospectiveStore tracks proposals and status updates", async 
 
   const linked = await store.appendLinkedProposal(created.id, "memory", "memory-1");
   assert.deepEqual(linked.proposedMemoryIds, ["memory-1"]);
-  const linkedTool = await store.appendLinkedProposal(created.id, "tool_investigation", "inv-1");
-  assert.deepEqual(linkedTool.proposedToolInvestigationIds, ["inv-1"]);
+  const linkedTool = await store.appendLinkedProposal(created.id, "tool_follow_up", "inv-1");
+  assert.deepEqual(linkedTool.proposedToolFollowUpIds, ["inv-1"]);
 
   const reviewed = await store.updateStatus(created.id, {
     status: "reviewed",

@@ -3,10 +3,10 @@ import { AgentEvent, AgentRunResult } from "../types.js";
 export type RunStatus =
   | "queued"
   | "running"
+  | "waiting_approval"
   | "completed"
   | "failed"
-  | "cancelled"
-  | "waiting_tool_rework";
+  | "cancelled";
 
 export type AgentRunRecord = {
   id: string;
@@ -49,12 +49,11 @@ export type RunStore = {
   list(): Promise<AgentRunRecord[]>;
   get(id: string): Promise<AgentRunRecord | undefined>;
   markRunning(id: string): Promise<void>;
+  waitForApproval(id: string, result: AgentRunResult, reason: string): Promise<void>;
   appendEvent(id: string, event: AgentEvent): Promise<void>;
   complete(id: string, result: AgentRunResult): Promise<void>;
   fail(id: string, error: string): Promise<void>;
   cancel(id: string, reason: string): Promise<void>;
-  markWaitingForToolRework(id: string, reason: string): Promise<void>;
-  resumeFromToolRework(id: string, reason: string): Promise<void>;
   /**
    * Sweep runs left in `queued` / `running` after a process restart and mark
    * them `failed` with the supplied reason. `staleAfterMs` (optional) filters
@@ -63,5 +62,6 @@ export type RunStore = {
    * killed. Default 0 = no filter (legacy behaviour).
    */
   recoverInterrupted(error: string, options?: { staleAfterMs?: number }): Promise<number>;
+  delete(id: string): Promise<boolean>;
   deleteByThreadId(threadId: string): Promise<number>;
 };

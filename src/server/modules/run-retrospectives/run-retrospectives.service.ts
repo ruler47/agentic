@@ -132,9 +132,9 @@ export class RunRetrospectivesService {
       missingCapabilities: parseOptionalStringArray(value.missingCapabilities, "missingCapabilities"),
       usefulEvidenceIds: parseOptionalStringArray(value.usefulEvidenceIds, "usefulEvidenceIds"),
       proposedMemoryIds: parseOptionalStringArray(value.proposedMemoryIds, "proposedMemoryIds"),
-      proposedToolInvestigationIds: parseOptionalStringArray(
-        value.proposedToolInvestigationIds,
-        "proposedToolInvestigationIds",
+      proposedToolFollowUpIds: parseOptionalStringArray(
+        value.proposedToolFollowUpIds,
+        "proposedToolFollowUpIds",
       ),
       proposedPolicyChanges: parseOptionalStringArray(value.proposedPolicyChanges, "proposedPolicyChanges"),
       proposedPromptChanges: parseOptionalStringArray(value.proposedPromptChanges, "proposedPromptChanges"),

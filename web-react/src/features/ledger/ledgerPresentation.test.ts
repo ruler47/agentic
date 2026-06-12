@@ -45,7 +45,7 @@ const baseRetro: RunRetrospectiveRecord = {
   missingCapabilities: [],
   usefulEvidenceIds: ["ev_1"],
   proposedMemoryIds: [],
-  proposedToolInvestigationIds: [],
+  proposedToolFollowUpIds: [],
   proposedPolicyChanges: [],
   proposedPromptChanges: [],
   createdAt: "2026-05-08T00:00:00.000Z",

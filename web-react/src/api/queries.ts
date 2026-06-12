@@ -1,7 +1,5 @@
 /**
  * Read-only React Query hooks for the rest of the app surface.
- * Mutations live in feature-specific files (tool-builds, investigations, ...)
- * once those features are ported. For Phase 1 this is "list everything".
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/fetch";
@@ -10,9 +8,6 @@ import type {
   AuditEventRecord,
   ConversationThreadRecord,
   GroupProfileUpdateInput,
-  ToolBuildRequest,
-  ToolInvestigationRecord,
-  ToolReworkWaitRecord,
 } from "@/api/types";
 
 export type GroupProfile = {
@@ -72,41 +67,6 @@ export function useConversations() {
         (data) => data.threads ?? [],
       ),
     refetchInterval: 10_000,
-  });
-}
-
-export function useToolBuildRequests() {
-  return useQuery({
-    queryKey: queryKeys.toolBuildRequests,
-    queryFn: () =>
-      apiFetch<{ requests: ToolBuildRequest[] }>("/api/tool-build-requests").then(
-        (data) => data.requests ?? [],
-      ),
-    refetchInterval: 5_000,
-  });
-}
-
-export function useToolInvestigations() {
-  return useQuery({
-    queryKey: queryKeys.toolInvestigations,
-    queryFn: () =>
-      apiFetch<{ investigations: ToolInvestigationRecord[] }>("/api/tool-investigations")
-        .then((data) => data.investigations ?? [])
-        // Investigations may be unsupported in some bare-bones server configs;
-        // returning [] keeps Dashboard from going red on a missing optional store.
-        .catch(() => [] as ToolInvestigationRecord[]),
-    refetchInterval: 10_000,
-  });
-}
-
-export function useToolReworkWaits() {
-  return useQuery({
-    queryKey: queryKeys.toolReworkWaits,
-    queryFn: () =>
-      apiFetch<{ waits: ToolReworkWaitRecord[] }>("/api/tool-rework-waits")
-        .then((data) => data.waits ?? [])
-        .catch(() => [] as ToolReworkWaitRecord[]),
-    refetchInterval: 5_000,
   });
 }
 

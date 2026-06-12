@@ -32,9 +32,6 @@ const ArtifactsPage = lazy(() =>
   import("@/routes/Artifacts").then((m) => ({ default: m.ArtifactsPage })),
 );
 const ToolsPage = lazy(() => import("@/routes/Tools").then((m) => ({ default: m.ToolsPage })));
-const ToolBuildsPage = lazy(() =>
-  import("@/routes/ToolBuilds").then((m) => ({ default: m.ToolBuildsPage })),
-);
 const ModelsPage = lazy(() => import("@/routes/Models").then((m) => ({ default: m.ModelsPage })));
 const GroupProfilePage = lazy(() =>
   import("@/routes/GroupProfile").then((m) => ({ default: m.GroupProfilePage })),
@@ -85,7 +82,6 @@ export const router = createBrowserRouter([
       { path: "artifacts", element: lazyRoute(<ArtifactsPage />) },
 
       { path: "tools", element: lazyRoute(<ToolsPage />) },
-      { path: "tool-builds", element: lazyRoute(<ToolBuildsPage />) },
       { path: "models", element: lazyRoute(<ModelsPage />) },
 
       { path: "group-profile", element: lazyRoute(<GroupProfilePage />) },

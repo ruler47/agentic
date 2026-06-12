@@ -13,6 +13,7 @@ export type SemanticArtifactQualityInput = {
   task: string;
   browser?: BrowserArtifactEvidence;
   toolContent?: string;
+  expectedSignals?: string[];
 };
 
 export type SemanticArtifactQualityReport = {
@@ -28,6 +29,11 @@ export type SemanticArtifactQualityReport = {
 
 const blockerPatterns = [
   /\bloading\b/i,
+  /\bcookie(?:s)?\b/i,
+  /\bconsent\b/i,
+  /\bprivacy\s+(?:preferences|settings|policy)\b/i,
+  /\bmanage\s+options\b/i,
+  /\bdo\s+not\s+consent\b/i,
   /\bfrom\s+meta\b/i,
   /\bsign\s*in\b/i,
   /\blog\s*in\b/i,
@@ -105,9 +111,13 @@ export function inspectBrowserScreenshotEvidence(input: SemanticArtifactQualityI
   const blockerSignals = blockerPatterns
     .filter((pattern) => pattern.test(evidenceText))
     .map((pattern) => pattern.source.replace(/\\b|\\s\+|\(\?:|\)|\?|\[|\]/g, "").slice(0, 42));
-  const expectedSignals = extractExpectedSignals(input.task);
+  const expectedSignals = extractExpectedSignals(input.task, input.expectedSignals);
   const evidenceTokens = new Set(tokenize(evidenceText));
-  const matchedSignals = expectedSignals.filter((signal) => evidenceTokens.has(signal) || evidenceText.includes(signal));
+  const matchedSignals = expectedSignals.filter((signal) =>
+    evidenceTokens.has(signal) ||
+    evidenceText.includes(signal) ||
+    signalTokensMatchEvidence(signal, evidenceText, evidenceTokens),
+  );
 
   if (!visual.ok) {
     // Phase 13 follow-up: a "visually near-empty" screenshot of a
@@ -136,7 +146,11 @@ export function inspectBrowserScreenshotEvidence(input: SemanticArtifactQualityI
     }
   }
 
-  if (blockerSignals.length > 0 && (matchedSignals.length < 2 || evidenceText.length < 280)) {
+  const hasHardBlocker = blockerSignals.some((signal) =>
+    /cookie|consent|privacy|manage|do\+not|access|denied|forbidden|checking|verify|human|just|moment/.test(signal),
+  );
+
+  if (blockerSignals.length > 0 && (hasHardBlocker || matchedSignals.length < 2 || evidenceText.length < 280)) {
     return {
       ok: false,
       decision: "blocked_or_loader",
@@ -208,11 +222,16 @@ function buildEvidenceText(input: SemanticArtifactQualityInput): string {
   return normalize(parts.filter((item): item is string => Boolean(item)).join("\n"));
 }
 
-function extractExpectedSignals(task: string): string[] {
+function extractExpectedSignals(task: string, explicitSignals: string[] = []): string[] {
   const tokens = tokenize(task).filter((token) => !stopWords.has(token));
   const handles = [...task.matchAll(/[@#]([a-zA-Z0-9_.-]{3,})/g)].map((match) => normalize(match[1] ?? ""));
   const hosts = [...task.matchAll(/https?:\/\/([^/\s)]+)/g)].flatMap((match) => tokenize(match[1] ?? ""));
-  return [...new Set([...handles, ...hosts, ...tokens])].filter((token) => token.length >= 4).slice(0, 24);
+  const explicit = explicitSignals
+    .map(normalizeExpectedSignal)
+    .filter((signal) => signal.length >= 4 || /\d/.test(signal));
+  return [...new Set([...explicit, ...handles, ...hosts, ...tokens])]
+    .filter((token) => token.length >= 4 || /\d/.test(token))
+    .slice(0, 32);
 }
 
 function tokenize(value: string): string[] {
@@ -222,6 +241,21 @@ function tokenize(value: string): string[] {
     .filter((token) => token.length >= 4);
 }
 
+function signalTokensMatchEvidence(signal: string, evidenceText: string, evidenceTokens: Set<string>): boolean {
+  const tokens = tokenize(signal).filter((token) => !stopWords.has(token));
+  if (tokens.length < 2) return false;
+  const requiredMatches = tokens.length <= 3 ? tokens.length : Math.max(3, tokens.length - 1);
+  const matched = tokens.filter((token) => evidenceTokens.has(token) || evidenceText.includes(token)).length;
+  return matched >= requiredMatches;
+}
+
 function normalize(value: string): string {
   return value.toLowerCase().normalize("NFKC");
+}
+
+function normalizeExpectedSignal(value: string): string {
+  return normalize(value)
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "");
 }

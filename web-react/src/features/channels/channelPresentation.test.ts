@@ -4,6 +4,7 @@ import {
   filterChannelEvents,
   filterChannelIdentities,
   flattenChannelIdentities,
+  findPendingChannelUsers,
   summarizeChannelHealth,
 } from "./channelPresentation";
 
@@ -119,5 +120,63 @@ describe("channelPresentation", () => {
         search: "100",
       }).map((identity) => identity.id),
     ).toEqual(["identity-1"]);
+  });
+
+  it("finds unknown inbound users and groups repeated events", () => {
+    const pending = findPendingChannelUsers({
+      events: [
+        {
+          id: "evt-pending-1",
+          toolName: "channel.telegram",
+          direction: "inbound",
+          status: "ignored",
+          summary: "First message",
+          sourceUserId: "200",
+          sourceChatId: "chat-2",
+          payload: { sourceUserAliases: ["Dima", "@Dima"] },
+          createdAt: new Date(1).toISOString(),
+        },
+        {
+          id: "evt-pending-2",
+          toolName: "channel.telegram",
+          direction: "inbound",
+          status: "ignored",
+          summary: "Second message",
+          sourceUserId: "200",
+          sourceChatId: "chat-2",
+          createdAt: new Date(2).toISOString(),
+        },
+      ],
+      identities: flattenChannelIdentities(users),
+    });
+
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      sourceUserId: "200",
+      messageCount: 2,
+      aliases: ["Dima", "@Dima"],
+    });
+    expect(pending[0]?.event.id).toBe("evt-pending-2");
+  });
+
+  it("does not mark inbound events as pending when an alias is already allowed", () => {
+    const pending = findPendingChannelUsers({
+      events: [
+        {
+          id: "evt-known-alias",
+          toolName: "generated.telegram.family-bot",
+          direction: "inbound",
+          status: "ignored",
+          summary: "Known alias",
+          sourceUserId: "different-id",
+          sourceChatId: "chat-1",
+          payload: { sourceUserAliases: ["100"] },
+          createdAt: new Date(3).toISOString(),
+        },
+      ],
+      identities: flattenChannelIdentities(users),
+    });
+
+    expect(pending).toHaveLength(0);
   });
 });

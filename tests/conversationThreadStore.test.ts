@@ -63,3 +63,45 @@ test("conversation threads can be deleted with their message history", async () 
   assert.equal(await store.get(thread.id), undefined);
   assert.equal(await store.delete(thread.id), false);
 });
+
+test("failed conversation runs are tracked as rejected attempts, not accepted answers", async () => {
+  const store = new InMemoryConversationThreadStore();
+  const thread = await store.create({
+    title: "проверить ресторан",
+    requesterUserId: "user-admin",
+    channel: "channel.telegram",
+  });
+
+  await store.appendMessage({
+    threadId: thread.id,
+    runId: "run-failed",
+    role: "user",
+    content: "что по Mamzel?",
+  });
+  await store.completeRun({
+    threadId: thread.id,
+    runId: "run-failed",
+    task: "что по Mamzel?",
+    finalAnswer: "(empty)",
+    failedError: "Model output was truncated by the token limit before producing a complete final answer.",
+    artifacts: [
+      {
+        id: "artifact-failed",
+        runId: "run-failed",
+        kind: "output",
+        filename: "failed.png",
+        mimeType: "image/png",
+        sizeBytes: 10,
+        url: "/api/runs/run-failed/artifacts/artifact-failed",
+        createdAt: new Date().toISOString(),
+      },
+    ],
+  });
+
+  const updated = await store.get(thread.id);
+  assert.equal(updated?.latestRunId, "run-failed");
+  assert.deepEqual(updated?.acceptedFacts, []);
+  assert.deepEqual(updated?.artifactIds, []);
+  assert.equal(updated?.messages?.filter((message) => message.role === "assistant").length, 0);
+  assert.match(updated?.rejectedAttempts[0] ?? "", /Model output was truncated/);
+});

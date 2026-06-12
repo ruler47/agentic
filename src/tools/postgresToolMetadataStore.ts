@@ -1,50 +1,22 @@
 import { PgQueryExecutor } from "../db/pool.js";
-import { Tool, ToolHealth, ToolSchema, ToolStartupMode } from "./tool.js";
+import { Tool, ToolHealth } from "./tool.js";
 import {
   GeneratedToolReplacementInput,
   GeneratedToolModuleInput,
   ToolMetadataStore,
   ToolModuleMetadata,
-  ToolModuleSource,
-  ToolModuleStatus,
   ToolModuleVersionSummary,
   validateReplacement,
 } from "./toolMetadataStore.js";
-
-type ToolModuleRow = {
-  name: string;
-  display_name: string | null;
-  version: string;
-  description: string;
-  capabilities: string[];
-  startup_mode: ToolStartupMode;
-  input_schema: ToolSchema | null;
-  output_schema: ToolSchema | null;
-  module_path: string | null;
-  test_path: string | null;
-  source: ToolModuleSource;
-  status: ToolModuleStatus;
-  last_health_ok: boolean | null;
-  last_health_detail: string | null;
-  required_configuration_keys: string[];
-  required_secret_handles: string[];
-  settings_schema: ToolSchema | null;
-  storage_contract: ToolModuleMetadata["storage"] | null;
-  docs_markdown: string | null;
-  change_summary: string | null;
-  promotion_evidence: ToolModuleMetadata["promotionEvidence"] | null;
-  examples: ToolModuleMetadata["examples"];
-  package_manifest: ToolModuleMetadata["packageManifest"] | null;
-  success_count: number;
-  failure_count: number;
-  last_success_at: Date | null;
-  last_failure_at: Date | null;
-  updated_at: Date;
-};
-
-type ToolModuleVersionRow = ToolModuleRow & {
-  active: boolean;
-};
+import {
+  inputToInactiveVersionRow,
+  mapRow,
+  mapVersionSummary,
+  OPERATOR_DISABLED_HEALTH_DETAIL,
+  TOOL_MODULE_COLUMNS,
+  type ToolModuleRow,
+  type ToolModuleVersionRow,
+} from "./postgresToolMetadataRows.js";
 
 export class PostgresToolMetadataStore implements ToolMetadataStore {
   constructor(
@@ -54,12 +26,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
 
   async list(): Promise<ToolModuleMetadata[]> {
     const rows = await this.pool.query<ToolModuleRow>(`
-      select name, display_name, version, description, capabilities, startup_mode, input_schema,
-             output_schema, module_path, test_path, source, status,
-             last_health_ok, last_health_detail, required_configuration_keys,
-             required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-             promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
-             updated_at
+      select ${TOOL_MODULE_COLUMNS}
       from tool_modules
       order by name
     `);
@@ -72,12 +39,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
   async listVersions(name: string): Promise<ToolModuleVersionSummary[]> {
     const rows = await this.pool.query<ToolModuleVersionRow>(
       `
-        select name, display_name, version, description, capabilities, startup_mode, input_schema,
-               output_schema, module_path, test_path, source, status,
-               last_health_ok, last_health_detail, required_configuration_keys,
-               required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-               promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
-               updated_at, active
+        select ${TOOL_MODULE_COLUMNS}, active
         from tool_module_versions
         where name = $1
         order by string_to_array(version, '.')::int[] desc nulls last, updated_at desc
@@ -90,6 +52,21 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
 
   async syncBuiltins(tools: Tool[]): Promise<ToolModuleMetadata[]> {
     const updatedAt = new Date().toISOString();
+    const desired = tools.map((tool) => tool.name);
+
+    if (desired.length === 0) {
+      await this.pool.query(`delete from tool_module_versions where source = 'builtin'`);
+      await this.pool.query(`delete from tool_modules where source = 'builtin'`);
+    } else {
+      await this.pool.query(
+        `delete from tool_module_versions where source = 'builtin' and not (name = any($1::text[]))`,
+        [desired],
+      );
+      await this.pool.query(
+        `delete from tool_modules where source = 'builtin' and not (name = any($1::text[]))`,
+        [desired],
+      );
+    }
 
     for (const tool of tools) {
       await this.pool.query(
@@ -156,21 +133,49 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     if (health.ok) {
       await this.pool.query(
         `update tool_modules
-           set status = case when status = 'available' then 'available' else 'loaded' end,
+           set status = case
+                 when status = 'available' then 'available'
+                 when status = 'disabled' and last_health_detail like $5 then 'disabled'
+                 else 'loaded'
+               end,
                last_health_ok = $2,
-               last_health_detail = $3,
+               last_health_detail = case
+                 when status = 'disabled' and last_health_detail like $5 then $6
+                 else $3
+               end,
                updated_at = $4
          where name = $1`,
-        [name, true, health.detail, new Date().toISOString()],
+        [
+          name,
+          true,
+          health.detail,
+          new Date().toISOString(),
+          `${OPERATOR_DISABLED_HEALTH_DETAIL}%`,
+          `${OPERATOR_DISABLED_HEALTH_DETAIL} Last health: ${health.detail}`,
+        ],
       );
       await this.pool.query(
         `update tool_module_versions
-           set status = case when status = 'available' then 'available' else 'loaded' end,
+           set status = case
+                 when status = 'available' then 'available'
+                 when status = 'disabled' and last_health_detail like $5 then 'disabled'
+                 else 'loaded'
+               end,
                last_health_ok = $2,
-               last_health_detail = $3,
+               last_health_detail = case
+                 when status = 'disabled' and last_health_detail like $5 then $6
+                 else $3
+               end,
                updated_at = $4
          where name = $1 and active = true`,
-        [name, true, health.detail, new Date().toISOString()],
+        [
+          name,
+          true,
+          health.detail,
+          new Date().toISOString(),
+          `${OPERATOR_DISABLED_HEALTH_DETAIL}%`,
+          `${OPERATOR_DISABLED_HEALTH_DETAIL} Last health: ${health.detail}`,
+        ],
       );
       return;
     }
@@ -221,18 +226,46 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     );
   }
 
+  async setStatus(
+    name: string,
+    status: "available" | "disabled",
+  ): Promise<ToolModuleMetadata | undefined> {
+    const updatedAt = new Date().toISOString();
+    const rows = await this.pool.query<ToolModuleRow>(
+      `
+        update tool_modules
+        set status = $2,
+            last_health_detail = case when $2 = 'disabled' then $4 else last_health_detail end,
+            updated_at = $3
+        where name = $1
+        returning ${TOOL_MODULE_COLUMNS}
+      `,
+      [name, status, updatedAt, OPERATOR_DISABLED_HEALTH_DETAIL],
+    );
+    const row = rows.rows[0];
+    if (!row) return undefined;
+    await this.pool.query(
+      `
+        update tool_module_versions
+        set status = $2,
+            last_health_detail = case when $2 = 'disabled' then $4 else last_health_detail end,
+            updated_at = $3
+        where name = $1 and active = true
+      `,
+      [name, status, updatedAt, OPERATOR_DISABLED_HEALTH_DETAIL],
+    );
+    const tool = mapRow(row);
+    await this.attachVersions([tool]);
+    return tool;
+  }
+
   async registerGenerated(input: GeneratedToolModuleInput): Promise<ToolModuleMetadata> {
     const autoTransaction = this.options.autoTransactionWrites ?? true;
     if (autoTransaction) await this.pool.query("begin");
     try {
       const existing = await this.pool.query<ToolModuleRow>(
         `
-          select name, display_name, version, description, capabilities, startup_mode, input_schema,
-                 output_schema, module_path, test_path, source, status,
-                 last_health_ok, last_health_detail, required_configuration_keys,
-                 required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                 promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
-                 updated_at
+          select ${TOOL_MODULE_COLUMNS}
           from tool_modules
           where name = $1
           for update
@@ -244,9 +277,11 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
         throw new Error(`Cannot register generated tool ${input.name}: a builtin tool already uses that name.`);
       }
       if (current && current.version !== input.version) {
-        throw new Error(
-          `Cannot register generated tool ${input.name}: existing version ${current.version} differs from ${input.version}.`,
-        );
+        await this.upsertVersionRow(input, inputToInactiveVersionRow(input, current), false);
+        if (autoTransaction) await this.pool.query("commit");
+        const module = mapRow(current);
+        module.versions = await this.listVersions(input.name);
+        return module;
       }
 
       const rows = await this.pool.query<ToolModuleRow>(
@@ -277,14 +312,9 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               examples = excluded.examples,
               package_manifest = excluded.package_manifest,
               source = 'generated',
-              status = 'disabled',
+              status = tool_modules.status,
               updated_at = excluded.updated_at
-          returning name, display_name, version, description, capabilities, startup_mode, input_schema,
-                    output_schema, module_path, test_path, source, status,
-                    last_health_ok, last_health_detail, required_configuration_keys,
-                    required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                    promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
-                    updated_at
+          returning ${TOOL_MODULE_COLUMNS}
         `,
         [
           input.name,
@@ -325,12 +355,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     try {
       const existing = await this.pool.query<ToolModuleRow>(
         `
-          select name, display_name, version, description, capabilities, startup_mode, input_schema,
-                 output_schema, module_path, test_path, source, status,
-                 last_health_ok, last_health_detail, required_configuration_keys,
-                 required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                 promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
-                 updated_at
+          select ${TOOL_MODULE_COLUMNS}
           from tool_modules
           where name = $1
           for update
@@ -366,12 +391,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               last_health_detail = null,
               updated_at = $20
           where name = $1
-          returning name, display_name, version, description, capabilities, startup_mode, input_schema,
-                    output_schema, module_path, test_path, source, status,
-                    last_health_ok, last_health_detail, required_configuration_keys,
-                    required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                    promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
-                    updated_at
+          returning ${TOOL_MODULE_COLUMNS}
         `,
         [
           input.name,
@@ -473,12 +493,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     try {
       const existing = await this.pool.query<ToolModuleRow>(
         `
-          select name, display_name, version, description, capabilities, startup_mode, input_schema,
-                 output_schema, module_path, test_path, source, status,
-                 last_health_ok, last_health_detail, required_configuration_keys,
-                 required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                 promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
-                 updated_at
+          select ${TOOL_MODULE_COLUMNS}
           from tool_modules
           where name = $1
           for update
@@ -509,12 +524,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     try {
       const active = await this.pool.query<ToolModuleRow>(
         `
-          select name, display_name, version, description, capabilities, startup_mode, input_schema,
-                 output_schema, module_path, test_path, source, status,
-                 last_health_ok, last_health_detail, required_configuration_keys,
-                 required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                 promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
-                 updated_at
+          select ${TOOL_MODULE_COLUMNS}
           from tool_modules
           where name = $1
           for update
@@ -527,12 +537,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
 
       const selected = await this.pool.query<ToolModuleRow>(
         `
-          select name, display_name, version, description, capabilities, startup_mode, input_schema,
-                 output_schema, module_path, test_path, source, status,
-                 last_health_ok, last_health_detail, required_configuration_keys,
-                 required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                 promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
-                 updated_at
+          select ${TOOL_MODULE_COLUMNS}
           from tool_module_versions
           where name = $1 and version = $2
           for update
@@ -577,12 +582,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
               last_health_detail = $23,
               updated_at = $20
           where name = $1
-          returning name, display_name, version, description, capabilities, startup_mode, input_schema,
-                    output_schema, module_path, test_path, source, status,
-                    last_health_ok, last_health_detail, required_configuration_keys,
-                    required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-                    promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
-                    updated_at
+          returning ${TOOL_MODULE_COLUMNS}
         `,
         [
           selectedRow.name,
@@ -625,12 +625,7 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
     if (modules.length === 0) return;
     const rows = await this.pool.query<ToolModuleVersionRow>(
       `
-        select name, display_name, version, description, capabilities, startup_mode, input_schema,
-               output_schema, module_path, test_path, source, status,
-               last_health_ok, last_health_detail, required_configuration_keys,
-               required_secret_handles, settings_schema, storage_contract, docs_markdown, change_summary,
-               promotion_evidence, examples, package_manifest, success_count, failure_count, last_success_at, last_failure_at,
-               updated_at, active
+        select ${TOOL_MODULE_COLUMNS}, active
         from tool_module_versions
         where name = any($1)
         order by name, string_to_array(version, '.')::int[] desc nulls last, updated_at desc
@@ -735,58 +730,4 @@ export class PostgresToolMetadataStore implements ToolMetadataStore {
       ],
     );
   }
-}
-
-function mapRow(row: ToolModuleRow): ToolModuleMetadata {
-  return {
-    name: row.name,
-    displayName: row.display_name ?? undefined,
-    version: row.version,
-    description: row.description,
-    capabilities: row.capabilities,
-    startupMode: row.startup_mode,
-    inputSchema: row.input_schema ?? undefined,
-    outputSchema: row.output_schema ?? undefined,
-    modulePath: row.module_path ?? undefined,
-    testPath: row.test_path ?? undefined,
-    source: row.source,
-    status: row.status,
-    lastHealthOk: row.last_health_ok ?? undefined,
-    lastHealthDetail: row.last_health_detail ?? undefined,
-    requiredConfigurationKeys: row.required_configuration_keys ?? [],
-    requiredSecretHandles: row.required_secret_handles ?? [],
-    settingsSchema: row.settings_schema ?? undefined,
-    storage: row.storage_contract ?? undefined,
-    docsMarkdown: row.docs_markdown ?? undefined,
-    changeSummary: row.change_summary ?? undefined,
-    promotionEvidence: row.promotion_evidence ?? undefined,
-    examples: Array.isArray(row.examples) ? row.examples : [],
-    packageManifest: row.package_manifest ?? undefined,
-    successCount: row.success_count ?? 0,
-    failureCount: row.failure_count ?? 0,
-    lastSuccessAt: row.last_success_at?.toISOString(),
-    lastFailureAt: row.last_failure_at?.toISOString(),
-    updatedAt: row.updated_at.toISOString(),
-  };
-}
-
-function mapVersionSummary(row: ToolModuleVersionRow): ToolModuleVersionSummary {
-  return {
-    version: row.version,
-    active: row.active,
-    status: row.status,
-    displayName: row.display_name ?? undefined,
-    description: row.description,
-    capabilities: row.capabilities ?? [],
-    modulePath: row.module_path ?? undefined,
-    testPath: row.test_path ?? undefined,
-    requiredSecretHandles: row.required_secret_handles ?? [],
-    changeSummary: row.change_summary ?? undefined,
-    promotionEvidence: row.promotion_evidence ?? undefined,
-    packageManifest: row.package_manifest ?? undefined,
-    lastHealthDetail: row.last_health_detail ?? undefined,
-    successCount: row.success_count ?? 0,
-    failureCount: row.failure_count ?? 0,
-    updatedAt: row.updated_at.toISOString(),
-  };
 }

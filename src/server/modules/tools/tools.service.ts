@@ -2,44 +2,99 @@ import {
   BadRequestException,
   Inject,
   Injectable,
-  InternalServerErrorException,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from "@nestjs/common";
+import { rm } from "node:fs/promises";
+import { join, relative } from "node:path";
 import type { ToolRegistry } from "../../../tools/registry.js";
+import type { Tool } from "../../../tools/tool.js";
 import {
+  generatedToolInputFromPackageManifest,
   toolToMetadata,
   type ToolMetadataStore,
   type ToolModuleMetadata,
 } from "../../../tools/toolMetadataStore.js";
 import {
-  normalizeToolRuntimeSettingInput,
-  type ToolRuntimeSettingRecord,
   type ToolRuntimeSettingsStore,
 } from "../../../settings/toolRuntimeSettings.js";
-import type { ToolPackageRunner } from "../../../tools/toolPackageRunner.js";
+import {
+  type ToolPackageRunner,
+} from "../../../tools/toolPackageRunner.js";
+import type { ToolServiceSupervisor } from "../../../tools/toolServiceSupervisor.js";
 import type { ToolModuleVersionSummary } from "../../../tools/toolMetadataStore.js";
+import {
+  createToolPackageV1,
+  normalizeToolCreationV1Input,
+} from "../../../tools/toolCreationV1.js";
+import { buildToolBuilderPlan } from "../../../tools/toolBuilderAgent.js";
+import { authorToolPackageWithGuardrails } from "../../../tools/toolBuilderPackageAuthor.js";
+import { discoverToolImplementation } from "../../../tools/toolImplementationDiscovery.js";
+import type { LlmClient } from "../../../llm/client.js";
+import type {
+  ToolCreationRecord,
+  ToolCreationStatus,
+  ToolCreationStore,
+} from "../../../tools/toolCreationStore.js";
+import { ToolPackageWorkspaceStore, type ToolPackageWorkspaceFile } from "../../../tools/toolPackageWorkspaceStore.js";
+import { validateAndBuildToolPackageWorkspace } from "../../../tools/toolPackageWorkspaceQa.js";
+import type { ToolPackageManifest } from "../../../tools/toolPackage.js";
+import type { SecretHandleStore } from "../../../secrets/secretHandleStore.js";
+import type { RunStore } from "../../../runs/types.js";
+import type {
+  ToolContextRecord,
+  ToolContextStore,
+} from "../../../tools/toolContextStore.js";
 import { AuditService } from "../../common/services/audit.service.js";
 import {
   parseRequiredText,
   isRecord,
+  parseOptionalText,
   parseOptionalStringArray,
+  sanitizeAuditMetadata,
 } from "../../common/parsers.js";
 import {
   RELOAD_GENERATED_TOOLS,
+  LLM_CLIENT,
+  RUN_STORE,
+  SECRET_HANDLE_STORE,
+  TOOL_CONTEXT_STORE,
+  TOOL_CREATION_STORE,
   TOOL_METADATA_STORE,
   TOOL_PACKAGE_RUNNERS,
   TOOL_REGISTRY,
   TOOL_RUNTIME_SETTINGS,
+  TOOL_SERVICE_SUPERVISOR,
 } from "../../persistence/tokens.js";
 import {
-  looksLikeUrl,
-  parseGeneratedToolModuleInput,
-  parseGeneratedToolReplacementInput,
-  parseToolPackageManifestImport,
-  schemaProperty,
-  settingPropertyType,
-} from "./tool-parsers.js";
+  createToolCreationTrace,
+  noToolCreationTrace,
+  type ToolCreationTrace,
+} from "./tool-creation-trace.js";
+import { ToolManualRunService } from "./tool-manual-run.service.js";
+import { ToolRegistryAdminService } from "./tool-registry-admin.service.js";
+import {
+  dependencyRecords,
+  packageJsonDependencies,
+  parseJsonFile,
+  parseSourceBundleFiles,
+  readSourceBundleDependenciesForTool,
+  readSourceBundleFiles,
+  sourceBundlePackageDir,
+  STANDARD_SOURCE_BUNDLE_FILES,
+} from "./tool-source-bundle-files.js";
+import { ToolVersionLifecycleService } from "./tool-version-lifecycle.service.js";
+import {
+  documentationTextValues,
+  extractRequestContextItems,
+  formatContextForBuilder,
+  formatCreationRecordForContext,
+  parseOptionalKind,
+  parseToolContextCreateInput,
+} from "./tool-context-helpers.js";
+import { ToolPackageCreationWorkflow } from "./tool-package-creation-workflow.js";
+import { ToolPackageVersionWorkflow } from "./tool-package-version-workflow.js";
 
 @Injectable()
 export class ToolsService {
@@ -50,300 +105,350 @@ export class ToolsService {
     @Inject(TOOL_PACKAGE_RUNNERS) private readonly packageRunners: ToolPackageRunner[] | undefined,
     @Inject(RELOAD_GENERATED_TOOLS) private readonly reload: (() => Promise<void>) | undefined,
     @Inject(AuditService) private readonly audit: AuditService,
+    @Optional() @Inject(TOOL_CREATION_STORE) private readonly creationStore?: ToolCreationStore,
+    @Optional() @Inject(LLM_CLIENT) private readonly llm?: LlmClient,
+    @Optional() @Inject(RUN_STORE) private readonly runs?: RunStore,
+    @Optional() @Inject(SECRET_HANDLE_STORE) private readonly secretHandles?: SecretHandleStore,
+    @Optional() @Inject(TOOL_CONTEXT_STORE) private readonly toolContexts?: ToolContextStore,
+    @Optional() @Inject(TOOL_SERVICE_SUPERVISOR) private readonly serviceSupervisor?: ToolServiceSupervisor,
+    @Optional() @Inject(ToolManualRunService) private readonly manualRuns?: ToolManualRunService,
+    @Optional() @Inject(ToolRegistryAdminService) private readonly registryAdmin?: ToolRegistryAdminService,
+    @Optional() @Inject(ToolVersionLifecycleService) private readonly versionLifecycle?: ToolVersionLifecycleService,
   ) {}
 
   async listTools(): Promise<ToolModuleMetadata[]> {
-    const tools = this.registry?.list() ?? [];
-    if (this.metadata) return this.metadata.list();
-    return tools.map((tool) => toolToMetadata(tool));
+    return this.registryAdminService().listTools();
   }
 
   async toolHealth(): Promise<Array<{ name: string; ok: boolean; detail?: string }>> {
-    const tools = this.registry?.list() ?? [];
-    return Promise.all(
-      tools.map(async (tool) => {
-        const result = tool.healthcheck
-          ? await tool.healthcheck()
-          : { ok: true, detail: "No healthcheck registered." };
-        await this.metadata?.updateHealth(tool.name, result);
-        return { name: tool.name, ...result };
-      }),
-    );
+    return this.registryAdminService().toolHealth();
   }
 
-  /**
-   * Phase 13 follow-up: manual tool invocation from the UI / curl.
-   * Lets the operator paste an input payload, click "Run", and see
-   * the exact `ToolResult` the runtime would hand back to an agent.
-   * Useful for:
-   *   1. Smoke-testing a freshly-built / freshly-rebuilt tool service
-   *      without having to craft a whole agent run.
-   *   2. Verifying that a tool version actually works before promoting
-   *      it.
-   *   3. Reproducing an agent-observed failure with a known-good
-   *      input.
-   *
-   * Runs synchronously, returns whatever the tool returned (or the
-   * structured failure). Audits the invocation so the timeline shows
-   * who tried what.
-   */
   async runToolManually(
     name: string,
     body: unknown,
     actor: { actorId: string } = { actorId: "user-admin" },
-  ): Promise<{
-    tool: { name: string; version: string };
-    result: { ok: boolean; content: string; data?: unknown };
-    durationMs: number;
+  ) {
+    return this.manualRunService().runToolManually(name, body, actor);
+  }
+
+  async runToolVersionManually(
+    name: string,
+    version: string,
+    body: unknown,
+    actor: { actorId: string } = { actorId: "user-admin" },
+  ) {
+    return this.manualRunService().runToolVersionManually(name, version, body, actor);
+  }
+
+  async loadToolVersionForAgent(name: string, version: string): Promise<{
+    tool: Tool;
+    metadata: ToolModuleMetadata;
+    loadDetail: string;
   }> {
-    if (!this.registry) throw new ServiceUnavailableException("Tool registry is not configured");
-    const tool = this.registry.get(name);
-    if (!tool) throw new NotFoundException(`Tool not registered: ${name}`);
-
-    const input = isRecord(body) && isRecord((body as Record<string, unknown>).input)
-      ? ((body as Record<string, unknown>).input as Record<string, unknown>)
-      : isRecord(body)
-        ? (body as Record<string, unknown>)
-        : {};
-
-    const startedAt = Date.now();
-    let result: { ok: boolean; content: string; data?: unknown };
-    try {
-      result = await tool.run(input, {
-        toolName: tool.name,
-        now: new Date(),
-        caller: "manual-ui",
-      });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      result = { ok: false, content: `Manual tool invocation threw: ${detail}` };
-    }
-    const durationMs = Date.now() - startedAt;
-
-    await this.audit.record({
-      instanceId: "instance-local",
-      actorId: actor.actorId,
-      actorType: "user",
-      action: "tool.manual_run",
-      targetType: "tool",
-      targetId: tool.name,
-      status: result.ok ? "success" : "failure",
-      summary: `Manual tool run: ${tool.name} (${result.ok ? "ok" : "failed"}, ${durationMs}ms)`,
-      metadata: {
-        inputKeys: Object.keys(input),
-        contentPreview: (result.content ?? "").slice(0, 200),
-      },
-    });
-
-    // Phase 13 follow-up: HttpToolAdapter rehydrates artifact
-    // `contentBase64` → Node `Buffer` in `result.data` so downstream
-    // helpers (saveArtifact, etc.) get usable binary. But the
-    // /api/tools/:name/run response is plain JSON, where Buffer serializes
-    // to `{ type: "Buffer", data: [...] }` and the UI sees an object
-    // instead of file bytes. Re-serialize Buffer back to `contentBase64`
-    // here so the Manual Run panel can render a Download link.
-    const wireResult = {
-      ok: result.ok,
-      content: typeof result.content === "string" ? result.content : "",
-      data: serializeBuffersForWire(result.data),
-    };
-
-    return {
-      tool: { name: tool.name, version: tool.version ?? "unknown" },
-      result: wireResult,
-      durationMs,
-    };
+    return this.manualRunService().loadToolVersionForAgent(name, version);
   }
 
-  async reloadGenerated(): Promise<{ tools: ToolModuleMetadata[] }> {
-    if (!this.reload) {
-      throw new ServiceUnavailableException("Generated tool reload is not configured");
-    }
-    try {
-      await this.reload();
-    } catch (error) {
-      throw new InternalServerErrorException(
-        error instanceof Error ? error.message : "Generated tool reload failed",
-      );
-    }
-    await this.audit.record({
-      instanceId: "instance-local",
-      actorId: "user-admin",
-      actorType: "user",
-      action: "tool.generated_reload",
-      targetType: "tool_registry",
-      targetId: "generated-tools",
-      status: "success",
-      summary: "Generated tools reloaded by operator.",
-    });
-    return { tools: this.metadata ? await this.metadata.list() : [] };
-  }
-
-  async listSettings(toolName?: string): Promise<ToolRuntimeSettingRecord[]> {
-    return this.runtimeSettings ? this.runtimeSettings.list(toolName) : [];
-  }
-
-  async setSetting(rawBody: unknown): Promise<ToolRuntimeSettingRecord> {
-    if (!this.runtimeSettings) {
-      throw new ServiceUnavailableException("Tool runtime settings store is not configured");
-    }
-    if (!isRecord(rawBody)) throw new BadRequestException("tool setting must be an object");
-    let input: { toolName: string; key: string; value: string };
-    try {
-      input = normalizeToolRuntimeSettingInput({
-        toolName: parseRequiredText(rawBody.toolName, "toolName"),
-        key: parseRequiredText(rawBody.key, "key"),
-        value: parseRequiredText(rawBody.value, "value"),
-      });
-    } catch (error) {
-      throw new BadRequestException(
-        error instanceof Error ? error.message : "Invalid tool runtime setting request",
-      );
-    }
-    const metadata = await this.findToolMetadata(input.toolName);
-    const issues = this.validateToolSettingValue(metadata, input.key, input.value);
-    if (issues.length > 0) {
-      throw new BadRequestException(issues[0]);
-    }
-    const setting = await this.runtimeSettings.set(input);
-    await this.audit.record({
-      instanceId: "instance-local",
-      actorId: "user-admin",
-      actorType: "user",
-      action: "tool.setting_updated",
-      targetType: "tool",
-      targetId: setting.toolName,
-      status: "success",
-      summary: `Updated runtime setting ${setting.key} for ${setting.toolName}`,
-      metadata: { key: setting.key },
-    });
-    return setting;
-  }
-
-  async deleteSetting(toolName: string, key: string): Promise<{ deleted: true; toolName: string; key: string }> {
-    if (!this.runtimeSettings) {
-      throw new ServiceUnavailableException("Tool runtime settings store is not configured");
-    }
-    const deleted = await this.runtimeSettings.delete(toolName, key);
-    if (!deleted) throw new NotFoundException("Tool runtime setting was not found");
-    await this.audit.record({
-      instanceId: "instance-local",
-      actorId: "user-admin",
-      actorType: "user",
-      action: "tool.setting_deleted",
-      targetType: "tool",
-      targetId: toolName,
-      status: "success",
-      summary: `Deleted runtime setting ${key} for ${toolName}`,
-      metadata: { key },
-    });
-    return { deleted: true, toolName, key };
-  }
-
-  async validateSettings(rawBody: unknown) {
-    if (!this.runtimeSettings) {
-      throw new ServiceUnavailableException("Tool runtime settings store is not configured");
-    }
-    try {
-      if (!isRecord(rawBody)) throw new Error("tool settings validation request must be an object");
-      const toolName = normalizeToolRuntimeSettingInput({
-        toolName: parseRequiredText(rawBody.toolName, "toolName"),
-        key: "DUMMY_KEY",
-        value: "dummy",
-      }).toolName;
-      const requestedSettings = this.parseRuntimeSettingsMap(rawBody.settings);
-      const deleteKeys = parseOptionalStringArray(rawBody.deleteKeys, "deleteKeys") ?? [];
-      const metadata = await this.findToolMetadata(toolName);
-      const existing = new Map(
-        (await this.runtimeSettings.list(toolName)).map((item) => [item.key, item.value]),
-      );
-      for (const key of deleteKeys) {
-        const normalized = normalizeToolRuntimeSettingInput({ toolName, key, value: "dummy" });
-        existing.delete(normalized.key);
-      }
-      for (const [key, settingValue] of Object.entries(requestedSettings)) {
-        const normalized = normalizeToolRuntimeSettingInput({ toolName, key, value: settingValue });
-        existing.set(normalized.key, normalized.value);
-      }
-
-      const issues: string[] = [];
-      const warnings: string[] = [];
-      if (!metadata) {
-        warnings.push(`No tool metadata found for ${toolName}; only key/value shape was validated.`);
-      }
-      const requiredKeys = new Set(metadata?.requiredConfigurationKeys ?? []);
-      const schemaProperties = metadata?.settingsSchema?.properties ?? {};
-      for (const key of requiredKeys) {
-        if (!existing.has(key)) issues.push(`${key} is required by ${toolName}.`);
-      }
-      for (const [key, settingValue] of existing.entries()) {
-        issues.push(...this.validateToolSettingValue(metadata, key, settingValue));
-        if (metadata && !requiredKeys.has(key) && !Object.prototype.hasOwnProperty.call(schemaProperties, key)) {
-          warnings.push(
-            `${key} is not declared by ${toolName}; it will be treated as an optional runtime override.`,
-          );
-        }
-      }
-      const previewKeys = new Set([
-        ...requiredKeys,
-        ...Object.keys(schemaProperties),
-        ...existing.keys(),
-      ]);
-      const preview = [...previewKeys].sort((a, b) => a.localeCompare(b)).map((key) => {
-        const property = schemaProperty(metadata?.settingsSchema, key);
-        return {
-          key,
-          configured: existing.has(key),
-          required: requiredKeys.has(key),
-          declared: Boolean(property),
-          type: settingPropertyType(property),
-        };
-      });
-      return { ok: issues.length === 0, toolName, issues, warnings, preview };
-    } catch (error) {
-      throw new BadRequestException(
-        error instanceof Error ? error.message : "Invalid tool runtime setting validation request",
-      );
-    }
-  }
-
-  async listPackageRunners() {
-    return (this.packageRunners ?? []).map((runner) =>
-      runner.describe
-        ? runner.describe()
-        : {
-            name: `${runner.type} runner`,
-            type: runner.type,
-            status: "available",
-            detail: "Runner does not expose extended diagnostics.",
-            supportedPackageTypes: runner.type === "legacy-local-path" ? [] : [runner.type],
-          },
+  private manualRunService(): ToolManualRunService {
+    return this.manualRuns ?? new ToolManualRunService(
+      this.registry,
+      this.metadata,
+      this.packageRunners,
+      this.audit,
+      this.creationStore,
+      this.runs,
     );
   }
 
-  async registerGenerated(rawBody: unknown): Promise<ToolModuleMetadata> {
-    if (!this.metadata) {
-      throw new ServiceUnavailableException("Tool metadata store is not configured");
-    }
-    try {
-      const input = parseGeneratedToolModuleInput(rawBody);
-      return await this.metadata.registerGenerated(input);
-    } catch (error) {
-      throw new BadRequestException(
-        error instanceof Error ? error.message : "Invalid generated tool module",
-      );
-    }
+  private registryAdminService(): ToolRegistryAdminService {
+    return this.registryAdmin ?? new ToolRegistryAdminService(
+      this.registry,
+      this.metadata,
+      this.runtimeSettings,
+      this.packageRunners,
+      this.reload,
+      this.audit,
+      this.creationStore,
+      this.secretHandles,
+      this.runs,
+    );
   }
 
-  async importPackageManifest(rawBody: unknown): Promise<ToolModuleMetadata> {
+  async reloadGenerated(): Promise<{ tools: ToolModuleMetadata[] }> {
+    return this.registryAdminService().reloadGenerated();
+  }
+
+  async setToolStatus(
+    name: string,
+    rawBody: unknown,
+  ): Promise<{ tool: ToolModuleMetadata }> {
+    return this.registryAdminService().setToolStatus(name, rawBody);
+  }
+
+  async listToolCreations(options: { toolName?: string; status?: string; limit?: number } = {}): Promise<ToolCreationRecord[]> {
+    if (!this.creationStore) return [];
+    const status = options.status;
+    if (status && !["requested", "building", "qa_failed", "registered", "failed"].includes(status)) {
+      throw new BadRequestException("Invalid tool creation status");
+    }
+    return this.creationStore.list({
+      toolName: options.toolName,
+      status: status as ToolCreationStatus | undefined,
+      limit: options.limit,
+    });
+  }
+
+  async getToolCreation(id: string): Promise<ToolCreationRecord> {
+    const record = await this.creationStore?.get(id);
+    if (!record) throw new NotFoundException("Tool creation record not found");
+    return record;
+  }
+
+  async deleteFailedToolCreation(id: string): Promise<{
+    deleted: true;
+    creationId: string;
+    toolName: string;
+    toolVersion: string;
+    packageDeleted: boolean;
+    creationRunDeleted: boolean;
+    metadataDeleted: boolean;
+    secretHandlesDeleted: string[];
+  }> {
+    if (!this.creationStore) {
+      throw new ServiceUnavailableException("Tool creation store is not configured");
+    }
+    const record = await this.creationStore.get(id);
+    if (!record) throw new NotFoundException("Tool creation record not found");
+    if (record.status === "registered") {
+      const versions = await this.metadata?.listVersions(record.toolName).catch(() => []) ?? [];
+      if (versions.length > 0) {
+        throw new BadRequestException("Registered tool creations must be deleted through the generated tool lifecycle.");
+      }
+    }
+
+    const metadataDeleted = await this.deleteMatchingUnregisteredMetadata(record);
+    const packageDeleted = await this.deleteCreationPackage(record);
+    const secretHandlesDeleted = await this.deleteToolScopedSecrets(record);
+    const creationRunDeleted = record.runId ? await this.runs?.delete(record.runId) ?? false : false;
+    await this.creationStore.delete(id);
+    await this.audit.record({
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "tool.creation_deleted",
+      targetType: "tool_creation",
+      targetId: id,
+      status: "success",
+      summary: `Deleted failed tool creation: ${record.toolName}@${record.toolVersion}`,
+      metadata: sanitizeAuditMetadata({
+        toolName: record.toolName,
+        toolVersion: record.toolVersion,
+        status: record.status,
+        packageRef: record.packageRef,
+        packageDeleted,
+        creationRunDeleted,
+        metadataDeleted,
+        secretHandlesDeleted,
+      }),
+    });
+
+    return {
+      deleted: true,
+      creationId: id,
+      toolName: record.toolName,
+      toolVersion: record.toolVersion,
+      packageDeleted,
+      creationRunDeleted,
+      metadataDeleted,
+      secretHandlesDeleted,
+    };
+  }
+
+  private packageCreationWorkflow(): ToolPackageCreationWorkflow {
+    return new ToolPackageCreationWorkflow(
+      this.registry,
+      this.metadata,
+      this.reload,
+      this.audit,
+      this.creationStore,
+      this.llm,
+      this.runs,
+      this.secretHandles,
+    );
+  }
+
+  async createToolPackage(rawBody: unknown) {
+    const result = await this.packageCreationWorkflow().createToolPackage(rawBody);
+    await this.captureRequestContext(result.tool.name, rawBody, result.creation?.id);
+    return result;
+  }
+
+  async createToolVersion(name: string, rawBody: unknown) {
+    const requestWithContext = await this.withStoredToolContext(name, rawBody);
+    const result = await new ToolPackageVersionWorkflow(
+      this.registry,
+      this.metadata,
+      this.reload,
+      this.audit,
+      this.creationStore,
+      this.llm,
+      this.runs,
+      this.secretHandles,
+    ).createToolVersion(name, requestWithContext);
+    await this.captureRequestContext(name, rawBody, result.creation?.id);
+    return result;
+  }
+
+  async listToolContext(toolName: string): Promise<ToolContextRecord[]> {
+    if (!this.toolContexts) return [];
+    await this.backfillToolContextFromCreations(toolName);
+    return this.toolContexts.list({ toolName });
+  }
+
+  async createToolContext(toolName: string, rawBody: unknown): Promise<ToolContextRecord> {
+    if (!this.toolContexts) throw new ServiceUnavailableException("Tool context store is not configured");
+    if (!isRecord(rawBody)) throw new BadRequestException("tool context body must be an object");
+    return this.toolContexts.create(parseToolContextCreateInput(toolName, rawBody));
+  }
+
+  async updateToolContext(id: string, rawBody: unknown): Promise<ToolContextRecord> {
+    if (!this.toolContexts) throw new ServiceUnavailableException("Tool context store is not configured");
+    if (!isRecord(rawBody)) throw new BadRequestException("tool context body must be an object");
+    const updated = await this.toolContexts.update(id, {
+      kind: parseOptionalKind(rawBody.kind),
+      title: parseOptionalText(rawBody.title),
+      content: parseOptionalText(rawBody.content),
+      mimeType: parseOptionalText(rawBody.mimeType),
+      source: parseOptionalText(rawBody.source),
+    });
+    if (!updated) throw new NotFoundException("Tool context item not found");
+    return updated;
+  }
+
+  async deleteToolContext(id: string): Promise<{ deleted: boolean; id: string }> {
+    if (!this.toolContexts) throw new ServiceUnavailableException("Tool context store is not configured");
+    return { deleted: await this.toolContexts.delete(id), id };
+  }
+
+  async exportSourceBundle(name: string): Promise<{
+    manifest: ToolPackageManifest;
+    package: { packageRef: string; manifestPath: string };
+    files: ToolPackageWorkspaceFile[];
+  }> {
+    const tool = await this.findToolMetadata(name);
+    if (!tool) throw new NotFoundException("Tool not found");
+    const manifest = tool.packageManifest;
+    if (!manifest || manifest.package.type !== "source-bundle") {
+      throw new BadRequestException("Tool does not have an exportable source-bundle package manifest");
+    }
+    const packageDir = sourceBundlePackageDir(process.cwd(), process.env.TOOL_PACKAGE_WORKSPACE_ROOT ?? "tools", manifest.package.ref);
+    const files = await readSourceBundleFiles(packageDir);
+    return {
+      manifest,
+      package: {
+        packageRef: manifest.package.ref,
+        manifestPath: relative(process.cwd(), join(packageDir, "tool.package.json")).replace(/\\/g, "/"),
+      },
+      files,
+    };
+  }
+
+  async importSourceBundle(rawBody: unknown): Promise<{
+    tool: ToolModuleMetadata;
+    creation?: ToolCreationRecord;
+    package: { packageRef: string; manifestPath: string; files: string[] };
+    qa: { ok: boolean; summary: string; checks: string[] };
+  }> {
     if (!this.metadata) {
       throw new ServiceUnavailableException("Tool metadata store is not configured");
     }
+    if (!this.reload) {
+      throw new ServiceUnavailableException("Generated tool reload is not configured");
+    }
+    if (!isRecord(rawBody) || !isRecord(rawBody.manifest) || !Array.isArray(rawBody.files)) {
+      throw new BadRequestException("source bundle import requires manifest and files");
+    }
+    const manifest = rawBody.manifest as ToolPackageManifest;
+    if (manifest.package?.type !== "source-bundle") {
+      throw new BadRequestException("source bundle import requires a source-bundle manifest");
+    }
+    const files = parseSourceBundleFiles(rawBody.files);
+    const fileMap = new Map(files.map((file) => [file.path, file.content]));
+    let creation: ToolCreationRecord | undefined;
+
     try {
-      const input = parseToolPackageManifestImport(rawBody);
-      const registered = await this.metadata.registerGenerated(input);
-      await this.reload?.();
-      const tool = (await this.metadata.list()).find((candidate) => candidate.name === registered.name) ?? registered;
+      creation = await this.creationStore?.create({
+        source: "import",
+        toolName: manifest.name,
+        toolVersion: manifest.version,
+        kind: "source-bundle-import",
+        request: "Imported portable source-bundle package.",
+        description: manifest.description,
+        capabilities: manifest.capabilities,
+        dependencies: dependencyRecords(packageJsonDependencies(fileMap.get("package.json"))),
+        strategy: {
+          kind: "imported-source-bundle",
+          reason: "Operator imported an existing portable source-bundle package.",
+          confidence: "high",
+          candidates: [
+            {
+              kind: "imported-source-bundle",
+              name: "source bundle import",
+              reason: "The source bundle already contains manifest, package metadata, source, tests, and runtime files.",
+            },
+          ],
+          rejectedCandidates: [],
+          selectedDependencies: dependencyRecords(packageJsonDependencies(fileMap.get("package.json"))),
+          implementationNotes: ["Imported package is re-QA'd and starts disabled until manual verification."],
+        },
+      });
+      if (creation) {
+        creation = await this.creationStore?.update(creation.id, { status: "building" }) ?? creation;
+      }
+
+      const store = new ToolPackageWorkspaceStore(process.cwd(), process.env.TOOL_PACKAGE_WORKSPACE_ROOT ?? "tools");
+      const workspace = await store.writeSourceBundlePackage({
+        manifest,
+        readmeMarkdown: fileMap.get("README.md"),
+        dockerfile: fileMap.get("Dockerfile"),
+        packageJson: parseJsonFile(fileMap.get("package.json"), "package.json"),
+        tsconfigJson: parseJsonFile(fileMap.get("tsconfig.json"), "tsconfig.json"),
+        files: files.filter((file) => !STANDARD_SOURCE_BUNDLE_FILES.has(file.path)),
+      });
+      const qa = await validateAndBuildToolPackageWorkspace(
+        process.cwd(),
+        {
+          packageRef: workspace.packageRef,
+          manifestPath: workspace.manifestPath,
+          files: workspace.files,
+        },
+        { linkNodeModulesFrom: process.cwd() },
+      );
+      creation = await this.creationStore?.update(creation?.id ?? "", {
+        status: qa.ok ? "building" : "qa_failed",
+        packageRef: workspace.packageRef,
+        manifestPath: workspace.manifestPath,
+        files: workspace.files,
+        qa,
+        error: qa.ok ? undefined : qa.summary,
+      }) ?? creation;
+      if (!qa.ok) throw new Error(qa.summary);
+
+      const manifestWithQa: ToolPackageManifest = {
+        ...workspace.manifest,
+        qa: { summary: qa.summary, checks: qa.checks },
+      };
+      const registered = await this.metadata.registerGenerated(
+        generatedToolInputFromPackageManifest(manifestWithQa, "Imported portable source-bundle package."),
+      );
+      await this.reload();
+      const tool = await this.metadata.setStatus(registered.name, "disabled")
+        ?? (await this.metadata.list()).find((candidate) => candidate.name === registered.name)
+        ?? registered;
+      creation = await this.creationStore?.update(creation?.id ?? "", {
+        status: "registered",
+        registeredAt: new Date(),
+      }) ?? creation;
       await this.audit.record({
         instanceId: "instance-local",
         actorId: "user-admin",
@@ -352,27 +457,51 @@ export class ToolsService {
         targetType: "tool",
         targetId: tool.name,
         status: "success",
-        summary: `Imported tool package manifest: ${tool.name}@${tool.version}`,
+        summary: `Imported source-bundle tool package: ${tool.name}@${tool.version}`,
+        metadata: sanitizeAuditMetadata({
+          packageRef: workspace.packageRef,
+          manifestPath: workspace.manifestPath,
+          qa,
+          creationId: creation?.id,
+        }),
       });
-      return tool;
+      return {
+        tool,
+        creation,
+        package: {
+          packageRef: workspace.packageRef,
+          manifestPath: workspace.manifestPath,
+          files: workspace.files,
+        },
+        qa,
+      };
     } catch (error) {
+      if (creation) {
+        await this.creationStore?.update(creation.id, {
+          status: creation.status === "qa_failed" ? "qa_failed" : "failed",
+          error: error instanceof Error ? error.message : "Invalid source bundle import",
+        });
+      }
       throw new BadRequestException(
-        error instanceof Error ? error.message : "Invalid tool package manifest",
+        error instanceof Error ? error.message : "Invalid source bundle import",
       );
     }
   }
 
+  async listPackageRunners() {
+    return this.registryAdminService().listPackageRunners();
+  }
+
+  async registerGenerated(rawBody: unknown): Promise<ToolModuleMetadata> {
+    return this.registryAdminService().registerGenerated(rawBody);
+  }
+
+  async importPackageManifest(rawBody: unknown): Promise<ToolModuleMetadata> {
+    return this.registryAdminService().importPackageManifest(rawBody);
+  }
+
   async listVersions(name: string): Promise<ToolModuleVersionSummary[]> {
-    if (!this.metadata) {
-      throw new ServiceUnavailableException("Tool metadata store is not configured");
-    }
-    try {
-      return await this.metadata.listVersions(name);
-    } catch (error) {
-      throw new BadRequestException(
-        error instanceof Error ? error.message : "Invalid generated tool version request",
-      );
-    }
+    return this.registryAdminService().listVersions(name);
   }
 
   /**
@@ -398,29 +527,7 @@ export class ToolsService {
       changeSummary?: string;
     }>;
   }> {
-    if (!this.metadata) {
-      throw new ServiceUnavailableException("Tool metadata store is not configured");
-    }
-    const tool = (await this.metadata.list()).find((candidate) => candidate.name === name);
-    if (!tool) throw new NotFoundException("Tool not found");
-    const totalRuns = tool.successCount + tool.failureCount;
-    const successRate = totalRuns > 0 ? tool.successCount / totalRuns : null;
-    const versions = await this.metadata.listVersions(name);
-    return {
-      name: tool.name,
-      activeVersion: tool.version,
-      totalRuns,
-      successCount: tool.successCount,
-      failureCount: tool.failureCount,
-      successRate,
-      lastSuccessAt: tool.lastSuccessAt,
-      lastFailureAt: tool.lastFailureAt,
-      versions: versions.map((v) => ({
-        version: v.version,
-        activatedAt: v.updatedAt,
-        changeSummary: v.changeSummary,
-      })),
-    };
+    return this.registryAdminService().getToolStats(name);
   }
 
   /**
@@ -435,169 +542,78 @@ export class ToolsService {
     manifest: unknown;
     filename: string;
   }> {
-    const manifest = await this.getPackageManifest(name);
-    const safeName = name.replace(/[^a-zA-Z0-9_.-]+/g, "-");
-    return {
-      manifest,
-      filename: `${safeName}-${
-        (manifest as { version?: string })?.version ?? "version"
-      }.tool-package.json`,
-    };
+    return this.registryAdminService().exportPackageManifest(name);
   }
 
   async getPackageManifest(name: string) {
-    if (!this.metadata) {
-      throw new ServiceUnavailableException("Tool metadata store is not configured");
-    }
-    const tool = (await this.metadata.list()).find((candidate) => candidate.name === name);
-    if (!tool) throw new NotFoundException("Generated tool was not found");
-    if (!tool.packageManifest) {
-      throw new NotFoundException("Generated tool does not have a package manifest");
-    }
-    return tool.packageManifest;
+    return this.registryAdminService().getPackageManifest(name);
   }
 
   async deleteGenerated(name: string): Promise<{ deleted: true; name: string }> {
-    if (!this.metadata) {
-      throw new ServiceUnavailableException("Tool metadata store is not configured");
-    }
-    let deleted: boolean;
-    try {
-      deleted = await this.metadata.deleteGenerated(name);
-    } catch (error) {
-      throw new BadRequestException(
-        error instanceof Error ? error.message : "Invalid generated tool delete request",
-      );
-    }
-    if (!deleted) throw new NotFoundException("Generated tool was not found");
-    this.registry?.unregister?.(name);
-    await this.audit.record({
-      instanceId: "instance-local",
-      actorId: "user-admin",
-      actorType: "user",
-      action: "tool.deleted",
-      targetType: "tool",
-      targetId: name,
-      status: "success",
-      summary: `Generated tool deleted: ${name}`,
-    });
-    return { deleted: true, name };
+    return this.versionLifecycleService().deleteGenerated(name);
   }
 
-  /**
-   * Phase 18 Slice D: operator-driven "Mark available". Lets an
-   * operator who has manually verified a version via Manual Run
-   * promote it from `loaded` → `available` without forcing a
-   * fresh council QA cycle. Audit-logged so the trail of who
-   * blessed what is preserved.
-   */
   async markVersionAvailable(
     name: string,
     version: string,
   ): Promise<{ name: string; version: string; status: "available" }> {
-    if (!this.metadata) {
-      throw new ServiceUnavailableException("Tool metadata store is not configured");
-    }
-    try {
-      await this.metadata.markAvailable(name, version);
-    } catch (error) {
-      throw new BadRequestException(
-        error instanceof Error ? error.message : "Invalid mark-available request",
-      );
-    }
-    await this.audit.record({
-      instanceId: "instance-local",
-      actorId: "user-admin",
-      actorType: "user",
-      action: "tool.version_activated",
-      targetType: "tool",
-      targetId: `${name}@${version}`,
-      status: "success",
-      summary: `Operator marked ${name} v${version} as available (manual verification)`,
-    });
-    return { name, version, status: "available" };
+    return this.versionLifecycleService().markVersionAvailable(name, version);
   }
 
-  /**
-   * Phase 16 Slice I: drop a single non-active version from the
-   * version history. The metadata store refuses to delete the
-   * currently-active row, so a 400 here means "activate something
-   * else first". The active version stays untouched in
-   * tool_modules; only the historical row in
-   * tool_module_versions is removed.
-   */
   async deleteVersion(
     name: string,
     version: string,
   ): Promise<{ deleted: true; name: string; version: string }> {
-    if (!this.metadata) {
-      throw new ServiceUnavailableException("Tool metadata store is not configured");
-    }
-    let deleted: boolean;
-    try {
-      deleted = await this.metadata.deleteVersion(name, version);
-    } catch (error) {
-      throw new BadRequestException(
-        error instanceof Error ? error.message : "Invalid version delete request",
-      );
-    }
-    if (!deleted) {
-      throw new BadRequestException(
-        `Cannot delete v${version} of ${name}: it is either the currently active version (activate another version first) or it is not on record.`,
-      );
-    }
-    await this.audit.record({
-      instanceId: "instance-local",
-      actorId: "user-admin",
-      actorType: "user",
-      action: "tool.deleted",
-      targetType: "tool",
-      targetId: `${name}@${version}`,
-      status: "success",
-      summary: `Generated tool version deleted: ${name} v${version}`,
-    });
-    return { deleted: true, name, version };
+    return this.versionLifecycleService().deleteVersion(name, version);
+  }
+
+  async rejectVersion(
+    name: string,
+    version: string,
+    rawBody: unknown,
+  ): Promise<{ rejected: true; name: string; version: string; reason: string }> {
+    return this.versionLifecycleService().rejectVersion(name, version, rawBody);
   }
 
   async promoteReplacement(name: string, rawBody: unknown): Promise<ToolModuleMetadata> {
-    if (!this.metadata) {
-      throw new ServiceUnavailableException("Tool metadata store is not configured");
-    }
-    try {
-      const input = parseGeneratedToolReplacementInput(name, rawBody);
-      return await this.metadata.promoteReplacement(input);
-    } catch (error) {
-      throw new BadRequestException(
-        error instanceof Error ? error.message : "Invalid generated tool replacement",
-      );
-    }
+    const tool = await this.versionLifecycleService().promoteReplacement(name, rawBody);
+    await this.restartAlwaysOnServiceAfterVersionSwitch(tool);
+    return tool;
   }
 
   async activateVersion(name: string, rawBody: unknown): Promise<ToolModuleMetadata> {
-    if (!this.metadata) {
-      throw new ServiceUnavailableException("Tool metadata store is not configured");
-    }
-    try {
-      if (!isRecord(rawBody)) throw new Error("activate version request must be an object");
-      const version = parseRequiredText(rawBody.version, "version");
-      const tool = await this.metadata.activateVersion(name, version);
-      await this.reload?.();
-      await this.audit.record({
-        instanceId: "instance-local",
-        actorId: "user-admin",
-        actorType: "user",
-        action: "tool.version_activated",
-        targetType: "tool",
-        targetId: name,
-        status: "success",
-        summary: `Activated ${name} ${version}`,
-      });
-      return tool;
-    } catch (error) {
-      throw new BadRequestException(
-        error instanceof Error ? error.message : "Invalid generated tool version activation",
-      );
-    }
+    const tool = await this.versionLifecycleService().activateVersion(name, rawBody);
+    await this.restartAlwaysOnServiceAfterVersionSwitch(tool);
+    return tool;
+  }
+
+  async acceptAgentVerifiedVersion(input: {
+    name: string;
+    version: string;
+    runId?: string;
+    replacesVersion?: string;
+  }): Promise<ToolModuleMetadata> {
+    const tool = await this.versionLifecycleService().acceptAgentVerifiedVersion(input);
+    await this.restartAlwaysOnServiceAfterVersionSwitch(tool);
+    return tool;
+  }
+
+  private async restartAlwaysOnServiceAfterVersionSwitch(tool: ToolModuleMetadata): Promise<void> {
+    if (tool.startupMode !== "always-on" || !this.serviceSupervisor) return;
+    const service = (await this.serviceSupervisor.list()).find((item) => item.toolName === tool.name);
+    if (!service || service.desiredState !== "running") return;
+    await this.serviceSupervisor.restart(tool.name);
+  }
+
+  private versionLifecycleService(): ToolVersionLifecycleService {
+    return this.versionLifecycle ?? new ToolVersionLifecycleService(
+      this.registry,
+      this.metadata,
+      this.reload,
+      this.audit,
+      this.creationStore,
+      this.runs,
+    );
   }
 
   private async findToolMetadata(toolName: string): Promise<ToolModuleMetadata | undefined> {
@@ -609,92 +625,101 @@ export class ToolsService {
       .find((tool) => tool.name === toolName);
   }
 
-  private parseRuntimeSettingsMap(value: unknown): Record<string, string> {
-    if (value === undefined) return {};
-    if (!isRecord(value)) throw new Error("settings must be an object");
-    const parsed: Record<string, string> = {};
-    for (const [key, rawValue] of Object.entries(value)) {
-      if (typeof rawValue !== "string") throw new Error(`settings.${key} must be a string`);
-      if (rawValue.trim() === "") continue;
-      parsed[key] = rawValue;
-    }
-    return parsed;
+  private async deleteCreationPackage(record: ToolCreationRecord): Promise<boolean> {
+    if (!record.packageRef) return false;
+    const packageDir = sourceBundlePackageDir(
+      process.cwd(),
+      process.env.TOOL_PACKAGE_WORKSPACE_ROOT ?? "tools",
+      record.packageRef,
+    );
+    await rm(packageDir, { recursive: true, force: true });
+    return true;
   }
 
-  private validateToolSettingValue(
-    metadata: ToolModuleMetadata | undefined,
-    key: string,
-    value: string,
-  ): string[] {
-    const property = schemaProperty(metadata?.settingsSchema, key);
-    if (!property) return [];
-    const issues: string[] = [];
-    const type = settingPropertyType(property);
-    if (Array.isArray(property.enum) && !property.enum.map(String).includes(value)) {
-      issues.push(`${key} must be one of: ${property.enum.map(String).join(", ")}.`);
-    }
-    if (type === "boolean" && !/^(true|false|1|0|yes|no|on|off)$/i.test(value)) {
-      issues.push(`${key} must be a boolean value.`);
-    }
-    if (type === "number" || type === "integer") {
-      const parsed = Number(value);
-      if (!Number.isFinite(parsed)) {
-        issues.push(`${key} must be a number.`);
-      } else {
-        if (type === "integer" && !Number.isInteger(parsed)) issues.push(`${key} must be an integer.`);
-        if (typeof property.minimum === "number" && parsed < property.minimum) {
-          issues.push(`${key} must be at least ${property.minimum}.`);
-        }
-        if (typeof property.maximum === "number" && parsed > property.maximum) {
-          issues.push(`${key} must be at most ${property.maximum}.`);
-        }
-      }
-    }
-    if (type === "string" || !type) {
-      if (typeof property.minLength === "number" && value.length < property.minLength) {
-        issues.push(`${key} must be at least ${property.minLength} characters.`);
-      }
-      if (typeof property.maxLength === "number" && value.length > property.maxLength) {
-        issues.push(`${key} must be at most ${property.maxLength} characters.`);
-      }
-      if (typeof property.pattern === "string") {
-        try {
-          if (!new RegExp(property.pattern).test(value)) issues.push(`${key} does not match its required pattern.`);
-        } catch {
-          issues.push(`${key} has an invalid schema pattern.`);
-        }
-      }
-      if ((property.format === "uri" || property.format === "url") && !looksLikeUrl(value)) {
-        issues.push(`${key} must be a valid URL.`);
-      }
-    }
-    return issues;
+  private async deleteMatchingUnregisteredMetadata(record: ToolCreationRecord): Promise<boolean> {
+    if (!this.metadata) return false;
+    const versions = await this.metadata.listVersions(record.toolName).catch(() => []);
+    const matched = versions.filter((version) =>
+      version.version === record.toolVersion
+      && (!record.packageRef || version.packageManifest?.package.ref === record.packageRef)
+    );
+    if (matched.length === 0 || matched.length !== versions.length) return false;
+    await this.metadata.deleteGenerated(record.toolName);
+    this.registry?.unregister?.(record.toolName);
+    return true;
   }
-}
 
-/**
- * Phase 13 follow-up: walk a tool result and re-encode any Node `Buffer`
- * we find back into the wire-friendly `contentBase64` shape (with the
- * sibling `content` key removed). HttpToolAdapter rehydrates docker
- * services' base64 payloads into Buffers so the in-process saveArtifact
- * path gets binary; for the Manual Run JSON response we need to reverse
- * that so the UI's artifact detector sees a usable file. Pure function;
- * cycle-safe via the `seen` set.
- */
-function serializeBuffersForWire(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
-  if (value === null || value === undefined) return value;
-  if (Buffer.isBuffer(value)) return { contentBase64: value.toString("base64") };
-  if (typeof value !== "object") return value;
-  if (seen.has(value as object)) return undefined;
-  seen.add(value as object);
-  if (Array.isArray(value)) return value.map((item) => serializeBuffersForWire(item, seen));
-  const out: Record<string, unknown> = {};
-  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-    if (key === "content" && Buffer.isBuffer(nested)) {
-      out.contentBase64 = (nested as Buffer).toString("base64");
-      continue;
+  private async deleteToolScopedSecrets(record: ToolCreationRecord): Promise<string[]> {
+    if (!this.secretHandles) return [];
+    const prefix = `secret.tool.${record.toolName}.`;
+    const protectedHandles = await this.referencedSecretHandles(record.toolName);
+    const handles = (await this.secretHandles.list(1_000))
+      .map((record) => record.handle)
+      .filter((handle) => handle.startsWith(prefix) && !protectedHandles.has(handle));
+    const deleted: string[] = [];
+    for (const handle of handles) {
+      if (await this.secretHandles.delete(handle)) deleted.push(handle);
     }
-    out[key] = serializeBuffersForWire(nested, seen);
+    return deleted;
   }
-  return out;
+
+  private async referencedSecretHandles(toolName: string): Promise<Set<string>> {
+    if (!this.metadata) return new Set();
+    const versions = await this.metadata.listVersions(toolName).catch(() => []);
+    return new Set(versions.flatMap((version) => [
+      ...(version.requiredSecretHandles ?? []),
+      ...(version.packageManifest?.requiredSecretHandles ?? []),
+      ...(version.packageManifest?.integration?.auth?.requiredSecretHandles ?? []),
+      ...(version.packageManifest?.integration?.operations.flatMap((operation) => operation.requiredSecretHandles ?? []) ?? []),
+    ]));
+  }
+
+  private async withStoredToolContext(toolName: string, rawBody: unknown): Promise<unknown> {
+    if (!this.toolContexts || !isRecord(rawBody)) return rawBody;
+    const contextItems = await this.toolContexts.list({ toolName });
+    const contextDocs = contextItems.map(formatContextForBuilder);
+    if (contextDocs.length === 0) return rawBody;
+    const suppliedDocs = documentationTextValues([
+      rawBody.documentation,
+      rawBody.docs,
+      rawBody.docsMarkdown,
+      rawBody.apiDocs,
+      rawBody.apiDocumentation,
+      rawBody.openApiSpec,
+    ]);
+    return {
+      ...rawBody,
+      documentation: [...contextDocs, ...suppliedDocs],
+    };
+  }
+
+  private async captureRequestContext(
+    toolName: string,
+    rawBody: unknown,
+    creationId?: string,
+  ): Promise<void> {
+    if (!this.toolContexts || !isRecord(rawBody)) return;
+    const items = extractRequestContextItems(toolName, rawBody, creationId);
+    for (const item of items) await this.toolContexts.create(item);
+  }
+
+  private async backfillToolContextFromCreations(toolName: string): Promise<void> {
+    if (!this.toolContexts || !this.creationStore) return;
+    const existing = await this.toolContexts.list({ toolName, includeDeleted: true });
+    const existingSources = new Set(existing.map((item) => item.source).filter(Boolean));
+    const creations = await this.creationStore.list({ toolName, limit: 200 });
+    for (const creation of creations) {
+      const source = `tool-creation-history:${creation.id}`;
+      if (existingSources.has(source)) continue;
+      await this.toolContexts.create({
+        toolName,
+        kind: "note",
+        title: `v${creation.toolVersion} ${creation.kind} ${creation.status}`,
+        content: formatCreationRecordForContext(creation),
+        source,
+        mimeType: "text/markdown",
+      });
+      existingSources.add(source);
+    }
+  }
 }

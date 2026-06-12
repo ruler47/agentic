@@ -1,7 +1,5 @@
 /**
- * Single source of truth for sidebar navigation. Mirrors the legacy
- * `routes` constant in public/app.js so users see the same information
- * architecture across both UIs while we port screens.
+ * Single source of truth for sidebar navigation.
  */
 
 export type NavItem = {
@@ -38,7 +36,6 @@ export const navigation: NavGroup[] = [
     group: "Build",
     items: [
       { id: "tools", label: "Tools", description: "Registry, schemas, health, and credentials.", path: "/tools" },
-      { id: "tool-builds", label: "Tool Builds", description: "Build API, browser, file, bot, webhook, and service tools.", path: "/tool-builds" },
       { id: "models", label: "Models", description: "Providers, tiers, fallbacks, and health.", path: "/models" },
     ],
   },

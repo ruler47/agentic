@@ -4,37 +4,20 @@ import type { TraceNode } from "@/features/trace/buildTraceNodes";
 import { modelTierForNode } from "@/features/trace/buildTraceNodes";
 import { ArtifactGallery } from "@/components/ArtifactPreview";
 import { GenericBadge } from "@/components/StatusBadge";
-import { readArtifactRefs } from "@/features/investigations/buildSpanInvestigationDraft";
 import { formatDuration, formatRelative, truncate } from "@/lib/format";
-import type { ToolReworkWaitRecord } from "@/api/types";
-import {
-  useAutoRetryReworkWait,
-  useCreateRetryRunForWait,
-  useResumeReworkWait,
-} from "@/api/reworkWaits";
 import { useCancelRun, useResumeRun } from "@/api/runs";
-import {
-  canCreateRetryRun,
-  retryRunLabel,
-} from "@/features/tool-builds/reworkWaitPresentation";
-import { Link } from "react-router-dom";
+import { toolRequestSummary } from "@/features/trace/traceToolRequestSummary";
 
 type TraceInspectorProps = {
   node: TraceNode | undefined;
   runId?: string;
-  reworkWait: ToolReworkWaitRecord | undefined;
-  onCreateInvestigation?: (node: TraceNode) => void;
 };
 
-export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation }: TraceInspectorProps) {
-  const resume = useResumeReworkWait();
-  const createRetry = useCreateRetryRunForWait();
-  const autoRetry = useAutoRetryReworkWait();
-
+export function TraceInspector({ node, runId }: TraceInspectorProps) {
   if (!node) {
     return (
       <aside className="rounded-[var(--radius-card)] border border-dashed border-app-border bg-app-surface p-5 text-sm text-app-text-muted">
-        Select a span on the graph or in the timeline to inspect its call frame, evidence, and any linked tool rework wait.
+        Select a span on the graph or in the timeline to inspect its call frame, evidence, and artifacts.
       </aside>
     );
   }
@@ -64,7 +47,9 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
             {node.status === "started" ? "in progress" : node.status}
           </GenericBadge>
           <span className="text-app-text-muted">{node.activity}</span>
-          <span className="font-mono text-app-text-muted">{node.actor}</span>
+          <span className="font-mono text-app-text-muted">
+            {node.actor}{node.toolVersion ? `@${node.toolVersion}` : ""}
+          </span>
           {tier ? <GenericBadge tone="muted">tier {tier}</GenericBadge> : null}
           <LiveDuration node={node} />
           {typeof node.durationMs === "number" && node.status !== "started" ? (
@@ -91,7 +76,7 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
             onClick={() => {
               if (
                 window.confirm(
-                  `Cancel this run and resume? The new run will re-enter from completed phases (council pipeline restarts the in-flight phase).`,
+                  "Cancel this run and resume? The new run will re-enter from completed phases when a resume snapshot is available.",
                 )
               ) {
                 stuckHelper.onResumeFromHere();
@@ -207,100 +192,13 @@ export function TraceInspector({ node, runId, reworkWait, onCreateInvestigation 
               url: artifact.url ?? "",
               mimeType: artifact.mimeType,
               kind: "output",
+              quality: artifact.quality,
             }))}
           />
         </Section>
       ) : null}
 
-      {reworkWait ? (
-        <section className="rounded-md border border-app-warning/40 bg-app-warning-soft p-3 text-[11px]">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-app-warning">
-            Tool rework wait
-          </p>
-          <p className="mt-1 break-all font-mono">{reworkWait.id}</p>
-          <p className="mt-1">
-            Status: <span className="font-mono">{reworkWait.status}</span>
-            {reworkWait.toolName ? (
-              <>
-                {" · tool "}
-                <span className="font-mono">{reworkWait.toolName}</span>
-                {reworkWait.toolVersion ? <> v{reworkWait.toolVersion}</> : null}
-                {reworkWait.promotedVersion ? <> → v{reworkWait.promotedVersion}</> : null}
-              </>
-            ) : null}
-          </p>
-          {reworkWait.reason ? (
-            <p className="mt-1 break-words text-app-text-muted">{truncate(reworkWait.reason, 220)}</p>
-          ) : null}
-          {reworkWait.retryRunId ? (
-            <p className="mt-1 text-app-text-muted">
-              {retryRunLabel(reworkWait)}:{" "}
-              <Link to={`/run/${reworkWait.retryRunId}`} className="font-mono text-app-accent underline">
-                {reworkWait.retryRunId}
-              </Link>
-            </p>
-          ) : null}
-          {canCreateRetryRun(reworkWait) ? (
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => createRetry.mutate({ id: reworkWait.id })}
-                disabled={createRetry.isPending}
-                className="rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
-              >
-                {createRetry.isPending ? "Creating…" : "Create retry run"}
-              </button>
-              <button
-                type="button"
-                onClick={() => autoRetry.mutate({ id: reworkWait.id })}
-                disabled={autoRetry.isPending}
-                className="rounded-md border border-app-warning/40 bg-app-surface px-2.5 py-1 text-[11px] text-app-text"
-              >
-                {autoRetry.isPending ? "Checking…" : "Force auto retry"}
-              </button>
-            </div>
-          ) : null}
-          {reworkWait.retryRunId ? (
-            <Link
-              to={`/run/${reworkWait.retryRunId}`}
-              className="mt-2 inline-flex rounded-md border border-app-warning/40 bg-app-surface px-2.5 py-1 text-[11px] text-app-text hover:border-app-accent/40"
-            >
-              Open retry run
-            </Link>
-          ) : null}
-          {reworkWait.status === "promoted" ? (
-            <button
-              type="button"
-              onClick={() => resume.mutate({ id: reworkWait.id })}
-              disabled={resume.isPending}
-              className="mt-2 rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
-            >
-              {resume.isPending ? "Closing…" : "Mark ready for retry"}
-            </button>
-          ) : null}
-          {[createRetry.error, autoRetry.error, resume.error]
-            .filter((error): error is Error => Boolean(error))
-            .map((error, index) => (
-              <p key={index} className="mt-1 text-[11px] text-app-danger">
-                {error.message}
-              </p>
-            ))}
-        </section>
-      ) : null}
-
       <footer className="mt-2 flex flex-col gap-2 border-t border-app-border pt-3 text-[11px]">
-        <button
-          type="button"
-          className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 text-xs font-medium text-app-text transition-colors hover:border-app-accent/40 hover:text-app-accent disabled:opacity-50"
-          disabled={!onCreateInvestigation}
-          onClick={() => onCreateInvestigation?.(node)}
-          title={onCreateInvestigation ? "Open the Tool Investigation modal" : "Investigation creation is unavailable for this view"}
-        >
-          Create tool request / bug
-        </button>
-        <p className="text-[10px] text-app-text-muted">
-          Opens a Tool Investigation Ticket modal so the failure context is preserved before any rebuild.
-        </p>
         <p className="text-[10px] text-app-text-muted">
           First seen {formatRelative(node.firstTimestamp)} · last update {formatRelative(node.lastTimestamp)}
         </p>
@@ -403,6 +301,54 @@ function readToolEvidence(payload: unknown): string {
   return lines.join("\n");
 }
 
+function readArtifactRefs(
+  payload: unknown,
+  runId: string,
+): Array<{ id?: string; filename?: string; mimeType?: string; url?: string; quality?: import("@/api/types").ArtifactQualityMetadata }> {
+  if (!payload || typeof payload !== "object") return [];
+  const refs: Array<{ id?: string; filename?: string; mimeType?: string; url?: string; quality?: import("@/api/types").ArtifactQualityMetadata }> = [];
+  const record = payload as Record<string, unknown>;
+  const single = record.artifact;
+  const list = Array.isArray(record.artifacts) ? record.artifacts : [];
+  const inlineArtifact =
+    typeof record.artifactId === "string" || typeof record.filename === "string"
+      ? {
+          id: record.artifactId,
+          filename: record.filename,
+          mimeType: record.mimeType,
+          url: `/api/runs/${runId}/artifacts/${record.artifactId ?? ""}`,
+          quality: record.quality,
+        }
+      : undefined;
+  const all = [inlineArtifact, single, ...list].filter(
+    (entry): entry is Record<string, unknown> =>
+      Boolean(entry) &&
+      typeof entry === "object" &&
+      (typeof (entry as { url?: unknown }).url === "string" ||
+        typeof (entry as { filename?: unknown }).filename === "string"),
+  );
+  for (const artifact of all) {
+    refs.push({
+      id: typeof artifact.id === "string" ? artifact.id : undefined,
+      filename: typeof artifact.filename === "string" ? artifact.filename : undefined,
+      mimeType: typeof artifact.mimeType === "string" ? artifact.mimeType : undefined,
+      quality: readArtifactQuality(artifact.quality),
+      url:
+        typeof artifact.url === "string"
+          ? artifact.url
+          : `/api/runs/${runId}/artifacts/${artifact.id ?? ""}`,
+    });
+  }
+  return refs;
+}
+
+function readArtifactQuality(value: unknown): import("@/api/types").ArtifactQualityMetadata | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const status = (value as { status?: unknown }).status;
+  if (status !== "passed" && status !== "warning" && status !== "failed") return undefined;
+  return value as import("@/api/types").ArtifactQualityMetadata;
+}
+
 function statusTone(status: string): "ok" | "running" | "danger" | "muted" {
   if (status === "completed") return "ok";
   if (status === "failed") return "danger";
@@ -421,15 +367,13 @@ function statusTone(status: string): "ok" | "running" | "danger" | "muted" {
  * the stuck threshold, the operator sees a "Resume from here" affordance
  * in the Inspector. The button:
  *   1. Cancels the parent run (aborts in-flight LLM calls).
- *   2. Triggers a Phase 12 resume on the parent — `extractCouncilContext`
- *      re-threads the council toolBuildContext so the resumed run is
- *      still a council pipeline run (Slice A fix). Completed phases
- *      are reused via the resumeFrom snapshot.
+ *   2. Triggers a resume on the parent. Completed phases are reused
+ *      via the resumeFrom snapshot when the backend can recover them.
  *
  * The TRUE "preserve in-flight sub-research findings AND re-fire just
- * this LLM call" semantic would require surgical state injection into
- * the council loop; that's a follow-up. For now the practical guarantee
- * is "completed phases survive, the stuck phase re-runs from scratch".
+ * this LLM call" semantic would require more granular runtime state.
+ * For now the practical guarantee is "completed phases survive, the
+ * stuck phase re-runs from scratch".
  */
 const STUCK_THRESHOLD_MS = 3 * 60 * 1000;
 
@@ -592,51 +536,6 @@ function CouncilEventDetails({ node }: { node: TraceNode }) {
           </div>
         </Collapsible>
       ) : null}
-      {/* Phase 2: child sub-build links — when a parent council run
-          halted waiting for a reader tool, it spawned one or more
-          sub-build runs. Render each as a clickable link into Trace
-          Lab so the operator can drill into the sub-build's
-          progress without copying run ids manually. */}
-      {summary.subBuildRunIds.length > 0 ? (
-        <Collapsible title={`Spawned reader sub-builds (${summary.subBuildRunIds.length})`} defaultOpen>
-          {summary.missingCapabilities.length > 0 ? (
-            <ul className="mb-2 space-y-1 text-[11px] text-app-text-muted">
-              {summary.missingCapabilities.map((entry, i) => (
-                <li key={i}>
-                  needs <span className="font-mono text-app-text">{entry.capability}</span>
-                  {entry.filename ? <> (for {entry.filename})</> : null}
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          <ul className="flex flex-col gap-1 text-[11px]">
-            {summary.subBuildRunIds.map((id) => (
-              <li key={id}>
-                <Link
-                  to={`/trace/${id}`}
-                  className="block break-all rounded border border-app-border bg-app-surface px-2 py-1 font-mono text-app-accent hover:border-app-accent/40"
-                >
-                  {id}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </Collapsible>
-      ) : null}
-      {summary.successorRunId ? (
-        <Collapsible title="Successor run" defaultOpen>
-          <p className="text-[11px] text-app-text-muted">
-            All reader tools became available — this build was replayed as a fresh council
-            run. Click through to see the resumed pipeline.
-          </p>
-          <Link
-            to={`/trace/${summary.successorRunId}`}
-            className="mt-2 inline-block break-all rounded border border-app-accent/40 bg-app-accent-soft/40 px-2 py-1 font-mono text-[11px] text-app-accent hover:bg-app-accent-soft"
-          >
-            {summary.successorRunId}
-          </Link>
-        </Collapsible>
-      ) : null}
     </Section>
   );
 }
@@ -650,33 +549,15 @@ type PayloadSummary = {
   findings: string[];
   failures: string[];
   files: { path: string; content: string }[];
-  /** Sub-builds the parent council spawned (Phase 2 auto-spawn). */
+  /** Linked child run ids, when a trace payload records them. */
   subBuildRunIds: string[];
-  /** When the parent build was replayed after waiting on readers, this
-   *  is the new run id that picked up the work. */
+  /** Linked successor run id, when a trace payload records one. */
   successorRunId?: string;
-  /** Reader-tool capabilities the parent build was blocked on. */
+  /** Missing capabilities recorded by a trace payload. */
   missingCapabilities: { capability: string; filename: string; mimeType: string }[];
 };
 
-/**
- * Normalises whatever the council emitted into a uniform Input/Output
- * pair plus a few headline fields. The mapping is event-type aware so
- * each kind of span gets a meaningful label:
- *
- *   brainstorm-proposal → Input: "Brainstorm prompt", Output: "Council proposal"
- *   vote-cast           → Input: "Voting prompt",     Output: "Ranking JSON"
- *   winner-selected     → headline only (Borda scores, winner)
- *   code-drafted        → Input: "Implement prompt",  Output: "Drafted code"
- *   code-review-cast    → Input: "Review prompt",     Output: "Verdict + findings"
- *   code-revised        → Input: "Revise prompt",     Output: "Revised code"
- *   qa-attempt          → Input: "QA tool input",     Output: "Tool output + oracle verdict"
- *   code-repaired       → Input: "Repair prompt",     Output: "Repaired code"
- *   tool-build-registered → headline only
- *
- * Falls back gracefully when the new payload fields (`prompt` / `output`)
- * are missing — older events stored only `content`/`raw`/`ranking`.
- */
+/** Normalises trace payloads into a uniform Input/Output pair plus headline fields. */
 function buildPayloadSummary(node: TraceNode, payload: Record<string, unknown>): PayloadSummary {
   const summary: PayloadSummary = {
     hasAny: false,
@@ -690,6 +571,8 @@ function buildPayloadSummary(node: TraceNode, payload: Record<string, unknown>):
   };
 
   const promptText = stringField(payload.prompt);
+  const genericInput = payload.input;
+  const genericOutput = payload.output;
   const outputText = stringField(payload.output);
   const oracleOutputText = stringField(payload.oracleOutput);
   const rawText = stringField(payload.raw);
@@ -711,6 +594,7 @@ function buildPayloadSummary(node: TraceNode, payload: Record<string, unknown>):
     : undefined;
   const attempt = typeof payload.attempt === "number" ? payload.attempt : undefined;
   const skipped = payload.skipped === true;
+  const toolRequest = toolRequestSummary(genericOutput);
 
   summary.error = errorText;
   summary.findings = findings;
@@ -749,6 +633,25 @@ function buildPayloadSummary(node: TraceNode, payload: Record<string, unknown>):
   if (attempt !== undefined) {
     summary.headerLines.push({ label: "Attempt", value: String(attempt), note: skipped ? "skipped" : undefined });
   }
+  if (toolRequest.operation) summary.headerLines.push({ label: "Operation", value: toolRequest.operation });
+  if (toolRequest.target) {
+    summary.headerLines.push({
+      label: "Target",
+      value: toolRequest.target,
+      note: toolRequest.targetRequested && toolRequest.targetRequested !== toolRequest.target
+        ? `requested ${toolRequest.targetRequested}`
+        : undefined,
+    });
+  }
+  if (toolRequest.url) summary.headerLines.push({ label: "Request URL", value: truncate(toolRequest.url, 140) });
+  if (toolRequest.status) summary.headerLines.push({ label: "HTTP", value: toolRequest.status });
+  if (toolRequest.providerError) {
+    summary.headerLines.push({
+      label: "Provider error",
+      value: truncate(toolRequest.providerError, 140),
+      note: toolRequest.providerErrorCategory || undefined,
+    });
+  }
 
   // Event-type-aware Input/Output labels.
   const labels = inputOutputLabelsFor(node);
@@ -758,6 +661,8 @@ function buildPayloadSummary(node: TraceNode, payload: Record<string, unknown>):
     summary.input = { label: labels.inputLabel, text: promptText };
   } else if (qaInput && typeof qaInput === "object") {
     summary.input = { label: labels.inputLabel, text: safeJson(qaInput) };
+  } else if (genericInput !== undefined) {
+    summary.input = { label: labels.inputLabel, text: safeJson(genericInput) };
   }
 
   // Output: prefer the new output field; for review/qa surface the
@@ -768,6 +673,8 @@ function buildPayloadSummary(node: TraceNode, payload: Record<string, unknown>):
     summary.output = { label: labels.outputLabel, text: `${safeJson(qaToolOutput)}${oracleNote}` };
   } else if (outputText) {
     summary.output = { label: labels.outputLabel, text: outputText };
+  } else if (genericOutput !== undefined) {
+    summary.output = { label: labels.outputLabel, text: safeJson(genericOutput) };
   } else if (rawText) {
     summary.output = { label: labels.outputLabel, text: rawText };
   } else if (proposalContent) {
@@ -794,28 +701,7 @@ function buildPayloadSummary(node: TraceNode, payload: Record<string, unknown>):
 }
 
 function inputOutputLabelsFor(node: TraceNode): { inputLabel: string; outputLabel: string } {
-  const type = node.type ?? "";
-  if (type === "tool-build-brainstorm-proposal") {
-    return { inputLabel: "Input — brainstorm prompt", outputLabel: "Output — council proposal" };
-  }
-  if (type === "tool-build-vote-cast") {
-    return { inputLabel: "Input — voting prompt", outputLabel: "Output — vote response" };
-  }
-  if (type === "tool-build-code-drafted") {
-    return { inputLabel: "Input — implement prompt", outputLabel: "Output — drafted code" };
-  }
-  if (type === "tool-build-code-review-cast") {
-    return { inputLabel: "Input — review prompt", outputLabel: "Output — review response" };
-  }
-  if (type === "tool-build-code-revised") {
-    return { inputLabel: "Input — revise prompt", outputLabel: "Output — revised code" };
-  }
-  if (type === "tool-build-qa-attempt") {
-    return { inputLabel: "Input — tool call payload", outputLabel: "Output — tool result + oracle" };
-  }
-  if (type === "tool-build-code-repaired") {
-    return { inputLabel: "Input — repair prompt", outputLabel: "Output — repaired code" };
-  }
+  void node;
   return { inputLabel: "Input", outputLabel: "Output" };
 }
 

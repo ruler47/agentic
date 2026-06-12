@@ -1,5 +1,11 @@
 # Universal Agent Architecture
 
+Current implementation direction: stabilize the preinstalled portable core toolbelt
+before expanding Tool Creation V1 or external-action automation. See
+[Core Toolbelt Roadmap](roadmap-core-toolbelt.md). Tool builder and external-action
+flows remain useful infrastructure, but they should not drive new product complexity
+until the agent reliably uses enabled core tools for real tasks.
+
 ## Goal
 
 The universal agent is not a giant agent that tries to keep every detail in one context.
@@ -44,6 +50,20 @@ includes summary, accepted facts, rejected attempts, open questions, and recent 
 metadata such as filename, MIME type, URL, content preview, and QA status. Agents should
 reuse these prior artifacts when they satisfy a follow-up request. They should reacquire
 data only when the prior artifact is stale, missing, insufficient, or explicitly rejected.
+
+For broad research, the base agent does not apply small default caps on tool calls, LLM
+step count, or LLM response time. Quality gates, cancellation, and explicit caller
+limits decide when work is done or blocked; `maxToolCalls`, `maxSteps`, and
+`llmTimeoutMs` remain available to callers that need hard safety controls. Repeated or
+near-duplicate search queries inside one run are skipped and traced instead of spending
+another tool call.
+
+Always-on channel intake uses explicit identity review. Unknown inbound senders appear in
+the Channels page as `Pending channel users`; an operator maps the event to an existing
+local user or creates a new user. The backend then allows all discovered provider ids and
+aliases for that event and replays the inbound message once into normal run creation.
+This keeps multi-user provenance explicit instead of silently assigning new channel ids
+to the admin user.
 
 The next recursive-agent layer adds a structured Thread/Run Work Ledger and Evidence
 Ledger beside this compact summary. The summary is for humans and prompt compression; the
@@ -588,6 +608,11 @@ Recursive agents need a small coordination surface so parallel branches do not r
 the same searches, URL visits, API calls, screenshots, or artifact generation. The
 domain foundation lives in `src/work-ledger/`:
 
+Inside a single base-agent run, exact or near-duplicate search requests are also
+deduplicated before the tool executes. The skipped call is still visible in trace output
+with the prior similar query, so operators can distinguish useful deep research from
+query churn.
+
 - **Work Ledger** ([src/work-ledger/types.ts](../src/work-ledger/types.ts),
   [workLedgerStore.ts](../src/work-ledger/workLedgerStore.ts)) — typed `WorkLedgerItem`
   records keyed by a deterministic `workKey` and tagged with `kind`
@@ -859,6 +884,14 @@ uses the normal conversation-thread resolver, creates a standard run, and record
 linked queued event. This is the provider-neutral bridge for future Telegram/Slack/webhook
 tools.
 
+If the inbound event is valid but cannot become a run, the core records a linked
+`system/failed` tool-service event with the failure reason instead of leaving the
+operator to infer why `runId` is empty. When an operator allows a new channel identity
+from a received inbound event, the service layer creates the identity mappings for the
+source id and aliases, then replays that event once into the normal run path. This keeps
+first-contact channel onboarding auditable and avoids requiring the user to send the same
+message again after approval.
+
 The response path is provider-neutral as well. When a run that originated from an
 always-on tool reaches a terminal success or failure, the server records an
 `outbound/queued` `tool_service_events` record containing the final answer or error
@@ -866,14 +899,19 @@ payload plus source identity links. Provider-specific generated services own the
 delivery step: they poll `GET /api/tool-services/:name/outbox`, send the response through
 their provider, then call `POST /api/tool-services/:name/outbox/:eventId/ack` to append a
 `sent` or `failed` evidence event and keep the queued outbox from being delivered again.
+Ack details are sanitized with runtime secret redaction before persistence so provider
+URLs, tokens, and authorization material do not leak through diagnostics.
 
-`channel.telegram.bot` is the first built-in reference implementation of this contract.
-It is still an ordinary tool: it resolves a token through the secret-handle registry,
+`channel.telegram` is the first generated reference implementation of this contract. It
+is still an ordinary tool package: it resolves a token through the secret-handle registry,
 polls Telegram, forwards source user/chat/message ids to the generic inbound endpoint,
 delivers neutral outbox events back through Telegram, and records sent/failed
-acknowledgements. Generated replacements for Telegram or any other messaging provider
-should follow the same contract rather than adding provider-specific branches to the core
-runtime.
+acknowledgements. Version edits must preserve the inherited always-on integration
+contract so a messaging tool does not silently degrade into an echo/on-demand package.
+Generated replacements for Telegram or any other messaging provider should follow the
+same contract rather than adding provider-specific branches to the core runtime.
+Manual restart stops the active service runtime before starting the current active tool
+version, so promoted always-on versions do not keep serving from an old process.
 
 Thread resolution should prefer provider metadata such as reply-to messages, chat/thread
 IDs, forum topics, or webhook thread IDs, then use a bounded classifier over recent
@@ -881,6 +919,10 @@ compact thread summaries. The
 classifier should return `new_task`, `continuation`, `clarification`, or `correction`
 with confidence and reason. Low-confidence cases can ask the user a short clarification
 instead of executing against the wrong context.
+For generated messaging tools, the generic inbound endpoint resolves `replyToProviderMessageId`
+and `replyToSourceMessageId` against prior outbound service events before classification,
+then passes the matched `threadId` and `parentRunId` into normal run creation. Provider
+adapters should forward reply metadata, but the core owns this reply-to-thread mapping.
 
 ### Outbound Actions
 

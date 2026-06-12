@@ -48,7 +48,7 @@ export type RuntimeClaimResult = {
 const SPAN_ID_PREFIX = "ledger";
 
 /**
- * Thin runtime adapter that wires `UniversalAgent` operations into the durable
+ * Thin runtime adapter that wires agent operations into the durable
  * Work / Evidence / Retrospective ledger contracts. The coordinator stays optional —
  * if no stores are wired, every method short-circuits and the runtime falls back to
  * its existing behaviour.
@@ -266,7 +266,7 @@ export class RuntimeLedgerCoordinator {
       duplicatedWorkSignals: [...this.duplicatedWorkSignals],
       whatFailed: [...this.whatFailed],
     });
-    const proposedToolInvestigationNotes = [...this.weakTools, ...this.missingCapabilities]
+    const proposedToolFollowUpNotes = [...this.weakTools, ...this.missingCapabilities]
       .map((item) => `Investigate reusable capability/tool improvement: ${item}`);
     const proposedPromptChanges = this.duplicatedWorkSignals.size > 0
       ? ["Prompt child agents to consult Work Ledger / thread evidence before repeating external work."]
@@ -283,7 +283,7 @@ export class RuntimeLedgerCoordinator {
       weakTools: [...this.weakTools],
       missingCapabilities: [...this.missingCapabilities],
       usefulEvidenceIds: [...this.evidenceIds],
-      proposedPolicyChanges: proposedToolInvestigationNotes,
+      proposedPolicyChanges: proposedToolFollowUpNotes,
       proposedPromptChanges,
       summary: this.draftSummary(runOutcome, items, reuseSignals, suspectedRootCauses),
       metadata: {

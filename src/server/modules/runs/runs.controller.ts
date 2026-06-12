@@ -7,6 +7,7 @@ import {
   Inject,
   Param,
   Post,
+  Query,
   Res,
   Sse,
 } from "@nestjs/common";
@@ -14,6 +15,8 @@ import type { Response } from "express";
 import { Observable } from "rxjs";
 import { RUN_STORE } from "../../persistence/tokens.js";
 import type { RunStore } from "../../../runs/types.js";
+import { ActionProposalAutoModeService } from "./action-proposal-auto-mode.service.js";
+import { ActionProposalsService } from "./action-proposals.service.js";
 import { RunsService } from "./runs.service.js";
 
 @Controller("api")
@@ -21,6 +24,10 @@ export class RunsController {
   constructor(
     @Inject(RunsService)
     private readonly service: RunsService,
+    @Inject(ActionProposalsService)
+    private readonly actionProposals: ActionProposalsService,
+    @Inject(ActionProposalAutoModeService)
+    private readonly actionProposalAutoMode: ActionProposalAutoModeService,
     @Inject(RUN_STORE) private readonly runs: RunStore,
   ) {}
 
@@ -48,6 +55,117 @@ export class RunsController {
   @Get("runs/:id")
   async get(@Param("id") id: string) {
     return { run: await this.service.get(decodeURIComponent(id)) };
+  }
+
+  @Get("action-proposals")
+  async listActionProposals() {
+    return { proposals: await this.actionProposals.listActionProposals() };
+  }
+
+  @Post("action-proposals/fixture")
+  @HttpCode(201)
+  async createFixtureActionProposal(@Body() body: unknown) {
+    const proposal = await this.actionProposals.createFixtureActionProposal(body);
+    if (
+      proposal.proposal.executionMode === "auto" &&
+      !proposal.proposal.approvalRequired
+    ) {
+      const [updated] =
+        await this.actionProposalAutoMode.commitReadyAutoProposalsForRun(
+          proposal.run.id,
+          body,
+        );
+      return { proposal: updated ?? proposal };
+    }
+    return {
+      proposal,
+    };
+  }
+
+  @Post("action-proposals/:proposalId/approve")
+  @HttpCode(200)
+  async approveActionProposal(
+    @Param("proposalId") proposalId: string,
+    @Body() body: unknown,
+  ) {
+    return {
+      proposal: await this.actionProposals.decideActionProposal(
+        decodeURIComponent(proposalId),
+        "approved",
+        body,
+      ),
+    };
+  }
+
+  @Post("action-proposals/:proposalId/reject")
+  @HttpCode(200)
+  async rejectActionProposal(
+    @Param("proposalId") proposalId: string,
+    @Body() body: unknown,
+  ) {
+    return {
+      proposal: await this.actionProposals.decideActionProposal(
+        decodeURIComponent(proposalId),
+        "rejected",
+        body,
+      ),
+    };
+  }
+
+  @Post("action-proposals/:proposalId/commit")
+  @HttpCode(200)
+  async commitActionProposal(
+    @Param("proposalId") proposalId: string,
+    @Body() body: unknown,
+  ) {
+    return {
+      proposal: await this.actionProposals.commitActionProposal(
+        decodeURIComponent(proposalId),
+        body,
+      ),
+    };
+  }
+
+  @Post("action-proposals/:proposalId/prepare")
+  @HttpCode(200)
+  async prepareActionProposal(
+    @Param("proposalId") proposalId: string,
+    @Body() body: unknown,
+  ) {
+    return {
+      proposal: await this.actionProposals.prepareActionProposal(
+        decodeURIComponent(proposalId),
+        body,
+      ),
+    };
+  }
+
+  @Post("action-proposals/:proposalId/profile-hydration/approve")
+  @HttpCode(200)
+  async approveActionProposalProfileHydration(
+    @Param("proposalId") proposalId: string,
+    @Body() body: unknown,
+  ) {
+    return {
+      proposal: await this.actionProposals.approveActionProposalProfileHydration(
+        decodeURIComponent(proposalId),
+        body,
+      ),
+    };
+  }
+
+  @Post("action-proposals/:proposalId/build-executor")
+  @HttpCode(200)
+  async buildActionProposalExecutor(
+    @Param("proposalId") proposalId: string,
+    @Body() body: unknown,
+  ) {
+    return {
+      proposal: await this.actionProposals.buildActionProposalExecutor(
+        decodeURIComponent(proposalId),
+        body,
+      ),
+    };
   }
 
   @Post("runs/:id/cancel")
@@ -78,6 +196,7 @@ export class RunsController {
   async downloadArtifact(
     @Param("id") id: string,
     @Param("artifactId") artifactId: string,
+    @Query("download") download: string | undefined,
     @Res() response: Response,
   ) {
     const { stored, buffer } = await this.service.getArtifact(
@@ -89,7 +208,7 @@ export class RunsController {
       .set({
         "content-type": stored.artifact.mimeType,
         "content-length": String(stored.artifact.sizeBytes),
-        "content-disposition": `inline; filename="${stored.artifact.filename.replace(/"/g, "")}"`,
+        "content-disposition": `${download === "1" ? "attachment" : "inline"}; filename="${stored.artifact.filename.replace(/"/g, "")}"`,
         "cache-control": "no-store",
       })
       .send(buffer);

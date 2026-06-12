@@ -55,3 +55,72 @@ test("Nest SecretsService keeps env secret refs visible because they are handles
 
   assert.equal(created.secretRef, "TELEGRAM_BOT_TOKEN");
 });
+
+test("Nest SecretsService reports registered and resolvable handle status without leaking values", async () => {
+  const service = new SecretsService(new InMemorySecretHandleStore(), new AuditService(new InMemoryAuditEventStore()));
+  await service.create(
+    {
+      handle: "secret.inline.status",
+      label: "Inline status",
+      provider: "inline",
+      secretRef: "INLINE-STATUS-SECRET",
+    },
+    {
+      handle: "secret.inline.status",
+      label: "Inline status",
+      provider: "inline",
+      secretRef: "INLINE-STATUS-SECRET",
+    },
+  );
+  await service.create(
+    {
+      handle: "secret.env.status",
+      label: "Env status",
+      provider: "env",
+      secretRef: "MISSING_STATUS_ENV",
+    },
+    {
+      handle: "secret.env.status",
+      label: "Env status",
+      provider: "env",
+      secretRef: "MISSING_STATUS_ENV",
+    },
+  );
+
+  const status = await service.status([
+    "secret.inline.status",
+    "secret.env.status",
+    "secret.missing.status",
+  ]);
+
+  assert.deepEqual(status.handles.map((handle) => ({
+    handle: handle.handle,
+    registered: handle.registered,
+    resolvable: handle.resolvable,
+    reason: handle.reason,
+    secretRef: handle.secretRef,
+  })), [
+    {
+      handle: "secret.inline.status",
+      registered: true,
+      resolvable: true,
+      reason: "resolved",
+      secretRef: "[redacted inline secret]",
+    },
+    {
+      handle: "secret.env.status",
+      registered: true,
+      resolvable: false,
+      reason: "unresolved",
+      secretRef: "MISSING_STATUS_ENV",
+    },
+    {
+      handle: "secret.missing.status",
+      registered: false,
+      resolvable: false,
+      reason: "not_registered",
+      secretRef: undefined,
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(status), /INLINE-STATUS-SECRET/);
+});

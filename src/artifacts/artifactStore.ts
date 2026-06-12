@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import {
@@ -58,7 +59,7 @@ export type ArtifactObjectStore = {
 export class LocalArtifactStore implements ArtifactStore {
   private readonly root: string;
 
-  constructor(root = process.env.ARTIFACT_ROOT ?? "/app/workspace/artifacts") {
+  constructor(root = process.env.ARTIFACT_ROOT ?? defaultArtifactRoot()) {
     this.root = resolve(root);
   }
 
@@ -174,6 +175,10 @@ export class LocalArtifactStore implements ArtifactStore {
   ): string {
     return inside(this.kindDir(runId, kind), `${safeSegment(artifactId)}-${safeFilename(filename)}`);
   }
+}
+
+function defaultArtifactRoot(): string {
+  return existsSync("/app/workspace") ? "/app/workspace/artifacts" : "workspace/artifacts";
 }
 
 export class DurableArtifactStore implements ArtifactStore {

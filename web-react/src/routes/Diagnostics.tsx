@@ -12,6 +12,9 @@ export function DiagnosticsPage() {
 
   const failedTools = (tools.data ?? []).filter((tool) => tool.status === "failed" || tool.lastHealthOk === false);
   const healthyTools = (tools.data ?? []).filter((tool) => tool.status !== "failed" && tool.lastHealthOk !== false);
+  const databaseMode = health.data?.persistence?.database.mode ?? "unknown";
+  const databaseStatus = health.data?.persistence?.database.status ?? "unknown";
+  const fallbackStores = (health.data?.persistence?.stores ?? []).filter((store) => !store.durable);
 
   return (
     <section className="flex flex-col gap-4">
@@ -43,6 +46,47 @@ export function DiagnosticsPage() {
                 : "muted"
           }
         />
+        <DiagnosticTile
+          label="Persistence"
+          value={`${databaseMode} · ${databaseStatus}`}
+          tone={
+            databaseMode === "postgres" && databaseStatus === "ok"
+              ? "ok"
+              : databaseStatus === "error"
+                ? "danger"
+                : "warn"
+          }
+          subtitle={
+            fallbackStores.length
+              ? `${fallbackStores.length} volatile store${fallbackStores.length === 1 ? "" : "s"}`
+              : "Stateful stores durable"
+          }
+        />
+      </article>
+
+      <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-5">
+        <header className="mb-3">
+          <h2 className="text-base font-semibold">Persistence</h2>
+          <p className="mt-1 text-xs text-app-text-muted">
+            Runtime storage mode for state that must survive API restarts.
+          </p>
+        </header>
+        <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+          {(health.data?.persistence?.stores ?? []).map((store) => (
+            <div key={store.name} className="rounded-md border border-app-border bg-app-surface-2 p-3 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-mono">{store.name}</span>
+                <GenericBadge tone={store.durable ? "ok" : "warn"}>
+                  {store.durable ? "durable" : "volatile"}
+                </GenericBadge>
+              </div>
+              <p className="mt-1 font-mono text-[11px] text-app-text-muted">{store.mode}</p>
+            </div>
+          ))}
+        </div>
+        {!health.data?.persistence ? (
+          <p className="text-xs text-app-text-muted">Persistence diagnostics are not available yet.</p>
+        ) : null}
       </article>
 
       <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-5">

@@ -16,6 +16,7 @@ import {
   useUsers,
 } from "@/api/users";
 import { GenericBadge } from "@/components/StatusBadge";
+import { PendingChannelUsers } from "@/features/channels/PendingChannelUsers";
 import { formatRelative, truncate } from "@/lib/format";
 import type {
   ToolServiceEventDirection,
@@ -28,6 +29,7 @@ import {
   filterChannelEvents,
   filterChannelIdentities,
   flattenChannelIdentities,
+  findPendingChannelUsers,
   summarizeChannelHealth,
   type ChannelIdentityView,
 } from "@/features/channels/channelPresentation";
@@ -80,6 +82,16 @@ export function ChannelsPage() {
     () => filterChannelIdentities(identities, { service: serviceFilter, search }),
     [identities, serviceFilter, search],
   );
+  const pendingChannelUsers = useMemo(
+    () =>
+      findPendingChannelUsers({
+        events: allEvents,
+        identities,
+        service: serviceFilter,
+        search,
+      }),
+    [allEvents, identities, serviceFilter, search],
+  );
 
   const setFilter = (key: "service" | "direction", value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -103,12 +115,6 @@ export function ChannelsPage() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2 text-xs">
-            <Link
-              to="/tool-builds"
-              className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 font-semibold hover:border-app-accent/50 hover:text-app-accent"
-            >
-              Build channel tool
-            </Link>
             <Link
               to="/users"
               className="rounded-md border border-app-border bg-app-surface-2 px-3 py-1.5 font-semibold hover:border-app-accent/50 hover:text-app-accent"
@@ -137,6 +143,8 @@ export function ChannelsPage() {
         onSearchChange={setSearch}
       />
 
+      <PendingChannelUsers pending={pendingChannelUsers} users={allUsers} />
+
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
         <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
           <SectionHeader
@@ -146,7 +154,7 @@ export function ChannelsPage() {
           {services.isLoading ? (
             <EmptyLine>Loading services…</EmptyLine>
           ) : serviceOptions.length === 0 ? (
-            <EmptyLine>No always-on services installed. Create one from Tool Builds.</EmptyLine>
+            <EmptyLine>No always-on services installed.</EmptyLine>
           ) : (
             <div className="mt-3 grid gap-3 2xl:grid-cols-2">
               {serviceOptions

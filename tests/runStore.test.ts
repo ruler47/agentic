@@ -97,6 +97,26 @@ test("InMemoryRunStore recovers interrupted queued and running runs", async () =
   assert.equal(untouchedCompleted?.status, "completed");
 });
 
+test("InMemoryRunStore can pause a run for external action approval", async () => {
+  const store = new InMemoryRunStore();
+  const run = await store.create("approval task");
+  const result: AgentRunResult = {
+    finalAnswer: "Prepared an external action proposal.",
+    complexity: { mode: "direct", reason: "test", domains: ["test"], riskLevel: "high" },
+    subtasks: [],
+    workerResults: [],
+    reviews: [],
+  };
+
+  await store.markRunning(run.id);
+  await store.waitForApproval(run.id, result, "Waiting for operator approval.");
+
+  const paused = await store.get(run.id);
+  assert.equal(paused?.status, "waiting_approval");
+  assert.equal(paused?.error, "Waiting for operator approval.");
+  assert.equal(paused?.result?.finalAnswer, "Prepared an external action proposal.");
+});
+
 test("InMemoryRunStore cancellation is terminal", async () => {
   const store = new InMemoryRunStore();
   const run = await store.create("cancel me");
@@ -126,51 +146,6 @@ test("InMemoryRunStore cancellation is terminal", async () => {
   assert.equal(cancelled?.error, "operator cancelled");
   assert.equal(cancelled?.events.length, 0);
   assert.equal(cancelled?.result, undefined);
-});
-
-test("InMemoryRunStore waiting_tool_rework status survives late completion or failure", async () => {
-  const store = new InMemoryRunStore();
-  const run = await store.create("paused task");
-
-  await store.markRunning(run.id);
-  await store.markWaitingForToolRework(
-    run.id,
-    "Run paused: existing browser.screenshot tool needs rework before retry.",
-  );
-
-  const paused = await store.get(run.id);
-  assert.equal(paused?.status, "waiting_tool_rework");
-  assert.match(paused?.error ?? "", /needs rework/);
-
-  await store.complete(run.id, {
-    finalAnswer: "late agent completion",
-    complexity: { mode: "direct", reason: "test", domains: ["test"], riskLevel: "low" },
-    subtasks: [],
-    workerResults: [],
-    reviews: [],
-  });
-  await store.fail(run.id, "late agent failure");
-
-  const stillWaiting = await store.get(run.id);
-  assert.equal(
-    stillWaiting?.status,
-    "waiting_tool_rework",
-    "late agent complete()/fail() must not overwrite waiting_tool_rework",
-  );
-  assert.equal(stillWaiting?.result, undefined, "late completion result must not be stored");
-  assert.match(stillWaiting?.error ?? "", /needs rework/);
-});
-
-test("InMemoryRunStore resume returns waiting run to failed", async () => {
-  const store = new InMemoryRunStore();
-  const run = await store.create("resume me");
-  await store.markRunning(run.id);
-  await store.markWaitingForToolRework(run.id, "Waiting for tool upgrade.");
-  await store.resumeFromToolRework(run.id, "Operator marked ready for retry.");
-
-  const resumed = await store.get(run.id);
-  assert.equal(resumed?.status, "failed");
-  assert.match(resumed?.error ?? "", /ready for retry/);
 });
 
 test("InMemoryRunStore deletes runs by conversation thread id", async () => {

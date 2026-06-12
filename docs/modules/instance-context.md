@@ -160,7 +160,9 @@ Outbound Telegram actions must be explicit and auditable. The runtime should dis
 between answering the requester and sending a message to another person or to the group.
 
 Telegram thread resolution should use deterministic metadata first and LLM classification
-second inside the generated always-on module before it creates a normal run:
+second before it creates a normal run. Generated messaging tools forward provider
+reply ids, while the generic tool-service inbound endpoint maps those ids to prior
+outbound service events and injects the resolved `threadId` / `parentRunId`:
 
 ```text
 reply-to message / forum topic / explicit command

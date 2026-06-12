@@ -17,22 +17,16 @@ import { PostgresModelTierSettingsStore } from "../../settings/postgresModelTier
 import { InMemoryModelProviderStore } from "../../settings/modelProviderStore.js";
 import { PostgresModelProviderStore } from "../../settings/postgresModelProviderStore.js";
 import { InMemoryToolRuntimeSettingsStore } from "../../settings/toolRuntimeSettings.js";
-import {
-  InMemoryCodingCouncilStore,
-  PostgresCodingCouncilStore,
-} from "../../settings/codingCouncilStore.js";
 import { PostgresToolRuntimeSettingsStore } from "../../settings/postgresToolRuntimeSettings.js";
 import { SkillMemory } from "../../memory/skillMemory.js";
 import { PostgresSkillMemory } from "../../memory/postgresSkillMemory.js";
 import { createTextEmbeddingProviderFromEnv } from "../../memory/textEmbedding.js";
-import { InMemoryToolMetadataStore } from "../../tools/toolMetadataStore.js";
+import { LocalJsonToolMetadataStore } from "../../tools/toolMetadataStore.js";
 import { PostgresToolMetadataStore } from "../../tools/postgresToolMetadataStore.js";
-import { InMemoryToolBuildRequestStore } from "../../tools/toolBuildRequestStore.js";
-import { PostgresToolBuildRequestStore } from "../../tools/postgresToolBuildRequestStore.js";
-import { InMemoryToolInvestigationStore } from "../../tools/toolInvestigationStore.js";
-import { PostgresToolInvestigationStore } from "../../tools/postgresToolInvestigationStore.js";
-import { InMemoryToolReworkWaitStore } from "../../runs/toolReworkWaitStore.js";
-import { PostgresToolReworkWaitStore } from "../../runs/postgresToolReworkWaitStore.js";
+import { InMemoryToolCreationStore } from "../../tools/toolCreationStore.js";
+import { PostgresToolCreationStore } from "../../tools/postgresToolCreationStore.js";
+import { InMemoryToolContextStore } from "../../tools/toolContextStore.js";
+import { PostgresToolContextStore } from "../../tools/postgresToolContextStore.js";
 import { InMemoryToolMigrationStore } from "../../tools/toolMigrationStore.js";
 import { PostgresToolMigrationStore } from "../../tools/postgresToolMigrationStore.js";
 import { InMemoryToolPromotionStore } from "../../tools/toolPromotionStore.js";
@@ -53,7 +47,6 @@ import { PostgresArtifactMetadataStore } from "../../artifacts/postgresArtifactM
 import { S3ObjectStore, s3ConfigFromEnv } from "../../artifacts/s3ObjectStore.js";
 import { APP_ENV } from "../config/config.module.js";
 import type { AppEnv } from "../config/env.js";
-import { UniversalAgent } from "../../agents/universalAgent.js";
 import { LlmClient, readLlmConfigFromEnv } from "../../llm/client.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { FileReadTool, FileWriteTool } from "../../tools/fileTools.js";
@@ -89,21 +82,17 @@ import {
   SECRET_HANDLE_STORE,
   SKILL_MEMORY,
   TEXT_EMBEDDING_PROVIDER,
-  TOOL_BUILD_MIGRATION_QA_POOL,
-  TOOL_BUILD_REQUEST_STORE,
-  TOOL_INVESTIGATION_STORE,
+  TOOL_CREATION_STORE,
+  TOOL_CONTEXT_STORE,
   TOOL_METADATA_STORE,
   TOOL_MIGRATION_STORE,
   TOOL_PROMOTION_STORE,
   TOOL_REGISTRY,
   TOOL_CALLBACK_TOKEN_ISSUER,
-  TOOL_REWORK_WAIT_STORE,
   TOOL_RUNTIME_SETTINGS,
-  CODING_COUNCIL_STORE,
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_LOG_STORE,
   TOOL_SERVICE_STATUS_STORE,
-  UNIVERSAL_AGENT,
   USER_STORE,
   WORK_LEDGER_STORE,
 } from "./tokens.js";
@@ -114,12 +103,6 @@ const providers: Provider[] = [
     provide: PG_POOL,
     inject: [APP_ENV],
     useFactory: (env: AppEnv): PgPool | undefined => (env.databaseUrl ? createPool(env.databaseUrl) : undefined),
-  },
-  {
-    provide: TOOL_BUILD_MIGRATION_QA_POOL,
-    inject: [APP_ENV],
-    useFactory: (env: AppEnv): PgPool | undefined =>
-      env.toolBuildMigrationQaDatabaseUrl ? createPool(env.toolBuildMigrationQaDatabaseUrl) : undefined,
   },
   {
     provide: TEXT_EMBEDDING_PROVIDER,
@@ -185,36 +168,22 @@ const providers: Provider[] = [
       pool ? new PostgresToolRuntimeSettingsStore(pool) : new InMemoryToolRuntimeSettingsStore(),
   },
   {
-    // Phase 14: coding council settings (which tier acts as the
-    // tool-build council + loop limits).
-    provide: CODING_COUNCIL_STORE,
-    inject: [PG_POOL],
-    useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresCodingCouncilStore(pool) : new InMemoryCodingCouncilStore(),
-  },
-  {
     provide: TOOL_METADATA_STORE,
     inject: [PG_POOL],
     useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresToolMetadataStore(pool) : new InMemoryToolMetadataStore(),
+      pool ? new PostgresToolMetadataStore(pool) : new LocalJsonToolMetadataStore("workspace/tool-metadata.json"),
   },
   {
-    provide: TOOL_BUILD_REQUEST_STORE,
+    provide: TOOL_CREATION_STORE,
     inject: [PG_POOL],
     useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresToolBuildRequestStore(pool) : new InMemoryToolBuildRequestStore(),
+      pool ? new PostgresToolCreationStore(pool) : new InMemoryToolCreationStore(),
   },
   {
-    provide: TOOL_INVESTIGATION_STORE,
+    provide: TOOL_CONTEXT_STORE,
     inject: [PG_POOL],
     useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresToolInvestigationStore(pool) : new InMemoryToolInvestigationStore(),
-  },
-  {
-    provide: TOOL_REWORK_WAIT_STORE,
-    inject: [PG_POOL],
-    useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresToolReworkWaitStore(pool) : new InMemoryToolReworkWaitStore(),
+      pool ? new PostgresToolContextStore(pool) : new InMemoryToolContextStore(),
   },
   {
     provide: TOOL_MIGRATION_STORE,
@@ -279,9 +248,8 @@ const providers: Provider[] = [
     useFactory: (pool: PgPool | undefined) =>
       pool ? new PostgresRunRetrospectiveStore(pool) : new InMemoryRunRetrospectiveStore(),
   },
-  // Runtime singletons. The registry hosts built-in tools immediately; the
-  // generated-tool loader and supervisors wire in later phases through
-  // OnModuleInit hooks.
+  // Runtime singletons. The rebuilt product starts from generated/package
+  // tools; legacy built-in/reference registrations are opt-in only.
   {
     provide: TOOL_REGISTRY,
     inject: [TOOL_METADATA_STORE, PG_POOL, SECRET_HANDLE_STORE, TOOL_RUNTIME_SETTINGS, APP_ENV],
@@ -293,12 +261,6 @@ const providers: Provider[] = [
       env: import("../config/env.js").AppEnv,
     ) => {
       const registry = new ToolRegistry();
-      // The hard-coded built-ins (web.search, file.read/write, chart.generate,
-      // market.timeseries, telegram.bot, browser.operate) skip registration
-      // when BUILTIN_TOOLS=disabled — operators running a "pure council"
-      // registry want only the council-built tools visible. The metadata
-      // rows for previously-synced built-ins are cleaned up below via the
-      // explicit DELETE in db/migrate.ts (one-shot, idempotent).
       if (env.builtinToolsEnabled) {
       registry.register(new WebSearchTool());
       // Phase 13: every built-in tool is now backed by a dockerized
@@ -395,31 +357,6 @@ const providers: Provider[] = [
   {
     provide: TOOL_CALLBACK_TOKEN_ISSUER,
     useFactory: () => new ToolCallbackTokenIssuer(),
-  },
-  {
-    provide: UNIVERSAL_AGENT,
-    inject: [LLM_CLIENT, SKILL_MEMORY, TOOL_REGISTRY, TOOL_CALLBACK_TOKEN_ISSUER, APP_ENV],
-    useFactory: (
-      llm,
-      memory,
-      registry,
-      issuer: ToolCallbackTokenIssuer,
-      env: AppEnv,
-    ) => {
-      const agent = new UniversalAgent(llm, memory, registry);
-      // Phase 13: wire the callback envelope source so dockerized
-      // tool services receive a short-lived bearer token + callback
-      // base URL with every /run invocation. The base URL points at
-      // the runtime's own HTTP API; tools running inside the same
-      // docker network reach it as `http://app:3000/api/tools/callbacks`.
-      const baseUrl = env.toolCallbackBaseUrl
-        ?? `http://app:${env.port ?? 3000}/api/tools/callbacks`;
-      agent.setCallbackEnvelopeSource({
-        issuer,
-        baseUrl,
-      });
-      return agent;
-    },
   },
 ];
 

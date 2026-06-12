@@ -28,7 +28,7 @@ export class InMemoryRunRetrospectiveStore implements RunRetrospectiveStore {
       missingCapabilities: uniqueStringArray(input.missingCapabilities),
       usefulEvidenceIds: uniqueStringArray(input.usefulEvidenceIds),
       proposedMemoryIds: uniqueStringArray(input.proposedMemoryIds),
-      proposedToolInvestigationIds: uniqueStringArray(input.proposedToolInvestigationIds),
+      proposedToolFollowUpIds: uniqueStringArray(input.proposedToolFollowUpIds),
       proposedPolicyChanges: uniqueStringArray(input.proposedPolicyChanges),
       proposedPromptChanges: uniqueStringArray(input.proposedPromptChanges),
       summary: optionalText(input.summary),
@@ -102,8 +102,8 @@ export class InMemoryRunRetrospectiveStore implements RunRetrospectiveStore {
       switch (proposalKind) {
         case "memory":
           return "proposedMemoryIds";
-        case "tool_investigation":
-          return "proposedToolInvestigationIds";
+        case "tool_follow_up":
+          return "proposedToolFollowUpIds";
         case "policy_change":
           return "proposedPolicyChanges";
         case "prompt_change":
@@ -134,7 +134,7 @@ function cloneRecord(record: RunRetrospectiveRecord): RunRetrospectiveRecord {
     missingCapabilities: [...record.missingCapabilities],
     usefulEvidenceIds: [...record.usefulEvidenceIds],
     proposedMemoryIds: [...record.proposedMemoryIds],
-    proposedToolInvestigationIds: [...record.proposedToolInvestigationIds],
+    proposedToolFollowUpIds: [...record.proposedToolFollowUpIds],
     proposedPolicyChanges: [...record.proposedPolicyChanges],
     proposedPromptChanges: [...record.proposedPromptChanges],
     metadata: record.metadata ? (sanitizeForLedger(record.metadata) as Record<string, unknown>) : undefined,

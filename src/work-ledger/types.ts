@@ -228,7 +228,7 @@ export type EvidenceLedgerStore = {
 };
 
 export type RunRetrospectiveStatus = "proposed" | "reviewed" | "archived";
-export type RunRetrospectiveOutcome = "completed" | "failed" | "cancelled" | "waiting_tool_rework";
+export type RunRetrospectiveOutcome = "completed" | "failed" | "cancelled";
 
 export const RUN_RETROSPECTIVE_STATUSES: readonly RunRetrospectiveStatus[] = [
   "proposed",
@@ -240,12 +240,11 @@ export const RUN_RETROSPECTIVE_OUTCOMES: readonly RunRetrospectiveOutcome[] = [
   "completed",
   "failed",
   "cancelled",
-  "waiting_tool_rework",
 ];
 
 export type RunRetrospectiveProposalKind =
   | "memory"
-  | "tool_investigation"
+  | "tool_follow_up"
   | "policy_change"
   | "prompt_change";
 
@@ -265,7 +264,7 @@ export type RunRetrospectiveRecord = {
   missingCapabilities: string[];
   usefulEvidenceIds: string[];
   proposedMemoryIds: string[];
-  proposedToolInvestigationIds: string[];
+  proposedToolFollowUpIds: string[];
   proposedPolicyChanges: string[];
   proposedPromptChanges: string[];
   summary?: string;
@@ -289,7 +288,7 @@ export type RunRetrospectiveCreateInput = {
   missingCapabilities?: string[];
   usefulEvidenceIds?: string[];
   proposedMemoryIds?: string[];
-  proposedToolInvestigationIds?: string[];
+  proposedToolFollowUpIds?: string[];
   proposedPolicyChanges?: string[];
   proposedPromptChanges?: string[];
   summary?: string;

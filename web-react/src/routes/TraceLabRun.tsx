@@ -1,19 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { useRun, useRunWaits } from "@/api/runs";
+import { useRun } from "@/api/runs";
 import { useRunStream } from "@/api/sse";
-import { useTools } from "@/api/tools";
 import { RunStatusBadge } from "@/components/StatusBadge";
+import { RunCandidateReviewPanel } from "@/features/run-workspace/RunCandidateReviewPanel";
 import { TraceGraph } from "@/features/trace/TraceGraph";
 import { TraceInspector } from "@/features/trace/TraceInspector";
-import { buildSpanInvestigationDraft } from "@/features/investigations/buildSpanInvestigationDraft";
-import { useInvestigationModal } from "@/features/investigations/store";
 import {
   applyTraceFilters,
   buildTraceNodes,
   emptyTraceFilters,
   hasActiveTraceFilters,
+  sortTraceTimelineNodes,
   traceFilterOptions,
   type TraceFilterKey,
   type TraceFilters,
@@ -37,9 +36,6 @@ export function TraceLabRunPage() {
   const params = useParams<{ runId: string }>();
   const runId = params.runId;
   const run = useRun(runId);
-  const waits = useRunWaits(runId);
-  const tools = useTools();
-  const openInvestigationModal = useInvestigationModal((state) => state.openWith);
   useRunStream(runId);
 
   const [mode, setMode] = useState<TraceMode>(() => readStoredTraceMode());
@@ -49,16 +45,10 @@ export function TraceLabRunPage() {
 
   const allNodes = useMemo(() => buildTraceNodes(run.data?.events ?? []), [run.data?.events]);
   const visibleNodes = useMemo(() => applyTraceFilters(allNodes, filters), [allNodes, filters]);
+  const timelineNodes = useMemo(() => sortTraceTimelineNodes(visibleNodes), [visibleNodes]);
   const selectedNode = useMemo(
-    () => visibleNodes.find((node) => node.spanId === selectedSpanId) ?? visibleNodes[0],
-    [visibleNodes, selectedSpanId],
-  );
-  const linkedWait = useMemo(
-    () =>
-      (waits.data ?? []).find(
-        (wait) => wait.spanId && wait.spanId === selectedNode?.spanId,
-      ) ?? (waits.data ?? []).find((wait) => !wait.spanId),
-    [waits.data, selectedNode?.spanId],
+    () => visibleNodes.find((node) => node.spanId === selectedSpanId) ?? (mode === "timeline" ? timelineNodes[0] : visibleNodes[0]),
+    [mode, timelineNodes, visibleNodes, selectedSpanId],
   );
 
   // If filters drop the previously selected span, re-anchor on the first visible.
@@ -149,6 +139,8 @@ export function TraceLabRunPage() {
         </div>
       </header>
 
+      <RunCandidateReviewPanel run={run.data} />
+
       <FiltersBar
         nodes={allNodes}
         filters={filters}
@@ -162,7 +154,7 @@ export function TraceLabRunPage() {
         <div className="min-w-0">
           {mode === "timeline" ? (
             <TimelineView
-              nodes={visibleNodes}
+              nodes={timelineNodes}
               total={allNodes.length}
               selectedSpanId={selectedNode?.spanId}
               onSelect={setSelectedSpanId}
@@ -191,17 +183,6 @@ export function TraceLabRunPage() {
         <TraceInspector
           node={selectedNode}
           runId={run.data.id}
-          reworkWait={linkedWait}
-          onCreateInvestigation={(node) => {
-            if (!run.data) return;
-            openInvestigationModal(
-              buildSpanInvestigationDraft({
-                run: run.data,
-                node,
-                installedTools: tools.data ?? [],
-              }),
-            );
-          }}
         />
       </div>
     </section>
@@ -356,7 +337,7 @@ function TimelineView({
             <div className="min-w-0">
               <p className="truncate text-[12px] font-semibold">{node.title}</p>
               <p className="truncate font-mono text-[10px] text-app-text-muted">
-                {node.activity} · {node.actor}
+                {node.activity} · {node.actor}{node.toolVersion ? `@${node.toolVersion}` : ""}
                 {typeof node.durationMs === "number" ? ` · ${formatDuration(node.durationMs)}` : ""}
                 {node.parentTitle ? ` · ⤴ ${truncate(node.parentTitle, 60)}` : ""}
               </p>
@@ -393,13 +374,19 @@ function LogsView({
             event.timestamp,
             event.activity.padEnd(11),
             event.status.padEnd(9),
-            event.actor,
+            `${event.actor}${toolVersionFromPayload(event.payload) ? `@${toolVersionFromPayload(event.payload)}` : ""}`,
             event.title,
           ].join("  "),
         )
         .join("\n")}
     </pre>
   );
+}
+
+function toolVersionFromPayload(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const value = (payload as { toolVersion?: unknown }).toolVersion;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function EmptyTracePanel({ filtersActive, message }: { filtersActive: boolean; message?: string }) {

@@ -1,22 +1,12 @@
-import { useCallback, useMemo, useState } from "react";
-import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  Handle,
-  MarkerType,
-  MiniMap,
-  Position,
-  ReactFlow,
-  type Edge,
-  type Node,
-  type NodeProps,
-} from "@xyflow/react";
-
-import "@xyflow/react/dist/style.css";
+import { useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 
 import type { TraceNode } from "@/features/trace/buildTraceNodes";
-import { layoutTrace, type TraceGraphLayoutMode } from "@/features/trace/graphLayout";
+import {
+  layoutTrace,
+  TRACE_NODE_HEIGHT,
+  TRACE_NODE_WIDTH,
+  type TraceGraphLayoutMode,
+} from "@/features/trace/graphLayout";
 import { formatDuration } from "@/lib/format";
 
 type TraceGraphProps = {
@@ -33,12 +23,36 @@ type SpanNodeData = {
   dimmed: boolean;
   onHover: (spanId: string) => void;
   onLeave: () => void;
+  onSelect: (spanId: string) => void;
 };
 
-const nodeTypes = { span: SpanNode };
+type TraceEdge = {
+  id: string;
+  source: TraceNode;
+  target: TraceNode;
+  kind: "parent" | "dependency";
+  state: EdgeState;
+};
+
+const CANVAS_PADDING_X = 28;
+const CANVAS_PADDING_TOP = 74;
+const CANVAS_PADDING_BOTTOM = 28;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 1.8;
+const ZOOM_STEP = 0.15;
 
 export function TraceGraph({ nodes, layoutMode, selectedSpanId, onSelect }: TraceGraphProps) {
   const [hoveredSpanId, setHoveredSpanId] = useState<string | undefined>();
+  const [zoom, setZoom] = useState(1);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    scrollLeft: number;
+    scrollTop: number;
+    moved: boolean;
+  } | undefined>(undefined);
   const activeSpanId = hoveredSpanId ?? selectedSpanId;
   const { positions, columns } = useMemo(
     () => layoutTrace(nodes, layoutMode),
@@ -58,119 +72,213 @@ export function TraceGraph({ nodes, layoutMode, selectedSpanId, onSelect }: Trac
     return connected;
   }, [activeSpanId, nodes]);
 
-  const flowNodes = useMemo<Node<SpanNodeData>[]>(() => {
+  const graphNodes = useMemo<Array<SpanNodeData & { x: number; y: number }>>(() => {
     return nodes.map((node) => {
-      const position = positions.get(node.spanId) ?? { x: 0, y: 0 };
+      const position = translatedPosition(positions.get(node.spanId));
       const highlighted = connectedSpanIds.has(node.spanId);
       return {
-        id: node.spanId,
-        position,
-        data: {
-          node,
-          selected: node.spanId === selectedSpanId,
-          highlighted,
-          dimmed: Boolean(activeSpanId) && !highlighted,
-          onHover: setHoveredSpanId,
-          onLeave: () => setHoveredSpanId(undefined),
-        },
-        type: "span",
-        sourcePosition: Position.Right,
-        targetPosition: Position.Left,
-        width: 240,
-        height: 112,
-        style: { width: 240, height: 112 },
-      } satisfies Node<SpanNodeData>;
+        node,
+        x: position.x,
+        y: position.y,
+        selected: node.spanId === selectedSpanId,
+        highlighted,
+        dimmed: Boolean(activeSpanId) && !highlighted,
+        onHover: setHoveredSpanId,
+        onLeave: () => setHoveredSpanId(undefined),
+        onSelect,
+      };
     });
-  }, [activeSpanId, connectedSpanIds, nodes, positions, selectedSpanId]);
+  }, [activeSpanId, connectedSpanIds, nodes, onSelect, positions, selectedSpanId]);
 
-  const flowEdges = useMemo<Edge[]>(() => {
-    const presentSpanIds = new Set(nodes.map((node) => node.spanId));
-    const edges: Edge[] = [];
+  const graphEdges = useMemo<TraceEdge[]>(() => {
+    const nodeBySpanId = new Map(nodes.map((node) => [node.spanId, node]));
+    const edges: TraceEdge[] = [];
 
     for (const node of nodes) {
-      if (node.parentSpanId && presentSpanIds.has(node.parentSpanId)) {
+      const parent = node.parentSpanId ? nodeBySpanId.get(node.parentSpanId) : undefined;
+      if (parent) {
         edges.push({
           id: `parent-${node.parentSpanId}-${node.spanId}`,
-          source: node.parentSpanId,
-          target: node.spanId,
-          type: "smoothstep",
-          animated: false,
-          style: edgeStyle(node, "parent", edgeState(activeSpanId, node.parentSpanId, node.spanId)),
-          markerEnd: edgeMarker(node, "parent", edgeState(activeSpanId, node.parentSpanId, node.spanId)),
-          className: edgeClassName(node, edgeState(activeSpanId, node.parentSpanId, node.spanId)),
-          zIndex: edgeZIndex(node, edgeState(activeSpanId, node.parentSpanId, node.spanId)),
+          source: parent,
+          target: node,
+          kind: "parent",
+          state: edgeState(activeSpanId, parent.spanId, node.spanId),
         });
       }
       for (const dependencySpanId of node.dependencySpanIds) {
-        if (!presentSpanIds.has(dependencySpanId)) continue;
+        const dependency = nodeBySpanId.get(dependencySpanId);
+        if (!dependency) continue;
         if (dependencySpanId === node.parentSpanId) continue;
         edges.push({
           id: `dep-${dependencySpanId}-${node.spanId}`,
-          source: dependencySpanId,
-          target: node.spanId,
-          type: "smoothstep",
-          animated: false,
-          style: {
-            ...edgeStyle(node, "dependency", edgeState(activeSpanId, dependencySpanId, node.spanId)),
-            strokeDasharray: "5 4",
-          },
-          markerEnd: edgeMarker(node, "dependency", edgeState(activeSpanId, dependencySpanId, node.spanId)),
-          className: edgeClassName(node, edgeState(activeSpanId, dependencySpanId, node.spanId)),
-          zIndex: edgeZIndex(node, edgeState(activeSpanId, dependencySpanId, node.spanId)),
+          source: dependency,
+          target: node,
+          kind: "dependency",
+          state: edgeState(activeSpanId, dependencySpanId, node.spanId),
         });
       }
     }
     return edges.sort((left, right) => edgeRenderRank(left) - edgeRenderRank(right));
   }, [activeSpanId, nodes]);
 
-  const handleNodeClick = useCallback<NonNullable<React.ComponentProps<typeof ReactFlow>["onNodeClick"]>>(
-    (_event, node) => {
-      onSelect(node.id);
-    },
-    [onSelect],
+  const canvasSize = useMemo(
+    () => calculateCanvasSize([...positions.values()].map(translatedPosition)),
+    [positions],
+  );
+  const scaledCanvasSize = useMemo(
+    () => ({
+      width: Math.ceil(canvasSize.width * zoom),
+      height: Math.ceil(canvasSize.height * zoom),
+    }),
+    [canvasSize.height, canvasSize.width, zoom],
   );
 
+  const resetView = () => {
+    setZoom(1);
+    if (viewportRef.current) {
+      viewportRef.current.scrollLeft = 0;
+      viewportRef.current.scrollTop = 0;
+    }
+  };
+
+  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || event.target !== event.currentTarget) return;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      scrollLeft: event.currentTarget.scrollLeft,
+      scrollTop: event.currentTarget.scrollTop,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) drag.moved = true;
+    event.currentTarget.scrollLeft = drag.scrollLeft - dx;
+    event.currentTarget.scrollTop = drag.scrollTop - dy;
+  };
+
+  const handlePointerUp = (event: PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId === event.pointerId) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
   return (
-    <div className="relative h-[calc(100vh-260px)] min-h-[420px] overflow-hidden rounded-[var(--radius-card)] border border-app-border bg-app-surface">
+    <div
+      ref={viewportRef}
+      className="relative h-[calc(100vh-260px)] min-h-[420px] cursor-grab overflow-auto rounded-[var(--radius-card)] border border-app-border bg-app-surface active:cursor-grabbing"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      onClick={(event) => {
+        if (dragRef.current?.moved) {
+          dragRef.current = undefined;
+          event.stopPropagation();
+          return;
+        }
+        dragRef.current = undefined;
+        setHoveredSpanId(undefined);
+        onSelect(undefined);
+      }}
+    >
       <ColumnLegend columns={columns} layoutMode={layoutMode} />
-      <ReactFlow
-        nodes={flowNodes}
-        edges={flowEdges}
-        nodeTypes={nodeTypes}
-        onNodeClick={handleNodeClick}
-        onNodeMouseEnter={(_event, node) => setHoveredSpanId(node.id)}
-        onNodeMouseLeave={() => setHoveredSpanId(undefined)}
-        onPaneClick={() => {
-          setHoveredSpanId(undefined);
-          onSelect(undefined);
-        }}
-        proOptions={{ hideAttribution: true }}
-        fitView
-        fitViewOptions={{ padding: 0.2, maxZoom: 1.2 }}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        elementsSelectable
-        zoomOnScroll
-        panOnScroll
+      <GraphControls
+        zoom={zoom}
+        onZoomOut={() => setZoom((current) => nextTraceGraphZoom(current, -ZOOM_STEP))}
+        onZoomIn={() => setZoom((current) => nextTraceGraphZoom(current, ZOOM_STEP))}
+        onReset={resetView}
+      />
+      <div
+        className="relative"
+        style={{ width: scaledCanvasSize.width, height: scaledCanvasSize.height }}
+        data-trace-edge-count={graphEdges.length}
       >
-        <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="rgba(255,255,255,0.06)" />
-        <MiniMap
-          pannable
-          zoomable
-          maskColor="rgba(11,13,18,0.7)"
-          nodeColor={(reactFlowNode) => statusColor((reactFlowNode.data as SpanNodeData).node.status)}
-          nodeStrokeColor={(reactFlowNode) =>
-            (reactFlowNode.data as SpanNodeData).selected ? "#35e6c1" : "rgba(255,255,255,0.35)"
-          }
-          nodeStrokeWidth={2}
-          nodeBorderRadius={6}
+        <div
+          className="absolute left-0 top-0"
           style={{
-            background: "var(--color-app-surface-2)",
-            border: "1px solid var(--color-app-border)",
+            width: canvasSize.width,
+            height: canvasSize.height,
+            transform: `scale(${zoom})`,
+            transformOrigin: "top left",
           }}
-        />
-        <Controls showInteractive={false} className="!bg-app-surface !text-app-text-muted" />
-      </ReactFlow>
+        >
+          <div className="absolute inset-0 bg-[radial-gradient(circle,rgba(255,255,255,0.055)_1px,transparent_1px)] [background-size:16px_16px]" />
+          <TraceEdges edges={graphEdges} positions={positions} />
+          {graphNodes.map((node) => (
+          <div
+            key={node.node.spanId}
+            className="absolute"
+            style={{
+              left: node.x,
+              top: node.y,
+              width: TRACE_NODE_WIDTH,
+              height: TRACE_NODE_HEIGHT,
+            }}
+          >
+            <SpanNode data={node} />
+          </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GraphControls({
+  zoom,
+  onZoomOut,
+  onZoomIn,
+  onReset,
+}: {
+  zoom: number;
+  onZoomOut: () => void;
+  onZoomIn: () => void;
+  onReset: () => void;
+}) {
+  return (
+    <div
+      className="sticky right-3 top-3 z-20 ml-auto flex w-fit items-center gap-1 rounded-md border border-app-border bg-app-surface/95 p-1 shadow-sm backdrop-blur"
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <button
+        type="button"
+        aria-label="Zoom out"
+        title="Zoom out"
+        className="h-8 w-8 rounded border border-app-border bg-app-surface-2 text-sm text-app-text hover:border-app-accent"
+        onClick={onZoomOut}
+      >
+        -
+      </button>
+      <span className="min-w-14 px-1 text-center font-mono text-[11px] text-app-text-muted">
+        {Math.round(zoom * 100)}%
+      </span>
+      <button
+        type="button"
+        aria-label="Zoom in"
+        title="Zoom in"
+        className="h-8 w-8 rounded border border-app-border bg-app-surface-2 text-sm text-app-text hover:border-app-accent"
+        onClick={onZoomIn}
+      >
+        +
+      </button>
+      <button
+        type="button"
+        aria-label="Reset graph view"
+        title="Reset graph view"
+        className="h-8 rounded border border-app-border bg-app-surface-2 px-2 text-[11px] text-app-text hover:border-app-accent"
+        onClick={onReset}
+      >
+        Reset
+      </button>
     </div>
   );
 }
@@ -205,24 +313,27 @@ function ColumnLegend({
   );
 }
 
-function SpanNode({ data }: NodeProps<Node<SpanNodeData>>) {
+function SpanNode({ data }: { data: SpanNodeData }) {
   const { node, selected, highlighted, dimmed, onHover, onLeave } = data;
   const statusTone = statusBgClass(node.status);
   const activeTone = activeNodeClass(node.status, highlighted, selected);
   return (
-    <div
+    <button
+      type="button"
       onMouseEnter={() => onHover(node.spanId)}
       onMouseLeave={onLeave}
+      onClick={(event) => {
+        event.stopPropagation();
+        data.onSelect(node.spanId);
+      }}
       className={[
-        "rounded-md border bg-app-surface-2 px-3 py-2 text-left text-xs shadow-sm transition-colors",
+        "h-full w-full rounded-md border bg-app-surface-2 px-3 py-2 text-left text-xs shadow-sm transition-colors",
         statusTone,
         activeTone,
         dimmed ? "opacity-45" : "",
         selected || highlighted ? "" : "border-app-border hover:border-app-accent/40",
       ].join(" ")}
     >
-      <Handle type="target" position={Position.Left} className="!opacity-0" />
-      <Handle type="source" position={Position.Right} className="!opacity-0" />
       <div className="flex items-center justify-between gap-1">
         <span className="font-mono text-[10px] uppercase tracking-wider text-app-text-muted">
           {node.activity}
@@ -241,7 +352,9 @@ function SpanNode({ data }: NodeProps<Node<SpanNodeData>>) {
       <p className="mt-1 line-clamp-2 break-words text-[11px] font-semibold leading-tight">
         {node.title}
       </p>
-      <p className="mt-0.5 truncate font-mono text-[10px] text-app-text-muted">{node.actor}</p>
+      <p className="mt-0.5 truncate font-mono text-[10px] text-app-text-muted">
+        {node.actor}{node.toolVersion ? `@${node.toolVersion}` : ""}
+      </p>
       {node.status === "started" ? (
         <p className="mt-0.5 text-[10px] text-app-info">running…</p>
       ) : typeof node.durationMs === "number" ? (
@@ -249,7 +362,83 @@ function SpanNode({ data }: NodeProps<Node<SpanNodeData>>) {
           {formatDuration(node.durationMs)}
         </p>
       ) : null}
-    </div>
+    </button>
+  );
+}
+
+function TraceEdges({ edges, positions }: { edges: TraceEdge[]; positions: Map<string, { x: number; y: number }> }) {
+  const edgePaths = edges.map((edge) => {
+    const source = translatedPosition(positions.get(edge.source.spanId));
+    const target = translatedPosition(positions.get(edge.target.spanId));
+    return {
+      edge,
+      d: edgePath(
+        { x: source.x + TRACE_NODE_WIDTH, y: source.y + TRACE_NODE_HEIGHT / 2 },
+        { x: target.x, y: target.y + TRACE_NODE_HEIGHT / 2 },
+      ),
+    };
+  });
+
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 z-0"
+      width="100%"
+      height="100%"
+      aria-hidden="true"
+      data-testid="trace-edge-layer"
+    >
+      <defs>
+        <marker
+          id="trace-edge-arrow"
+          markerWidth="10"
+          markerHeight="10"
+          refX="8"
+          refY="5"
+          orient="auto"
+          markerUnits="strokeWidth"
+        >
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-app-accent)" opacity="0.9" />
+        </marker>
+        <marker
+          id="trace-edge-arrow-muted"
+          markerWidth="10"
+          markerHeight="10"
+          refX="8"
+          refY="5"
+          orient="auto"
+          markerUnits="strokeWidth"
+        >
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-app-text-muted)" opacity="0.75" />
+        </marker>
+        <marker
+          id="trace-edge-arrow-danger"
+          markerWidth="10"
+          markerHeight="10"
+          refX="8"
+          refY="5"
+          orient="auto"
+          markerUnits="strokeWidth"
+        >
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-app-danger)" opacity="0.95" />
+        </marker>
+      </defs>
+      {edgePaths.map(({ edge, d }) => {
+        const style = edgeStyle(edge.target, edge.kind, edge.state);
+        return (
+          <path
+            key={edge.id}
+            data-testid="trace-edge"
+            d={d}
+            fill="none"
+            stroke={String(style.stroke)}
+            strokeWidth={Number(style.strokeWidth)}
+            strokeOpacity={Number(style.strokeOpacity)}
+            strokeDasharray={edge.kind === "dependency" ? "5 4" : undefined}
+            markerEnd={`url(#${edgeMarkerId(edge.target, edge.kind)})`}
+          />
+        );
+      })}
+    </svg>
   );
 }
 
@@ -260,45 +449,17 @@ function edgeState(activeSpanId: string | undefined, source: string, target: str
   return activeSpanId === source || activeSpanId === target ? "highlighted" : "dimmed";
 }
 
-function edgeStyle(target: TraceNode, kind: "parent" | "dependency", state: EdgeState = "neutral"): React.CSSProperties {
+function edgeStyle(target: TraceNode, kind: "parent" | "dependency", state: EdgeState = "neutral"): CSSProperties {
   const color = edgeColor(target, kind, state);
   const baseWidth = state === "highlighted" ? 2.6 : target.status === "failed" ? 1.8 : 1.5;
   const opacity = state === "dimmed" ? 0.22 : state === "highlighted" ? 1 : kind === "dependency" ? 0.7 : 0.8;
   return { stroke: color, strokeWidth: baseWidth, strokeOpacity: opacity };
 }
 
-function edgeMarker(target: TraceNode, kind: "parent" | "dependency", state: EdgeState = "neutral") {
-  return {
-    type: MarkerType.ArrowClosed,
-    color: edgeColor(target, kind, state),
-    width: state === "highlighted" ? 18 : 14,
-    height: state === "highlighted" ? 18 : 14,
-  };
-}
-
-function edgeClassName(target: TraceNode, state: EdgeState = "neutral"): string {
-  return [
-    "trace-flow-edge",
-    target.status === "failed" ? "trace-flow-edge-failed" : "",
-    state === "highlighted" ? "trace-flow-edge-highlighted" : "",
-    state === "dimmed" ? "trace-flow-edge-dimmed" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function edgeZIndex(target: TraceNode, state: EdgeState = "neutral"): number {
-  if (state === "highlighted") return 20;
-  if (target.status === "failed") return 10;
-  if (state === "dimmed") return 0;
-  return 2;
-}
-
-function edgeRenderRank(edge: Edge): number {
-  const classes = edge.className ?? "";
-  if (classes.includes("trace-flow-edge-highlighted")) return 3;
-  if (classes.includes("trace-flow-edge-failed")) return 2;
-  if (classes.includes("trace-flow-edge-dimmed")) return 0;
+function edgeRenderRank(edge: TraceEdge): number {
+  if (edge.state === "highlighted") return 3;
+  if (edge.target.status === "failed") return 2;
+  if (edge.state === "dimmed") return 0;
   return 1;
 }
 
@@ -313,10 +474,38 @@ function edgeColor(target: TraceNode, kind: "parent" | "dependency", state: Edge
   return "var(--color-app-accent)";
 }
 
-function statusColor(status: TraceNode["status"]): string {
-  if (status === "failed") return "#ff5470";
-  if (status === "completed") return "#35e6c1";
-  return "#6ea8ff";
+function edgeMarkerId(target: TraceNode, kind: "parent" | "dependency"): string {
+  if (target.status === "failed") return "trace-edge-arrow-danger";
+  if (kind === "dependency") return "trace-edge-arrow-muted";
+  return "trace-edge-arrow";
+}
+
+function edgePath(source: { x: number; y: number }, target: { x: number; y: number }): string {
+  const deltaX = target.x - source.x;
+  const controlOffset = Math.max(48, Math.min(180, Math.abs(deltaX) * 0.45));
+  const sourceControlX = source.x + controlOffset;
+  const targetControlX = target.x - controlOffset;
+  return `M ${source.x} ${source.y} C ${sourceControlX} ${source.y}, ${targetControlX} ${target.y}, ${target.x} ${target.y}`;
+}
+
+function translatedPosition(position: { x: number; y: number } | undefined): { x: number; y: number } {
+  return {
+    x: (position?.x ?? 0) + CANVAS_PADDING_X,
+    y: (position?.y ?? 0) + CANVAS_PADDING_TOP,
+  };
+}
+
+function calculateCanvasSize(positions: Array<{ x: number; y: number }>): { width: number; height: number } {
+  const maxX = Math.max(CANVAS_PADDING_X, ...positions.map((position) => position.x + TRACE_NODE_WIDTH));
+  const maxY = Math.max(CANVAS_PADDING_TOP, ...positions.map((position) => position.y + TRACE_NODE_HEIGHT));
+  return {
+    width: maxX + CANVAS_PADDING_X,
+    height: maxY + CANVAS_PADDING_BOTTOM,
+  };
+}
+
+export function nextTraceGraphZoom(current: number, delta: number): number {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number((current + delta).toFixed(2))));
 }
 
 function statusBgClass(status: TraceNode["status"]): string {

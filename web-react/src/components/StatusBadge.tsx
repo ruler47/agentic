@@ -17,7 +17,7 @@ function runStatusTone(status: string): Tone {
     case "running":
     case "queued":
       return "running";
-    case "waiting_tool_rework":
+    case "waiting_approval":
       return "warn";
     case "failed":
       return "danger";
@@ -29,12 +29,7 @@ function runStatusTone(status: string): Tone {
 }
 
 function runStatusLabel(status: string): string {
-  switch (status) {
-    case "waiting_tool_rework":
-      return "waiting tool";
-    default:
-      return status.replace(/_/g, " ");
-  }
+  return status.replace(/_/g, " ");
 }
 
 export function RunStatusBadge({ status }: { status: RunStatus | string }) {

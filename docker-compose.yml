@@ -17,31 +17,18 @@ services:
       CHROMIUM_PATH: /usr/bin/chromium
       TZ: Europe/Madrid
       AGENT_TIME_ZONE: Europe/Madrid
-      # Phase 13: route built-in tool calls to dockerized services
-      # instead of running them in-process.
-      BROWSER_OPERATE_RUNNER: docker
-      BROWSER_OPERATE_BASE_URL: http://browser-operate:8080
-      CHART_GENERATE_RUNNER: docker
-      CHART_GENERATE_BASE_URL: http://chart-generate:8080
-      MARKET_TIMESERIES_RUNNER: docker
-      MARKET_TIMESERIES_BASE_URL: http://market-timeseries:8080
-      TELEGRAM_BOT_RUNNER: docker
-      TELEGRAM_BOT_BASE_URL: http://telegram-bot:8080
-      # Pure-council registry: skip hard-coded built-ins. The only tools
-      # visible to the agent are the ones the council has built itself.
+      # Base rebuild: the default runtime is the small Agent/Tool/LLM loop.
+      AGENT_RUNTIME: base
+      TOOL_BUILD_WORKER: disabled
+      # Legacy built-in/reference tools are disabled in the rebuilt product.
+      # Tools should be generated/imported source-bundle or OCI packages.
       BUILTIN_TOOLS: disabled
-      # Phase 17: pass through the optional research-delegation flag.
-      # When set to `enabled`, council LLM calls (brainstorm /
-      # implement / repair) may emit <request_research> blocks that
-      # spawn a fresh UniversalAgent sub-run to fetch current facts.
-      # Defaults to unset (feature off).
-      COUNCIL_RESEARCH_ENABLED: ${COUNCIL_RESEARCH_ENABLED:-}
     ports:
       - "3000:3000"
     volumes:
       - ./workspace:/app/workspace
       # Tool source-bundles live in <project-root>/tools and are bind-mounted
-      # so the council can write new ones on the host. The relative `./tools`
+      # so builders/imports can write runtime packages on the host. The relative `./tools`
       # path is RESOLVED RELATIVE TO THIS docker-compose.yml — i.e. it ALWAYS
       # points at the canonical project checkout, even if `docker compose` is
       # invoked from a sibling worktree (Claude Code session dir, etc.).
@@ -113,63 +100,6 @@ services:
       - "8080:8080"
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-
-  # Phase 13: dockerized browser.operate tool service. The runtime
-  # forwards all browser.operate calls here when BROWSER_OPERATE_RUNNER=docker
-  # is set on the app service. Self-contained Playwright + Chromium image;
-  # restart on failure so a Chromium crash doesn't take the runtime down.
-  browser-operate:
-    build:
-      context: ./tools/browser-operate-service
-    environment:
-      PORT: "8080"
-    shm_size: "1gb"
-    restart: on-failure
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
-  # Phase 13: dockerized chart.generate tool service.
-  chart-generate:
-    build:
-      context: ./tools/chart-generate-service
-    environment:
-      PORT: "8080"
-    restart: on-failure
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-
-  # Phase 13: dockerized market.timeseries tool service.
-  market-timeseries:
-    build:
-      context: ./tools/market-timeseries-service
-    environment:
-      PORT: "8080"
-    restart: on-failure
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-
-  # Phase 13: dockerized telegram.bot tool service skeleton.
-  telegram-bot:
-    build:
-      context: ./tools/telegram-bot-service
-    environment:
-      PORT: "8080"
-    restart: on-failure
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
 
 volumes:
   postgres-data:

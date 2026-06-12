@@ -3,11 +3,12 @@ import { apiFetch } from "@/lib/fetch";
 import { queryKeys } from "@/api/queryKeys";
 import type {
   AgentRunRecord,
+  ExternalActionPreparedSession,
+  ExternalActionProposal,
   RunCreateContext,
   RunCreateResponse,
   RunDetailResponse,
   RunListResponse,
-  ToolReworkWaitRecord,
 } from "@/api/types";
 
 export function useRuns() {
@@ -30,15 +31,178 @@ export function useRun(id: string | undefined) {
   });
 }
 
-export function useRunWaits(runId: string | undefined) {
+export type ActionProposalQueueItem = {
+  proposal: ExternalActionProposal;
+  run: {
+    id: string;
+    task: string;
+    status: AgentRunRecord["status"];
+    createdAt: string;
+    updatedAt: string;
+    requesterUserId?: string;
+    channel?: string;
+    threadId?: string;
+  };
+  decision?: {
+    status: "approved" | "rejected";
+    reason?: string;
+    decidedAt: string;
+    decidedBy: string;
+  };
+  execution?: {
+    status: "blocked" | "committed" | "failed";
+    reason?: string;
+    decidedAt: string;
+    actor: string;
+    toolName?: string;
+    toolVersion?: string;
+    contentPreview?: string;
+    dataPreview?: unknown;
+  };
+  preparationExecution?: {
+    status: "completed" | "failed";
+    reason?: string;
+    decidedAt: string;
+    actor: string;
+    toolName?: string;
+    toolVersion?: string;
+    contentPreview?: string;
+    dataPreview?: unknown;
+    artifactIds?: string[];
+    preparedSession?: ExternalActionPreparedSession;
+  };
+  profileHydration?: {
+    status: "approved";
+    reason?: string;
+    approvedAt: string;
+    approvedBy: string;
+    fields: Array<{
+      field: string;
+      label?: string;
+      source: "user_profile" | "group_profile";
+      valuePreview: string;
+    }>;
+  };
+  executorBuild?: {
+    status: "needed" | "requested" | "registered" | "failed" | "attached";
+    reason?: string;
+    toolName: string;
+    toolVersion: string;
+    request: string;
+    capabilities: string[];
+    runId?: string;
+    creationId?: string;
+    packageRef?: string;
+    commitExecutor?: ExternalActionProposal["commitExecutor"];
+    updatedAt: string;
+  };
+};
+
+export function useActionProposals() {
   return useQuery({
-    queryKey: runId ? queryKeys.runWaits(runId) : queryKeys.runWaits("__none__"),
-    enabled: Boolean(runId),
+    queryKey: queryKeys.actionProposals,
     queryFn: () =>
-      apiFetch<{ waits: ToolReworkWaitRecord[] }>(
-        `/api/runs/${encodeURIComponent(runId!)}/tool-rework-waits`,
-      ).then((data) => data.waits ?? []),
-    refetchInterval: 10_000,
+      apiFetch<{ proposals: ActionProposalQueueItem[] }>("/api/action-proposals").then(
+        (data) => data.proposals ?? [],
+      ),
+    refetchInterval: 5_000,
+  });
+}
+
+export function useCreateFixtureActionProposal() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ proposal: ActionProposalQueueItem }>("/api/action-proposals/fixture", {
+        method: "POST",
+        body: {},
+      }),
+    onSuccess: (data) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.actionProposals });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.run(data.proposal.run.id) });
+    },
+  });
+}
+
+export function useActionProposalDecision() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, decision, reason }: { id: string; decision: "approve" | "reject"; reason?: string }) =>
+      apiFetch<{ proposal: ActionProposalQueueItem }>(
+        `/api/action-proposals/${encodeURIComponent(id)}/${decision}`,
+        { method: "POST", body: { reason } },
+      ),
+    onSuccess: (data) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.actionProposals });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.run(data.proposal.run.id) });
+    },
+  });
+}
+
+export function useActionProposalCommit() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason, input, toolInput }: { id: string; reason?: string; input?: Record<string, unknown>; toolInput?: Record<string, unknown> }) =>
+      apiFetch<{ proposal: ActionProposalQueueItem }>(
+        `/api/action-proposals/${encodeURIComponent(id)}/commit`,
+        { method: "POST", body: { reason, ...(input ? { input } : {}), ...(toolInput ? { toolInput } : {}) } },
+      ),
+    onSuccess: (data) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.actionProposals });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.run(data.proposal.run.id) });
+    },
+  });
+}
+
+export function useActionProposalPrepare() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, mode }: { id: string; mode?: "prepare" | "replay" }) =>
+      apiFetch<{ proposal: ActionProposalQueueItem }>(
+        `/api/action-proposals/${encodeURIComponent(id)}/prepare`,
+        { method: "POST", body: mode === "replay" ? { mode: "replay" } : {} },
+      ),
+    onSuccess: (data) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.actionProposals });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.run(data.proposal.run.id) });
+    },
+  });
+}
+
+export function useActionProposalProfileHydrationApproval() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, fields, reason }: { id: string; fields: string[]; reason?: string }) =>
+      apiFetch<{ proposal: ActionProposalQueueItem }>(
+        `/api/action-proposals/${encodeURIComponent(id)}/profile-hydration/approve`,
+        { method: "POST", body: { fields, reason } },
+      ),
+    onSuccess: (data) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.actionProposals });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.run(data.proposal.run.id) });
+    },
+  });
+}
+
+export function useActionProposalExecutorBuild() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, mode = "create", authoringMode, activateOnSuccess }: { id: string; mode?: "create" | "plan"; authoringMode?: "auto" | "llm" | "scaffold"; activateOnSuccess?: boolean }) =>
+      apiFetch<{ proposal: ActionProposalQueueItem }>(
+        `/api/action-proposals/${encodeURIComponent(id)}/build-executor`,
+        { method: "POST", body: { mode, ...(authoringMode ? { authoringMode } : {}), ...(activateOnSuccess ? { activateOnSuccess } : {}) } },
+      ),
+    onSuccess: (data) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.actionProposals });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.run(data.proposal.run.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.toolCreations });
+    },
   });
 }
 

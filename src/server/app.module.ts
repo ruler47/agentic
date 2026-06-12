@@ -14,13 +14,8 @@ import { SettingsModule } from "./modules/settings/settings.module.js";
 import { EvidenceLedgerModule } from "./modules/evidence-ledger/evidence-ledger.module.js";
 import { RunRetrospectivesModule } from "./modules/run-retrospectives/run-retrospectives.module.js";
 import { RunsModule } from "./modules/runs/runs.module.js";
-import { ToolBuildsModule } from "./modules/tool-builds/tool-builds.module.js";
-import { ToolBuildRunsModule } from "./modules/tool-build-runs/tool-build-runs.module.js";
 import { ToolCallbacksModule } from "./modules/tool-callbacks/tool-callbacks.module.js";
 import { WorkLedgerModule } from "./modules/work-ledger/work-ledger.module.js";
-import { ToolInvestigationsModule } from "./modules/tool-investigations/tool-investigations.module.js";
-import { ToolMigrationsModule } from "./modules/tool-migrations/tool-migrations.module.js";
-import { ToolReworkWaitsModule } from "./modules/tool-rework-waits/tool-rework-waits.module.js";
 import { ToolServicesModule } from "./modules/tool-services/tool-services.module.js";
 import { ToolsModule } from "./modules/tools/tools.module.js";
 import { UsersModule } from "./modules/users/users.module.js";
@@ -42,12 +37,7 @@ import { RuntimeWorkersModule } from "./workers/runtime-workers.module.js";
     SettingsModule,
     ModelsModule,
     ToolsModule,
-    ToolBuildsModule,
-    ToolBuildRunsModule,
     ToolCallbacksModule,
-    ToolInvestigationsModule,
-    ToolReworkWaitsModule,
-    ToolMigrationsModule,
     RunsModule,
     ToolServicesModule,
     WorkLedgerModule,

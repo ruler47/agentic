@@ -16,6 +16,13 @@ export type {
   ArtifactQualityCheck,
   ArtifactQualityMetadata,
   ArtifactRequirement,
+  ExternalActionCommitExecutor,
+  ExternalActionCommitExecutorKind,
+  ExternalActionExecutionMode,
+  ExternalActionPreparedSession,
+  ExternalActionProposal,
+  ExternalActionProposalStatus,
+  ExternalActionType,
   MemoryScope,
   MemorySensitivity,
   MemoryStatus,
@@ -34,34 +41,6 @@ export type {
   RunCreateContext,
   RunStatus,
 } from "@server/runs/types";
-
-export type {
-  ToolReworkWaitCreateInput,
-  ToolReworkWaitRecord,
-  ToolReworkWaitStatus,
-  ToolReworkWaitUpdateInput,
-} from "@server/runs/toolReworkWaitStore";
-
-export type {
-  ToolInvestigationContextBundle,
-  ToolInvestigationCreateInput,
-  ToolInvestigationRecord,
-  ToolInvestigationSource,
-  ToolInvestigationStatus,
-  ToolInvestigationUpdateInput,
-} from "@server/tools/toolInvestigationStore";
-
-export type {
-  ToolBuildContract,
-  ToolBuildQaReport,
-  ToolBuildRequest,
-  ToolBuildRequestInput,
-  ToolBuildRequestStatus,
-  ToolBuildRequestStatusUpdate,
-  ToolBuildReviewDecision,
-  ToolBuildReviewKind,
-  ToolBuildReviewReport,
-} from "@server/tools/toolBuildRequestStore";
 
 export type {
   AuditAction,
@@ -87,6 +66,11 @@ export type {
   ToolModuleVersionSummary,
   ToolModulePromotionEvidence,
 } from "@server/tools/toolMetadataStore";
+
+export type {
+  ToolContextKind,
+  ToolContextRecord,
+} from "@server/tools/toolContextStore";
 
 export type {
   ToolRuntimeSettingInput,

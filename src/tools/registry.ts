@@ -112,6 +112,7 @@ export class ToolRegistry {
     tool: Tool,
     input: ToolInput,
     context?: Partial<Omit<ToolExecutionContext, "toolName">>,
+    options: { recordUsage?: boolean } = {},
   ): Promise<ToolResult> {
     const now = context?.now ?? new Date();
     const baseContext: ToolExecutionContext = {
@@ -131,10 +132,14 @@ export class ToolRegistry {
         toolName: tool.name,
         now,
       });
-      await this.recordUsage(tool.name, result.ok ? "success" : "failure");
+      if (options.recordUsage !== false) {
+        await this.recordUsage(tool.name, result.ok ? "success" : "failure");
+      }
       return result;
     } catch (error) {
-      await this.recordUsage(tool.name, "failure");
+      if (options.recordUsage !== false) {
+        await this.recordUsage(tool.name, "failure");
+      }
       throw error;
     }
   }

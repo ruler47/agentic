@@ -8,55 +8,6 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Reference doc the operator attached to a council build run. */
-export type ParsedReferenceAttachment = {
-  filename: string;
-  mimeType: string;
-  bytes: Buffer;
-};
-
-/**
- * Parse `references: [{filename, mimeType, contentBase64}]` from the
- * `POST /api/tool-build-runs` body. Caps each attachment at 5 MB to
- * keep a single request from blowing memory; total cap is left to
- * Express body-size limits (which we own elsewhere).
- *
- * Rejects malformed entries with a thrown Error — the caller wraps
- * that into a BadRequestException so the UI surfaces the failure.
- */
-export function parseReferenceAttachments(value: unknown): ParsedReferenceAttachment[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) {
-    throw new Error("`references` must be an array of {filename, mimeType, contentBase64}.");
-  }
-  const out: ParsedReferenceAttachment[] = [];
-  for (const entry of value) {
-    if (!isRecord(entry)) {
-      throw new Error("Each reference must be an object.");
-    }
-    const filename = typeof entry.filename === "string" ? entry.filename.trim() : "";
-    const mimeType = typeof entry.mimeType === "string" ? entry.mimeType.trim() : "";
-    const contentBase64 = typeof entry.contentBase64 === "string" ? entry.contentBase64 : "";
-    if (!filename) throw new Error("Reference filename is required.");
-    if (!mimeType) throw new Error(`Reference ${filename}: mimeType is required.`);
-    if (!contentBase64) throw new Error(`Reference ${filename}: contentBase64 is required.`);
-    let bytes: Buffer;
-    try {
-      bytes = Buffer.from(contentBase64, "base64");
-    } catch (err) {
-      throw new Error(`Reference ${filename}: invalid base64 (${err instanceof Error ? err.message : String(err)}).`);
-    }
-    if (bytes.length === 0) {
-      throw new Error(`Reference ${filename}: decoded to zero bytes.`);
-    }
-    if (bytes.length > 5 * 1024 * 1024) {
-      throw new Error(`Reference ${filename}: exceeds 5 MB cap.`);
-    }
-    out.push({ filename, mimeType, bytes });
-  }
-  return out;
-}
-
 export function parseRequiredText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${field} is required`);

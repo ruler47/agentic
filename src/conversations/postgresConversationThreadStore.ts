@@ -141,7 +141,7 @@ export class PostgresConversationThreadStore implements ConversationThreadStore 
     const thread = await this.get(input.threadId);
     if (!thread) return undefined;
 
-    const artifactIds = input.artifacts?.map((artifact) => artifact.id) ?? [];
+    const artifactIds = input.failedError ? [] : input.artifacts?.map((artifact) => artifact.id) ?? [];
     const summary = buildSummary({
       previousSummary: thread.summary,
       task: input.task,
@@ -182,7 +182,7 @@ export class PostgresConversationThreadStore implements ConversationThreadStore 
       ],
     );
 
-    if (input.finalAnswer) {
+    if (!input.failedError && input.finalAnswer) {
       await this.appendMessage({
         threadId: input.threadId,
         runId: input.runId,

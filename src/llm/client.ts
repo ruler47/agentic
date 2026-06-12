@@ -68,12 +68,9 @@ export class LlmClient {
       signal?: AbortSignal;
     },
   ): Promise<string> {
-    // Phase 14: explicit `model` override bypasses tier resolution so the
-    // tool-build council can address each peer model directly. Falls
-    // through to tier-based attempts when omitted. We retry an explicit
-    // model once on empty content — LM Studio + large quantised models
-    // occasionally return an empty stream the first time the model is
-    // warmed up.
+    // Explicit `model` override bypasses tier resolution. We retry an explicit
+    // model once on empty content because local OpenAI-compatible runtimes can
+    // occasionally return an empty stream while warming up.
     const attempts = options?.model
       ? [options.model, options.model]
       : await this.modelAttemptsForTier(options?.modelTier);
