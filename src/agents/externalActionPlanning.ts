@@ -159,6 +159,12 @@ function hasExternalActionExecutionIntent(
   if (/(?:^|[\s,.;:!?])(?:и|потом|затем)\s+(?:забронируй|зарезервируй|запиши|купи|закажи|отправь|подтверди|оформи|сабмить|создай\s+заявку)/i.test(task)) {
     return true;
   }
+  // "найди X и подготовь запись/бронь" — the prepare verb after a
+  // connective is the most natural household phrasing; the sentence-start
+  // branch above misses it.
+  if (/(?:^|[\s,.;:!?])(?:и|потом|затем)\s+(?:подготовь|собери)\s+(?:брон|бронирование|запись|заказ|покупку|отправку|заявку)/i.test(task)) {
+    return true;
+  }
   return /(?:make\s+(?:a\s+)?reservation|place\s+an\s+order|book\s+me|reserve\s+me|schedule\s+me|сделай\s+брон|оформи\s+брон|запиши\s+меня|забронировать\s+мне)/i.test(
     normalizedTask,
   );
@@ -174,7 +180,7 @@ function hasExternalActionPreparationIntent(
   const hasTimingOrService = /(?:дата|время|после\s+\d{1,2}|next\s+week|следующ(?:ей|ую)\s+недел|tomorrow|завтра|услуга|service|стриж|haircut|beard|barber|salon|барбер|салон)/iu.test(
     task,
   );
-  const asksForSafePreparation = /(?:approval|апрув|подтвержд|одобрен|перед\s+(?:отправк|подтвержд|сабмит)|до\s+финальн|финальн(?:ой|ого)\s+(?:кнопк|подтвержд)|proof|пруф|скриншот|заполненн(?:ой|ая)\s+форм|filled\s+form|ready[-\s]?to[-\s]?submit)/iu.test(
+  const asksForSafePreparation = /(?:approval|апрув|подтвержд|одобрен|перед\s+(?:отправк|подтвержд|сабмит)|до\s+финальн|финальн(?:ой|ого)\s+(?:кнопк|подтвержд)|proof|пруф|скриншот|заполненн(?:ой|ая)\s+форм|filled\s+form|ready[-\s]?to[-\s]?submit|тольк[оa]\s+подготовь|не\s+отправляй|без\s+отправк|покажи,?\s+что\s+заполнено|do\s+not\s+submit|don't\s+submit)/iu.test(
     task,
   );
   const selectsKnownTargetForAction = /(?:\buse\b|\btake\b|\bpick\b|\bchoose\b|бери|возьми|выбирай|выбери|давай\s+(?:этот|его|туда)|тот\s+что\s+лучше|лучший\s+(?:вариант|барбершоп|ресторан|салон))/iu.test(

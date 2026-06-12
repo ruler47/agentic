@@ -398,3 +398,23 @@ test("external action planning ignores explanatory headings as reservation targe
 
   assert.equal(proposal?.target, "LEÑA (by Dani García)");
 });
+
+test("prepare verb after a connective infers an external action policy", () => {
+  // Live regression: "Найди барбершоп ... и подготовь запись" got no policy
+  // (no proposal, no waiting_approval pause, 12-step budget).
+  const policy = inferExternalActionPolicy(
+    "Найди барбершоп в Марбелье с онлайн-записью и подготовь запись на стрижку на ближайшую пятницу после 17:00. Это тест: используй тестовые данные Test User, test@example.com, +34 600 000 000. Ничего финально не отправляй — только подготовь и покажи что заполнено.",
+  );
+  assert.ok(policy, "policy must be inferred");
+  assert.equal(policy.actionType, "appointment");
+  assert.equal(policy.executionMode, "approval");
+  assert.equal(policy.userExplicitlyForbidsAction, true);
+});
+
+test("safe-preparation phrasings count as preparation intent", () => {
+  const policy = inferExternalActionPolicy(
+    "Найди ресторан в Марбелье и подготовь бронирование столика на завтра, телефон +34 600 000 000. Только подготовь, не отправляй.",
+  );
+  assert.ok(policy);
+  assert.equal(policy.actionType, "reservation");
+});
