@@ -88,6 +88,13 @@ generated tools.
   (`RunContextResolver.threadContextForThreadId`). The thread summary appends the
   newest "Answered:" digest at the END; prompt rendering must keep enough tail
   (currently 1 400 chars) so the latest answer is not truncated away.
+- The whole `/api` surface supports an opt-in shared operator token:
+  `AGENTIC_API_TOKEN` set -> every request needs `Authorization: Bearer`,
+  `x-agentic-token`, or `?token=` (timing-safe compare); unset keeps the open
+  localhost-dev behavior. Exempt: `/api/health`, `/api/tools/callbacks/*`
+  (own HMAC tokens), `/api/fixtures/*` (local browser fixture pages). The
+  React console does not attach the token yet — enable it only for headless
+  /API deployments until the UI learns to store it.
 - Core toolbelt tools are generated packages whose metadata must be blessed to
   status `available` before agents can call them directly: run the exact version
   manually (`POST /api/tools/generated-modules/:name/versions/:ver/run`), then
