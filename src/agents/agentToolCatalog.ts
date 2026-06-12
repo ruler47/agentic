@@ -262,3 +262,56 @@ function stableJson(value: unknown): string {
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
 }
+
+/**
+ * Attach host-provided run-scoped tool candidates before the loop starts.
+ * Each candidate becomes callable for this run only and is recorded as an
+ * initialAttachment creation outcome (an offer — the unused-candidate gate
+ * skips it; see baseAgentTrace.findUnusedScopedCandidate).
+ */
+export function attachInitialScopedCandidates(input: {
+  candidates: ReadonlyArray<{
+    tool: Tool;
+    catalogEntry?: BaseAgentToolCatalogEntry;
+    reason?: string;
+    promotionPolicy?: "auto_on_success" | "manual";
+  }>;
+  tools: Tool[];
+  toolCatalog: BaseAgentToolCatalogEntry[];
+  toolCreationRequests: Array<Record<string, unknown>>;
+}): { tools: Tool[]; toolCatalog: BaseAgentToolCatalogEntry[] } {
+  let { tools, toolCatalog } = input;
+  for (const candidate of input.candidates) {
+    tools = upsertTool(tools, candidate.tool);
+    toolCatalog = upsertCatalogEntry(toolCatalog, {
+      ...(candidate.catalogEntry ?? {
+        ...catalogEntryFromTool(candidate.tool),
+        source: "generated",
+        status: "loaded",
+        visibility: "run_scoped_candidate",
+        changeSummary: candidate.reason,
+      }),
+      promotionPolicy: candidate.promotionPolicy ?? "auto_on_success",
+    });
+    input.toolCreationRequests.push({
+      ok: true,
+      toolName: candidate.tool.name,
+      toolVersion: candidate.tool.version,
+      status: "registered",
+      message: candidate.reason ?? "Existing generated tool candidate attached to this run.",
+      scopedTool: candidate.tool,
+      scopedCatalogEntry: toolCatalog.find((entry) => entry.name === candidate.tool.name),
+      reusedCandidate: true,
+      initialAttachment: true,
+      promotionPolicy: candidate.promotionPolicy ?? "auto_on_success",
+      request: {
+        name: candidate.tool.name,
+        version: candidate.tool.version,
+        request: candidate.reason ?? "Use this run-scoped generated tool candidate for the task.",
+        description: candidate.tool.description,
+        capabilities: candidate.tool.capabilities,
+      },
+    });
+  }
+  return { tools, toolCatalog };
+}

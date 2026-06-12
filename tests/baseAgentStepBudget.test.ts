@@ -102,3 +102,68 @@ test("explicit maxSteps option still overrides the frame default", async () => {
   assert.equal(llm.calls, 3);
   assert.equal(llm.toolChoices.at(-1), "none");
 });
+
+test("context overflow compacts older tool results and retries the step", async () => {
+  class OverflowOnceLlm {
+    calls = 0;
+    messagesAtLastCall: Message[] = [];
+
+    async completeWithTools(
+      messages: Message[],
+      _tools: LlmToolSchema[],
+      options?: { toolChoice?: string },
+    ): Promise<LlmToolReply> {
+      this.calls += 1;
+      this.messagesAtLastCall = [...messages];
+      if (this.calls <= 3) {
+        return {
+          content: "",
+          finishReason: "tool_calls",
+          toolCalls: [
+            { id: `call_${this.calls}`, name: "web_search", arguments: { query: `q${this.calls}` } },
+          ],
+        };
+      }
+      if (this.calls === 4) {
+        throw new Error("qwen/qwen3.6-35b-a3b: Context size has been exceeded.");
+      }
+      return {
+        content: options?.toolChoice === "none" ? "Ответ после компакции." : "Ответ после компакции.",
+        finishReason: "stop",
+        toolCalls: [],
+      };
+    }
+  }
+
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "web.search",
+    version: "0.1.0",
+    description: "Fixture search tool with a huge payload.",
+    capabilities: ["web-search"],
+    inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    async run() {
+      return { ok: true, content: `1. Result — https://example.com/r\n${"x".repeat(20_000)}` };
+    },
+  });
+
+  const llm = new OverflowOnceLlm();
+  const agent = new BaseAgent(llm as unknown as LlmClient, registry);
+  const result = await agent.run("Найди данные про погоду в трёх источниках", {
+    runId: "run_overflow_1",
+    runContext: {
+      instanceId: "instance-local",
+      requesterUserId: "user-admin",
+      channel: "web",
+      threadId: "thread_overflow_1",
+      currentDateTimeIso: "2026-06-12T15:00:00.000Z",
+    },
+  });
+
+  assert.equal(result.runStatus ?? "completed", "completed");
+  assert.match(result.finalAnswer, /Ответ после компакции/);
+  const compacted = llm.messagesAtLastCall.filter(
+    (m) => typeof m.content === "string" && m.content.startsWith("[compacted earlier tool result]"),
+  );
+  assert.ok(compacted.length > 0, "older tool results must be compacted after overflow retry");
+});

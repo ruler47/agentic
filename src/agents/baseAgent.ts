@@ -3,8 +3,8 @@ import type { LlmClient } from "../llm/client.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { ToolResult } from "../tools/tool.js";
 import {
+  attachInitialScopedCandidates,
   buildToolCatalog,
-  catalogEntryFromTool,
   publicToolCatalogEntry,
   selectTools,
   toolCallCacheKey,
@@ -43,7 +43,12 @@ import {
   runtimeDiagnosticFromError,
   toolMessage,
 } from "./baseAgentToolMessages.js";
-import { requestTruncatedAnswerRepair } from "./baseAgentTruncation.js";
+import {
+  compactToolMessagesForContextBudget,
+  pushFinalStepNudge,
+  recoverFromContextOverflow,
+  requestTruncatedAnswerRepair,
+} from "./baseAgentTruncation.js";
 import {
   contextSummary,
   createAgentSpanId,
@@ -97,8 +102,7 @@ export class BaseAgent {
     const searchQueryHistory = new Map<string, string>();
     const runContext = normalizeRunContext(options.runContext, options.runId, startedAt);
     const taskFrame = frameTask(taskWithThreadContextForFraming(task, runContext));
-    // Unbounded loops are a product bug: budgets default from the task
-    // frame (observed: 209 events / 16 min unbounded); callers may override.
+    // Budgets default from the task frame; callers may override.
     const maxSteps = options.maxSteps ?? defaultMaxStepsForTaskFrame(taskFrame);
     const maxToolCalls = options.maxToolCalls ?? maxSteps * 4;
     const llmTimeoutMs = options.llmTimeoutMs;
@@ -118,41 +122,12 @@ export class BaseAgent {
     const taskFrameSpanId = createAgentSpanId(runContext.runId, "task-frame");
     let tools = selectTools(this.tools.list(), options.toolPolicy);
     let toolCatalog = buildToolCatalog(tools, options.toolCatalog);
-    for (const candidate of options.initialScopedToolCandidates ?? []) {
-      tools = upsertTool(tools, candidate.tool);
-      toolCatalog = upsertCatalogEntry(
-        toolCatalog,
-        {
-          ...(candidate.catalogEntry ?? {
-            ...catalogEntryFromTool(candidate.tool),
-            source: "generated",
-            status: "loaded",
-            visibility: "run_scoped_candidate",
-            changeSummary: candidate.reason,
-          }),
-          promotionPolicy: candidate.promotionPolicy ?? "auto_on_success",
-        },
-      );
-      toolCreationRequests.push({
-        ok: true,
-        toolName: candidate.tool.name,
-        toolVersion: candidate.tool.version,
-        status: "registered",
-        message: candidate.reason ?? "Existing generated tool candidate attached to this run.",
-        scopedTool: candidate.tool,
-        scopedCatalogEntry: toolCatalog.find((entry) => entry.name === candidate.tool.name),
-        reusedCandidate: true,
-        initialAttachment: true,
-        promotionPolicy: candidate.promotionPolicy ?? "auto_on_success",
-        request: {
-          name: candidate.tool.name,
-          version: candidate.tool.version,
-          request: candidate.reason ?? "Use this run-scoped generated tool candidate for the task.",
-          description: candidate.tool.description,
-          capabilities: candidate.tool.capabilities,
-        },
-      });
-    }
+    ({ tools, toolCatalog } = attachInitialScopedCandidates({
+      candidates: options.initialScopedToolCandidates ?? [],
+      tools,
+      toolCatalog,
+      toolCreationRequests: toolCreationRequests as unknown as Array<Record<string, unknown>>,
+    }));
 
     await emit(options.onEvent, {
       spanId: rootSpanId,
@@ -238,8 +213,9 @@ export class BaseAgent {
       const llmSpanId = createLlmSpanId(runContext.runId, step);
       const toolSchemas = buildBaseAgentToolSchemas(tools, toolCatalog);
       const isFinalBudgetedStep = maxSteps !== undefined && step === maxSteps && step > 1;
-      if (isFinalBudgetedStep) messages.push({ role: "system", content: FINAL_STEP_WRAP_UP_NUDGE });
+      if (isFinalBudgetedStep) pushFinalStepNudge(messages, FINAL_STEP_WRAP_UP_NUDGE);
       const stepToolChoice = isFinalBudgetedStep ? ("none" as const) : ("auto" as const);
+      compactToolMessagesForContextBudget(messages);
       const llmInput = {
         step,
         modelTier: options.modelTier ?? "S",
@@ -262,7 +238,12 @@ export class BaseAgent {
           }),
         );
       } catch (error) {
-        terminalFailureReason = error instanceof Error ? error.message : String(error);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (recoverFromContextOverflow(messages, errorMessage)) {
+          step -= 1;
+          continue;
+        }
+        terminalFailureReason = errorMessage;
         finalAnswer = terminalFailureReason;
         break;
       }
