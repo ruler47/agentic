@@ -232,7 +232,12 @@ function buildExternalActionPreparation(input: {
     (required) => !collectedInputs.some((item) => item.label === required),
   );
   const hasActionableTarget = Boolean(input.target);
-  const targetUrl = selectExternalActionPreparationUrl(
+  // A URL the user spelled out in the task IS the chosen target — it must
+  // not be second-guessed by inference or dropped by the proof-worthy
+  // filter (which rightly excludes loopback hosts from public PROOF but
+  // has no say over where the operator asked to act).
+  const explicitTaskUrl = firstExplicitTaskActionUrl(input.task);
+  const targetUrl = explicitTaskUrl ?? selectExternalActionPreparationUrl(
     input.actionType,
     input.sourceUrls,
   );
@@ -345,12 +350,25 @@ function inferPartySize(task: string): string | undefined {
   return wordNumbers.find(([pattern]) => pattern.test(lower))?.[1];
 }
 
+function firstExplicitTaskActionUrl(task: string): string | undefined {
+  const match = task.match(/https?:\/\/[^\s<>"')\]]+/iu);
+  if (!match) return undefined;
+  try {
+    return new URL(match[0].replace(/[.,;:!?]+$/u, "")).href;
+  } catch {
+    return undefined;
+  }
+}
+
 function inferDateTimeValue(task: string, createdAt: string): string | undefined {
   const date = inferDate(task, createdAt);
   const time = normalizeTime(
     task.match(/(?:^|[\s,.;])(?:в|at)\s*(\d{1,2})(?::|\.)(\d{2})\b/iu) ??
       task.match(/(?:^|[\s,.;])(?:в|at)\s*(\d{1,2})\b/iu) ??
-      task.match(/(?:после|after)\s*(\d{1,2})(?::|\.)(\d{2})?\b/iu),
+      task.match(/(?:после|after)\s*(\d{1,2})(?::|\.)(\d{2})?\b/iu) ??
+      // Bare HH:MM after a weekday/date ("на пятницу 17:30") — range
+      // validation in normalizeTime rejects port-like fragments.
+      task.match(/(?:^|[\s,.;(])(\d{1,2}):(\d{2})(?=$|[\s,.;)!?])/u),
   );
   const relativeWindow = inferRelativeDateWindow(task);
   const timeWindow = task.match(/(?:после|after)\s*(\d{1,2})(?::|\.)(\d{2})?\b/iu)
@@ -697,7 +715,7 @@ function isExternalActionNonTargetHeading(value: string): boolean {
     .replace(/\([^)]*\)/gu, "")
     .replace(/[:：].*$/u, "")
     .trim();
-  return /^(?:details?|booking details?|reservation details?|appointment details?|action details?|search results?|results?|важная информация|детали(?: бронирования| записи| заказа)?|данные(?: для (?:записи|бронирования|заказа))?|информация|результат(?:ы)?(?: поиска)?|поиск|следующие шаги|чек[- ]?лист|почему\s+(?:это\s+)?(?:шикарно|подходит|выбрать)|про\s+(?:мясо|меню|атмосферу)|бронирование)$/iu.test(
+  return /^(?:details?|booking details?|reservation details?|appointment details?|action details?|search results?|results?|важная информация|детали(?: бронирования| записи| заказа)?|данные(?:\s+для\s+[а-яёa-z]+)?|информация|результат(?:ы)?(?: поиска)?|поиск|следующие шаги|чек[- ]?лист|почему\s+(?:это\s+)?(?:шикарно|подходит|выбрать)|про\s+(?:мясо|меню|атмосферу)|бронирование)$/iu.test(
     heading,
   );
 }

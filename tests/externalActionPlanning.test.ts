@@ -445,3 +445,31 @@ test("target is read from the value cell of a Markdown table, not the header", (
     "https://booksy.com/es-es/134426_harrisons-barbershop_barberia_29260_marbella",
   );
 });
+
+test("fixture-style task: explicit URL, weekday+bare time, and clean draft labels", () => {
+  const task =
+    "Подготовь запись на стрижку через форму записи http://127.0.0.1:3000/api/fixtures/external-actions/appointment на пятницу 17:30. Данные: Test User, test@example.com, +34 600 000 000. Только подготовь и покажи что заполнено — финально не отправляй без моего подтверждения.";
+  const proposal = buildExternalActionProposal({
+    task,
+    finalAnswer: "**Данные для проверки:**\n* Услуга: Стрижка\n* Дата и время: Пятница, 17:30",
+    taskFrame: frameTask(task),
+    runContext: { runId: "run_fixture_test" },
+    artifacts: [],
+    sourceUrls: [],
+    createdAt: "2026-06-13T10:00:00.000Z",
+  });
+  assert.ok(proposal, "policy and proposal expected");
+  // The explicitly given URL is the target even though loopback hosts are
+  // excluded from public proof sources.
+  assert.equal(
+    proposal.preparation?.targetUrl,
+    "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+  );
+  // "на пятницу 17:30" carries the time — date_or_time must not be missing.
+  assert.ok(
+    !(proposal.preparation?.missingInputs ?? []).includes("date_or_time"),
+    `date_or_time missing: ${JSON.stringify(proposal.preparation?.missingInputs)}`,
+  );
+  // A bold list label is not the booking target.
+  assert.notEqual(proposal.target, "Данные для проверки:");
+});
