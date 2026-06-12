@@ -50,6 +50,7 @@ import {
   requestTruncatedAnswerRepair,
 } from "./baseAgentTruncation.js";
 import {
+  containsRawToolCallSyntax,
   contextSummary,
   createAgentSpanId,
   createLlmSpanId,
@@ -112,6 +113,7 @@ export class BaseAgent {
     let terminalFailureReason: string | undefined;
     let stoppedByStepLimit = false;
     let answerRepairExtensions = 0;
+    let rawSyntaxRepairAttempts = 0;
     let successfulResearchToolCalls = 0;
     let successfulSourceReadToolCalls = 0;
     let researchRepairAttempts = 0;
@@ -303,6 +305,22 @@ export class BaseAgent {
           }
           terminalFailureReason = repair.failureReason;
           break;
+        }
+        // Local models sometimes leak XML/JSON tool-call syntax as prose on
+        // the no-tools wrap-up step. One corrective retry, then the
+        // finalization gate fails the run honestly.
+        if (containsRawToolCallSyntax(finalAnswer) && rawSyntaxRepairAttempts < 1) {
+          rawSyntaxRepairAttempts += 1;
+          messages.push({ role: "assistant", content: finalAnswer });
+          messages.push({
+            role: "user",
+            content:
+              "Your previous output was raw tool-call syntax, which is invalid as a final answer. " +
+              "Write the final user-facing answer in plain prose now from the evidence already collected. Do not emit tool-call syntax.",
+          });
+          if (maxSteps !== undefined && step >= maxSteps + answerRepairExtensions) answerRepairExtensions += 1;
+          finalAnswer = "";
+          continue;
         }
         const candidateUseRepairInstruction = candidateUseRepairInstructionForModel({
           task,

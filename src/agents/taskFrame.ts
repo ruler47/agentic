@@ -60,6 +60,9 @@ export type ResearchContractGap = {
 };
 
 export function defaultMaxStepsForTaskFrame(taskFrame: TaskFrame): number {
+  // External-action preparation needs discovery + provider page + form
+  // preparation + proof — observed live to exceed the selection budget.
+  if (taskFrame.externalActionPolicy) return 18;
   return taskFrame.mode === "product_selection" || taskFrame.researchDepth === "structured_selection"
     ? 12
     : DEFAULT_MAX_STEPS;

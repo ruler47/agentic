@@ -44,6 +44,8 @@ export function findUnusedScopedCandidate(input: {
 export function containsRawToolCallSyntax(answer: string): boolean {
   const trimmed = answer.trim();
   if (!trimmed) return false;
+  // LM Studio / Qwen-style XML tool-call leakage in prose output.
+  if (/<tool_call>|<function=/i.test(trimmed)) return true;
   if (/\bfinish\s*\(\s*\{\s*answer\s*:/i.test(trimmed)) return true;
   if (/"tool_calls"\s*:/.test(trimmed)) return true;
   if (/"function"\s*:\s*\{[^}]*"arguments"\s*:/.test(trimmed)) return true;
