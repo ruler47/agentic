@@ -1,6 +1,80 @@
 # Core Toolbelt Roadmap
 
-Status date: 2026-06-02.
+Status date: 2026-06-18.
+
+## 2026-06-18 Validation Checkpoint
+
+Branch: `codex/rewrite-from-agentic-main-next`.
+
+Automated verification:
+
+- `npm run verify` passed for this checkpoint: lint, typecheck, type tests, unit tests, and
+  build.
+
+Runtime smoke:
+
+- `npm run web` starts the Nest API at `http://127.0.0.1:3000` and the React console at
+  `http://127.0.0.1:3001`.
+- `/api/health` reports Postgres-backed durable stores for runs, run events, secrets,
+  tool metadata, tool creations, audit, conversations, work ledger, and evidence ledger;
+  artifacts use the local-files durable fallback.
+- The generated registry reloads 20 tool packages.
+
+Manual tool calls that passed through `/api/tools/:name/run`:
+
+- `web.search@0.1.0`: returned search results for `OpenAI official website`.
+- `web.read@0.1.0`: read `https://example.com` with status/title/text/links.
+- `browser.screenshot@0.1.5`: captured a viewport PNG for `https://example.com`.
+- `browser.operate@0.1.4`: operated the local external-action fixture in prepare-only
+  mode.
+- `external.action.prepare@0.1.15`: prepared the local fixture without final submit.
+- `external.action.commit@0.1.2`: committed a safe fixture action manually, even though
+  it is not currently offered to agents.
+
+Agent runs:
+
+- `run_1781737302310_6ln1wrr2`: current Bitcoin lookup used `web.search` and
+  `browser.screenshot`, returned CoinMarketCap source and a QA-passed proof artifact.
+- `run_1781737990450_4ziwnf5r`: simple direct answer completed without tool calls.
+- `run_1781738025605_mozhfsmv`: URL read over `jsonplaceholder.typicode.com/todos/1`
+  returned the correct `title` and stored a QA-passed screenshot artifact.
+- `run_1781738068292_apav9bnh`: barbershop appointment task found a real Booksy target
+  and reached `waiting_approval` with a proposal card.
+- `run_1781738317784_dx4prbn0`: conversation follow-up failed because task framing
+  treated "what source did you use in the previous answer" as a fresh `current_lookup`
+  and the return gate demanded a new search/fetch instead of accepting thread context.
+
+UI smoke:
+
+- Dashboard, Tools, Run Workspace, Trace Lab, and an external-action waiting-approval run
+  render in the React console without Vite overlays or console errors after normal data
+  loading.
+- Run Workspace and Trace Lab show the Bitcoin proof artifact, tool versions, timeline,
+  trace inputs/outputs, and approval controls.
+
+Current blockers before declaring the base ready:
+
+- Only 5 of the 20 registered tools are currently `available` and offered to agents:
+  `web.search`, `web.read`, `browser.screenshot`, `browser.operate`, and
+  `external.action.prepare`. The intended core tools `http.request`, `file.read`,
+  `file.write`, `document.extract`, `data.transform`/`data.table`, and
+  `channel.telegram` are not yet active agent capabilities in this branch.
+- The explicit "do not screenshot" API-read task still triggered proof repair and a
+  screenshot. API/local utility tasks must respect negative proof instructions and the
+  roadmap rule that API-only tasks do not request visual proof unless asked.
+- Follow-up questions that ask about prior answers can be misclassified as
+  `current_lookup`. Thread context is present in the prompt payload, but task framing and
+  return gates do not yet treat "answer from previous context" as sufficient evidence.
+- External-action tasks still stop before preparation in ordinary approval mode. The
+  proposal card is clearer than before, but the user still cannot complete "find,
+  prepare, show proof, then submit after one approval" in one simple flow.
+- Work/Evidence Ledger cards on tested runs show `0 claims` and `0 evidence records`
+  despite tool activity. Either BaseAgent is not writing ledger claims yet, or the UI
+  is not reading the relevant records.
+- Files slightly above the preferred 800-line limit remain:
+  `src/server/modules/runs/action-proposal-preparation-runner.ts`,
+  `src/agents/baseAgent.ts`, `tests/actionProposalPreparationRunner.test.ts`,
+  `src/server/modules/runs/runs.service.ts`, and `tests/nestApi.test.ts`.
 
 This is the active product roadmap after the tool-builder/external-action stress phase.
 The immediate goal is to make agents useful with a stable, generic toolbelt before adding
@@ -252,4 +326,3 @@ Initial targets:
 - Collapse approval UI into a smaller state machine after the generic action contract is
   stable.
 - Split or delete files that approach the 800-line limit as part of each touched area.
-
