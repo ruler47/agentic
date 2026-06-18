@@ -49,15 +49,7 @@ import { APP_ENV } from "../config/config.module.js";
 import type { AppEnv } from "../config/env.js";
 import { LlmClient, readLlmConfigFromEnv } from "../../llm/client.js";
 import { ToolRegistry } from "../../tools/registry.js";
-import { FileReadTool, FileWriteTool } from "../../tools/fileTools.js";
-import { WebSearchTool } from "../../tools/webSearchTool.js";
-// Phase 13 follow-up: the in-process tool classes have been
-// removed in favour of dockerized tool services. The runtime
-// always wires the HttpToolAdapter / BrowserOperateHttpTool
-// instances below so every browser.operate / chart.generate /
-// market.timeseries / telegram.bot call goes to a container.
-import { BrowserOperateHttpTool } from "../../tools/browserOperateHttpTool.js";
-import { HttpToolAdapter } from "../../tools/httpToolAdapter.js";
+import { createCoreToolbelt } from "../../tools/coreToolbelt.js";
 import { createScopedToolDbClient } from "../../tools/toolScopedDb.js";
 import type { SecretHandleStore } from "../../secrets/secretHandleStore.js";
 import type { ToolMetadataStore } from "../../tools/toolMetadataStore.js";
@@ -261,79 +253,9 @@ const providers: Provider[] = [
       env: import("../config/env.js").AppEnv,
     ) => {
       const registry = new ToolRegistry();
-      if (env.builtinToolsEnabled) {
-      registry.register(new WebSearchTool());
-      // Phase 13: every built-in tool is now backed by a dockerized
-      // tool service. The runtime forwards each call to the matching
-      // container via HttpToolAdapter / BrowserOperateHttpTool — see
-      // docker-compose.yml `*_RUNNER=docker` env vars.
-      registry.register(new HttpToolAdapter({
-        name: "telegram.bot",
-        version: "1.0.0",
-        description: "Receives Telegram bot messages and bridges them to generic Agentic inbound/outbox APIs.",
-        capabilities: ["messaging-channel", "telegram-bridge", "background-service"],
-        startupMode: "always-on",
-        // Always-on bridge driven by the runtime's inbound/outbox APIs;
-        // /run is a noop so the schema is intentionally empty.
-        inputSchema: { type: "object", properties: {} },
-        outputSchema: { type: "object", properties: { ok: { type: "boolean" }, content: { type: "string" } } },
-      }));
-      registry.register(new FileReadTool());
-      registry.register(new FileWriteTool());
-      registry.register(new HttpToolAdapter({
-        name: "chart.generate",
-        version: "1.0.0",
-        description: "Generates an SVG line-chart artifact from time-series text or JSON.",
-        capabilities: ["chart-generation", "artifact-generation", "data-visualization"],
-        startupMode: "on-demand",
-        // Mirrors the docker chart-generate-service /describe schema.
-        inputSchema: {
-          type: "object",
-          properties: {
-            task: { type: "string", minLength: 1 },
-            text: { type: "string", minLength: 1 },
-            title: { type: "string" },
-            filename: { type: "string" },
-          },
-          required: ["task", "text"],
-        },
-        outputSchema: {
-          type: "object",
-          properties: {
-            ok: { type: "boolean" },
-            content: { type: "string" },
-            data: { type: "object", properties: { artifact: { type: "object" }, points: { type: "number" } } },
-          },
-          required: ["ok", "content"],
-        },
-      }));
-      registry.register(new HttpToolAdapter({
-        name: "market.timeseries",
-        version: "1.0.0",
-        description: "Fetches structured crypto market time-series data and returns a CSV artifact.",
-        capabilities: ["market-timeseries", "crypto-timeseries", "structured-market-data"],
-        startupMode: "on-demand",
-        inputSchema: {
-          type: "object",
-          properties: {
-            symbol: { type: "string", minLength: 1 },
-            vsCurrency: { type: "string", default: "usd" },
-            days: { type: "number", minimum: 1, maximum: 3650, default: 30 },
-          },
-          required: ["symbol"],
-        },
-        outputSchema: {
-          type: "object",
-          properties: {
-            ok: { type: "boolean" },
-            content: { type: "string" },
-            data: { type: "object" },
-          },
-          required: ["ok", "content"],
-        },
-      }));
-      registry.register(new BrowserOperateHttpTool());
-      } // end if (env.builtinToolsEnabled)
+      for (const tool of createCoreToolbelt({ enabled: env.builtinToolsEnabled })) {
+        registry.register(tool);
+      }
       if (metadata) {
         await metadata.syncBuiltins(registry.list());
         registry.setUsageReporter((event) =>

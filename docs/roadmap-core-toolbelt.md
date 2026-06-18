@@ -67,14 +67,18 @@ Follow-up checkpoint on branch `codex/split-mainline`:
     lookup.
 - `src/agents/baseAgent.ts` is back under the line limit at 793 lines after moving thread
   framing helpers into `src/agents/baseAgentThreadContext.ts`.
+- The preinstalled core toolbelt from `main` was ported onto the split BaseAgent branch:
+  `createCoreToolbelt()` now registers first-party `web.search`, `web.read`,
+  `browser.operate`, `browser.screenshot`, `http.request`, `file.read`, `file.write`,
+  `document.extract`, `data.transform`, `external.action.prepare`,
+  `external.action.commit`, and `channel.telegram` at bootstrap when built-ins are enabled.
+  Typecheck and focused BaseAgent/core-toolbelt tests passed after the port.
 
 Current blockers before declaring the base ready:
 
-- Only 5 of the 20 registered tools are currently `available` and offered to agents:
-  `web.search`, `web.read`, `browser.screenshot`, `browser.operate`, and
-  `external.action.prepare`. The intended core tools `http.request`, `file.read`,
-  `file.write`, `document.extract`, `data.transform`/`data.table`, and
-  `channel.telegram` are not yet active agent capabilities in this branch.
+- Core toolbelt code and bootstrap registration are now present on the split branch, but
+  the running API/UI smoke still needs to confirm that metadata/readiness exposes every
+  intended tool to agents.
 - External-action tasks still stop before preparation in ordinary approval mode. The
   proposal card is clearer than before, but the user still cannot complete "find,
   prepare, show proof, then submit after one approval" in one simple flow.

@@ -29,7 +29,9 @@ that generated tools will use later.
 ## Current Verified State
 
 `npm run verify` passed on 2026-06-18 from `codex/split-mainline` after the P0 fixes:
-lint, typecheck, test typecheck, 493 unit tests, and build.
+lint, typecheck, test typecheck, 493 unit tests, and build. After that checkpoint, the
+preinstalled core toolbelt from `main` was ported onto the split BaseAgent branch and wired
+into bootstrap through `createCoreToolbelt()`.
 
 Recent P0 fixes:
 
@@ -39,6 +41,10 @@ Recent P0 fixes:
   from thread summary/facts/open questions instead of doing a fresh lookup.
 - `src/agents/baseAgent.ts` is below the 800-line limit again; thread-context framing moved
   into `src/agents/baseAgentThreadContext.ts`.
+- Preinstalled tools now exist on the split branch: `web.search`, `web.read`,
+  `browser.operate`, `browser.screenshot`, `http.request`, `file.read`, `file.write`,
+  `document.extract`, `data.transform`, `external.action.prepare`,
+  `external.action.commit`, and `channel.telegram`.
 
 ## Current Priorities
 
@@ -51,8 +57,8 @@ P0:
 
 P1:
 
-- Activate and test the full core toolbelt for agents: `http.request`, `file.read`,
-  `file.write`, `document.extract`, `data.transform`/`data.table`, and `channel.telegram`.
+- Verify the full core toolbelt through the running API/UI and confirm all intended tools
+  are offered to agents through metadata/readiness, not only present in code.
 - Wire Work/Evidence Ledger records for BaseAgent tool calls, or fix the UI if records are
   being written but not shown.
 
@@ -68,7 +74,8 @@ P3:
 
 ## Known Gaps
 
-- Only a subset of registered tools is currently offered to agents.
+- Core toolbelt wiring has type/unit coverage, but still needs a running API/UI smoke to
+  confirm metadata availability and agent catalog exposure.
 - External actions remain too hard to understand from the UI and still stop too early in
   ordinary approval mode.
 - Work/Evidence Ledger cards on tested runs showed zero records despite tool activity.

@@ -102,11 +102,10 @@ large legacy `UniversalAgent` runtime.
   (own HMAC tokens), `/api/fixtures/*` (local browser fixture pages). The
   React console does not attach the token yet — enable it only for headless
   /API deployments until the UI learns to store it.
-- Core toolbelt tools are generated packages whose metadata must be blessed to
-  status `available` before agents can call them directly: run the exact version
-  manually (`POST /api/tools/generated-modules/:name/versions/:ver/run`), then
-  `POST .../mark-available`. Unblessed tools force every run through the
-  tool-missing -> candidate ceremony and waste steps.
+- Core toolbelt tools are preinstalled first-party tools registered at bootstrap through
+  `createCoreToolbelt()` when `BUILTIN_TOOLS` is enabled. They are synchronized into tool
+  metadata as built-ins and should be directly offered to agents when metadata/readiness
+  marks them available. Generated/package tools still use the manual QA/promotion flow.
 - BaseAgent trace spans now use stable parent/child ids for the root agent, context,
   every LLM step, every tool call, artifact saves, and the return gate. LLM spans record
   safe normalized `input`/`output`; tool spans record summarized tool `input`/`output`.
