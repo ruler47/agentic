@@ -246,12 +246,10 @@ not the operator's form input.
 ### Pure-council registry
 
 Setting `BUILTIN_TOOLS=disabled` in the app env skips registration of
-the seven hard-coded built-in tools (`web.search`, `file.read`,
-`file.write`, `chart.generate`, `market.timeseries`, `telegram.bot`,
-`browser.operate`). The rebuilt product defaults to
-`BUILTIN_TOOLS=disabled`; the only tools visible to the agent are
-generated/imported packages that are registered, loaded, and enabled.
-There is no automatic core-tool seeding.
+the preinstalled core toolbelt. This is a specialized generated-tool-only mode for
+focused tests and historical pure-council experiments. The rebuilt product defaults to
+the core toolbelt being available; generated/imported packages are loaded alongside it
+when registered, loaded, and enabled.
 
 The `tools/` directory is reconciled on bootstrap by
 `reconcileToolsDirectory(toolsRoot, knownVersions)`:

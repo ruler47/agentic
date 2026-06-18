@@ -13,6 +13,7 @@ new primary branch.
 - Split base branch: `codex/rewrite-from-agentic-main-next`.
 - Active runtime: `BaseAgent`.
 - Active roadmap: `docs/roadmap-core-toolbelt.md`.
+- Active architecture map: `docs/current-architecture.md`.
 
 Do not use `claude/phase17-research-delegation` as the active base. It was audited on
 2026-06-18 and still contains a legacy `src/agents/universalAgent.ts` above 9k lines plus
@@ -31,9 +32,10 @@ that generated tools will use later.
 
 ## Current Verified State
 
-`npm run verify` passed on 2026-06-18 from `main` after merging the split runtime:
-lint, typecheck, test typecheck, 506 unit tests, and build. The final `main` tree matches
-the verified `codex/split-mainline` tree and is pushed to `origin/main`.
+`npm run verify` passed on 2026-06-18 from `main` after merging the split runtime and
+after the default-core-toolbelt fix: lint, typecheck, test typecheck, 508 unit tests,
+and build. Targeted suites also passed: BaseAgent runtime 49/49, external-action
+preparation/approval 29/29, and focused env/core-toolbelt/auth 12/12.
 
 Recent P0 fixes:
 
@@ -47,13 +49,17 @@ Recent P0 fixes:
   `browser.operate`, `browser.screenshot`, `http.request`, `file.read`, `file.write`,
   `document.extract`, `data.transform`, `external.action.prepare`,
   `external.action.commit`, and `channel.telegram`.
+- Core tools are enabled by default. `BUILTIN_TOOLS=disabled` is only for focused tests or
+  generated-tool-only experiments. Live API smoke confirmed `/api/tools` exposes all 12
+  core tools and manual `http.request` plus `data.transform` calls work.
 
 ## Current Priorities
 
 P0:
 
-- Confirm the running API/UI exposes the core toolbelt to agents: metadata, readiness,
-  manual run, agent run, trace input/output, and artifact handling.
+- Run practical agent-level smoke against the live API/UI now that manual core-tool
+  exposure is confirmed: direct answer, current web fact with proof, API/JSON fast path,
+  local file/document/data task, broad research, and optional Telegram channel smoke.
 - Make simple runs fast and correct in practice: API/local utility tasks should use the
   direct core-tool path, avoid browser/search when unnecessary, and finish with structured
   proof instead of screenshots.
@@ -86,8 +92,9 @@ P3:
 
 ## Known Gaps
 
-- Core toolbelt wiring has type/unit coverage, but still needs a running API/UI smoke from
-  the updated `main` branch to confirm metadata availability and agent catalog exposure.
+- Live API smoke confirmed `/api/tools` exposes the full preinstalled core toolbelt.
+  Remaining smoke gap is agent-level end-to-end behavior through `/api/runs`, preferably
+  with Postgres-backed persistence enabled.
 - External actions remain too hard to understand from the UI and still stop too early in
   ordinary approval mode.
 - Work/Evidence Ledger cards on tested runs showed zero records despite tool activity.
@@ -103,5 +110,6 @@ P3:
 - Do not reintroduce `UniversalAgent` as the active runtime.
 - Keep generated or imported tool implementations out of Agentic app source unless they are
   deliberately promoted as first-party core packages.
-- Update `AGENTS.md`, this handoff, and `docs/roadmap-core-toolbelt.md` whenever architecture,
-  command, or roadmap decisions change.
+- Update `AGENTS.md`, this handoff, `docs/current-architecture.md`, and
+  `docs/roadmap-core-toolbelt.md` whenever architecture, command, or roadmap decisions
+  change.

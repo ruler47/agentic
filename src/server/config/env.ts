@@ -9,11 +9,12 @@ export type AppEnv = {
   toolServiceMaxAutoRestarts: number;
   toolSourceBundleHttpRunnerEnabled: boolean;
   /**
-   * Gate the legacy built-in/reference tools
-   * (web.search, file.read/write, chart.generate, browser.operate,
-   * telegram.bot, market.timeseries) on a single env flag. The rebuilt
-   * product defaults to generated/package tools only; set
-   * BUILTIN_TOOLS=enabled only for old compatibility smoke tests.
+   * Gate the preinstalled first-party core toolbelt
+   * (web.search, web.read, browser.operate, browser.screenshot,
+   * http.request, file.*, document.extract, data.transform,
+   * external.action.*, channel.telegram). The rebuilt product defaults
+   * to these tools being present; set BUILTIN_TOOLS=disabled only for
+   * focused tests or generated-tool-only experiments.
    */
   builtinToolsEnabled: boolean;
   internalBaseUrl?: string;
@@ -49,7 +50,7 @@ export function readEnv(): AppEnv {
     toolSourceBundleHttpRunnerEnabled:
       process.env.TOOL_SOURCE_BUNDLE_HTTP_RUNNER !== "disabled" &&
       process.env.TOOL_SOURCE_BUNDLE_RUNNER !== "in-process",
-    builtinToolsEnabled: process.env.BUILTIN_TOOLS === "enabled",
+    builtinToolsEnabled: process.env.BUILTIN_TOOLS !== "disabled",
     internalBaseUrl: process.env.AGENTIC_INTERNAL_BASE_URL,
     toolCallbackBaseUrl: process.env.TOOL_CALLBACK_BASE_URL,
     apiAuthToken: process.env.AGENTIC_API_TOKEN?.trim() || undefined,

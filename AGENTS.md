@@ -106,9 +106,10 @@ large legacy `UniversalAgent` runtime.
   React console does not attach the token yet — enable it only for headless
   /API deployments until the UI learns to store it.
 - Core toolbelt tools are preinstalled first-party tools registered at bootstrap through
-  `createCoreToolbelt()` when `BUILTIN_TOOLS` is enabled. They are synchronized into tool
-  metadata as built-ins and should be directly offered to agents when metadata/readiness
-  marks them available. Generated/package tools still use the manual QA/promotion flow.
+  `createCoreToolbelt()` by default. Set `BUILTIN_TOOLS=disabled` only for focused tests
+  or generated-tool-only experiments. Core tools are synchronized into tool metadata as
+  built-ins and should be directly offered to agents when metadata/readiness marks them
+  available. Generated/package tools still use the manual QA/promotion flow.
 - BaseAgent trace spans now use stable parent/child ids for the root agent, context,
   every LLM step, every tool call, artifact saves, and the return gate. LLM spans record
   safe normalized `input`/`output`; tool spans record summarized tool `input`/`output`.
@@ -639,6 +640,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 ## Important Files
 
 - `README.md` - quick start and current execution summary.
+- `docs/current-architecture.md` - active architecture diagrams, code map, request
+  lifecycle, external-action lifecycle, memory model, verified state, and current gaps.
 - `docs/roadmap.md` - active rebuild plan and phase order.
 - `docs/api-surface.md` - active HTTP API contract and removed endpoint list.
 - `docs/modules/agent-runtime.md` - current `BaseAgent` runtime contract.

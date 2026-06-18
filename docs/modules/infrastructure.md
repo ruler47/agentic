@@ -193,23 +193,27 @@ deployment-appropriate backend.
 
 ### Workspace Files
 
-The app container mounts `./workspace` to `/app/workspace` for generated tool packages
-and artifact workflows that need shared local files. The old built-in `file.read` /
-`file.write` tools are no longer part of the default registry; file capabilities should
-return as generated/imported tools with explicit manifests and QA.
+The app container mounts `./workspace` to `/app/workspace` for artifact workflows and
+generated/imported tool packages that need shared local files. The preinstalled
+`file.read` / `file.write` tools are part of the default core toolbelt and use the same
+registry, trace, artifact, metadata, and QA contracts as other tools. Future generated
+file tools should keep that same contract instead of becoming app-specific branches.
 
 ### Web Search
 
-SearXNG remains available in Docker Compose as infrastructure, but the old built-in
-`web.search` tool is no longer registered by default. Search should return as a generated
-or imported tool package that wraps SearXNG or another provider behind the normal tool
-manifest.
+SearXNG remains available in Docker Compose as infrastructure. The preinstalled
+`web.search` tool is part of the default core toolbelt and wraps configured search
+infrastructure behind the normal tool manifest. Generated/imported search tools may be
+added later, but they should coexist through normal versioned registry state instead of
+replacing the core contract ad hoc.
 
 The Postgres `tool_modules` table is the durable catalog for generated/imported tools: it stores stable
 system name, optional human display name, version, capabilities, schemas, source, status,
 configuration/secret requirements, storage contracts, docs/examples, usage counters, and
-the latest health result. When `BUILTIN_TOOLS` is not explicitly enabled, startup prunes
-old `source='builtin'` catalog rows so stale reference tools do not appear in `/api/tools`.
+the latest health result. Core toolbelt tools are registered by default. Set
+`BUILTIN_TOOLS=disabled` only for focused tests or generated-tool-only experiments; in
+that mode startup prunes old `source='builtin'` catalog rows so stale reference tools do
+not appear in `/api/tools`.
 Without Postgres, local development persists the same active generated-tool metadata to
 `workspace/tool-metadata.json`, which is runtime data and remains outside git. Generated
 package source still lives under the gitignored `tools/` workspace; the JSON file is only

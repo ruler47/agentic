@@ -79,12 +79,28 @@ Follow-up checkpoint on branch `codex/split-mainline`:
   the verified split `BaseAgent` tree with the preinstalled core toolbelt. `npm run
   verify` passed on `main` after the merge: lint, typecheck, test typecheck, 506 unit
   tests, and build.
+- Follow-up live API smoke on `main` found and fixed a product/runtime mismatch:
+  preinstalled core tools were registered only when `BUILTIN_TOOLS=enabled`, while the
+  product contract says the first-party toolbelt is the default baseline. `BUILTIN_TOOLS`
+  is now opt-out: set `BUILTIN_TOOLS=disabled` only for focused tests or
+  generated-tool-only experiments.
+- After that fix, live `/api/tools` exposes all 12 preinstalled tools:
+  `web.search`, `web.read`, `browser.operate`, `browser.screenshot`, `http.request`,
+  `file.read`, `file.write`, `document.extract`, `data.transform`,
+  `external.action.prepare`, `external.action.commit`, and `channel.telegram`.
+- Manual API smoke passed for `http.request` against
+  `https://jsonplaceholder.typicode.com/todos/1` and for `data.transform` JSON-to-CSV
+  sorting. This smoke was run with the local dev server and no `DATABASE_URL`, so the
+  remaining product smoke must use the durable Postgres stack.
+- `npm run verify` passed after the default-core-toolbelt fix: lint, typecheck, test
+  typecheck, 508 unit tests, and build.
 
 Current blockers before declaring the base ready for product testing:
 
-- Core toolbelt code and bootstrap registration are present on `main`, but the running
-  API/UI smoke still needs to confirm that metadata/readiness exposes every intended tool
-  to agents.
+- Agent-level end-to-end smoke through `/api/runs` still needs to be repeated on the
+  durable Postgres stack after the default-core-toolbelt fix. Manual tool exposure is
+  confirmed, but the agent must prove it actually selects and uses those tools in normal
+  tasks.
 - External-action tasks still stop before preparation in ordinary approval mode. The
   proposal card is clearer than before, but the user still cannot complete "find,
   prepare, show proof, then submit after one approval" in one simple flow.
@@ -98,11 +114,12 @@ Current blockers before declaring the base ready for product testing:
 
 ## Active Priority Order After Main Merge
 
-P0: prove the core-toolbelt baseline through the live product surface.
+P0: prove the core-toolbelt baseline through agent-level live product runs.
 
-- Start the API/UI from `main`.
-- Confirm `/api/tools`, `/api/tools/health`, manual tool runs, agent catalog exposure,
-  trace input/output, and artifact preview/download for every preinstalled tool class.
+- Start the full durable stack from `main` with Postgres, object/artifact storage, local
+  model endpoint, browser-operate, and optional Telegram service.
+- Confirm `/api/tools`, `/api/tools/health`, agent catalog exposure, trace input/output,
+  and artifact preview/download for every preinstalled tool class.
 - Run practical tasks:
   - simple direct answer without tools;
   - current web fact with source and screenshot proof;
@@ -110,6 +127,8 @@ P0: prove the core-toolbelt baseline through the live product surface.
   - local file/document/data task through file/document/data tools;
   - broad research task using search plus read;
   - Telegram/channel smoke if service credentials are configured.
+- Confirm run records, events, artifacts, approval state, and ledger records survive a
+  server restart.
 
 P1: make the agent operationally coherent.
 
