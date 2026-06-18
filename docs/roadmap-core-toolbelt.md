@@ -1,6 +1,6 @@
 # Core Toolbelt Roadmap
 
-Status date: 2026-06-18.
+Status date: 2026-06-19.
 
 ## 2026-06-18 Validation Checkpoint
 
@@ -93,8 +93,8 @@ Follow-up checkpoint on branch `codex/split-mainline`:
   `https://jsonplaceholder.typicode.com/todos/1` and for `data.transform` JSON-to-CSV
   sorting. This smoke was run with the local dev server and no `DATABASE_URL`, so the
   remaining product smoke must use the durable Postgres stack.
-- `npm run verify` passed after the BaseAgent Ledger fix: lint, typecheck, test
-  typecheck, 512 unit tests, and build.
+- `npm run verify` passed after the BaseAgent Ledger/proof fix: lint, typecheck, test
+  typecheck, 513 unit tests, and build.
 
 Durable agent-level smoke then passed on `main` with Postgres-backed persistence:
 
@@ -160,7 +160,12 @@ Code fixes from that smoke:
 - Safe deterministic `http.request` GET/HEAD calls now publish a reusable-index work item
   scoped to the current thread/instance and not tied to a specific run. A later identical
   stable call can reuse fresh passed evidence for up to 10 minutes, while current/fresh
-  tasks bypass reuse and still execute the tool.
+  tasks bypass reuse, still execute the tool, and emit a trace-visible
+  `work-ledger-reuse-skipped` reason.
+- API-only HTTP/JSON endpoint tasks treat structured protocol/source evidence as the
+  proof by default. They should finish after one successful direct `http.request` when it
+  satisfies the task, without adding web search, web read, browser operation, or
+  screenshot proof unless the user explicitly requests visual proof.
 
 Current blockers before declaring the base ready for broader product testing:
 
@@ -184,6 +189,8 @@ P0: keep simple runs fast, correct, and auditable.
   and failure reasons.
 - Stable `http.request` GET/HEAD calls now create reusable-index records and can be
   reused across runs in the same thread/instance when fresh passed evidence exists.
+- Current/fresh/live tasks now bypass stable HTTP reuse explicitly and expose the
+  decision in Trace Lab instead of silently reusing or silently refetching.
 - `/api/work-ledger`, `/api/evidence-ledger`, and the React Ledger page show the same
   tool work visible in Trace Lab for `run_1781818681262_rpvsg59u`.
 - Run records, events, artifacts, and ledger records survived backend restart in the

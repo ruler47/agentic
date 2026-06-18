@@ -27,7 +27,7 @@ class SequenceLlm {
   }
 }
 
-test("BaseAgent respects explicit no-screenshot API tasks and uses structured proof instead", async () => {
+test("BaseAgent uses structured proof for API-only tasks without visual proof by default", async () => {
   const registry = new ToolRegistry();
   const httpCalls: unknown[] = [];
   let screenshotCalls = 0;
@@ -105,7 +105,7 @@ test("BaseAgent respects explicit no-screenshot API tasks and uses structured pr
   const events: AgentEvent[] = [];
   const artifacts: AgentArtifact[] = [];
   const agent = new BaseAgent(llm as unknown as LlmClient, registry);
-  const result = await agent.run("Прочитай API https://jsonplaceholder.typicode.com/todos/1 и скажи title. Не делай скриншот.", {
+  const result = await agent.run("Прочитай API https://jsonplaceholder.typicode.com/todos/1 и скажи title.", {
     runId: "run_no_screenshot_api",
     ledger,
     runContext: {
@@ -370,6 +370,99 @@ test("BaseAgent reuses safe http.request evidence across runs through Work Ledge
   assert.equal(secondEvidence[0]?.metadata?.reusedFromWorkItemId, reusableIndexItems[0]?.id);
   assert.ok(ledgerEvents.some((event) => event.type === "work-ledger-reuse-available"));
   assert.ok(ledgerEvents.some((event) => event.type === "work-ledger-reuse-applied"));
+});
+
+test("BaseAgent skips reusable http.request evidence for current-data tasks", async () => {
+  const registry = new ToolRegistry();
+  const workLedger = new InMemoryWorkLedgerStore();
+  const evidenceLedger = new InMemoryEvidenceLedgerStore();
+  const ledgerEvents: RuntimeLedgerEventDraft[] = [];
+  let httpCalls = 0;
+  const requestInput = { url: "https://api.example.test/btc", method: "GET" };
+
+  registry.register({
+    name: "http.request",
+    version: "0.1.0",
+    description: "Generic HTTP JSON API client.",
+    capabilities: ["http-json", "external-api", "structured-data"],
+    inputSchema: { type: "object", properties: { url: { type: "string" }, method: { type: "string" } }, required: ["url"] },
+    async run() {
+      httpCalls += 1;
+      return {
+        ok: true,
+        content: `HTTP 200: price=${httpCalls === 1 ? "70000" : "70111"}`,
+        data: {
+          url: requestInput.url,
+          status: 200,
+          body: { symbol: "BTC", price: httpCalls === 1 ? 70000 : 70111 },
+        },
+      };
+    },
+  });
+
+  const makeLedger = (runId: string) => new RuntimeLedgerCoordinator({
+    runId,
+    threadId: "thread_current_api",
+    instanceId: "instance-local",
+    workLedgerStore: workLedger,
+    evidenceLedgerStore: evidenceLedger,
+    emit: async (event) => {
+      ledgerEvents.push(event);
+    },
+  });
+  const makeLlm = (answer: string) => new SequenceLlm([
+    {
+      content: "",
+      finishReason: "tool_calls",
+      toolCalls: [{ id: "call_http", name: "http_request", arguments: requestInput }],
+    },
+    {
+      content: "",
+      finishReason: "tool_calls",
+      toolCalls: [{ id: "call_finish", name: "finish", arguments: { answer } }],
+    },
+  ]);
+
+  const firstAgent = new BaseAgent(makeLlm("BTC price: 70000.") as unknown as LlmClient, registry);
+  const first = await firstAgent.run("Прочитай API https://api.example.test/btc и скажи цену BTC.", {
+    runId: "run_current_api_1",
+    ledger: makeLedger("run_current_api_1"),
+    runContext: {
+      runId: "run_current_api_1",
+      threadId: "thread_current_api",
+      instanceId: "instance-local",
+    },
+  });
+  assert.equal(first.runStatus, "completed");
+  assert.equal(httpCalls, 1);
+
+  const canonicalWorkKey = workKeyForToolCall("http.request", "api_call", requestInput);
+  const reusableIndexItems = await workLedger.listByWorkKey(canonicalWorkKey);
+  assert.equal(reusableIndexItems.length, 1);
+
+  const secondAgent = new BaseAgent(makeLlm("BTC price: 70111.") as unknown as LlmClient, registry);
+  const second = await secondAgent.run("Какая сейчас цена BTC? Прочитай API https://api.example.test/btc.", {
+    runId: "run_current_api_2",
+    ledger: makeLedger("run_current_api_2"),
+    runContext: {
+      runId: "run_current_api_2",
+      threadId: "thread_current_api",
+      instanceId: "instance-local",
+    },
+  });
+
+  assert.equal(second.runStatus, "completed");
+  assert.equal(httpCalls, 2);
+  assert.ok(ledgerEvents.some((event) =>
+    event.type === "work-ledger-reuse-skipped" &&
+    /current\/fresh data/i.test(event.detail ?? "")
+  ));
+  assert.equal(ledgerEvents.some((event) => event.type === "work-ledger-reuse-applied"), false);
+
+  const secondEvidence = await evidenceLedger.listByRun("run_current_api_2");
+  assert.equal(secondEvidence.length, 1);
+  assert.equal(secondEvidence[0]?.metadata?.reusedFromWorkItemId, undefined);
+  assert.match(secondEvidence[0]?.summary ?? "", /70111/);
 });
 
 test("BaseAgent frames prior-answer source questions as thread-context answers", async () => {

@@ -662,7 +662,8 @@ BaseAgent runtime integration is now wired through
   when fresh passed evidence exists, the run skips the external HTTP call, creates a
   run-local completed work item plus reused evidence, and emits
   `work-ledger-reuse-available` / `work-ledger-reuse-applied` trace events. Current/live
-  requests such as price or "сейчас/latest/today" bypass this reuse path.
+  requests such as price or "сейчас/latest/today" bypass this reuse path and emit
+  `work-ledger-reuse-skipped` with the matched freshness signal.
 - Successful runs record `search_result`/`api_response`/`browser_snapshot`/`screenshot`/
   `artifact` evidence; non-OK tool results, semantic-QA failures, and CAPTCHA/loader blockers record
   `limitation` evidence and mark the work item failed.

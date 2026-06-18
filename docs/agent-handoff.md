@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Status date: 2026-06-18.
+Status date: 2026-06-19.
 
 ## Active Base
 
@@ -32,10 +32,11 @@ that generated tools will use later.
 
 ## Current Verified State
 
-`npm run verify` passed on 2026-06-18 from `main` after merging the split runtime and
-after the default-core-toolbelt plus Ledger fixes: lint, typecheck, test typecheck,
-512 unit tests, and build. Targeted suites also passed: BaseAgent runtime 50/50,
-external-action preparation/approval 29/29, and focused env/core-toolbelt/auth 12/12.
+`npm run verify` passed on 2026-06-19 from `main` after merging the split runtime and
+after the default-core-toolbelt plus Ledger/P0 proof fixes: lint, typecheck, test
+typecheck, 513 unit tests, and build. Targeted BaseAgent P0 coverage now includes
+API-only structured proof without screenshots, safe stable HTTP reuse, and current-data
+HTTP reuse bypass with trace-visible `work-ledger-reuse-skipped`.
 
 Durable-stack agent smoke was then repeated with Postgres, SearXNG, browser-operate,
 local artifacts, and local LM Studio tiers enabled:
@@ -54,8 +55,9 @@ React UI smoke confirmed the data/file run page shows the final answer, timeline
 
 Recent P0 fixes:
 
-- Explicit API/HTTP/JSON tasks that say not to screenshot no longer trigger visual proof
-  repair. They can still save structured/source proof artifacts.
+- API/HTTP/JSON endpoint tasks use structured/source proof by default and no longer
+  trigger screenshot/browser proof repair unless the user explicitly asks for visual
+  proof of a web page.
 - Follow-up questions about prior answers can frame as `thread_context_answer` and answer
   from thread summary/facts/open questions instead of doing a fresh lookup.
 - `src/agents/baseAgent.ts` is below the 800-line limit again; thread-context framing moved
@@ -80,7 +82,7 @@ Recent P0 fixes:
   reusable-index item without `runId`. Later identical stable calls in that scope can
   reuse fresh passed evidence for up to 10 minutes while still creating a new run-local
   work/evidence record and trace events. Current/fresh/live tasks such as price/current
-  facts deliberately bypass this reuse path.
+  facts deliberately bypass this reuse path and emit `work-ledger-reuse-skipped`.
 - Durable Ledger smoke passed after backend restart: `run_1781818681262_rpvsg59u` keeps
   one completed `api_call` work item, one `api_response` evidence record, and linked
   artifact `artifact_1781818687616_9q389ujl`; the React Ledger page shows the same data

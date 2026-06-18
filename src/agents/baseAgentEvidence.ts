@@ -308,6 +308,13 @@ export function isScreenshotArtifact(artifact: AgentArtifact): boolean {
   return artifact.mimeType.startsWith("image/");
 }
 
+function isStructuredProofArtifact(artifact: AgentArtifact): boolean {
+  if (artifact.mimeType === "application/json" && /structured-proof|source-evidence/i.test(artifact.filename)) {
+    return true;
+  }
+  return artifact.quality?.checks?.some((check) => check.name.startsWith("structured-data-")) ?? false;
+}
+
 export function finalAnswerWithoutScreenshotProofClaim(answer: string): string {
   return answer
     .replace(/\s*\([^)]{0,120}(?:подтвержден(?:о|а|ы)?|confirmed|verified)[^)]{0,120}(?:скриншот|screenshot)[^)]{0,160}\)/giu, "")
@@ -436,6 +443,7 @@ export function inspectProofArtifactSourceConsistency(
   const lowerAnswer = answerForSourceInspection.toLowerCase();
   const sourceLabels = collectKnownSourceLabels(artifacts, proofEvidence);
   for (const artifact of artifacts.filter(isUsableProofArtifact)) {
+    if (isStructuredProofArtifact(artifact)) continue;
     const filenameIndex = lowerAnswer.indexOf(artifact.filename.toLowerCase());
     if (filenameIndex < 0) continue;
     const expectedLabels = sourceLabelsForArtifact(artifact);

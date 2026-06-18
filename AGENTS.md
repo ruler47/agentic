@@ -29,7 +29,7 @@ Build queue, investigation flow, and tool-rework wait flow were removed from the
 tree on 2026-05-15. Reintroduce those ideas only through the roadmap, not by reviving the
 deleted pipeline.
 
-As of 2026-06-18, the active roadmap is `docs/roadmap-core-toolbelt.md`: stabilize a
+As of 2026-06-19, the active roadmap is `docs/roadmap-core-toolbelt.md`: stabilize a
 preinstalled portable core toolbelt before expanding Tool Creation V1 or external-action
 automation. Tool builder and external actions remain useful infrastructure, but new
 feature work in those areas should be frozen unless it fixes baseline operation. Core
@@ -75,7 +75,8 @@ large legacy `UniversalAgent` runtime.
   same scope can reuse fresh passed evidence for up to 10 minutes while still creating a
   run-local work/evidence record and trace events (`work-ledger-reuse-available`,
   `work-ledger-reuse-applied`). Reuse is disabled for tasks with current/fresh/live
-  signals such as "сейчас", "latest", "today", "цена", or "курс".
+  signals such as "сейчас", "latest", "today", "цена", or "курс"; those skips emit
+  `work-ledger-reuse-skipped` so Trace Lab explains why a fresh tool call happened.
 - BaseAgent loops are budgeted BY DEFAULT: `maxSteps` comes from the task frame
   (`defaultMaxStepsForTaskFrame` — 10 base, 12 for product selection, 18 for external
   action preparation) and `maxToolCalls` defaults to `maxSteps * 4`. Unbounded research
@@ -138,8 +139,9 @@ large legacy `UniversalAgent` runtime.
 - Automated P0 coverage verifies `http.request` creates `api_call` work plus
   `api_response` evidence, and `file.write` links generated file artifacts through both
   Work Ledger and Evidence Ledger. It also verifies cross-run safe reuse for identical
-  stable `http.request` GET calls through the reusable-index path. Durable live smoke
-  also passed across a backend
+  stable `http.request` GET calls through the reusable-index path, and verifies that
+  current/fresh tasks bypass reusable HTTP evidence with a trace-visible
+  `work-ledger-reuse-skipped` event. Durable live smoke also passed across a backend
   restart: `run_1781818681262_rpvsg59u` keeps one completed `api_call`, one
   `api_response`, linked artifact `artifact_1781818687616_9q389ujl`, and the same data is
   visible in the React Ledger page in `Backend ready · postgres` mode.
@@ -160,10 +162,11 @@ large legacy `UniversalAgent` runtime.
   preparation proof artifacts are visual-QA checked before they count as usable commit
   proof; failed/blocked screenshots can remain visible in UI diagnostics but are not
   returned as prepared-session proof ids.
-- Explicit API/HTTP/JSON or local-utility tasks that forbid screenshots, or that only need
-  structured protocol/source evidence, must not trigger visual proof repair. They may still
-  save a sanitized structured/source proof artifact such as HTTP status, response fields,
-  and source URL.
+- API/HTTP/JSON endpoint tasks and local-utility tasks should use structured protocol or
+  source evidence as proof by default. They must not trigger visual proof repair or call
+  `browser.screenshot` / `browser.operate` unless the user explicitly asks for visual
+  proof of a web page. They may still save a sanitized structured/source proof artifact
+  such as HTTP status, response fields, and source URL.
 - BaseAgent is offered only operator-enabled tools with active status `available`.
   `loaded`, `disabled`, and `failed` tools remain visible in Tools for manual checks but
   are omitted from agent prompts/tool schemas.

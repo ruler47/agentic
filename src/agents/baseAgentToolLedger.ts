@@ -80,11 +80,24 @@ export async function findReusableBaseAgentToolWork(input: {
   task: string;
   toolSpanId: string;
 }): Promise<BaseAgentToolLedgerReuse | undefined> {
-  if (!input.ledger || !canReuseBaseAgentToolWork(input.tool, input.toolInput, input.task)) {
+  if (!input.ledger || !canPublishReusableToolWork(input.tool, input.toolInput)) {
     return undefined;
   }
   const kind = workKindForTool(input.tool);
   const canonicalWorkKey = workKeyForToolCall(input.tool.name, kind, input.toolInput);
+  const currentSignal = currentDataSignalForTask(input.task);
+  if (currentSignal) {
+    await input.ledger.recordReuseSkipped(
+      {
+        kind,
+        workKey: canonicalWorkKey,
+        toolName: input.tool.name,
+        reason: `Task asks for current/fresh data (${currentSignal}); previous evidence must not be reused.`,
+      },
+      input.toolSpanId,
+    );
+    return undefined;
+  }
   const reusable = await input.ledger.findReusableCompletedWork(
     {
       kind,
@@ -435,12 +448,6 @@ async function publishReusableToolWorkIndex(input: {
   );
 }
 
-function canReuseBaseAgentToolWork(tool: Tool, toolInput: Record<string, unknown>, task: string): boolean {
-  if (!canPublishReusableToolWork(tool, toolInput)) return false;
-  if (hasCurrentDataSignal(task)) return false;
-  return true;
-}
-
 function canPublishReusableToolWork(tool: Tool, toolInput: Record<string, unknown>): boolean {
   if (tool.name.toLowerCase() !== "http.request") return false;
   const method = String(toolInput.method ?? "GET").trim().toUpperCase();
@@ -456,9 +463,9 @@ function reusableFreshnessExpiresAt(tool: Tool): string | undefined {
   return maxAgeMs === undefined ? undefined : new Date(Date.now() + maxAgeMs).toISOString();
 }
 
-function hasCurrentDataSignal(task: string): boolean {
-  return /\b(now|current|latest|today|fresh|live|real[-\s]?time)\b|сейчас|текущ|актуальн|последн|сегодня|свеж|цена|курс/i
-    .test(task);
+function currentDataSignalForTask(task: string): string | undefined {
+  const match = task.match(/\b(now|current|latest|today|fresh|live|real[-\s]?time)\b|сейчас|текущ|актуальн|последн|сегодня|свеж|цена|курс/i);
+  return match?.[0];
 }
 
 function toolResultFromReusableEvidence(

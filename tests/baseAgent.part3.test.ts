@@ -605,6 +605,41 @@ test("structured proof artifact filename does not create a false source mismatch
   assert.deepEqual(issues, []);
 });
 
+test("http structured proof can be cited beside its source URL without source mismatch", () => {
+  const artifact: AgentArtifact = {
+    id: "artifact_1",
+    runId: "run_1",
+    kind: "output",
+    filename: "http_request-structured-proof.json",
+    mimeType: "application/json",
+    sizeBytes: 100,
+    url: "/api/runs/run_1/artifacts/artifact_1",
+    description: "Structured data proof from http.request@1.0.0",
+    quality: {
+      status: "passed",
+      reviewedAt: new Date(0).toISOString(),
+      checks: [{
+        name: "structured-data-tool-result",
+        ok: true,
+        decision: "tool_result_ok",
+        reason: "Stored sanitized request and response.",
+      }],
+    },
+    createdAt: new Date(0).toISOString(),
+  };
+
+  const issues = inspectProofArtifactSourceConsistency(
+    [
+      "Источник: https://jsonplaceholder.typicode.com/todos/1.",
+      "Proof artifact: http_request-structured-proof.json",
+    ].join("\n\n"),
+    [artifact],
+    [],
+  );
+
+  assert.deepEqual(issues, []);
+});
+
 test("BaseAgent highlights tool contract primary fields in tool results", async () => {
   const registry = new ToolRegistry();
   registry.register({

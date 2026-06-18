@@ -1,6 +1,6 @@
 # Current Architecture
 
-Status date: 2026-06-18.
+Status date: 2026-06-19.
 
 This document describes the active code path in `main`. Historical recursive/council
 runtime files and legacy tool-build queues are not active.
@@ -240,11 +240,12 @@ Current memory is split but not finished:
   Stable `http.request` GET/HEAD calls also publish a thread/instance-scoped
   reusable-index item without `runId`; later identical stable calls can reuse fresh
   passed evidence for up to 10 minutes while still creating run-local work/evidence.
-  Current/live tasks bypass this path.
+  Current/live tasks bypass this path and emit `work-ledger-reuse-skipped` so operators
+  can see that the repeated tool call was intentional.
 
 ## Verified State
 
-- `npm run verify` passed on 2026-06-18: lint, typecheck, test typecheck, 512 tests, build.
+- `npm run verify` passed on 2026-06-19: lint, typecheck, test typecheck, 513 tests, build.
 - Targeted suites passed:
   - BaseAgent runtime: 50 tests.
   - External action preparation/approval: 29 tests.
@@ -266,7 +267,11 @@ Current memory is split but not finished:
   item plus `api_response` evidence, and `file.write` links the saved artifact id to
   both Work Ledger and Evidence Ledger records. It also confirms a second identical
   stable `http.request` GET in the same thread/instance uses Ledger evidence instead of
-  executing another HTTP call.
+  executing another HTTP call, while current/fresh HTTP tasks bypass that reuse and trace
+  the reason.
+- API-only HTTP/JSON endpoint tasks use structured/source proof by default. They avoid
+  browser/screenshot proof unless the user explicitly asks for visual proof of a web
+  page.
 - Durable Ledger product smoke passed on Postgres/S3 and survived server restart:
   `run_1781818681262_rpvsg59u` completed an `http.request` JSON task, `/api/work-ledger`
   shows one completed `api_call`, `/api/evidence-ledger` shows one `api_response`, both

@@ -328,6 +328,33 @@ export class RuntimeLedgerCoordinator {
     return undefined;
   }
 
+  async recordReuseSkipped(
+    input: {
+      kind: WorkLedgerKind;
+      workKey: string;
+      reason: string;
+      toolName?: string;
+    },
+    parentSpanId: string,
+  ): Promise<void> {
+    await this.emit({
+      spanId: `${SPAN_ID_PREFIX}-reuse-skipped-${safeLedgerSpanKey(input.workKey)}`,
+      parentSpanId,
+      type: "work-ledger-reuse-skipped",
+      actor: "runtime-ledger",
+      activity: "coordination",
+      status: "completed",
+      title: `Reusable work skipped: ${input.kind}`,
+      detail: input.reason,
+      payload: {
+        workKey: input.workKey,
+        kind: input.kind,
+        toolName: input.toolName,
+        reason: input.reason,
+      },
+    });
+  }
+
   async upsertReusableWorkIndex(
     input: RuntimeReusableWorkIndexInput,
     parentSpanId: string,
