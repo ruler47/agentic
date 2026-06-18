@@ -477,6 +477,10 @@ export type AgentEventType =
   | "work-ledger-blocked"
   | "work-ledger-reused"
   | "work-ledger-waiting-existing"
+  | "work-ledger-reuse-available"
+  | "work-ledger-reuse-skipped"
+  | "work-ledger-reuse-applied"
+  | "work-ledger-reuse-index-updated"
   | "evidence-ledger-recorded"
   | "run-retrospective-proposed";
 

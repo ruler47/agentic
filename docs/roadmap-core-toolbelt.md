@@ -94,7 +94,7 @@ Follow-up checkpoint on branch `codex/split-mainline`:
   sorting. This smoke was run with the local dev server and no `DATABASE_URL`, so the
   remaining product smoke must use the durable Postgres stack.
 - `npm run verify` passed after the BaseAgent Ledger fix: lint, typecheck, test
-  typecheck, 511 unit tests, and build.
+  typecheck, 512 unit tests, and build.
 
 Durable agent-level smoke then passed on `main` with Postgres-backed persistence:
 
@@ -157,6 +157,10 @@ Code fixes from that smoke:
   tool calls, stores canonical reusable work keys in metadata, completes or fails the
   items after execution, records Evidence Ledger records with source/tool/artifact
   metadata, and links saved artifact ids back to work items.
+- Safe deterministic `http.request` GET/HEAD calls now publish a reusable-index work item
+  scoped to the current thread/instance and not tied to a specific run. A later identical
+  stable call can reuse fresh passed evidence for up to 10 minutes, while current/fresh
+  tasks bypass reuse and still execute the tool.
 
 Current blockers before declaring the base ready for broader product testing:
 
@@ -164,8 +168,8 @@ Current blockers before declaring the base ready for broader product testing:
   proposal card is clearer than before, but the user still cannot complete "find,
   prepare, show proof, then submit after one approval" in one simple flow.
 - Work/Evidence Ledger writes are now covered by unit tests and durable live smoke for
-  the `http.request` path. Broader tool-family coverage should be added as those flows
-  are touched.
+  the `http.request` path, including cross-run safe reuse of stable GET calls. Broader
+  tool-family coverage should be added as those flows are touched.
 - Files slightly above the preferred 800-line limit remain after the P0 split:
   `src/server/modules/runs/action-proposal-preparation-runner.ts`,
   `tests/actionProposalPreparationRunner.test.ts`,
@@ -178,12 +182,15 @@ P0: keep simple runs fast, correct, and auditable.
 - BaseAgent core-tool calls now write Work/Evidence Ledger records: run-local execution
   keys, canonical reusable work keys, source URLs, evidence ids, artifact ids, status,
   and failure reasons.
+- Stable `http.request` GET/HEAD calls now create reusable-index records and can be
+  reused across runs in the same thread/instance when fresh passed evidence exists.
 - `/api/work-ledger`, `/api/evidence-ledger`, and the React Ledger page show the same
   tool work visible in Trace Lab for `run_1781818681262_rpvsg59u`.
 - Run records, events, artifacts, and ledger records survived backend restart in the
   durable Postgres/S3 smoke.
-- Next: use these records for reuse decisions, debugging, and external-action recovery
-  instead of treating them as a passive audit page only.
+- Next: expand Ledger-backed product flow to follow-up recovery, external-action
+  recovery, and additional deterministic tool families instead of treating Ledger as a
+  passive audit page only.
 
 Current expected runtime shape:
 
@@ -195,11 +202,19 @@ sequenceDiagram
   participant Artifacts as ArtifactStore
 
   Agent->>Ledger: claim(workKey, kind, spanId, inputSummary)
+  Agent->>Ledger: check reusable-index for safe deterministic calls
+  alt fresh passed reusable evidence exists
+    Ledger-->>Agent: prior evidence + source/artifact ids
+    Agent->>Ledger: mark run-local item completed from reuse
+    Agent->>Ledger: record reused evidence for this run
+  else no safe reusable evidence
   Agent->>Tool: execute registered tool
   Tool-->>Agent: ToolResult + optional generated artifacts
   Agent->>Artifacts: save artifact when produced
   Agent->>Ledger: markCompleted/markFailed(workItemId)
   Agent->>Ledger: recordEvidence(sourceUrl, toolName, artifactId, qaStatus)
+  Agent->>Ledger: update reusable-index when tool call is safe to reuse
+  end
 ```
 
 P1: make the agent operationally coherent.

@@ -5,7 +5,11 @@ import { BaseAgent } from "../src/agents/baseAgent.js";
 import type { LlmClient, LlmToolReply, LlmToolSchema } from "../src/llm/client.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import type { AgentArtifact, AgentEvent, ArtifactCreateInput, Message } from "../src/types.js";
-import { RuntimeLedgerCoordinator, type RuntimeLedgerEventDraft } from "../src/work-ledger/runtimeLedgerCoordinator.js";
+import {
+  RuntimeLedgerCoordinator,
+  workKeyForToolCall,
+  type RuntimeLedgerEventDraft,
+} from "../src/work-ledger/runtimeLedgerCoordinator.js";
 import { InMemoryEvidenceLedgerStore } from "../src/work-ledger/evidenceLedgerStore.js";
 import { InMemoryWorkLedgerStore } from "../src/work-ledger/workLedgerStore.js";
 
@@ -264,6 +268,108 @@ test("BaseAgent registers successful file.write output as a downloadable artifac
   assert.equal(evidence[0]?.kind, "file");
   assert.equal(evidence[0]?.artifactId, result.artifacts?.[0]?.id);
   assert.equal(evidence[0]?.workItemId, workItems[0]?.id);
+});
+
+test("BaseAgent reuses safe http.request evidence across runs through Work Ledger", async () => {
+  const registry = new ToolRegistry();
+  const workLedger = new InMemoryWorkLedgerStore();
+  const evidenceLedger = new InMemoryEvidenceLedgerStore();
+  const ledgerEvents: RuntimeLedgerEventDraft[] = [];
+  let httpCalls = 0;
+  const requestInput = { url: "https://jsonplaceholder.typicode.com/todos/1", method: "GET" };
+
+  registry.register({
+    name: "http.request",
+    version: "0.1.0",
+    description: "Generic HTTP JSON API client.",
+    capabilities: ["http-json", "external-api", "structured-data"],
+    inputSchema: { type: "object", properties: { url: { type: "string" }, method: { type: "string" } }, required: ["url"] },
+    async run() {
+      httpCalls += 1;
+      return {
+        ok: true,
+        content: "HTTP 200: title=delectus aut autem",
+        data: {
+          url: requestInput.url,
+          status: 200,
+          body: { id: 1, title: "delectus aut autem", completed: false },
+        },
+      };
+    },
+  });
+
+  const makeLedger = (runId: string) => new RuntimeLedgerCoordinator({
+    runId,
+    threadId: "thread_reuse_api",
+    instanceId: "instance-local",
+    workLedgerStore: workLedger,
+    evidenceLedgerStore: evidenceLedger,
+    emit: async (event) => {
+      ledgerEvents.push(event);
+    },
+  });
+  const makeLlm = () => new SequenceLlm([
+    {
+      content: "",
+      finishReason: "tool_calls",
+      toolCalls: [{ id: "call_http", name: "http_request", arguments: requestInput }],
+    },
+    {
+      content: "",
+      finishReason: "tool_calls",
+      toolCalls: [{ id: "call_finish", name: "finish", arguments: { answer: "title: delectus aut autem." } }],
+    },
+  ]);
+
+  const firstAgent = new BaseAgent(makeLlm() as unknown as LlmClient, registry);
+  const first = await firstAgent.run("Прочитай API https://jsonplaceholder.typicode.com/todos/1 и скажи title.", {
+    runId: "run_reuse_api_1",
+    ledger: makeLedger("run_reuse_api_1"),
+    runContext: {
+      runId: "run_reuse_api_1",
+      threadId: "thread_reuse_api",
+      instanceId: "instance-local",
+    },
+  });
+  assert.equal(first.runStatus, "completed");
+  assert.equal(httpCalls, 1);
+
+  const canonicalWorkKey = workKeyForToolCall("http.request", "api_call", requestInput);
+  const reusableIndexItems = await workLedger.listByWorkKey(canonicalWorkKey);
+  assert.equal(reusableIndexItems.length, 1);
+  assert.equal(reusableIndexItems[0]?.runId, undefined);
+  assert.equal(reusableIndexItems[0]?.status, "completed");
+  assert.equal(reusableIndexItems[0]?.evidenceIds.length, 1);
+
+  const secondLlm = makeLlm();
+  const secondAgent = new BaseAgent(secondLlm as unknown as LlmClient, registry);
+  const second = await secondAgent.run("Прочитай API https://jsonplaceholder.typicode.com/todos/1 и скажи title.", {
+    runId: "run_reuse_api_2",
+    ledger: makeLedger("run_reuse_api_2"),
+    runContext: {
+      runId: "run_reuse_api_2",
+      threadId: "thread_reuse_api",
+      instanceId: "instance-local",
+    },
+  });
+
+  assert.equal(second.runStatus, "completed");
+  assert.equal(httpCalls, 1);
+  assert.ok(secondLlm.messagesByCall[1]?.some((message) =>
+    message.role === "tool" && /Reused passed Work Ledger evidence/i.test(String(message.content))
+  ));
+
+  const secondWorkItems = await workLedger.listByRun("run_reuse_api_2");
+  assert.equal(secondWorkItems.length, 1);
+  assert.equal(secondWorkItems[0]?.status, "completed");
+  assert.equal(secondWorkItems[0]?.kind, "api_call");
+
+  const secondEvidence = await evidenceLedger.listByRun("run_reuse_api_2");
+  assert.equal(secondEvidence.length, 1);
+  assert.equal(secondEvidence[0]?.qaStatus, "passed");
+  assert.equal(secondEvidence[0]?.metadata?.reusedFromWorkItemId, reusableIndexItems[0]?.id);
+  assert.ok(ledgerEvents.some((event) => event.type === "work-ledger-reuse-available"));
+  assert.ok(ledgerEvents.some((event) => event.type === "work-ledger-reuse-applied"));
 });
 
 test("BaseAgent frames prior-answer source questions as thread-context answers", async () => {

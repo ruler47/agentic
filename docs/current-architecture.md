@@ -28,7 +28,7 @@ flowchart TD
   BA --> LLM["LlmClient\nmodel tier policy"]
   LLM --> BA
   BA --> TR["ToolRegistry"]
-  BA --> WL["Work/Evidence Ledger\nclaim, evidence, artifact links"]
+  BA --> WL["Work/Evidence Ledger\nrun-local execution + reusable-index"]
   TR --> CT["Core toolbelt\nweb, browser, http, file, document, data, external.action, telegram"]
   TR --> GT["Generated/imported tools\nsource-bundle / HTTP process / OCI"]
   CT --> AR["ArtifactStore"]
@@ -50,8 +50,9 @@ flowchart TD
 - `src/agents/baseAgentPrompt.ts`: system prompt and tool schemas passed to the model.
 - `src/agents/baseAgentToolExecution.ts`: registered tool execution, tool-call cache,
   evidence capture, artifact save hooks.
-- `src/agents/baseAgentToolLedger.ts`: Work/Evidence Ledger classification and
-  best-effort claim/evidence writes for BaseAgent tool calls.
+- `src/agents/baseAgentToolLedger.ts`: Work/Evidence Ledger classification,
+  run-local claim/evidence writes, and safe reusable-index publication/lookup for
+  deterministic `http.request` calls.
 - `src/agents/baseAgentFinalization.ts`: final-answer gates, action proposal creation,
   result assembly.
 - `src/agents/baseAgentEvidence.ts` and `src/agents/baseAgentProof.ts`: source/proof
@@ -236,12 +237,16 @@ Current memory is split but not finished:
   before execution, store the canonical reusable work key in metadata, complete or fail
   the item after execution, record evidence with source/tool/artifact metadata, and link
   artifact ids when a tool produces files or screenshots.
+  Stable `http.request` GET/HEAD calls also publish a thread/instance-scoped
+  reusable-index item without `runId`; later identical stable calls can reuse fresh
+  passed evidence for up to 10 minutes while still creating run-local work/evidence.
+  Current/live tasks bypass this path.
 
 ## Verified State
 
-- `npm run verify` passed on 2026-06-18: lint, typecheck, test typecheck, 511 tests, build.
+- `npm run verify` passed on 2026-06-18: lint, typecheck, test typecheck, 512 tests, build.
 - Targeted suites passed:
-  - BaseAgent runtime: 49 tests.
+  - BaseAgent runtime: 50 tests.
   - External action preparation/approval: 29 tests.
   - Focused env/core-toolbelt/auth regression: 12 tests.
 - Live API smoke passed after enabling core toolbelt by default:
@@ -259,7 +264,9 @@ Current memory is split but not finished:
     `run_1781799687705_rtayd8nl`.
 - Automated BaseAgent P0 coverage confirms `http.request` writes an `api_call` work
   item plus `api_response` evidence, and `file.write` links the saved artifact id to
-  both Work Ledger and Evidence Ledger records.
+  both Work Ledger and Evidence Ledger records. It also confirms a second identical
+  stable `http.request` GET in the same thread/instance uses Ledger evidence instead of
+  executing another HTTP call.
 - Durable Ledger product smoke passed on Postgres/S3 and survived server restart:
   `run_1781818681262_rpvsg59u` completed an `http.request` JSON task, `/api/work-ledger`
   shows one completed `api_call`, `/api/evidence-ledger` shows one `api_response`, both
@@ -270,9 +277,10 @@ Current memory is split but not finished:
 
 - `npm run web` without `DATABASE_URL` starts in-memory stores. That is acceptable for
   smoke tests, but real persistence testing must set Postgres env.
-- Work/Evidence Ledger writes are covered in BaseAgent unit tests and durable live
-  smoke. The next product step is using these records for operator-visible reuse,
-  debugging, and external-action recovery flows.
+- Work/Evidence Ledger writes and safe `http.request` reuse are covered in BaseAgent unit
+  tests and durable live smoke. The next product step is expanding this to
+  operator-visible recovery, follow-up reuse, external-action recovery, and more
+  deterministic tool families.
 - External-action UI is safer than before but still complex. The next UX target is one
   understandable proposal/proof/approval/commit path.
 - Tool Builder V1 still exists and works for source-bundle candidates, but strategic

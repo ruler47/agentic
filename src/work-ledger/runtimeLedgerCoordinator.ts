@@ -8,6 +8,7 @@ import {
 import {
   EvidenceCreateInput,
   EvidenceLedgerStore,
+  EvidenceQaStatus,
   EvidenceRecord,
   RunRetrospectiveCreateInput,
   RunRetrospectiveOutcome,
@@ -43,6 +44,34 @@ export type RuntimeClaimResult = {
   decision: WorkReuseDecision;
   coordinatorDecision: ClaimCoordinatorDecision;
   reusableEvidence?: EvidenceRecord[];
+};
+
+export type RuntimeReusableWorkInput = {
+  kind: WorkLedgerKind;
+  workKey: string;
+  allowedQaStatuses?: EvidenceQaStatus[];
+  minimumConfidence?: number;
+  maxAgeMs?: number;
+};
+
+export type RuntimeReusableWorkResult = {
+  item: WorkLedgerItem;
+  evidence: EvidenceRecord[];
+  reason: string;
+};
+
+export type RuntimeReusableWorkIndexInput = {
+  kind: WorkLedgerKind;
+  workKey: string;
+  title: string;
+  ownerSpanId?: string;
+  inputSummary?: string;
+  outputSummary?: string;
+  sourceUrls?: string[];
+  artifactIds?: string[];
+  evidenceIds?: string[];
+  freshnessExpiresAt?: string;
+  metadata?: Record<string, unknown>;
 };
 
 const SPAN_ID_PREFIX = "ledger";
@@ -233,6 +262,164 @@ export class RuntimeLedgerCoordinator {
     return record;
   }
 
+  async findReusableCompletedWork(
+    input: RuntimeReusableWorkInput,
+    parentSpanId: string,
+  ): Promise<RuntimeReusableWorkResult | undefined> {
+    if (!this.deps.workLedgerStore || !this.deps.evidenceLedgerStore) return undefined;
+    const matches = await this.deps.workLedgerStore.listByWorkKey(input.workKey, 10);
+    const allowedQaStatuses = input.allowedQaStatuses ?? ["passed"];
+    const minimumConfidence = input.minimumConfidence ?? 0.6;
+    const now = Date.now();
+    for (const item of matches) {
+      if (item.kind !== input.kind || item.status !== "completed") continue;
+      if (!this.isItemInScope(item)) continue;
+      if (isExpired(item.freshnessExpiresAt, now)) continue;
+      if (isOlderThan(item.updatedAt, input.maxAgeMs, now)) continue;
+      const evidence = await this.loadEvidenceByIds(item.evidenceIds);
+      const reusableEvidence = evidence.filter((record) =>
+        allowedQaStatuses.includes(record.qaStatus) &&
+        (record.confidence === undefined || record.confidence >= minimumConfidence) &&
+        record.limitations.length === 0
+      );
+      if (reusableEvidence.length === 0) continue;
+      this.duplicatedWorkSignals.add(`reuse_available:${item.workKey}`);
+      await this.emit({
+        spanId: `${SPAN_ID_PREFIX}-reuse-available-${item.id}`,
+        parentSpanId,
+        type: "work-ledger-reuse-available",
+        actor: "runtime-ledger",
+        activity: "coordination",
+        status: "completed",
+        title: `Reusable work available: ${item.title}`,
+        detail: `Found ${reusableEvidence.length} reusable evidence record(s).`,
+        payload: {
+          workItemId: item.id,
+          workKey: item.workKey,
+          kind: item.kind,
+          evidenceIds: reusableEvidence.map((record) => record.id),
+          artifactIds: item.artifactIds,
+          sourceUrls: item.sourceUrls,
+        },
+      });
+      return {
+        item,
+        evidence: reusableEvidence,
+        reason: "Completed work with passed evidence is reusable for this scoped request.",
+      };
+    }
+    if (matches.length > 0) {
+      await this.emit({
+        spanId: `${SPAN_ID_PREFIX}-reuse-skipped-${safeLedgerSpanKey(input.workKey)}`,
+        parentSpanId,
+        type: "work-ledger-reuse-skipped",
+        actor: "runtime-ledger",
+        activity: "coordination",
+        status: "completed",
+        title: `Reusable work skipped: ${input.kind}`,
+        detail: "Matching work existed, but no fresh passed evidence was usable.",
+        payload: {
+          workKey: input.workKey,
+          kind: input.kind,
+          matches: matches.length,
+        },
+      });
+    }
+    return undefined;
+  }
+
+  async upsertReusableWorkIndex(
+    input: RuntimeReusableWorkIndexInput,
+    parentSpanId: string,
+  ): Promise<WorkLedgerItem | undefined> {
+    if (!this.deps.workLedgerStore) return undefined;
+    const claim: WorkClaim = {
+      kind: input.kind,
+      workKey: input.workKey,
+      title: input.title,
+      threadId: this.deps.threadId,
+      instanceId: this.deps.instanceId,
+      ownerSpanId: input.ownerSpanId,
+      inputSummary: input.inputSummary,
+      freshnessExpiresAt: input.freshnessExpiresAt,
+      reason: "Runtime is indexing completed deterministic work for scoped future reuse.",
+      metadata: {
+        ...input.metadata,
+        reusableIndex: true,
+      },
+    };
+    const claimed = await this.deps.workLedgerStore.claimWork(claim);
+    if (
+      claimed.decision.status === "wait_for_inflight" ||
+      claimed.decision.status === "blocked_by_recent_failure"
+    ) {
+      return claimed.item;
+    }
+    const next = await this.deps.workLedgerStore.updateItemStatus(claimed.item.id, {
+      status: "completed",
+      outputSummary: input.outputSummary,
+      sourceUrls: input.sourceUrls,
+      freshnessExpiresAt: input.freshnessExpiresAt,
+      metadata: {
+        ...input.metadata,
+        reusableIndex: true,
+      },
+    });
+    for (const evidenceId of input.evidenceIds ?? []) {
+      await this.deps.workLedgerStore.appendEvidenceLink(next.id, evidenceId).catch(() => undefined);
+    }
+    for (const artifactId of input.artifactIds ?? []) {
+      await this.deps.workLedgerStore.appendArtifactLink(next.id, artifactId).catch(() => undefined);
+    }
+    await this.emit({
+      spanId: `${SPAN_ID_PREFIX}-reuse-index-${next.id}`,
+      parentSpanId,
+      type: "work-ledger-reuse-index-updated",
+      actor: "runtime-ledger",
+      activity: "coordination",
+      status: "completed",
+      title: `Reusable work indexed: ${input.title}`,
+      detail: input.outputSummary,
+      payload: {
+        workItemId: next.id,
+        workKey: next.workKey,
+        kind: next.kind,
+        sourceUrls: input.sourceUrls,
+        evidenceIds: input.evidenceIds,
+        artifactIds: input.artifactIds,
+      },
+    });
+    return next;
+  }
+
+  async recordReuseApplied(input: {
+    workItemId?: string;
+    reusedFromWorkItemId: string;
+    evidenceIds: string[];
+    artifactIds?: string[];
+    sourceUrls?: string[];
+    toolName?: string;
+  }, parentSpanId: string): Promise<void> {
+    this.duplicatedWorkSignals.add(`reuse_applied:${input.reusedFromWorkItemId}`);
+    await this.emit({
+      spanId: `${SPAN_ID_PREFIX}-reuse-applied-${input.workItemId ?? input.reusedFromWorkItemId}`,
+      parentSpanId,
+      type: "work-ledger-reuse-applied",
+      actor: "runtime-ledger",
+      activity: "coordination",
+      status: "completed",
+      title: `Reusable evidence applied${input.toolName ? `: ${input.toolName}` : ""}`,
+      detail: "Skipped a deterministic tool execution and used prior passed evidence.",
+      payload: {
+        workItemId: input.workItemId,
+        reusedFromWorkItemId: input.reusedFromWorkItemId,
+        evidenceIds: input.evidenceIds,
+        artifactIds: input.artifactIds,
+        sourceUrls: input.sourceUrls,
+      },
+    });
+  }
+
   trackWhatWorked(text: string): void {
     const trimmed = text.trim();
     if (trimmed) this.whatWorked.add(trimmed);
@@ -376,6 +563,22 @@ export class RuntimeLedgerCoordinator {
     await this.deps.emit(event);
   }
 
+  private isItemInScope(item: WorkLedgerItem): boolean {
+    if (this.deps.instanceId && item.instanceId && item.instanceId !== this.deps.instanceId) return false;
+    if (this.deps.threadId && item.threadId && item.threadId !== this.deps.threadId) return false;
+    return true;
+  }
+
+  private async loadEvidenceByIds(evidenceIds: string[]): Promise<EvidenceRecord[]> {
+    if (!this.deps.evidenceLedgerStore) return [];
+    const records: EvidenceRecord[] = [];
+    for (const id of evidenceIds) {
+      const record = await this.deps.evidenceLedgerStore.get(id).catch(() => undefined);
+      if (record) records.push(record);
+    }
+    return records;
+  }
+
   private draftSummary(
     runOutcome: RunRetrospectiveOutcome,
     items: WorkLedgerItem[],
@@ -431,6 +634,10 @@ export type RuntimeLedgerEventName =
   | "work-ledger-blocked"
   | "work-ledger-reused"
   | "work-ledger-waiting-existing"
+  | "work-ledger-reuse-available"
+  | "work-ledger-reuse-skipped"
+  | "work-ledger-reuse-applied"
+  | "work-ledger-reuse-index-updated"
   | "evidence-ledger-recorded"
   | "run-retrospective-proposed";
 
@@ -440,6 +647,10 @@ export const RUNTIME_LEDGER_EVENT_TYPES: readonly RuntimeLedgerEventName[] = [
   "work-ledger-blocked",
   "work-ledger-reused",
   "work-ledger-waiting-existing",
+  "work-ledger-reuse-available",
+  "work-ledger-reuse-skipped",
+  "work-ledger-reuse-applied",
+  "work-ledger-reuse-index-updated",
   "evidence-ledger-recorded",
   "run-retrospective-proposed",
 ];
@@ -499,6 +710,22 @@ function requestedByFromMetadata(
 
 function stableKeyValue(value: Record<string, unknown>): string {
   return JSON.stringify(sortRecursively(value));
+}
+
+function isExpired(value: string | undefined, now: number): boolean {
+  if (!value) return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed <= now;
+}
+
+function isOlderThan(value: string | undefined, maxAgeMs: number | undefined, now: number): boolean {
+  if (!value || maxAgeMs === undefined) return false;
+  const parsed = Date.parse(value);
+  return !Number.isFinite(parsed) || now - parsed > maxAgeMs;
+}
+
+function safeLedgerSpanKey(value: string): string {
+  return value.replace(/[^a-z0-9_-]+/gi, "-").slice(0, 80) || "work";
 }
 
 function sortRecursively(value: unknown): unknown {

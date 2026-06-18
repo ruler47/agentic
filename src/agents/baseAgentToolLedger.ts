@@ -2,13 +2,26 @@ import type { AgentArtifact } from "../types.js";
 import type { Tool, ToolResult } from "../tools/tool.js";
 import type { RuntimeLedgerCoordinator } from "../work-ledger/runtimeLedgerCoordinator.js";
 import { workKeyForToolCall } from "../work-ledger/runtimeLedgerCoordinator.js";
-import type { EvidenceKind, EvidenceQaStatus, WorkLedgerItem, WorkLedgerKind } from "../work-ledger/types.js";
+import type { EvidenceKind, EvidenceQaStatus, EvidenceRecord, WorkLedgerItem, WorkLedgerKind } from "../work-ledger/types.js";
 import { extractSourceUrls } from "./baseAgentEvidence.js";
 import { limitText, sanitizeArtifactValue } from "./baseAgentToolMessages.js";
+
+const HTTP_REUSE_MAX_AGE_MS = 10 * 60 * 1000;
 
 export type BaseAgentToolLedgerClaim = {
   workItemId?: string;
   startedArtifactCount: number;
+  canonicalWorkKey?: string;
+  kind?: WorkLedgerKind;
+};
+
+export type BaseAgentToolLedgerReuse = {
+  reusedFromWorkItemId: string;
+  evidenceIds: string[];
+  artifactIds: string[];
+  sourceUrls: string[];
+  result: ToolResult;
+  preview: string;
 };
 
 export async function claimBaseAgentToolWork(input: {
@@ -52,10 +65,55 @@ export async function claimBaseAgentToolWork(input: {
     return {
       workItemId: claim?.item.id,
       startedArtifactCount: input.artifactCount,
+      canonicalWorkKey,
+      kind,
     };
   } catch {
     return { startedArtifactCount: input.artifactCount };
   }
+}
+
+export async function findReusableBaseAgentToolWork(input: {
+  ledger?: RuntimeLedgerCoordinator;
+  tool: Tool;
+  toolInput: Record<string, unknown>;
+  task: string;
+  toolSpanId: string;
+}): Promise<BaseAgentToolLedgerReuse | undefined> {
+  if (!input.ledger || !canReuseBaseAgentToolWork(input.tool, input.toolInput, input.task)) {
+    return undefined;
+  }
+  const kind = workKindForTool(input.tool);
+  const canonicalWorkKey = workKeyForToolCall(input.tool.name, kind, input.toolInput);
+  const reusable = await input.ledger.findReusableCompletedWork(
+    {
+      kind,
+      workKey: canonicalWorkKey,
+      allowedQaStatuses: ["passed"],
+      minimumConfidence: 0.6,
+      maxAgeMs: maxReuseAgeMs(input.tool),
+    },
+    input.toolSpanId,
+  );
+  if (!reusable) return undefined;
+  const evidence = reusable.evidence[0];
+  const sourceUrls = uniqueUrls([
+    ...reusable.item.sourceUrls,
+    ...reusable.evidence.map((record) => record.sourceUrl).filter((url): url is string => Boolean(url)),
+  ]);
+  const artifactIds = uniqueUrls([
+    ...reusable.item.artifactIds,
+    ...reusable.evidence.map((record) => record.artifactId).filter((id): id is string => Boolean(id)),
+  ]);
+  const result = toolResultFromReusableEvidence(input.tool, reusable.item, evidence, sourceUrls, artifactIds);
+  return {
+    reusedFromWorkItemId: reusable.item.id,
+    evidenceIds: reusable.evidence.map((record) => record.id),
+    artifactIds,
+    sourceUrls,
+    result,
+    preview: limitText(evidence.contentPreview || evidence.summary || reusable.item.outputSummary || result.content, 2_000),
+  };
 }
 
 export async function completeBaseAgentToolWork(input: {
@@ -94,7 +152,7 @@ export async function completeBaseAgentToolWork(input: {
   }
 
   try {
-    await input.ledger.recordEvidence(
+    const evidence = await input.ledger.recordEvidence(
       {
         workItemId,
         spanId: input.toolSpanId,
@@ -124,6 +182,80 @@ export async function completeBaseAgentToolWork(input: {
             status: artifact.quality?.status,
           })),
         },
+      },
+      input.toolSpanId,
+    );
+    if (evidence && input.result.ok) {
+      await publishReusableToolWorkIndex({
+        ledger: input.ledger,
+        claim,
+        tool: input.tool,
+        toolInput: input.toolInput,
+        preview: input.preview,
+        result: input.result,
+        sourceUrls,
+        artifacts: newArtifacts,
+        evidence,
+        toolSpanId: input.toolSpanId,
+      });
+    }
+  } catch {
+    // Best-effort only.
+  }
+}
+
+export async function completeBaseAgentToolWorkFromReuse(input: {
+  ledger?: RuntimeLedgerCoordinator;
+  claim?: BaseAgentToolLedgerClaim;
+  tool: Tool;
+  toolInput: Record<string, unknown>;
+  reuse: BaseAgentToolLedgerReuse;
+  toolSpanId: string;
+}): Promise<void> {
+  const workItemId = input.claim?.workItemId;
+  if (!input.ledger || !workItemId) return;
+  try {
+    await input.ledger.markCompleted(workItemId, {
+      outputSummary: limitText(input.reuse.preview, 1_000),
+      sourceUrls: input.reuse.sourceUrls,
+    });
+    const evidence = await input.ledger.recordEvidence(
+      {
+        workItemId,
+        spanId: input.toolSpanId,
+        kind: evidenceKindForTool(input.tool, undefined),
+        sourceUrl: input.reuse.sourceUrls[0],
+        provider: input.tool.name,
+        toolName: input.tool.name,
+        title: `Reused tool result: ${input.tool.name}`,
+        summary: limitText(input.reuse.preview, 1_000),
+        contentPreview: limitText(input.reuse.result.content || input.reuse.preview, 2_000),
+        artifactId: input.reuse.artifactIds[0],
+        qaStatus: "passed",
+        confidence: 0.85,
+        metadata: {
+          toolName: input.tool.name,
+          toolVersion: input.tool.version,
+          input: sanitizeArtifactValue(input.toolInput),
+          output: {
+            ok: input.reuse.result.ok,
+            data: sanitizeArtifactValue(input.reuse.result.data),
+          },
+          reusedFromWorkItemId: input.reuse.reusedFromWorkItemId,
+          reusedEvidenceIds: input.reuse.evidenceIds,
+          reusedArtifactIds: input.reuse.artifactIds,
+        },
+      },
+      input.toolSpanId,
+    );
+    await input.ledger.recordReuseApplied(
+      {
+        workItemId,
+        reusedFromWorkItemId: input.reuse.reusedFromWorkItemId,
+        evidenceIds: evidence ? [evidence.id, ...input.reuse.evidenceIds] : input.reuse.evidenceIds,
+        artifactIds: input.reuse.artifactIds,
+        sourceUrls: input.reuse.sourceUrls,
+        toolName: input.tool.name,
       },
       input.toolSpanId,
     );
@@ -260,4 +392,102 @@ function uniqueUrls(urls: string[]): string[] {
 
 function executionWorkKey(canonicalWorkKey: string, runId: string | undefined, spanId: string): string {
   return `${canonicalWorkKey}#execution:${runId ?? "unknown-run"}:${spanId}`;
+}
+
+async function publishReusableToolWorkIndex(input: {
+  ledger: RuntimeLedgerCoordinator;
+  claim: BaseAgentToolLedgerClaim;
+  tool: Tool;
+  toolInput: Record<string, unknown>;
+  preview: string;
+  result: ToolResult;
+  sourceUrls: string[];
+  artifacts: AgentArtifact[];
+  evidence: EvidenceRecord;
+  toolSpanId: string;
+}): Promise<void> {
+  if (!input.claim.canonicalWorkKey || !input.claim.kind) return;
+  if (!canPublishReusableToolWork(input.tool, input.toolInput)) return;
+  await input.ledger.upsertReusableWorkIndex(
+    {
+      kind: input.claim.kind,
+      workKey: input.claim.canonicalWorkKey,
+      title: `Reusable tool result: ${input.tool.name}`,
+      ownerSpanId: `${input.toolSpanId}:reuse-index`,
+      inputSummary: limitText(JSON.stringify(sanitizeArtifactValue(input.toolInput)), 1_000),
+      outputSummary: limitText(input.preview, 1_000),
+      sourceUrls: input.sourceUrls,
+      artifactIds: input.artifacts.map((artifact) => artifact.id),
+      evidenceIds: [input.evidence.id],
+      freshnessExpiresAt: reusableFreshnessExpiresAt(input.tool),
+      metadata: {
+        toolName: input.tool.name,
+        toolVersion: input.tool.version,
+        sourceWorkItemId: input.claim.workItemId,
+        sourceEvidenceId: input.evidence.id,
+        output: {
+          ok: input.result.ok,
+          data: sanitizeArtifactValue(input.result.data),
+        },
+      },
+    },
+    input.toolSpanId,
+  );
+}
+
+function canReuseBaseAgentToolWork(tool: Tool, toolInput: Record<string, unknown>, task: string): boolean {
+  if (!canPublishReusableToolWork(tool, toolInput)) return false;
+  if (hasCurrentDataSignal(task)) return false;
+  return true;
+}
+
+function canPublishReusableToolWork(tool: Tool, toolInput: Record<string, unknown>): boolean {
+  if (tool.name.toLowerCase() !== "http.request") return false;
+  const method = String(toolInput.method ?? "GET").trim().toUpperCase();
+  return method === "GET" || method === "HEAD";
+}
+
+function maxReuseAgeMs(tool: Tool): number | undefined {
+  return tool.name.toLowerCase() === "http.request" ? HTTP_REUSE_MAX_AGE_MS : undefined;
+}
+
+function reusableFreshnessExpiresAt(tool: Tool): string | undefined {
+  const maxAgeMs = maxReuseAgeMs(tool);
+  return maxAgeMs === undefined ? undefined : new Date(Date.now() + maxAgeMs).toISOString();
+}
+
+function hasCurrentDataSignal(task: string): boolean {
+  return /\b(now|current|latest|today|fresh|live|real[-\s]?time)\b|сейчас|текущ|актуальн|последн|сегодня|свеж|цена|курс/i
+    .test(task);
+}
+
+function toolResultFromReusableEvidence(
+  tool: Tool,
+  item: WorkLedgerItem,
+  evidence: EvidenceRecord,
+  sourceUrls: string[],
+  artifactIds: string[],
+): ToolResult {
+  const outputData = outputDataFromEvidence(evidence);
+  return {
+    ok: true,
+    content: [
+      `Reused passed ledger evidence for ${tool.name}.`,
+      evidence.contentPreview || evidence.summary || item.outputSummary,
+    ].filter(Boolean).join("\n\n"),
+    data: outputData ?? {
+      reusedFromWorkItemId: item.id,
+      reusedEvidenceId: evidence.id,
+      sourceUrls,
+      artifactIds,
+    },
+  };
+}
+
+function outputDataFromEvidence(evidence: EvidenceRecord): unknown {
+  const metadata = evidence.metadata;
+  if (!metadata || typeof metadata !== "object") return undefined;
+  const output = (metadata as Record<string, unknown>).output;
+  if (!output || typeof output !== "object") return undefined;
+  return (output as Record<string, unknown>).data;
 }

@@ -34,7 +34,7 @@ that generated tools will use later.
 
 `npm run verify` passed on 2026-06-18 from `main` after merging the split runtime and
 after the default-core-toolbelt plus Ledger fixes: lint, typecheck, test typecheck,
-511 unit tests, and build. Targeted suites also passed: BaseAgent runtime 49/49,
+512 unit tests, and build. Targeted suites also passed: BaseAgent runtime 50/50,
 external-action preparation/approval 29/29, and focused env/core-toolbelt/auth 12/12.
 
 Durable-stack agent smoke was then repeated with Postgres, SearXNG, browser-operate,
@@ -76,6 +76,11 @@ Recent P0 fixes:
   call creates a run-local execution work item before execution, stores the canonical
   reusable work key in metadata, completes or fails that item after execution, records
   source/tool/artifact evidence, and links generated artifact ids back to the work item.
+- Safe deterministic `http.request` GET/HEAD calls now publish a thread/instance-scoped
+  reusable-index item without `runId`. Later identical stable calls in that scope can
+  reuse fresh passed evidence for up to 10 minutes while still creating a new run-local
+  work/evidence record and trace events. Current/fresh/live tasks such as price/current
+  facts deliberately bypass this reuse path.
 - Durable Ledger smoke passed after backend restart: `run_1781818681262_rpvsg59u` keeps
   one completed `api_call` work item, one `api_response` evidence record, and linked
   artifact `artifact_1781818687616_9q389ujl`; the React Ledger page shows the same data
@@ -93,9 +98,10 @@ P0:
 - Keep proof policy proportional: screenshot proof for visual/current web tasks,
   structured proof for API/local utility tasks, and no visual proof when the user
   explicitly forbids it.
-- Use the now-durable Work/Evidence Ledger records in product flows: operator debugging,
-  reuse decisions, and external-action recovery should read the same records shown in the
-  Ledger page.
+- Extend the now-active Ledger product flow beyond safe `http.request` reuse: operator
+  debugging, follow-up recovery, external-action recovery, and more tool families should
+  read the same records shown in the Ledger page instead of treating Ledger as passive
+  audit.
 
 P1:
 
@@ -127,8 +133,8 @@ P3:
 - External actions remain too hard to understand from the UI and still stop too early in
   ordinary approval mode.
 - Work/Evidence Ledger unit coverage and durable live UI/API verification are green for
-  BaseAgent `http.request` and `file.write` paths. Broader tool-family coverage should be
-  added as those flows are touched.
+  BaseAgent `http.request`, safe repeated `http.request` reuse, and `file.write` paths.
+  Broader tool-family reuse coverage should be added as those flows are touched.
 - Four files remain slightly above the preferred 800-line limit:
   `src/server/modules/runs/action-proposal-preparation-runner.ts`,
   `tests/actionProposalPreparationRunner.test.ts`,

@@ -627,8 +627,8 @@ query churn.
   `blocked_by_recent_failure` — agents call this before doing costly external work.
 - **Evidence Ledger** ([evidenceLedgerStore.ts](../src/work-ledger/evidenceLedgerStore.ts))
   — typed `EvidenceRecord` rows with QA status, confidence, limitations, and links to
-  artifacts/work items. Useful evidence is reused across runs and cited from final
-  answers without reissuing the same search/scrape.
+  artifacts/work items. Useful evidence can be reused across runs through explicit
+  runtime policy; it is not blindly trusted just because a prior run completed.
 - **Run Retrospective** ([runRetrospectiveStore.ts](../src/work-ledger/runRetrospectiveStore.ts))
   — structured per-run reflections (what worked, what failed, suspected root causes,
   duplicated work, weak tools/models, missing capabilities, useful evidence ids) plus
@@ -644,21 +644,25 @@ on instance/thread/run/workKey/status/sourceUrl. The web API exposes narrow CRUD
 endpoints (`/api/work-ledger`, `/api/evidence-ledger`, `/api/run-retrospectives`) for
 operator and runtime plumbing.
 
-UniversalAgent runtime integration (Phase 1) is now wired through
+BaseAgent runtime integration is now wired through
 [src/work-ledger/runtimeLedgerCoordinator.ts](../src/work-ledger/runtimeLedgerCoordinator.ts):
 
 - The web server passes the three stores through `executeRun` into `agent.run()` as
   optional dependencies. When any store is wired, the agent constructs a per-run
   `RuntimeLedgerCoordinator` keyed by `runId` so deeply nested helpers can resolve
   it from `toolExecutionContext.runId`.
-- Web search (`web.search`), market time-series, inferred API JSON tools, declared tool
-  inputs, and screenshot/artifact tool calls claim a Work Ledger entry before running
-  through the shared `WorkLedgerClaimCoordinator`. The common tool paths use
-  `runLedgeredToolOperation`, which centralizes claim -> execute -> evidence ->
-  complete/fail. It short-circuits on `reuse_completed` when a prior text/evidence
-  summary is sufficient, and surfaces `wait_for_active`, `revalidate`, and `blocked`
-  decisions as trace events so the operator can see whether the branch reused, waited,
-  refreshed, or hit a recent limitation.
+- BaseAgent registered tool calls claim a run-local Work Ledger execution item before
+  running through `ToolRegistry`, then complete/fail that item and record Evidence
+  Ledger rows with tool/source/artifact/QA metadata. The canonical reusable work key is
+  stored in metadata so operators can correlate repeated work even when execution items
+  are intentionally run-local.
+- Safe deterministic `http.request` GET/HEAD calls additionally publish a
+  thread/instance-scoped reusable-index item without `runId`, linked to the original
+  passed evidence ids. A later identical stable call checks that index before execution;
+  when fresh passed evidence exists, the run skips the external HTTP call, creates a
+  run-local completed work item plus reused evidence, and emits
+  `work-ledger-reuse-available` / `work-ledger-reuse-applied` trace events. Current/live
+  requests such as price or "сейчас/latest/today" bypass this reuse path.
 - Successful runs record `search_result`/`api_response`/`browser_snapshot`/`screenshot`/
   `artifact` evidence; non-OK tool results, semantic-QA failures, and CAPTCHA/loader blockers record
   `limitation` evidence and mark the work item failed.
@@ -670,7 +674,9 @@ UniversalAgent runtime integration (Phase 1) is now wired through
   external blockers.
 - New `AgentEvent` types (`work-ledger-claim-created`,
   `work-ledger-revalidation-created`, `work-ledger-blocked`, `work-ledger-reused`,
-  `work-ledger-waiting-existing`, `evidence-ledger-recorded`,
+  `work-ledger-waiting-existing`, `work-ledger-reuse-available`,
+  `work-ledger-reuse-skipped`, `work-ledger-reuse-applied`,
+  `work-ledger-reuse-index-updated`, `evidence-ledger-recorded`,
   `run-retrospective-proposed`) appear in the existing run trace stream so the
   console renders ledger activity inline with normal spans.
 

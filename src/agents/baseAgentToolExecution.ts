@@ -9,7 +9,9 @@ import { emit, runWithTimeout } from "./baseAgentRuntime.js";
 import {
   claimBaseAgentToolWork,
   completeBaseAgentToolWork,
+  completeBaseAgentToolWorkFromReuse,
   failBaseAgentToolWork,
+  findReusableBaseAgentToolWork,
 } from "./baseAgentToolLedger.js";
 import { extractPrimaryResultFields, renderToolResultForModel, runtimeDiagnosticFromError, safeToolName, toolMessage } from "./baseAgentToolMessages.js";
 import { createToolSpanId, summarizeToolResultForTrace } from "./baseAgentTrace.js";
@@ -328,6 +330,96 @@ export async function handleBaseAgentRegisteredToolCall(
     attemptedToolCalls,
     artifactCount: artifacts.length,
   });
+
+  const ledgerReuse = await findReusableBaseAgentToolWork({
+    ledger: options.ledger,
+    tool,
+    toolInput: call.arguments,
+    task,
+    toolSpanId,
+  });
+  if (ledgerReuse) {
+    const result = ledgerReuse.result;
+    const sourceUrls = ledgerReuse.sourceUrls.length
+      ? ledgerReuse.sourceUrls
+      : extractSourceUrls(call.arguments, result);
+    successfulToolCalls += 1;
+    primaryToolResults.push(...extractPrimaryResultFields(result.data, tool, catalogEntry));
+    for (const url of sourceUrls.slice(0, PROOF_SOURCE_URL_LIMIT)) externalEvidenceUrls.add(url);
+    if (!isScreenshotProofTool(tool)) {
+      if (sourceUrls.some(isProofWorthySourceUrl)) successfulResearchToolCalls += 1;
+      if (isSourceReadTool(tool) && sourceUrls.some(isProofWorthySourceUrl)) {
+        successfulSourceReadToolCalls += 1;
+      }
+      for (const url of sourceUrls.slice(0, PROOF_SOURCE_URL_LIMIT)) externalDataEvidenceUrls.add(url);
+      for (const evidence of extractProofEvidenceForSourceUrls(sourceUrls, call.arguments, result)) {
+        proofEvidenceByUrl.set(evidence.sourceUrl, evidence);
+      }
+    }
+    toolResultCache.set(cacheKey, {
+      result,
+      preview: ledgerReuse.preview,
+      sourceUrls,
+      proofEvidence: sourceUrls.map((url) => proofEvidenceByUrl.get(url)).filter((entry): entry is ProofEvidence => Boolean(entry)),
+    });
+    await completeBaseAgentToolWorkFromReuse({
+      ledger: options.ledger,
+      claim: ledgerClaim,
+      tool,
+      toolInput: call.arguments,
+      reuse: ledgerReuse,
+      toolSpanId,
+    });
+    const proofInstruction = shouldRequireResearchContract({
+      taskFrame,
+      sourceUrls: [...externalDataEvidenceUrls],
+      successfulResearchToolCalls,
+      successfulSourceReadToolCalls,
+    })
+      ? undefined
+      : proofInstructionForModel({
+          task,
+          finalAnswer,
+          sourceUrls: [...externalEvidenceUrls],
+          proofEvidence: [...proofEvidenceByUrl.values()],
+          artifacts,
+          tools,
+          artifactSavingAvailable: Boolean(options.saveArtifact),
+        });
+    messages.push(toolMessage(
+      call.id,
+      true,
+      [
+        `Reused passed Work Ledger evidence for ${tool.name}; no new external request was made.`,
+        ledgerReuse.preview,
+        proofInstruction,
+      ].filter(Boolean).join("\n\n"),
+    ));
+    await input.emitToolEvent(
+      options.onEvent,
+      tool.name,
+      call.arguments,
+      true,
+      `Reused passed Work Ledger evidence for ${tool.name}.`,
+      Date.now() - toolStartedAt,
+      {
+        step,
+        spanId: toolSpanId,
+        parentSpanId: llmSpanId,
+        toolCallNumber: attemptedToolCalls,
+        toolVersion: tool.version,
+        ledgerReuse: {
+          reusedFromWorkItemId: ledgerReuse.reusedFromWorkItemId,
+          evidenceIds: ledgerReuse.evidenceIds,
+          artifactIds: ledgerReuse.artifactIds,
+          sourceUrls,
+        },
+        output: summarizeToolResultForTrace(result, ledgerReuse.preview),
+      },
+    );
+    return output("continue");
+  }
+
   let result: ToolResult;
   try {
     result = await runWithTimeout(
