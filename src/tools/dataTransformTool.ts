@@ -59,9 +59,16 @@ export class DataTransformTool implements Tool {
 }
 
 function parseInput(input: ToolInput): unknown {
-  if (input.input !== undefined) return input.input;
-  const text = typeof input.text === "string" ? input.text : "";
   const format = input.format === "json" || input.format === "csv" || input.format === "text" ? input.format : "auto";
+  if (input.input !== undefined) {
+    if (typeof input.input === "string") return parseTextInput(input.input, format);
+    return input.input;
+  }
+  const text = typeof input.text === "string" ? input.text : "";
+  return parseTextInput(text, format);
+}
+
+function parseTextInput(text: string, format: "auto" | "json" | "csv" | "text"): unknown {
   if (format === "json" || (format === "auto" && looksLikeJson(text))) return JSON.parse(text);
   if (format === "csv" || (format === "auto" && text.includes(",") && text.includes("\n"))) return parseCsv(text);
   return text;
@@ -72,17 +79,24 @@ function parseOperations(value: unknown): TransformOperation[] {
   return value.flatMap((item): TransformOperation[] => {
     if (!item || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
+    const path = parseOperationPath(record);
     switch (record.type) {
       case "pick":
         return Array.isArray(record.paths) ? [{ type: "pick", paths: record.paths.map(String) }] : [];
       case "pluck":
-        return typeof record.path === "string" ? [{ type: "pluck", path: record.path }] : [];
+        return path ? [{ type: "pluck", path }] : [];
       case "filter":
-        return typeof record.path === "string"
-          ? [{ type: "filter", path: record.path, equals: record.equals, contains: stringOrUndefined(record.contains), exists: boolOrUndefined(record.exists) }]
+        return path
+          ? [{ type: "filter", path, equals: record.equals, contains: stringOrUndefined(record.contains), exists: boolOrUndefined(record.exists) }]
           : [];
       case "sort":
-        return typeof record.path === "string" ? [{ type: "sort", path: record.path, direction: record.direction === "desc" ? "desc" : "asc" }] : [];
+        return path
+          ? [{
+              type: "sort",
+              path,
+              direction: parseDirection(record.direction ?? record.order),
+            }]
+          : [];
       case "limit":
         return typeof record.count === "number" ? [{ type: "limit", count: record.count }] : [];
       case "rename":
@@ -221,4 +235,18 @@ function stringOrUndefined(value: unknown): string | undefined {
 
 function boolOrUndefined(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function parseOperationPath(record: Record<string, unknown>): string | undefined {
+  for (const key of ["path", "key", "field", "column"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function parseDirection(value: unknown): "asc" | "desc" {
+  return typeof value === "string" && /^(?:desc|descending|-1)$/i.test(value.trim())
+    ? "desc"
+    : "asc";
 }

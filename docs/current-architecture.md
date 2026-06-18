@@ -148,6 +148,45 @@ sequenceDiagram
   API-->>User: answer + artifacts + trace
 ```
 
+## Request Lifecycle: Local Data/File Task
+
+Example user task: "Отсортируй JSON по age desc, сохрани CSV в smoke-people.csv."
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant API as RunsController
+  participant Agent as BaseAgent
+  participant LLM as LlmClient
+  participant Tools as ToolRegistry
+  participant Data as data.transform
+  participant File as file.write
+  participant Artifacts as ArtifactStore
+  participant UI as React Run Workspace
+
+  User->>API: POST /api/runs { task }
+  API->>Agent: run(task, core tool catalog)
+  Agent->>Agent: frameTask() => local utility / file artifact
+  Agent->>LLM: bounded prompt + data/file tool schemas
+  LLM-->>Agent: call data.transform
+  Agent->>Tools: run data.transform
+  Tools->>Data: parse JSON-looking input, sort by age desc, serialize CSV
+  Data-->>Tools: CSV content + transformed data
+  Tools-->>Agent: tool result
+  LLM-->>Agent: call file.write
+  Agent->>Tools: run file.write
+  Tools->>File: write path + content
+  File-->>Tools: ok result
+  Agent->>Artifacts: save file.write content as smoke-people.csv
+  Artifacts-->>Agent: artifact id + download URL
+  Agent-->>API: completed answer + artifact metadata
+  UI-->>User: Final answer, timeline, preview, download
+```
+
+`file.write` artifacts are created from the content passed into the tool call. This avoids
+depending on a shared filesystem path and keeps the behavior compatible with future
+containerized tool execution.
+
 ## External Action Lifecycle
 
 External actions are state-changing tasks such as bookings, form submits, purchases, API
@@ -193,13 +232,22 @@ Current memory is split but not finished:
   - `/api/tools` exposes all 12 preinstalled core tools.
   - Manual `http.request` call to JSONPlaceholder succeeds.
   - Manual `data.transform` JSON->CSV sort succeeds.
+- Durable agent-level smoke passed after that:
+  - Direct no-tool run: `run_1781798532541_ru78eo3j`.
+  - HTTP JSON fast path with structured proof and no screenshot:
+    `run_1781798586255_qgomrub6`.
+  - Current web fact with QA-passed screenshot proof: `run_1781798630478_7gakwrcv`.
+  - Data/file artifact path with preview/download in React:
+    `run_1781799687705_rtayd8nl`.
 
 ## Current Gaps
 
 - `npm run web` without `DATABASE_URL` starts in-memory stores. That is acceptable for
   smoke tests, but real persistence testing must set Postgres env.
-- Work/Evidence Ledger usage from BaseAgent tool calls still needs live verification and
-  likely wiring.
+- Work/Evidence Ledger stores are present, but tested BaseAgent core-tool runs currently
+  show zero Work Ledger claims and zero Evidence Ledger records even when Trace Lab shows
+  real tool calls. The next runtime slice should make tool execution write ledger claims
+  and evidence records, then verify the Ledger page against the same run.
 - External-action UI is safer than before but still complex. The next UX target is one
   understandable proposal/proof/approval/commit path.
 - Tool Builder V1 still exists and works for source-bundle candidates, but strategic

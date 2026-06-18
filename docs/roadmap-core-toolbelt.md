@@ -95,38 +95,81 @@ Follow-up checkpoint on branch `codex/split-mainline`:
 - `npm run verify` passed after the default-core-toolbelt fix: lint, typecheck, test
   typecheck, 508 unit tests, and build.
 
-Current blockers before declaring the base ready for product testing:
+Durable agent-level smoke then passed on `main` with Postgres-backed persistence:
 
-- Agent-level end-to-end smoke through `/api/runs` still needs to be repeated on the
-  durable Postgres stack after the default-core-toolbelt fix. Manual tool exposure is
-  confirmed, but the agent must prove it actually selects and uses those tools in normal
-  tasks.
+```mermaid
+sequenceDiagram
+  participant User
+  participant API as /api/runs
+  participant Agent as BaseAgent
+  participant Tools as Core Toolbelt
+  participant Artifacts as Artifact Store
+  participant UI as React Run Workspace
+
+  User->>API: Direct question
+  API->>Agent: no-tool frame
+  Agent-->>API: completed answer
+
+  User->>API: JSON API task, no screenshot
+  Agent->>Tools: http.request
+  Tools-->>Agent: JSON response
+  Agent->>Artifacts: structured proof JSON
+  Agent-->>API: completed answer
+
+  User->>API: Current BTC price + proof
+  Agent->>Tools: web.search
+  Agent->>Tools: browser.screenshot
+  Tools-->>Agent: QA-passed PNG proof
+  Agent-->>API: completed answer
+
+  User->>API: JSON -> CSV -> file
+  Agent->>Tools: data.transform
+  Agent->>Tools: file.write
+  Agent->>Artifacts: smoke-people.csv
+  UI-->>User: preview + download link
+```
+
+Passed runs:
+
+- `run_1781798532541_ru78eo3j`: simple direct answer completed without tool calls.
+- `run_1781798586255_qgomrub6`: JSONPlaceholder API task used `http.request`, avoided
+  screenshot proof, and produced structured JSON proof.
+- `run_1781798630478_7gakwrcv`: current Bitcoin lookup used `web.search` plus
+  `browser.screenshot`; the final screenshot artifact passed QA.
+- `run_1781799687705_rtayd8nl`: JSON array sorted by `age desc`, written to
+  `smoke-people.csv`, surfaced as a run artifact, and verified in React with preview and
+  download.
+
+Code fixes from that smoke:
+
+- Docker compose no longer disables the core toolbelt by default.
+- `runs_status_check` migration statements consistently include `waiting_approval`.
+- `data.transform` parses JSON-looking `input` strings and accepts common operation
+  aliases such as `key`/`field`/`column` and `order: "desc"`.
+- `file.write` output is registered as a downloadable artifact from the tool input
+  content, not from a shared filesystem read.
+
+Current blockers before declaring the base ready for broader product testing:
+
 - External-action tasks still stop before preparation in ordinary approval mode. The
   proposal card is clearer than before, but the user still cannot complete "find,
   prepare, show proof, then submit after one approval" in one simple flow.
-- Work/Evidence Ledger cards on tested runs show `0 claims` and `0 evidence records`
-  despite tool activity. Either BaseAgent is not writing ledger claims yet, or the UI
-  is not reading the relevant records.
+- Work/Evidence Ledger cards on tested durable runs still show `0 claims` and
+  `0 evidence records` despite tool activity. Either BaseAgent is not writing ledger
+  claims yet, or the UI is not reading the relevant records. Treat this as the next P0.
 - Files slightly above the preferred 800-line limit remain after the P0 split:
   `src/server/modules/runs/action-proposal-preparation-runner.ts`,
   `tests/actionProposalPreparationRunner.test.ts`,
   `src/server/modules/runs/runs.service.ts`, and `tests/nestApi.test.ts`.
 
-## Active Priority Order After Main Merge
+## Active Priority Order After Durable Smoke
 
-P0: prove the core-toolbelt baseline through agent-level live product runs.
+P0: make BaseAgent tool work auditable.
 
-- Start the full durable stack from `main` with Postgres, object/artifact storage, local
-  model endpoint, browser-operate, and optional Telegram service.
-- Confirm `/api/tools`, `/api/tools/health`, agent catalog exposure, trace input/output,
-  and artifact preview/download for every preinstalled tool class.
-- Run practical tasks:
-  - simple direct answer without tools;
-  - current web fact with source and screenshot proof;
-  - explicit API/JSON task through `http.request` without screenshot;
-  - local file/document/data task through file/document/data tools;
-  - broad research task using search plus read;
-  - Telegram/channel smoke if service credentials are configured.
+- Wire BaseAgent core-tool calls into Work/Evidence Ledger, including claim keys, source
+  URLs, evidence ids, artifact ids, reuse/revalidation status, and failure reasons.
+- Confirm `/api/work-ledger`, `/api/evidence-ledger`, Run Workspace, and Ledger page show
+  the same tool work visible in Trace Lab.
 - Confirm run records, events, artifacts, approval state, and ledger records survive a
   server restart.
 
@@ -135,8 +178,8 @@ P1: make the agent operationally coherent.
 - Ensure follow-up runs reuse thread context and artifact metadata before reacquiring data.
 - Add a clear memory model for run memory, conversation/thread memory, user memory, group
   memory, and accepted retrospective memory.
-- Wire BaseAgent tool calls into Work/Evidence Ledger, or fix the UI if records are
-  already persisted under a different scope.
+- Clean/segregate legacy generated failed tools from the active tool catalog/UI, without
+  deleting the registry/version machinery needed by future generated tools.
 
 P2: reduce friction and complexity.
 

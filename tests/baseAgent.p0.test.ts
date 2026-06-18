@@ -113,6 +113,90 @@ test("BaseAgent respects explicit no-screenshot API tasks and uses structured pr
   assert.equal(events.some((event) => event.type === "agent-proof-repair-requested"), false);
 });
 
+test("BaseAgent registers successful file.write output as a downloadable artifact", async () => {
+  const registry = new ToolRegistry();
+  const writeCalls: unknown[] = [];
+  registry.register({
+    name: "file.write",
+    version: "1.0.0",
+    description: "Writes UTF-8 files to the workspace.",
+    capabilities: ["file-write", "artifacts"],
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+      },
+      required: ["path", "content"],
+    },
+    async run(input) {
+      writeCalls.push(input);
+      return {
+        ok: true,
+        content: "Wrote smoke-people.csv.",
+        data: { path: "smoke-people.csv", bytes: 30 },
+      };
+    },
+  });
+
+  const csv = "name,age\nBob,42\nAnn,31\nCara,25";
+  const llm = new SequenceLlm([
+    {
+      content: "",
+      finishReason: "tool_calls",
+      toolCalls: [
+        {
+          id: "call_write",
+          name: "file_write",
+          arguments: { path: "smoke-people.csv", content: csv },
+        },
+      ],
+    },
+    {
+      content: "",
+      finishReason: "tool_calls",
+      toolCalls: [
+        {
+          id: "call_finish",
+          name: "finish",
+          arguments: { answer: "Сохранил smoke-people.csv." },
+        },
+      ],
+    },
+  ]);
+  const artifacts: AgentArtifact[] = [];
+  const savedInputs: ArtifactCreateInput[] = [];
+  const agent = new BaseAgent(llm as unknown as LlmClient, registry);
+  const result = await agent.run("Сохрани CSV в smoke-people.csv и приложи файл как артефакт.", {
+    runId: "run_file_write_artifact",
+    saveArtifact: async (artifact: ArtifactCreateInput) => {
+      savedInputs.push(artifact);
+      const saved: AgentArtifact = {
+        id: `artifact_${artifacts.length + 1}`,
+        runId: "run_file_write_artifact",
+        kind: "output",
+        filename: artifact.filename,
+        mimeType: artifact.mimeType,
+        sizeBytes: artifact.content.length,
+        url: `/api/runs/run_file_write_artifact/artifacts/artifact_${artifacts.length + 1}`,
+        description: artifact.description,
+        quality: artifact.quality,
+        createdAt: new Date().toISOString(),
+      };
+      artifacts.push(saved);
+      return saved;
+    },
+  });
+
+  assert.equal(result.runStatus, "completed");
+  assert.equal(writeCalls.length, 1);
+  assert.equal(result.artifacts?.length, 1);
+  assert.equal(result.artifacts?.[0]?.filename, "smoke-people.csv");
+  assert.equal(result.artifacts?.[0]?.mimeType, "text/csv");
+  assert.equal(savedInputs[0]?.description, "File written to workspace path smoke-people.csv");
+  assert.equal(savedInputs[0]?.content.toString("utf8"), csv);
+});
+
 test("BaseAgent frames prior-answer source questions as thread-context answers", async () => {
   const registry = new ToolRegistry();
   let searchCalls = 0;

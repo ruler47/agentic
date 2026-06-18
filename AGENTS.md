@@ -110,6 +110,21 @@ large legacy `UniversalAgent` runtime.
   or generated-tool-only experiments. Core tools are synchronized into tool metadata as
   built-ins and should be directly offered to agents when metadata/readiness marks them
   available. Generated/package tools still use the manual QA/promotion flow.
+- Durable agent-level smoke on 2026-06-18 passed the active core-toolbelt baseline:
+  direct no-tool answer, `http.request` JSON fast path without screenshot proof,
+  current web fact with QA-passed screenshot proof, and `data.transform` -> `file.write`
+  with a previewable/downloadable CSV artifact in the React Run Workspace.
+- `data.transform` should accept common LLM-shaped operation inputs where reasonable:
+  JSON-looking string inputs are parsed before operations, operation path aliases include
+  `path`, `key`, `field`, and `column`, and sort direction may be `direction` or `order`.
+- Successful `file.write` tool calls should register the written content as an output
+  artifact from the tool input payload, not by rereading a shared workspace path. This is
+  required for future containerized tools that do not share the app filesystem.
+- Every migration statement that recreates `runs_status_check` must include
+  `waiting_approval`; durable databases can already contain paused approval runs.
+- BaseAgent core-tool calls currently show in Trace Lab and artifacts, but not yet in
+  Work/Evidence Ledger records. Treat ledger wiring for core tool calls as the next P0
+  correctness task.
 - BaseAgent trace spans now use stable parent/child ids for the root agent, context,
   every LLM step, every tool call, artifact saves, and the return gate. LLM spans record
   safe normalized `input`/`output`; tool spans record summarized tool `input`/`output`.

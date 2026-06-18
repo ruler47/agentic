@@ -1,4 +1,5 @@
 import type { AgentArtifact, ArtifactCreateInput, ArtifactQualityMetadata } from "../types.js";
+import { basename, extname } from "node:path";
 import { inspectBrowserScreenshotEvidence } from "../artifacts/semanticArtifactQuality.js";
 import type { Tool, ToolResult } from "../tools/tool.js";
 import type { TaskFrame } from "./taskFrame.js";
@@ -327,6 +328,9 @@ export function extractArtifact(
   input: Record<string, unknown>,
   result: ToolResult,
 ): ArtifactCreateInput | undefined {
+  const fileWriteArtifact = artifactFromFileWrite(toolName, input, result);
+  if (fileWriteArtifact) return fileWriteArtifact;
+
   const data = result.data;
   if (!data || typeof data !== "object") return undefined;
   const record = data as {
@@ -351,6 +355,56 @@ export function extractArtifact(
     content: Buffer.from(image, "base64"),
     description: typeof input.url === "string" ? `Screenshot captured from ${input.url}` : `Output of ${toolName}`,
   };
+}
+
+function artifactFromFileWrite(
+  toolName: string,
+  input: Record<string, unknown>,
+  result: ToolResult,
+): ArtifactCreateInput | undefined {
+  if (toolName !== "file.write" || !result.ok) return undefined;
+  const path = stringValue(input.path);
+  const content = typeof input.content === "string" ? input.content : undefined;
+  if (!path || content === undefined) return undefined;
+
+  return {
+    filename: basename(path),
+    mimeType: mimeTypeForPath(path),
+    content: Buffer.from(content, "utf8"),
+    description: `File written to workspace path ${path}`,
+  };
+}
+
+function mimeTypeForPath(path: string): string {
+  switch (extname(path).toLowerCase()) {
+    case ".csv":
+      return "text/csv";
+    case ".tsv":
+      return "text/tab-separated-values";
+    case ".json":
+      return "application/json";
+    case ".jsonl":
+    case ".ndjson":
+      return "application/x-ndjson";
+    case ".md":
+      return "text/markdown";
+    case ".html":
+    case ".htm":
+      return "text/html";
+    case ".xml":
+      return "application/xml";
+    case ".yaml":
+    case ".yml":
+      return "application/yaml";
+    case ".txt":
+    case ".log":
+    case ".js":
+    case ".ts":
+    case ".css":
+      return "text/plain";
+    default:
+      return "text/plain";
+  }
 }
 
 export type SerializedBuffer = { type: "Buffer"; data: number[] };

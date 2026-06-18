@@ -52,11 +52,12 @@ docker compose up --build
 
 Then open `http://127.0.0.1:3000`.
 
-The compose stack includes the app, Postgres, Redis, MinIO, and SearXNG. Legacy
-built-in/reference tools are disabled by default; current tool capability should come
-only from generated/imported source-bundle, OCI, or external packages created or imported
-through the platform lifecycle. Docker-stack artifacts use Postgres metadata plus MinIO
-object payloads.
+The compose stack includes the app, Postgres, Redis, MinIO, and SearXNG. The preinstalled
+core toolbelt is enabled by default so normal runs can use `web.search`, `web.read`,
+browser, HTTP, file, document, data, external-action, and Telegram capabilities without
+waiting for Tool Builder. Generated/imported source-bundle, OCI, or external packages
+coexist through the same registry lifecycle. Docker-stack artifacts use Postgres metadata
+plus MinIO object payloads.
 
 If a run needs to be stopped while the app is still online, use the Run Workspace
 `Cancel Run` action or `POST /api/runs/:id/cancel`. Rebuilding the app container while a

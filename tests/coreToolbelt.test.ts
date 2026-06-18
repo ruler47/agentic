@@ -92,6 +92,21 @@ test("data.transform filters and serializes structured data", async () => {
   assert.equal(result.content, "B:5");
 });
 
+test("data.transform parses JSON-looking input strings before applying operations", async () => {
+  const tool = new DataTransformTool();
+  const result = await tool.run({
+    input: "[{\"name\":\"Ann\",\"age\":31},{\"name\":\"Bob\",\"age\":42},{\"name\":\"Cara\",\"age\":25}]",
+    operations: [
+      { type: "sort", key: "age", order: "desc" },
+    ],
+    outputFormat: "csv",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.content, "name,age\nBob,42\nAnn,31\nCara,25");
+  assert.deepEqual((result.data as { operationsApplied?: string[] }).operationsApplied, ["sort"]);
+});
+
 test("document.extract extracts inline HTML and JSON", async () => {
   const tool = new DocumentExtractTool();
   const html = await tool.run({ content: "<html><title>T</title><body><h1>Hello</h1><p>World</p></body></html>", mimeType: "text/html" });

@@ -78,7 +78,7 @@ export const MIGRATION_STATEMENTS_PART_1: MigrationStatement[] = [
     sql: "\n      update runs\n      set status = 'failed',\n          error = coalesce(error, 'Legacy tool rework wait status was removed during base rebuild.')\n      where status = 'waiting_tool_rework';\n    ",
   },
   {
-    sql: "\n      alter table runs drop constraint if exists runs_status_check;\n      alter table runs add constraint runs_status_check\n        check (status in ('queued', 'running', 'completed', 'failed', 'cancelled'));\n    ",
+    sql: "\n      alter table runs drop constraint if exists runs_status_check;\n      alter table runs add constraint runs_status_check\n        check (status in ('queued', 'running', 'waiting_approval', 'completed', 'failed', 'cancelled'));\n    ",
   },
   {
     sql: "\n      alter table runs drop constraint if exists runs_status_check;\n      alter table runs add constraint runs_status_check\n        check (status in ('queued', 'running', 'waiting_approval', 'completed', 'failed', 'cancelled'));\n    ",

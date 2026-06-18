@@ -20,9 +20,8 @@ services:
       # Base rebuild: the default runtime is the small Agent/Tool/LLM loop.
       AGENT_RUNTIME: base
       TOOL_BUILD_WORKER: disabled
-      # Legacy built-in/reference tools are disabled in the rebuilt product.
-      # Tools should be generated/imported source-bundle or OCI packages.
-      BUILTIN_TOOLS: disabled
+      # Core first-party tools are enabled by default. Set
+      # BUILTIN_TOOLS=disabled only for generated-tool-only experiments.
     ports:
       - "3000:3000"
     volumes:
