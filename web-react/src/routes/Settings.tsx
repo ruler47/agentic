@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { useInstance } from "@/api/queries";
 import {
@@ -6,8 +6,6 @@ import {
   useDeleteSecretHandle,
   useSecretHandles,
 } from "@/api/secretHandles";
-import { useCodingCouncil, useUpdateCodingCouncil } from "@/api/codingCouncil";
-import { useModelTiers } from "@/api/models";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative } from "@/lib/format";
 import type { SecretHandleInput, SecretHandleProvider } from "@/api/types";
@@ -63,8 +61,9 @@ export function SettingsPage() {
             <h2 className="text-base font-semibold">Secret handles</h2>
             <p className="mt-1 text-xs text-app-text-muted">
               Named pointers to credentials (env vars, vault paths, scoped inline values).
-              The API rejects raw <code>token</code>/<code>password</code>/<code>apiKey</code>
-              fields — use a handle here and reference it from tool / provider configuration.
+              Manual secret-handle creation rejects raw <code>token</code>/<code>password</code>/
+              <code>apiKey</code> fields. Tool creation can accept onboarding credentials,
+              extract them into handles, and redact the builder request.
             </p>
           </div>
           <span className="text-[11px] text-app-text-muted">
@@ -185,163 +184,7 @@ export function SettingsPage() {
         </form>
       </article>
 
-      <CodingCouncilSection />
     </section>
-  );
-}
-
-function CodingCouncilSection() {
-  const config = useCodingCouncil();
-  const tiers = useModelTiers();
-  const update = useUpdateCodingCouncil();
-  const [draft, setDraft] = useState({
-    tier: "L" as "S" | "M" | "L" | "XL",
-    maxRevisionAttempts: 3,
-    maxQaRepairAttempts: 5,
-    qaTimeoutMs: 30000,
-    brainstormSystemPrompt: "",
-  });
-  const [dirty, setDirty] = useState(false);
-
-  // Initialize draft once the server config loads.
-  useEffect(() => {
-    if (!config.data) return;
-    setDraft({
-      tier: config.data.tier,
-      maxRevisionAttempts: config.data.maxRevisionAttempts,
-      maxQaRepairAttempts: config.data.maxQaRepairAttempts,
-      qaTimeoutMs: config.data.qaTimeoutMs,
-      brainstormSystemPrompt: config.data.brainstormSystemPrompt ?? "",
-    });
-    setDirty(false);
-  }, [config.data?.updatedAt]);
-
-  // Resolve which models will actually act as council members for the
-  // selected tier. Sourced from model_tier_settings.<tier>.models so the
-  // operator can see who'll vote without crossing pages.
-  const tierRow = (tiers.data ?? []).find((row) => row.tier === draft.tier);
-  const councilModels = tierRow?.models ?? [];
-
-  const onUpdate = <K extends keyof typeof draft>(key: K, value: (typeof draft)[K]) => {
-    setDraft((prev) => ({ ...prev, [key]: value }));
-    setDirty(true);
-  };
-
-  const save = () => {
-    update.mutate(
-      {
-        tier: draft.tier,
-        maxRevisionAttempts: draft.maxRevisionAttempts,
-        maxQaRepairAttempts: draft.maxQaRepairAttempts,
-        qaTimeoutMs: draft.qaTimeoutMs,
-        brainstormSystemPrompt: draft.brainstormSystemPrompt,
-      },
-      { onSuccess: () => setDirty(false) },
-    );
-  };
-
-  return (
-    <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-5">
-      <header className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h3 className="text-sm font-semibold">Coding council</h3>
-          <p className="mt-1 text-xs text-app-text-muted">
-            The pool of LLMs that compete to build a tool. Brainstorm → vote → implement →
-            review → revise → QA → repair. Council members come from
-            <code className="mx-1">model_tier_settings.&lt;tier&gt;.models</code> — add or
-            remove models on the Models page; pick the tier here.
-          </p>
-        </div>
-        {config.data ? (
-          <span className="text-[10px] text-app-text-muted">
-            updated {formatRelative(config.data.updatedAt)}
-          </span>
-        ) : null}
-      </header>
-      <div className="mt-4 grid gap-4 md:grid-cols-2">
-        <Field label="Council tier">
-          <select
-            value={draft.tier}
-            onChange={(event) => onUpdate("tier", event.target.value as typeof draft.tier)}
-            className="rounded-md border border-app-border bg-app-surface-2 px-2 py-1 text-xs"
-          >
-            {(["S", "M", "L", "XL"] as const).map((tier) => (
-              <option key={tier} value={tier}>
-                {tier}
-              </option>
-            ))}
-          </select>
-          <p className="mt-1 text-[10px] text-app-text-muted">
-            {councilModels.length > 0
-              ? `${councilModels.length} model${councilModels.length === 1 ? "" : "s"} in this tier: ${councilModels.join(", ")}`
-              : "No models registered for this tier yet. Add some on Models → Tier settings."}
-          </p>
-        </Field>
-        <Field label="Max review revision attempts (1-10)">
-          <input
-            type="number"
-            min={1}
-            max={10}
-            value={draft.maxRevisionAttempts}
-            onChange={(event) => onUpdate("maxRevisionAttempts", Number(event.target.value))}
-            className="rounded-md border border-app-border bg-app-surface-2 px-2 py-1 text-xs"
-          />
-        </Field>
-        <Field label="Max QA repair attempts (1-10)">
-          <input
-            type="number"
-            min={1}
-            max={10}
-            value={draft.maxQaRepairAttempts}
-            onChange={(event) => onUpdate("maxQaRepairAttempts", Number(event.target.value))}
-            className="rounded-md border border-app-border bg-app-surface-2 px-2 py-1 text-xs"
-          />
-        </Field>
-        <Field label="QA timeout (ms, 1000-600000)">
-          <input
-            type="number"
-            min={1000}
-            max={600000}
-            step={1000}
-            value={draft.qaTimeoutMs}
-            onChange={(event) => onUpdate("qaTimeoutMs", Number(event.target.value))}
-            className="rounded-md border border-app-border bg-app-surface-2 px-2 py-1 text-xs"
-          />
-        </Field>
-        <div className="md:col-span-2">
-          <Field label="Brainstorm system prompt (optional override)">
-            <textarea
-              value={draft.brainstormSystemPrompt}
-              onChange={(event) => onUpdate("brainstormSystemPrompt", event.target.value)}
-              rows={3}
-              placeholder="Leave empty to use the built-in default."
-              className="rounded-md border border-app-border bg-app-surface-2 px-2 py-1 text-xs"
-            />
-          </Field>
-        </div>
-      </div>
-      <div className="mt-4 flex items-center gap-2">
-        <button
-          type="button"
-          disabled={!dirty || update.isPending || councilModels.length < 2}
-          onClick={save}
-          className="rounded-md bg-app-accent px-3 py-1.5 text-xs font-semibold text-app-bg disabled:opacity-50"
-          title={
-            councilModels.length < 2
-              ? "Need at least 2 models in this tier for a council vote."
-              : "Save coding-council config."
-          }
-        >
-          {update.isPending ? "Saving…" : "Save"}
-        </button>
-        {update.isError ? (
-          <span className="text-[11px] text-app-danger">{update.error.message}</span>
-        ) : null}
-        {councilModels.length < 2 ? (
-          <GenericBadge tone="warn">add more models in tier</GenericBadge>
-        ) : null}
-      </div>
-    </article>
   );
 }
 

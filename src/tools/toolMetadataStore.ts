@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { Tool, ToolExample, ToolHealth, ToolSchema, ToolStartupMode, ToolStorageContract } from "./tool.js";
 import type { ToolPackageManifest } from "./toolPackage.js";
 
@@ -19,9 +21,9 @@ export type ToolModuleSource = "builtin" | "generated";
  *     gave up, or operator explicitly marked broken. Set by
  *     `updateHealth(ok=false)` and Slice F rollback paths.
  *
- * Runtime treats `available` AND `loaded` as callable (the agent
- * can invoke the tool). The UI distinguishes them so the operator
- * knows which versions have been blessed.
+ * Runtime treats only `available` as callable by agents. `loaded`
+ * means the package can be imported and manually tested, but still
+ * needs explicit operator promotion before it is offered to agents.
  */
 export type ToolModuleStatus = "available" | "loaded" | "disabled" | "failed";
 
@@ -33,6 +35,27 @@ export type ToolModulePromotionEvidence = {
   qaReport?: Record<string, unknown>;
   packageRef?: string;
   migrationIds?: string[];
+};
+
+export type ToolVersionLifecycleEvent = {
+  id: string;
+  type:
+    | "created"
+    | "manual_run"
+    | "marked_available"
+    | "activated"
+    | "agent_accepted"
+    | "rejected"
+    | "deleted";
+  status: "success" | "failure" | "info";
+  summary: string;
+  actorId?: string;
+  actorType?: string;
+  runId?: string;
+  traceRunId?: string;
+  auditEventId?: string;
+  createdAt: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type ToolModuleVersionSummary = {
@@ -51,6 +74,44 @@ export type ToolModuleVersionSummary = {
   lastHealthDetail?: string;
   successCount?: number;
   failureCount?: number;
+  manualRunEvidence?: {
+    successCount: number;
+    failureCount: number;
+    latestSuccess?: {
+      auditEventId: string;
+      ranAt: string;
+      durationMs?: number;
+      inputPreview?: unknown;
+      contentPreview?: string;
+    };
+    latestFailure?: {
+      auditEventId: string;
+      ranAt: string;
+      durationMs?: number;
+      inputPreview?: unknown;
+      contentPreview?: string;
+    };
+    requiredForActivation: boolean;
+  };
+  runScopedCandidateEvidence?: {
+    successCount: number;
+    failureCount: number;
+    latestSuccess?: {
+      runId: string;
+      ranAt: string;
+      inputPreview?: unknown;
+      contentPreview?: string;
+    };
+    latestFailure?: {
+      runId: string;
+      ranAt: string;
+      inputPreview?: unknown;
+      contentPreview?: string;
+    };
+    requiredForActivation: boolean;
+  };
+  reviewStatus?: "candidate" | "accepted" | "rejected";
+  lifecycleEvents?: ToolVersionLifecycleEvent[];
   updatedAt: string;
 };
 
@@ -69,6 +130,7 @@ export type ToolModuleMetadata = {
   status: ToolModuleStatus;
   lastHealthOk?: boolean;
   lastHealthDetail?: string;
+  runtimeReadiness?: ToolRuntimeReadiness;
   requiredConfigurationKeys: string[];
   requiredSecretHandles: string[];
   settingsSchema?: ToolSchema;
@@ -84,6 +146,15 @@ export type ToolModuleMetadata = {
   lastFailureAt?: string;
   updatedAt: string;
   versions?: ToolModuleVersionSummary[];
+};
+
+export type ToolRuntimeReadiness = {
+  ok: boolean;
+  status: "ready" | "missing_runtime_requirements" | "unknown";
+  checkedAt: string;
+  missingConfigurationKeys: string[];
+  missingSecretHandles: string[];
+  message: string;
 };
 
 export type GeneratedToolModuleInput = {
@@ -112,12 +183,15 @@ export type GeneratedToolReplacementInput = GeneratedToolModuleInput & {
   replacesVersion: string;
 };
 
+const OPERATOR_DISABLED_HEALTH_DETAIL = "Operator disabled tool.";
+
 export type ToolMetadataStore = {
   list(): Promise<ToolModuleMetadata[]>;
   listVersions(name: string): Promise<ToolModuleVersionSummary[]>;
   syncBuiltins(tools: Tool[]): Promise<ToolModuleMetadata[]>;
   updateHealth(name: string, health: ToolHealth): Promise<void>;
   recordUsage(name: string, outcome: "success" | "failure", at?: Date): Promise<void>;
+  setStatus(name: string, status: Extract<ToolModuleStatus, "available" | "disabled">): Promise<ToolModuleMetadata | undefined>;
   registerGenerated(input: GeneratedToolModuleInput): Promise<ToolModuleMetadata>;
   promoteReplacement(input: GeneratedToolReplacementInput): Promise<ToolModuleMetadata>;
   activateVersion(name: string, version: string): Promise<ToolModuleMetadata>;
@@ -143,10 +217,17 @@ export type ToolMetadataStore = {
 
 export class InMemoryToolMetadataStore implements ToolMetadataStore {
   private readonly modules = new Map<string, ToolModuleMetadata>();
+  private readonly moduleVersions = new Map<string, Map<string, ToolModuleMetadata>>();
 
   constructor(initialModules: ToolModuleMetadata[] = []) {
     for (const item of initialModules) {
-      this.modules.set(item.name, cloneModule(item));
+      const activeVersion = item.versions?.find((version) => version.active)?.version ?? item.version;
+      this.setActiveVersion(cloneModule({ ...item, version: activeVersion }));
+      for (const version of item.versions ?? []) {
+        const versionModule = moduleFromVersionSummary(item, version);
+        if (version.active || version.version === activeVersion) this.setActiveVersion(versionModule);
+        else this.setInactiveVersion(versionModule);
+      }
     }
   }
 
@@ -163,6 +244,13 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
 
   async syncBuiltins(tools: Tool[]): Promise<ToolModuleMetadata[]> {
     const updatedAt = new Date().toISOString();
+    const desired = new Set(tools.map((tool) => tool.name));
+
+    for (const [name, existing] of this.modules.entries()) {
+      if (existing.source === "builtin" && !desired.has(name)) {
+        this.modules.delete(name);
+      }
+    }
 
     for (const tool of tools) {
       const existing = this.modules.get(tool.name);
@@ -210,17 +298,24 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
     //                prior state. The operator needs to see it.
     let nextStatus: ToolModuleStatus;
     if (health.ok) {
-      nextStatus = existing.status === "available" ? "available" : "loaded";
+      nextStatus = existing.status === "available"
+        ? "available"
+        : isOperatorDisabled(existing)
+          ? "disabled"
+          : "loaded";
     } else {
       nextStatus = "failed";
     }
-    this.modules.set(name, {
+    const updated = {
       ...existing,
       status: nextStatus,
       lastHealthOk: health.ok,
-      lastHealthDetail: health.detail,
+      lastHealthDetail: nextStatus === "disabled" && isOperatorDisabled(existing)
+        ? `${OPERATOR_DISABLED_HEALTH_DETAIL} Last health: ${health.detail}`
+        : health.detail,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    this.setActiveVersion(updated);
   }
 
   async recordUsage(name: string, outcome: "success" | "failure", at = new Date()): Promise<void> {
@@ -228,14 +323,31 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
     if (!existing) return;
 
     const timestamp = at.toISOString();
-    this.modules.set(name, {
+    const updated = {
       ...existing,
       successCount: existing.successCount + (outcome === "success" ? 1 : 0),
       failureCount: existing.failureCount + (outcome === "failure" ? 1 : 0),
       lastSuccessAt: outcome === "success" ? timestamp : existing.lastSuccessAt,
       lastFailureAt: outcome === "failure" ? timestamp : existing.lastFailureAt,
       updatedAt: timestamp,
-    });
+    };
+    this.setActiveVersion(updated);
+  }
+
+  async setStatus(
+    name: string,
+    status: Extract<ToolModuleStatus, "available" | "disabled">,
+  ): Promise<ToolModuleMetadata | undefined> {
+    const existing = this.modules.get(name);
+    if (!existing) return undefined;
+    const updated: ToolModuleMetadata = {
+      ...cloneModule(existing),
+      status,
+      lastHealthDetail: status === "disabled" ? OPERATOR_DISABLED_HEALTH_DETAIL : existing.lastHealthDetail,
+      updatedAt: new Date().toISOString(),
+    };
+    this.setActiveVersion(updated);
+    return { ...cloneModule(updated), versions: this.versionsFor(name, updated.version) };
   }
 
   async registerGenerated(input: GeneratedToolModuleInput): Promise<ToolModuleMetadata> {
@@ -243,12 +355,6 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
     if (existing?.source === "builtin") {
       throw new Error(`Cannot register generated tool ${input.name}: a builtin tool already uses that name.`);
     }
-    if (existing && existing.version !== input.version) {
-      throw new Error(
-        `Cannot register generated tool ${input.name}: existing version ${existing.version} differs from ${input.version}.`,
-      );
-    }
-
     const stored: ToolModuleMetadata = {
       name: input.name,
       displayName: input.displayName ?? existing?.displayName,
@@ -274,12 +380,17 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       lastSuccessAt: existing?.lastSuccessAt,
       lastFailureAt: existing?.lastFailureAt,
       source: "generated",
-      status: "disabled",
+      status: existing && existing.version !== input.version ? "disabled" : existing?.status ?? "disabled",
       lastHealthOk: existing?.lastHealthOk,
       lastHealthDetail: existing?.lastHealthDetail,
       updatedAt: new Date().toISOString(),
     };
-    this.modules.set(stored.name, cloneModule(stored));
+    if (existing && existing.version !== input.version) {
+      this.setInactiveVersion(stored);
+      return { ...cloneModule(existing), versions: this.versionsFor(existing.name, existing.version) };
+    }
+
+    this.setActiveVersion(stored);
 
     return { ...cloneModule(stored), versions: this.versionsFor(stored.name, stored.version) };
   }
@@ -319,7 +430,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       status: "disabled",
       updatedAt: new Date().toISOString(),
     };
-    this.modules.set(stored.name, cloneModule(stored));
+    this.setActiveVersion(stored);
 
     return { ...cloneModule(stored), versions: this.versionsFor(stored.name, stored.version) };
   }
@@ -328,33 +439,29 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
     const existing = this.modules.get(name);
     if (!existing) throw new Error(`Generated tool ${name} was not found.`);
     if (existing.source === "builtin") throw new Error(`Cannot switch builtin tool ${name}.`);
-    if (existing.version !== version) {
-      throw new Error(
-        `Version ${version} for ${name} is not available in the in-memory registry after restart; rebuild or re-promote it first.`,
-      );
-    }
-    return { ...cloneModule(existing), versions: this.versionsFor(name, existing.version) };
+    const selected = this.moduleVersions.get(name)?.get(version);
+    if (!selected) throw new Error(`Version ${version} for ${name} was not found.`);
+    this.setActiveVersion(selected);
+    const active = this.modules.get(name)!;
+    return { ...cloneModule(active), versions: this.versionsFor(name, active.version) };
   }
 
   async markAvailable(name: string, version: string): Promise<void> {
     const existing = this.modules.get(name);
     if (!existing) return;
     if (existing.source === "builtin") return;
-    if (existing.version !== version) return;
+    const target = this.moduleVersions.get(name)?.get(version);
+    if (!target) return;
     const updated: ToolModuleMetadata = {
-      ...cloneModule(existing),
+      ...cloneModule(target),
       status: "available",
       updatedAt: new Date().toISOString(),
     };
-    this.modules.set(name, updated);
+    if (existing.version === version) this.setActiveVersion(updated);
+    else this.setInactiveVersion(updated);
   }
 
   async deleteVersion(name: string, version: string): Promise<boolean> {
-    // In-memory store keeps a single row per tool (no version history),
-    // so the only safe semantics here is: refuse to delete because the
-    // version IS the active version (if name+version match) or no-op
-    // when the version isn't on record. Real per-version deletion lives
-    // in the Postgres store. This stub keeps tests + CLI happy.
     const existing = this.modules.get(name);
     if (!existing) return false;
     if (existing.source === "builtin") {
@@ -366,9 +473,7 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
       // invariant; we keep it consistent here.
       return false;
     }
-    // Different version requested → not on record in the in-memory
-    // store. Treat as "nothing to do" rather than throwing.
-    return false;
+    return this.moduleVersions.get(name)?.delete(version) ?? false;
   }
 
   async deleteGenerated(name: string): Promise<boolean> {
@@ -377,14 +482,16 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
     if (existing.source === "builtin") {
       throw new Error(`Cannot delete builtin tool ${name}.`);
     }
+    this.moduleVersions.delete(name);
     return this.modules.delete(name);
   }
 
   private versionsFor(name: string, activeVersion: string): ToolModuleVersionSummary[] {
-    const module = this.modules.get(name);
-    if (!module) return [];
-    return [
-      {
+    const versions = this.moduleVersions.get(name);
+    const active = this.modules.get(name);
+    if (!versions || !active) return [];
+    return [...versions.values()]
+      .map((module) => ({
         version: module.version,
         active: module.version === activeVersion,
         status: module.status,
@@ -401,8 +508,99 @@ export class InMemoryToolMetadataStore implements ToolMetadataStore {
         successCount: module.successCount,
         failureCount: module.failureCount,
         updatedAt: module.updatedAt,
-      },
-    ];
+      }))
+      .sort((a, b) => compareVersionsDesc(a.version, b.version) || b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  private setActiveVersion(module: ToolModuleMetadata): void {
+    const stored = cloneModule(module);
+    this.modules.set(stored.name, stored);
+    const versions = this.moduleVersions.get(stored.name) ?? new Map<string, ToolModuleMetadata>();
+    versions.set(stored.version, cloneModule(stored));
+    this.moduleVersions.set(stored.name, versions);
+  }
+
+  private setInactiveVersion(module: ToolModuleMetadata): void {
+    const stored = cloneModule(module);
+    const versions = this.moduleVersions.get(stored.name) ?? new Map<string, ToolModuleMetadata>();
+    versions.set(stored.version, stored);
+    this.moduleVersions.set(stored.name, versions);
+  }
+}
+
+function isOperatorDisabled(module: ToolModuleMetadata): boolean {
+  return module.status === "disabled" && (module.lastHealthDetail ?? "").startsWith(OPERATOR_DISABLED_HEALTH_DETAIL);
+}
+
+export class LocalJsonToolMetadataStore extends InMemoryToolMetadataStore {
+  constructor(private readonly filePath: string) {
+    super(readLocalToolMetadata(filePath));
+  }
+
+  override async syncBuiltins(tools: Tool[]): Promise<ToolModuleMetadata[]> {
+    const result = await super.syncBuiltins(tools);
+    await this.persist();
+    return result;
+  }
+
+  override async updateHealth(name: string, health: ToolHealth): Promise<void> {
+    await super.updateHealth(name, health);
+    await this.persist();
+  }
+
+  override async recordUsage(name: string, outcome: "success" | "failure", at?: Date): Promise<void> {
+    await super.recordUsage(name, outcome, at);
+    await this.persist();
+  }
+
+  override async setStatus(
+    name: string,
+    status: Extract<ToolModuleStatus, "available" | "disabled">,
+  ): Promise<ToolModuleMetadata | undefined> {
+    const result = await super.setStatus(name, status);
+    await this.persist();
+    return result;
+  }
+
+  override async registerGenerated(input: GeneratedToolModuleInput): Promise<ToolModuleMetadata> {
+    const result = await super.registerGenerated(input);
+    await this.persist();
+    return result;
+  }
+
+  override async promoteReplacement(input: GeneratedToolReplacementInput): Promise<ToolModuleMetadata> {
+    const result = await super.promoteReplacement(input);
+    await this.persist();
+    return result;
+  }
+
+  override async activateVersion(name: string, version: string): Promise<ToolModuleMetadata> {
+    const result = await super.activateVersion(name, version);
+    await this.persist();
+    return result;
+  }
+
+  override async markAvailable(name: string, version: string): Promise<void> {
+    await super.markAvailable(name, version);
+    await this.persist();
+  }
+
+  override async deleteVersion(name: string, version: string): Promise<boolean> {
+    const result = await super.deleteVersion(name, version);
+    if (result) await this.persist();
+    return result;
+  }
+
+  override async deleteGenerated(name: string): Promise<boolean> {
+    const result = await super.deleteGenerated(name);
+    if (result) await this.persist();
+    return result;
+  }
+
+  private async persist(): Promise<void> {
+    const modules = await this.list();
+    mkdirSync(dirname(this.filePath), { recursive: true });
+    writeFileSync(this.filePath, `${JSON.stringify({ modules }, null, 2)}\n`, "utf8");
   }
 }
 
@@ -459,6 +657,55 @@ export function generatedToolInputFromPackageManifest(
   };
 }
 
+function readLocalToolMetadata(filePath: string): ToolModuleMetadata[] {
+  if (!existsSync(filePath)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf8")) as { modules?: unknown };
+    return Array.isArray(parsed.modules)
+      ? parsed.modules.filter(isToolModuleMetadataLike) as ToolModuleMetadata[]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function isToolModuleMetadataLike(value: unknown): value is ToolModuleMetadata {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && typeof (value as { name?: unknown }).name === "string"
+    && typeof (value as { version?: unknown }).version === "string"
+    && typeof (value as { description?: unknown }).description === "string"
+    && Array.isArray((value as { capabilities?: unknown }).capabilities)
+    && ((value as { source?: unknown }).source === "builtin" || (value as { source?: unknown }).source === "generated")
+    && typeof (value as { status?: unknown }).status === "string",
+  );
+}
+
+function moduleFromVersionSummary(
+  base: ToolModuleMetadata,
+  version: ToolModuleVersionSummary,
+): ToolModuleMetadata {
+  return {
+    ...cloneModule(base),
+    version: version.version,
+    displayName: version.displayName ?? base.displayName,
+    description: version.description ?? base.description,
+    capabilities: [...(version.capabilities ?? base.capabilities)],
+    modulePath: version.modulePath ?? base.modulePath,
+    testPath: version.testPath ?? base.testPath,
+    requiredSecretHandles: [...(version.requiredSecretHandles ?? base.requiredSecretHandles ?? [])],
+    changeSummary: version.changeSummary ?? base.changeSummary,
+    promotionEvidence: version.promotionEvidence ? cloneJson(version.promotionEvidence) : base.promotionEvidence,
+    packageManifest: version.packageManifest ? cloneJson(version.packageManifest) : base.packageManifest,
+    lastHealthDetail: version.lastHealthDetail ?? base.lastHealthDetail,
+    successCount: version.successCount ?? base.successCount,
+    failureCount: version.failureCount ?? base.failureCount,
+    status: version.status,
+    updatedAt: version.updatedAt,
+  };
+}
+
 function cloneModule(module: ToolModuleMetadata): ToolModuleMetadata {
   return {
     ...module,
@@ -472,6 +719,7 @@ function cloneModule(module: ToolModuleMetadata): ToolModuleMetadata {
     promotionEvidence: module.promotionEvidence ? cloneJson(module.promotionEvidence) : undefined,
     examples: (module.examples ?? []).map((example) => cloneJson(example)),
     packageManifest: module.packageManifest ? cloneJson(module.packageManifest) : undefined,
+    runtimeReadiness: module.runtimeReadiness ? cloneJson(module.runtimeReadiness) : undefined,
     successCount: module.successCount ?? 0,
     failureCount: module.failureCount ?? 0,
   };
@@ -479,6 +727,16 @@ function cloneModule(module: ToolModuleMetadata): ToolModuleMetadata {
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function compareVersionsDesc(a: string, b: string): number {
+  const left = a.split(/[.+-]/).map((part) => Number.parseInt(part, 10));
+  const right = b.split(/[.+-]/).map((part) => Number.parseInt(part, 10));
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const diff = (right[index] || 0) - (left[index] || 0);
+    if (diff !== 0) return diff;
+  }
+  return b.localeCompare(a);
 }
 
 export function validateReplacement(input: GeneratedToolReplacementInput, existing: ToolModuleMetadata | undefined): void {

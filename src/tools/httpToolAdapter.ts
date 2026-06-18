@@ -66,14 +66,11 @@ export class HttpToolAdapter implements Tool {
   async healthcheck(): Promise<ToolHealth> {
     try {
       const response = await this.fetchImpl(`${this.baseUrl()}/health`);
-      const text = await response.text().catch(() => "");
-      const parsed = parseHealthBody(text);
-      const serviceHealthy = response.ok && parsed.status !== "degraded" && parsed.status !== "failed";
       return {
-        ok: serviceHealthy,
-        detail: serviceHealthy
-          ? parsed.detail ?? `${this.name} HTTP service healthy`
-          : parsed.detail ?? `${this.name} HTTP service unhealthy: HTTP ${response.status}`,
+        ok: response.ok,
+        detail: response.ok
+          ? `${this.name} HTTP service healthy`
+          : `${this.name} HTTP service unhealthy: HTTP ${response.status}`,
       };
     } catch (error) {
       return {
@@ -164,21 +161,6 @@ export class HttpToolAdapter implements Tool {
     if (fromEnv) return fromEnv.replace(/\/+$/, "");
     const composeName = this.name.replace(/\./g, "-");
     return `http://${composeName}:8080`;
-  }
-}
-
-function parseHealthBody(text: string): { status?: string; detail?: string } {
-  if (!text) return {};
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    if (!parsed || typeof parsed !== "object") return {};
-    const record = parsed as { status?: unknown; detail?: unknown };
-    return {
-      status: typeof record.status === "string" ? record.status : undefined,
-      detail: typeof record.detail === "string" ? record.detail : undefined,
-    };
-  } catch {
-    return {};
   }
 }
 

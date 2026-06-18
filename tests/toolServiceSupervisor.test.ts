@@ -79,6 +79,38 @@ test("ToolServiceSupervisor starts and stops generic service runtimes", async ()
   assert.equal(heartbeat.detail, "runtime healthy");
 });
 
+test("ToolServiceSupervisor restart stops the active runtime before starting a new one", async () => {
+  const registry = new ToolRegistry();
+  let started = 0;
+  let stopped = 0;
+  registry.register(serviceTool({
+    async startService() {
+      started += 1;
+      const runtimeId = started;
+      return {
+        stop() {
+          stopped += 1;
+        },
+        async healthcheck() {
+          return { ok: true, detail: `runtime healthy ${runtimeId}` };
+        },
+      };
+    },
+  }));
+  const supervisor = new ToolServiceSupervisor(registry);
+
+  const startedStatus = await supervisor.start("service.echo");
+  const restartedStatus = await supervisor.restart("service.echo");
+
+  assert.equal(started, 2);
+  assert.equal(stopped, 1);
+  assert.equal(startedStatus.detail, "runtime healthy 1");
+  assert.equal(restartedStatus.detail, "runtime healthy 2");
+  assert.ok(restartedStatus.startedAt);
+  assert.ok(restartedStatus.lastRestartAt);
+  assert.ok(Date.parse(restartedStatus.startedAt) >= Date.parse(restartedStatus.lastRestartAt));
+});
+
 test("ToolServiceSupervisor stops runtime when start healthcheck fails", async () => {
   const registry = new ToolRegistry();
   let stopped = 0;
@@ -171,6 +203,9 @@ test("ToolServiceSupervisor auto-restarts a running service after failed heartbe
   assert.equal(restarted.restartCount, 1);
   assert.equal(restarted.consecutiveFailureCount, 0);
   assert.equal(restarted.lastRestartReason, "failed-heartbeat");
+  assert.ok(restarted.startedAt);
+  assert.ok(restarted.lastRestartAt);
+  assert.ok(Date.parse(restarted.startedAt) >= Date.parse(restarted.lastRestartAt));
   assert.equal(started, 2);
   assert.equal(stopped, 1);
   assert.match(logs.map((log) => log.message).join("\n"), /auto-restart/i);

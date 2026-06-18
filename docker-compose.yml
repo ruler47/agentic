@@ -17,17 +17,18 @@ services:
       CHROMIUM_PATH: /usr/bin/chromium
       TZ: Europe/Madrid
       AGENT_TIME_ZONE: Europe/Madrid
-      # Phase 13: route built-in tool calls to dockerized services
-      # instead of running them in-process.
-      BROWSER_OPERATE_RUNNER: docker
-      BROWSER_OPERATE_BASE_URL: http://browser-operate:8080
-      CHANNEL_TELEGRAM_BASE_URL: http://channel-telegram:8080
+      # Base rebuild: the default runtime is the small Agent/Tool/LLM loop.
+      AGENT_RUNTIME: base
+      TOOL_BUILD_WORKER: disabled
+      # Legacy built-in/reference tools are disabled in the rebuilt product.
+      # Tools should be generated/imported source-bundle or OCI packages.
+      BUILTIN_TOOLS: disabled
     ports:
       - "3000:3000"
     volumes:
       - ./workspace:/app/workspace
       # Tool source-bundles live in <project-root>/tools and are bind-mounted
-      # so the council can write new ones on the host. The relative `./tools`
+      # so builders/imports can write runtime packages on the host. The relative `./tools`
       # path is RESOLVED RELATIVE TO THIS docker-compose.yml — i.e. it ALWAYS
       # points at the canonical project checkout, even if `docker compose` is
       # invoked from a sibling worktree (Claude Code session dir, etc.).
@@ -45,8 +46,6 @@ services:
         condition: service_healthy
       searxng:
         condition: service_started
-      browser-operate:
-        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -101,43 +100,6 @@ services:
       - "8080:8080"
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-
-  # Phase 13: dockerized browser.operate tool service. The runtime
-  # forwards all browser.operate calls here when BROWSER_OPERATE_RUNNER=docker
-  # is set on the app service. Self-contained Playwright + Chromium image;
-  # restart on failure so a Chromium crash doesn't take the runtime down.
-  browser-operate:
-    build:
-      context: ./tools/browser-operate-service
-    environment:
-      PORT: "8080"
-    shm_size: "1gb"
-    restart: on-failure
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    ports:
-      - "18080:8080"
-
-  # Dockerized channel.telegram bridge. The implementation package is still the
-  # extracted Telegram service, but the compose service is named after the active
-  # registry tool instead of the retired telegram.bot module.
-  channel-telegram:
-    build:
-      context: ./tools/telegram-bot-service
-    environment:
-      PORT: "8080"
-    restart: on-failure
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    ports:
-      - "18081:8080"
 
 volumes:
   postgres-data:

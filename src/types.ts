@@ -4,9 +4,6 @@ export type AgentRole =
   | "worker"
   | "reviewer"
   | "synthesizer"
-  | "tool-builder"
-  | "tool-qa"
-  | "tool-registrar"
   | "tool-user";
 
 export type Message = {
@@ -36,8 +33,6 @@ export type LlmConfig = {
   baseUrl: string;
   model: string;
   temperature: number;
-  requestTimeoutMs?: number;
-  reasoningEffort?: string;
   tierModels: Partial<Record<ModelTier, string>>;
   tierModelCandidates: Partial<Record<ModelTier, string[]>>;
 };
@@ -146,14 +141,6 @@ export type WorkerResult = {
    */
   toolEvidenceRecords?: unknown[];
   artifacts?: AgentArtifact[];
-  selfCheck?: {
-    readyToReturn: boolean;
-    artifactCount: number;
-    evidenceCount: number;
-    checks: Array<{ name: string; ok: boolean; reason: string }>;
-    warnings: string[];
-    limitations: string[];
-  };
   traceSpanId?: string;
   modelTier?: ModelTier;
   /**
@@ -228,6 +215,146 @@ export type ArtifactCreateInput = {
   quality?: ArtifactQualityMetadata;
 };
 
+export type ExternalActionType =
+  | "reservation"
+  | "appointment"
+  | "purchase"
+  | "outbound_message"
+  | "api_write"
+  | "generic_external_action";
+
+export type ExternalActionProposalStatus =
+  | "proposed"
+  | "approved"
+  | "rejected"
+  | "committed"
+  | "cancelled";
+
+export type ExternalActionCommitStatus =
+  | "not_requested"
+  | "blocked"
+  | "committed"
+  | "failed";
+
+export type ExternalActionExecutionMode = "auto" | "approval";
+
+export type ExternalActionCommitExecutorKind = "generated_tool" | "manual_operator";
+
+export type ExternalActionCommitExecutor = {
+  kind: ExternalActionCommitExecutorKind;
+  toolName?: string;
+  toolVersion?: string;
+  toolInput?: Record<string, unknown>;
+  expectedProof?: string[];
+  risk: "low" | "medium" | "high";
+  ready: boolean;
+  reason: string;
+  missing?: string[];
+};
+
+export type ExternalActionPreparation = {
+  stage: "research_only" | "prepared_for_approval" | "ready_to_commit" | "blocked";
+  objective: string;
+  target?: string;
+  targetUrl?: string;
+  collectedInputs: Array<{
+    label: string;
+    value: string;
+    source: "user_request" | "agent_inferred" | "source_evidence" | "profile" | "unknown";
+  }>;
+  missingInputs: string[];
+  commitBoundary: string;
+  operatorChecklist: string[];
+  proofPlan: string[];
+};
+
+export type ExternalActionPreparedSession = {
+  preparedAt: string;
+  toolName: string;
+  toolVersion?: string;
+  currentUrl?: string;
+  pageTitle?: string;
+  textPreview?: string;
+  links: Array<{ text?: string; href: string }>;
+  formFields?: Array<{
+    id?: string;
+    label?: string;
+    name?: string;
+    type?: string;
+    selector?: string;
+    required?: boolean;
+    placeholder?: string;
+    autocomplete?: string;
+  }>;
+  formFieldGaps?: Array<{
+    field?: string;
+    label?: string;
+    name?: string;
+    type?: string;
+    selector?: string;
+    required?: boolean;
+    reason: string;
+    profileAvailable?: boolean;
+    profileSource?: "user_profile" | "group_profile";
+    valuePreview?: string;
+  }>;
+  approvedProfileFields?: Array<{
+    field: string;
+    source: "user_profile" | "group_profile";
+    valuePreview: string;
+    approvedAt: string;
+    approvedBy: string;
+  }>;
+  availableProfileFields?: Array<{
+    field: string;
+    source: "user_profile" | "group_profile";
+    valuePreview: string;
+    reason: string;
+  }>;
+  filledFields: Array<{ label?: string; selector?: string; valuePreview: string }>;
+  replaySteps: Array<Record<string, unknown>>;
+  commitCandidates: Array<{ label?: string; selector?: string; reason: string }>;
+  proofArtifactIds?: string[];
+  artifactIds: string[];
+  warnings: string[];
+  actionDraft?: {
+    status: "needs_preparation" | "needs_more_input" | "ready_for_operator_review";
+    target?: string;
+    action: string;
+    pageUrl?: string;
+    dataPreview: Array<{ label: string; value: string; source: "proposal" | "prepared_form" }>;
+    missingBeforeCommit: string[];
+    proofArtifactIds: string[];
+    commitControls: Array<{ label?: string; selector?: string; reason: string }>;
+    operatorNextStep: string;
+    postCommitReportRequirements: string[];
+  };
+};
+
+export type ExternalActionProposal = {
+  id: string;
+  runId: string;
+  threadId?: string;
+  actionType: ExternalActionType;
+  status: ExternalActionProposalStatus;
+  title: string;
+  summary: string;
+  proposedAction: string;
+  executionMode?: ExternalActionExecutionMode;
+  target?: string;
+  payloadPreview?: string;
+  preparation?: ExternalActionPreparation;
+  approvalRequired: boolean;
+  userExplicitlyForbidsAction: boolean;
+  allowedWithoutApproval: string[];
+  prohibitedWithoutApproval: string[];
+  sourceUrls: string[];
+  artifactIds: string[];
+  commitExecutor?: ExternalActionCommitExecutor;
+  createdAt: string;
+  createdBy: "base-agent";
+};
+
 export type AgentRunResult = {
   finalAnswer: string;
   complexity: TaskComplexity;
@@ -235,37 +362,47 @@ export type AgentRunResult = {
   workerResults: WorkerResult[];
   reviews: ReviewResult[];
   artifacts?: AgentArtifact[];
+  toolCreationRequests?: Array<{
+    toolName: string;
+    toolVersion?: string;
+    request: string;
+    status: "requested" | "registered" | "failed";
+    runId?: string;
+    creationId?: string;
+    packageRef?: string;
+    error?: string;
+  }>;
+  toolEditRequests?: Array<{
+    toolName: string;
+    toolVersion?: string;
+    request: string;
+    status: "requested" | "registered" | "failed";
+    runId?: string;
+    creationId?: string;
+    packageRef?: string;
+    activeVersion?: string;
+    replacesVersion?: string;
+    error?: string;
+  }>;
+  actionProposals?: ExternalActionProposal[];
   learnedSkill?: SkillMemoryEntry;
-  /**
-   * Phase 16 Slice D: optional terminal-status override.
-   *
-   * The default contract is "agent.run() returned, so the run is
-   * `completed`". For tool-build council runs that finish the
-   * pipeline but never passed QA, that label is misleading — the
-   * tool was registered in metadata but the operator's actual
-   * intent (a working tool) failed. Setting `runStatus: "failed"`
-   * lets the runtime caller (RunsService) record the run as
-   * `failed` while still preserving the final-answer text, trace
-   * events, and any artefacts. Absent or "completed" means the
-   * normal happy-path completion.
-   */
-  runStatus?: "completed" | "failed";
-  /**
-   * Phase 16 Slice D: human-readable reason for `runStatus: "failed"`.
-   * Used as the message persisted on the runs row so the Runs page
-   * shows why the run is red. Ignored when `runStatus` is not
-   * "failed".
-   */
+  /** Optional status override for agents that complete with a failed gate or pause for approval. */
+  runStatus?: "completed" | "failed" | "waiting_approval";
+  /** Human-readable reason for `runStatus: "failed"`. */
   runFailureReason?: string;
 };
 
 export type AgentEventType =
   | "run-started"
+  | "run-waiting-approval"
   | "artifacts-received"
   | "artifact-created"
+  | "artifact-quality-updated"
   | "memory-search-completed"
   | "classification-completed"
   | "agent-strategy-selected"
+  | "agent-task-framed"
+  | "agent-context-prepared"
   | "agent-invocation-created"
   | "agent-decision-loop-completed"
   | "agent-council-planned"
@@ -274,21 +411,61 @@ export type AgentEventType =
   | "agent-invocation-completed"
   | "agent-invocation-failed"
   | "agent-invocation-return-checked"
-  | "planning-started"
-  | "planning-fallback-created"
+  | "agent-truncated-answer-repair-requested"
+  | "agent-proof-repair-requested"
+  | "agent-research-contract-repair-requested"
+  | "agent-source-grounding-repair-requested"
+  | "agent-source-grounding-degraded"
+  | "agent-tool-contract-fields-added"
+  | "agent-final-answer-grounding-degraded"
+  | "external-action-proposal-created"
+  | "external-action-proposal-approved"
+  | "external-action-proposal-rejected"
+  | "external-action-approval-auto-advance-started"
+  | "external-action-approval-auto-advance-completed"
+  | "external-action-approval-auto-advance-failed"
+  | "external-action-executor-build-requested"
+  | "external-action-executor-build-completed"
+  | "external-action-executor-build-failed"
+  | "external-action-executor-attached"
+  | "external-action-preparation-started"
+  | "external-action-preparation-completed"
+  | "external-action-preparation-failed"
+  | "external-action-profile-hydration-approved"
+  | "external-action-commit-started"
+  | "external-action-commit-blocked"
+  | "external-action-commit-failed"
+  | "external-action-committed"
+  | "agent-candidate-use-repair-requested"
   | "planning-completed"
   | "worker-started"
   | "worker-completed"
   | "worker-failed"
-  | "worker-synthesis-degraded"
   | "review-started"
   | "review-completed"
   | "review-failed"
   | "tool-missing"
-  | "tool-build-requested"
-  | "tool-rework-wait-opened"
   | "tool-started"
   | "tool-completed"
+  | "tool-creation-started"
+  | "tool-creation-discovery-completed"
+  | "tool-creation-secrets-registered"
+  | "tool-creation-strategy-selected"
+  | "tool-creation-authoring-completed"
+  | "tool-creation-package-qa-completed"
+  | "tool-creation-registered"
+  | "tool-creation-reloaded"
+  | "tool-creation-completed"
+  | "tool-creation-failed"
+  | "tool-version-manual-run"
+  | "tool-version-marked-available"
+  | "tool-version-activated"
+  | "tool-version-agent-accepted"
+  | "tool-version-rejected"
+  | "tool-version-deleted"
+  | "agent-tool-catalog-updated"
+  | "tool-candidate-accepted"
+  | "tool-candidate-manual-review-required"
   | "agent-self-check-completed"
   | "synthesis-started"
   | "synthesis-completed"
@@ -301,21 +478,7 @@ export type AgentEventType =
   | "work-ledger-reused"
   | "work-ledger-waiting-existing"
   | "evidence-ledger-recorded"
-  | "run-retrospective-proposed"
-  // Phase 14: tool-build council events.
-  | "tool-build-brainstorm-proposal"
-  | "tool-build-vote-cast"
-  | "tool-build-council-winner-selected"
-  | "tool-build-code-drafted"
-  | "tool-build-code-review-cast"
-  | "tool-build-code-revised"
-  | "tool-build-qa-attempt"
-  | "tool-build-code-repaired"
-  | "tool-build-registered"
-  | "tool-build-registration-aborted"
-  | "tool-build-research-request"
-  // Phase 14 / Phase 2: parent build halted on a missing reader tool.
-  | "tool-build-waiting-for-reader";
+  | "run-retrospective-proposed";
 
 export type AgentActivity =
   | "coordination"

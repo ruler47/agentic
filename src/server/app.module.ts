@@ -1,5 +1,7 @@
 import { resolve } from "node:path";
 import { Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+import { ApiTokenGuard } from "./common/guards/api-token.guard.js";
 import { ServeStaticModule } from "@nestjs/serve-static";
 import { CommonModule } from "./common/common.module.js";
 import { ConfigModule } from "./config/config.module.js";
@@ -61,6 +63,12 @@ import { RuntimeWorkersModule } from "./workers/runtime-workers.module.js";
     // unknown non-API HTML request can be turned into the SPA shell
     // without breaking /assets/*.js or /api/*.
     SpaModule,
+  ],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ApiTokenGuard,
+    },
   ],
 })
 export class AppModule {}

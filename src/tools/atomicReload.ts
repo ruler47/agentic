@@ -9,8 +9,7 @@
  *
  *   1. There is a window between "unregister all" and "load
  *      finished" during which the registry is empty. Any concurrent
- *      `registry.get(name)` returns undefined and the caller (e.g.
- *      the QA loop in a tool-build council run) raises
+ *      `registry.get(name)` returns undefined and the caller raises
  *      "Tool not registered" against a tool that actually exists in
  *      the DB and on disk.
  *

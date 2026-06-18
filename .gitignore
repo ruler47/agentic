@@ -2,22 +2,11 @@ node_modules/
 dist/
 .env
 .DS_Store
-# Phase 13: tool sources we ship live under tools/. Generated/runtime
-# tool packages (plus old `tools/` workspace) are still ignored, but
-# the SDK and the four extracted tool services we author by hand
-# are explicitly tracked.
-/tools/*
-!/tools/sdk/
-!/tools/browser-operate-service/
-!/tools/chart-generate-service/
-!/tools/market-timeseries-service/
-!/tools/telegram-bot-service/
-# Phase 13 follow-up: stub directories that mirror in-process built-ins so
-# the `tools/` filesystem layout matches the live tool registry. README-only
-# marker dirs — actual implementations live under src/tools/.
-!/tools/web.search/
-!/tools/file.read/
-!/tools/file.write/
-!/tools/channel.telegram.bot/
+# Runtime/generated tool packages are not Agentic platform source.
+# The core stores tool manifests/versions/settings/status in metadata stores
+# and passes only enabled/available registrations to agents. Package source
+# under tools/ is operator/runtime data used to build or run separate
+# source-bundle/OCI/external tool services.
+/tools/
 workspace/*
 !workspace/.gitkeep

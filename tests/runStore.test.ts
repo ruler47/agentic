@@ -97,6 +97,26 @@ test("InMemoryRunStore recovers interrupted queued and running runs", async () =
   assert.equal(untouchedCompleted?.status, "completed");
 });
 
+test("InMemoryRunStore can pause a run for external action approval", async () => {
+  const store = new InMemoryRunStore();
+  const run = await store.create("approval task");
+  const result: AgentRunResult = {
+    finalAnswer: "Prepared an external action proposal.",
+    complexity: { mode: "direct", reason: "test", domains: ["test"], riskLevel: "high" },
+    subtasks: [],
+    workerResults: [],
+    reviews: [],
+  };
+
+  await store.markRunning(run.id);
+  await store.waitForApproval(run.id, result, "Waiting for operator approval.");
+
+  const paused = await store.get(run.id);
+  assert.equal(paused?.status, "waiting_approval");
+  assert.equal(paused?.error, "Waiting for operator approval.");
+  assert.equal(paused?.result?.finalAnswer, "Prepared an external action proposal.");
+});
+
 test("InMemoryRunStore cancellation is terminal", async () => {
   const store = new InMemoryRunStore();
   const run = await store.create("cancel me");

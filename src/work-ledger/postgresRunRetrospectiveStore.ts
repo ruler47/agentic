@@ -26,7 +26,7 @@ type RetrospectiveRow = {
   missing_capabilities: string[] | null;
   useful_evidence_ids: string[] | null;
   proposed_memory_ids: string[] | null;
-  proposed_tool_investigation_ids: string[] | null;
+  proposed_tool_follow_up_ids: string[] | null;
   proposed_policy_changes: string[] | null;
   proposed_prompt_changes: string[] | null;
   summary: string | null;
@@ -38,13 +38,13 @@ type RetrospectiveRow = {
 const SELECT_COLUMNS = `id, instance_id, thread_id, run_id, status, run_outcome,
   what_worked, what_failed, suspected_root_causes, duplicated_work,
   weak_tools, weak_models, missing_capabilities, useful_evidence_ids,
-  proposed_memory_ids, proposed_tool_investigation_ids,
+  proposed_memory_ids, proposed_tool_follow_up_ids,
   proposed_policy_changes, proposed_prompt_changes,
   summary, metadata, created_at, updated_at`;
 
 const PROPOSAL_COLUMN: Record<RunRetrospectiveProposalKind, string> = {
   memory: "proposed_memory_ids",
-  tool_investigation: "proposed_tool_investigation_ids",
+  tool_follow_up: "proposed_tool_follow_up_ids",
   policy_change: "proposed_policy_changes",
   prompt_change: "proposed_prompt_changes",
 };
@@ -62,7 +62,7 @@ export class PostgresRunRetrospectiveStore implements RunRetrospectiveStore {
           id, instance_id, thread_id, run_id, status, run_outcome,
           what_worked, what_failed, suspected_root_causes, duplicated_work,
           weak_tools, weak_models, missing_capabilities, useful_evidence_ids,
-          proposed_memory_ids, proposed_tool_investigation_ids,
+          proposed_memory_ids, proposed_tool_follow_up_ids,
           proposed_policy_changes, proposed_prompt_changes,
           summary, metadata, created_at, updated_at
         )
@@ -100,7 +100,7 @@ export class PostgresRunRetrospectiveStore implements RunRetrospectiveStore {
         uniqueStringArray(input.missingCapabilities),
         uniqueStringArray(input.usefulEvidenceIds),
         uniqueStringArray(input.proposedMemoryIds),
-        uniqueStringArray(input.proposedToolInvestigationIds),
+        uniqueStringArray(input.proposedToolFollowUpIds),
         uniqueStringArray(input.proposedPolicyChanges),
         uniqueStringArray(input.proposedPromptChanges),
         nullable(input.summary),
@@ -239,7 +239,7 @@ function mapRow(row: RetrospectiveRow | undefined): RunRetrospectiveRecord {
     missingCapabilities: row.missing_capabilities ?? [],
     usefulEvidenceIds: row.useful_evidence_ids ?? [],
     proposedMemoryIds: row.proposed_memory_ids ?? [],
-    proposedToolInvestigationIds: row.proposed_tool_investigation_ids ?? [],
+    proposedToolFollowUpIds: row.proposed_tool_follow_up_ids ?? [],
     proposedPolicyChanges: row.proposed_policy_changes ?? [],
     proposedPromptChanges: row.proposed_prompt_changes ?? [],
     summary: row.summary ?? undefined,

@@ -25,6 +25,17 @@ export type ChannelHealthSummary = {
   blockedIdentities: number;
 };
 
+export type PendingChannelUser = {
+  key: string;
+  event: ToolServiceEventRecord;
+  provider: string;
+  sourceUserId: string;
+  aliases: string[];
+  messageCount: number;
+  latestAt: string;
+  hasBlockedIdentity: boolean;
+};
+
 export function summarizeChannelHealth(input: {
   services: ToolServiceStatus[];
   events: ToolServiceEventRecord[];
@@ -102,9 +113,106 @@ export function filterChannelIdentities(
     });
 }
 
+export function findPendingChannelUsers(input: {
+  events: ToolServiceEventRecord[];
+  identities: ChannelIdentityView[];
+  service?: string;
+  search?: string;
+}): PendingChannelUser[] {
+  const search = input.search?.trim().toLowerCase();
+  const allowedKeys = new Set(
+    input.identities
+      .filter((identity) => identity.allowStatus === "allowed")
+      .map((identity) => identityKey(identity.provider, identity.providerUserId)),
+  );
+  const blockedKeys = new Set(
+    input.identities
+      .filter((identity) => identity.allowStatus === "blocked")
+      .map((identity) => identityKey(identity.provider, identity.providerUserId)),
+  );
+  const grouped = new Map<string, PendingChannelUser>();
+  for (const event of input.events) {
+    if (event.direction !== "inbound" || !event.sourceUserId || event.runId) continue;
+    if (event.status !== "ignored" && event.status !== "received") continue;
+    if (input.service && input.service !== "all" && event.toolName !== input.service) continue;
+    const ids = uniqueStrings([event.sourceUserId, ...sourceAliasesFromEvent(event)]);
+    if (ids.some((id) => allowedKeys.has(identityKey(event.toolName, id)))) continue;
+    const key = `${event.toolName}:${event.sourceUserId}:${event.sourceChatId ?? ""}`;
+    const existing = grouped.get(key);
+    const hasBlockedIdentity = ids.some((id) => blockedKeys.has(identityKey(event.toolName, id)));
+    if (!existing) {
+      grouped.set(key, {
+        key,
+        event,
+        provider: event.toolName,
+        sourceUserId: event.sourceUserId,
+        aliases: ids.filter((id) => id !== event.sourceUserId),
+        messageCount: 1,
+        latestAt: event.createdAt,
+        hasBlockedIdentity,
+      });
+      continue;
+    }
+    existing.messageCount += 1;
+    existing.hasBlockedIdentity = existing.hasBlockedIdentity || hasBlockedIdentity;
+    if (new Date(event.createdAt).getTime() > new Date(existing.latestAt).getTime()) {
+      existing.event = event;
+      existing.latestAt = event.createdAt;
+    }
+  }
+  return [...grouped.values()]
+    .filter((pending) => {
+      if (!search) return true;
+      return [
+        pending.provider,
+        pending.sourceUserId,
+        ...pending.aliases,
+        pending.event.sourceChatId,
+        pending.event.summary,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(search));
+    })
+    .sort((a, b) => new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime());
+}
+
 export function eventTone(event: ToolServiceEventRecord): "ok" | "warn" | "danger" | "muted" {
   if (event.status === "failed") return "danger";
   if (event.status === "ignored" || event.status === "received" || event.status === "queued") return "warn";
   if (event.status === "sent") return "ok";
   return "muted";
+}
+
+function sourceAliasesFromEvent(event: ToolServiceEventRecord): string[] {
+  const payload = event.payload;
+  if (!payload) return [];
+  const raw = payload.sourceUserAliases;
+  const aliases = Array.isArray(raw) ? raw.filter((value): value is string => typeof value === "string") : [];
+  const username =
+    typeof payload.username === "string"
+      ? payload.username
+      : typeof payload.sourceUsername === "string"
+        ? payload.sourceUsername
+        : typeof payload.sourceUserName === "string"
+          ? payload.sourceUserName
+          : undefined;
+  return uniqueStrings([
+    ...aliases,
+    username,
+    username && !username.startsWith("@") ? `@${username}` : undefined,
+  ]);
+}
+
+function identityKey(provider: string, providerUserId: string): string {
+  return `${provider}:${providerUserId}`;
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  return [
+    ...new Set(
+      values
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
 }

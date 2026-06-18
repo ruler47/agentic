@@ -16,6 +16,13 @@ export type {
   ArtifactQualityCheck,
   ArtifactQualityMetadata,
   ArtifactRequirement,
+  ExternalActionCommitExecutor,
+  ExternalActionCommitExecutorKind,
+  ExternalActionExecutionMode,
+  ExternalActionPreparedSession,
+  ExternalActionProposal,
+  ExternalActionProposalStatus,
+  ExternalActionType,
   MemoryScope,
   MemorySensitivity,
   MemoryStatus,
@@ -59,6 +66,11 @@ export type {
   ToolModuleVersionSummary,
   ToolModulePromotionEvidence,
 } from "@server/tools/toolMetadataStore";
+
+export type {
+  ToolContextKind,
+  ToolContextRecord,
+} from "@server/tools/toolContextStore";
 
 export type {
   ToolRuntimeSettingInput,

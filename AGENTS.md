@@ -7,275 +7,489 @@ architecture, commands, conventions, or collaboration rules change.
 
 ## Project
 
-Agentic Universal Agent is a TypeScript prototype of a coordinator agent.
+Agentic is a TypeScript rebuild of a universal assistant platform for one family,
+household, company, or team per running instance.
 
-The coordinator accepts one concrete user task, decides whether to answer directly or
-delegate, creates focused subtasks for worker agents, reviews their results, synthesizes
-the final answer, and stores reusable lessons in shared skill memory.
-Delegated subtasks form a dependency-aware DAG: workers with no dependencies can run in
-parallel, while workers with `dependsOn` wait for reviewed upstream outputs.
+The platform has three first-class primitives:
 
-The product direction is a deployable assistant platform for exactly one family,
-household, company, or team per running instance. Future work must preserve
-instance/user/channel provenance so the assistant can maintain group memory, personal
-memory, whitelisted channel identities, tools, credentials, outbound messages, and
-policies without leaking context.
+- **Agent**: an LLM-driven actor that receives one local task, uses visible context,
+  calls registered tools when useful, may later delegate, and returns through a
+  checkable contract.
+- **Tool**: an independently versioned, portable capability package with a manifest,
+  schemas, docs, its own `package.json` dependencies, settings, secret handles, runner,
+  health, QA evidence, artifacts, and optional migrations. Tools should be usable outside
+  Agentic as small npm-style packages, local HTTP runtimes, or containers when they are
+  generic enough.
+- **LLM**: a local or remote model resolved through tier/provider policy. Better models
+  should improve outcomes without product-specific hardcoding.
 
-## Current Architecture Decision
+The current rebuild baseline is intentionally small. `BaseAgent` is the only active agent
+runtime. The older coordinator DAG, recursive prototype, council tool-builder, legacy Tool
+Build queue, investigation flow, and tool-rework wait flow were removed from the active
+tree on 2026-05-15. Reintroduce those ideas only through the roadmap, not by reviving the
+deleted pipeline.
 
-- The legacy Tool Builder / tool-rework queue is removed from the active server and UI.
-  Do not restore `/api/tool-build-*`, `/api/tool-investigations`, or
-  `/api/tool-rework-waits` as part of ordinary fixes.
-- The active tool foundation is the preinstalled `createCoreToolbelt()` registry:
-  `web.search`, `web.read`, `browser.operate`, `browser.screenshot`,
-  `http.request`, `file.read`, `file.write`, `document.extract`,
-  `data.transform`, `external.action.prepare`, `external.action.commit`, and
-  `channel.telegram`.
-- Local React/API development (`npm run web`) wires `BROWSER_OPERATE_BASE_URL` to
-  `http://127.0.0.1:18080` by default so the preinstalled
-  `browser.operate`/`browser.screenshot` tools can reach the local
-  browser-operate service. Docker/container deployments can still override the value
-  and use the container DNS default.
-- Local React/API development also wires `CHANNEL_TELEGRAM_BASE_URL` /
-  `TELEGRAM_BOT_BASE_URL` to `http://127.0.0.1:18081` by default so the preinstalled
-  `channel.telegram` tool can reach a host-mapped Telegram service. Health is expected
-  to be `failed`/`degraded` until the service is started with a bot token and context.
-- The same local dev script sets `ARTIFACT_ROOT` to `workspace/artifacts` by default
-  so generated screenshots/files save on the host instead of trying to write Docker's
-  `/app/workspace/artifacts` path.
-- The old `chart.generate`, `market.timeseries`, and `telegram.bot` modules can remain
-  as historical/reference source, but they are not part of the active preinstalled
-  toolbelt unless deliberately reintroduced through the registry.
-- Future builder work must build on the same versioned tool registry and metadata
-  contract used by those preinstalled tools. Generated implementations should live as
-  out-of-tree portable packages/services and be registered/promoted into the registry;
-  they must not become special Agentic app branches or hardcoded task-specific code.
-- Missing capabilities should currently surface as missing/unsupported work. The platform
-  should not silently create tool build requests until the new builder lifecycle is
-  redesigned and tested.
-- Explicit HTTP/API/JSON URL tasks should use the `http.request` fast path before
-  `web.read` or browser automation. The runtime must not infer unsafe write methods from
-  words like "send/create"; use `POST`/`PUT`/`PATCH`/`DELETE` only when explicitly stated
-  by the user/task/tool input. API-only tasks should not request screenshot artifacts
-  unless the user explicitly asks for visual proof.
-- `jsonplaceholder.typicode.com` is a valid public API smoke-test host. Do not treat it
-  as fake proof merely because the hostname contains the word "placeholder".
-- HTTP status phrases such as `HTTP 200` and `Status 404` are protocol evidence, not
-  product/model/version specifics, and should not trigger ungrounded-specifics repair.
-- Runtime date/time from the current instance context is valid grounding evidence for
-  scheduling/report prose. The ungrounded-specifics gate should not reject current-date
-  mentions such as "June 5, 2026" when they come from runtime context, while still
-  rejecting unsupported product models, prices, versions, or future availability claims.
-- Explicit local utility tasks that name or structurally require `document.extract`,
-  `data.transform`, `file.read`, or `file.write` should use the local core-tool fast
-  path before the general planner. The runtime must suppress web search/browser
-  discovery for those local-only toolchains unless the user explicitly asks for external
-  discovery.
-- Run stores must keep terminal statuses terminal. After a run is `completed`, `failed`,
-  or `cancelled`, late worker/tool events must not mutate it back into an active run.
-- `RUN_IDLE_TIMEOUT_MS` bounds runs with no observable progress, and
-  `LEARNING_TIMEOUT_MS` keeps post-run learning best-effort so completed work is not held
-  hostage by memory summarization.
-- Local OpenAI-compatible reasoning models can put useful assistant text in
-  `reasoning_content` while leaving `message.content` empty. The LLM client treats that
-  as valid assistant output, and local LM Studio `:1234` requests default
-  `reasoning_effort` to `none` unless `LLM_REASONING_EFFORT` overrides it or is set to
-  `disabled`.
-- Small-context local models must not receive full runtime context in early pre-flight
-  calls. Classification uses a compact task/profile/time context, normal chat requests
-  can set `max_tokens`, and delegated final synthesis has bounded prompt sections plus a
-  compact fallback answer when the model still reports context-window overflow. The
-  fallback should complete the run with diagnostic evidence instead of losing all work at
-  the final synthesis boundary.
-- For the current reset/handoff state, read [docs/agent-handoff.md](docs/agent-handoff.md).
-  It summarizes the active product philosophy, core-toolbelt roadmap, external-action
-  safety boundary, model-routing direction, known gaps, and rules about not restoring the
-  legacy Tool Builder path.
+As of 2026-06-18, the active roadmap is `docs/roadmap-core-toolbelt.md`: stabilize a
+preinstalled portable core toolbelt before expanding Tool Creation V1 or external-action
+automation. Tool builder and external actions remain useful infrastructure, but new
+feature work in those areas should be frozen unless it fixes baseline operation. Core
+tools should be first-party portable packages registered through the same manifest,
+versioning, settings, secret-handle, runner, artifact, health, and trace contracts as
+generated tools.
+The companion handoff is `docs/agent-handoff.md`. Do not continue from
+`claude/phase17-research-delegation` as the active base; it was audited and still uses a
+large legacy `UniversalAgent` runtime.
+
+## Current Runtime
+
+- `POST /api/runs` creates a run and executes `BaseAgent`.
+- Run persistence is durable when `DATABASE_URL` is set; otherwise `RunsService` uses the
+  in-memory store and runs disappear on server restart. Backend bootstrap, migrations,
+  and host `npm run web:dev` load `.env` and `.env.local`, so local dev should set
+  `DATABASE_URL=postgres://agentic:agentic@127.0.0.1:5432/agentic` when the compose
+  Postgres service is running.
+- `/api/health` exposes persistence diagnostics for database mode and stateful stores.
+  The sidebar and Diagnostics page show whether runs, secrets, tool metadata, audit,
+  conversations, ledgers, and artifacts are durable or volatile.
+- `BaseAgent` frames the task before the first LLM step, emits `agent-task-framed`, then
+  sends the task, bounded context, task frame, available tool schemas, and a `finish`
+  action to one LLM. The frame is generic and quality-oriented: broad/current
+  recommendation, comparison, or purchase-selection tasks require structured research,
+  freshness checks, multiple source-backed claims, at least one source read/extract step,
+  and claim-focused proof instead of a one-search/snippet answer.
+- Tool calls execute only through `ToolRegistry` with run-scoped runtime context:
+  run/thread/user/instance provenance, per-call span id, artifact writer, callback
+  envelope, secret/configuration resolvers, audit, and logger.
+- BaseAgent loops are budgeted BY DEFAULT: `maxSteps` comes from the task frame
+  (`defaultMaxStepsForTaskFrame` — 10 base, 12 for product selection, 18 for external
+  action preparation) and `maxToolCalls` defaults to `maxSteps * 4`. Unbounded research
+  was a product bug (observed live: 209 events / 16 minutes on one selection run).
+  Callers may still override the budgets explicitly for deliberately long loops.
+  The FINAL budgeted step forbids tool calls (`toolChoice: "none"`) and pushes a
+  wrap-up nudge so the run ends with an answer synthesized from collected evidence,
+  not a step-limit failure stub. Truncated final answers and raw tool-syntax leakage
+  (`<tool_call>` / `<function=` XML from local models) each get a bounded no-tool
+  repair extension step past the budget; after that the finalization gate fails the
+  run honestly. Within one run, repeated or near-duplicate `web.search` queries are
+  skipped and traced with `duplicateSkipped` so the model must reuse prior evidence
+  or change strategy materially.
+- Small-context local models get rolling context compaction: once the dialog exceeds
+  `DEFAULT_CONTEXT_CHAR_BUDGET` (60k chars), tool messages older than the most recent
+  three are compacted to a short head before each LLM step. A context-window error from
+  the model compacts to half the current size (keeping only the latest tool result
+  verbatim) and retries the same step; recovery is bounded because compaction
+  eventually has nothing left to shrink.
+- Run-scoped tool candidate attachment is DETERMINISTIC: a generated tool is attached
+  to a run only when a distinctive token of its NAME appears in the task (e.g. "амл"
+  matches `crypto.aml.gl`). Description/capability text-similarity matching is
+  forbidden — it once attached a stale `example.com` reservation-commit tool to an
+  ordinary booking task. Host-attached initial candidates are OFFERS: the
+  unused-candidate gate skips them (`initialAttachment: true`); only candidates the
+  agent itself requested mid-run must be used before finishing.
+- Thread memory must survive restart/resume: any path that starts a run with only a
+  `threadId` gets the conversation context rebuilt from the thread record
+  (`RunContextResolver.threadContextForThreadId`). The thread summary appends the
+  newest "Answered:" digest at the END; prompt rendering must keep enough tail
+  (currently 1 400 chars) so the latest answer is not truncated away.
+- Follow-up questions about prior answers, sources, artifacts, or already-discussed facts
+  can frame as `thread_context_answer`. That mode answers from thread summary, accepted
+  facts, and open questions, and it must not force a fresh web/current lookup just to cite
+  what the previous answer already used.
+- The whole `/api` surface supports an opt-in shared operator token:
+  `AGENTIC_API_TOKEN` set -> every request needs `Authorization: Bearer`,
+  `x-agentic-token`, or `?token=` (timing-safe compare); unset keeps the open
+  localhost-dev behavior. Exempt: `/api/health`, `/api/tools/callbacks/*`
+  (own HMAC tokens), `/api/fixtures/*` (local browser fixture pages). The
+  React console does not attach the token yet — enable it only for headless
+  /API deployments until the UI learns to store it.
+- Core toolbelt tools are preinstalled first-party tools registered at bootstrap through
+  `createCoreToolbelt()` when `BUILTIN_TOOLS` is enabled. They are synchronized into tool
+  metadata as built-ins and should be directly offered to agents when metadata/readiness
+  marks them available. Generated/package tools still use the manual QA/promotion flow.
+- BaseAgent trace spans now use stable parent/child ids for the root agent, context,
+  every LLM step, every tool call, artifact saves, and the return gate. LLM spans record
+  safe normalized `input`/`output`; tool spans record summarized tool `input`/`output`.
+  Trace Lab renders these as arrows plus inspector call details.
+- Source-backed/current answers require proof by default when artifact saving and proof
+  tools make it possible. If the model tries to finish early, BaseAgent emits
+  `agent-proof-repair-requested`, blocks that `finish`, and gives the model a bounded
+  repair turn to capture focused proof before finishing again. If screenshot proof keeps
+  failing but a useful text report already exists, the runtime preserves the draft and
+  either saves a JSON source-evidence proof artifact from extracted URL evidence or
+  returns a degraded answer with an explicit proof note instead of losing the report.
+  External-action preparation tasks are the exception: source proof for the chosen
+  provider is useful, but filled-form screenshots and commit proof belong to the
+  approval/prepare/commit lifecycle, not the base agent loop. External-action
+  preparation proof artifacts are visual-QA checked before they count as usable commit
+  proof; failed/blocked screenshots can remain visible in UI diagnostics but are not
+  returned as prepared-session proof ids.
+- Explicit API/HTTP/JSON or local-utility tasks that forbid screenshots, or that only need
+  structured protocol/source evidence, must not trigger visual proof repair. They may still
+  save a sanitized structured/source proof artifact such as HTTP status, response fields,
+  and source URL.
+- BaseAgent is offered only operator-enabled tools with active status `available`.
+  `loaded`, `disabled`, and `failed` tools remain visible in Tools for manual checks but
+  are omitted from agent prompts/tool schemas.
+- One exception exists for operator testing: if the task explicitly asks to use a
+  particular disabled generated tool, RunsService may attach the best matching healthy
+  version to that run as a `run_scoped_candidate`. If the task names a concrete generated
+  version such as `tool.name@0.1.20`, RunsService pins that exact version for the run even
+  when another version is globally active. The agent must call it before finishing, but
+  the candidate uses `promotionPolicy=manual` and is not made globally available from that
+  run automatically. After completion, Run Workspace can use that successful run-scoped
+  candidate run as verification evidence for an operator-triggered activate/reject
+  decision.
+- Before each run, RunsService enriches the visible tool catalog from metadata. The LLM
+  sees callable tool names plus active version, source/status, capabilities, schema keys,
+  examples, required settings/secrets, health, usage counters, change summary, and compact
+  version history. Candidate versions are context only unless a tool creation/edit
+  request attaches one candidate to the current run as `run_scoped_candidate`.
+- BaseAgent also exposes a `request_tool_creation` meta-action. When the LLM determines
+  that no enabled registered tool can satisfy a required capability, RunsService turns
+  that request into the normal Tool Creation V1 flow with `source: "agent"`, a linked
+  parent run id, trace events, package-local QA, and a generated package candidate. For
+  agent-originated task runs, the freshly created or reused candidate is loaded back into
+  the same run as `run_scoped_candidate`; the agent must use it to finish the original
+  task. If the model tries to finish before calling that candidate, BaseAgent blocks the
+  answer, emits `agent-candidate-use-repair-requested`, and gives the model a bounded
+  repair turn to use the candidate first. If that run passes the return gate after using
+  the candidate, RunsService accepts it as agent-verified evidence, marks the version
+  available, activates it, and reloads the registry for future agents. Operator-originated
+  creation still requires manual pinned-run evidence before promotion.
+- BaseAgent also exposes `request_tool_edit`. When an enabled generated tool is relevant
+  but insufficient, RunsService routes the request into Tool Editing V1 with
+  `source: "agent"`, a linked parent run id, and a disabled inactive candidate version.
+  The previous active version remains active for other runs, while the requesting run can
+  use the new version as a pinned `run_scoped_candidate`. If that run succeeds after
+  using the candidate, RunsService accepts it as agent-verified evidence, marks the
+  version available, activates it, reloads the registry, and future agents get the
+  improved version instead of requesting the same edit again. Similar future edit
+  requests reuse a matching inactive candidate before building another package.
+- Tool Creation V1 has a first source-bundle path:
+  `POST /api/tools/create-package` and the Tools page accept a capability request, run it
+  through `ToolBuilderAgent` strategy planning, create a package under
+  `tools/<name>/<version>`, run package-local build/test QA, register and reload the
+  manifest, and record durable creation history. Create requests accept
+  `activationPolicy: "manual" | "available_on_success"`: manual keeps the tool disabled
+  for pinned verification, while available-on-success enables it after successful QA
+  unless QA reports `requiresManualLiveVerification` for live provider/secret-dependent
+  checks. `ToolBuilderPackageAuthor` can ask the
+  XL-tier model for a complete JSON source-bundle snapshot when
+  `TOOL_BUILDER_AUTHORING=llm` or request body `authoringMode: "llm"` is used; guardrails
+  reject unsafe paths, raw secrets, and Agentic-internal imports before package QA. If
+  authoring fails, the durable record keeps fallback notes and the guarded scaffold
+  writer is used. `ToolImplementationDiscovery` can search npm registry candidates when
+  `TOOL_BUILDER_DISCOVERY=npm` or request body `discoveryMode: "npm"` is used; selected
+  dependencies are package-local, selected package metadata/README hints are inspected
+  when available, and discovery/inspection evidence is stored in the creation record.
+  README usage can produce an `adapterContract` for default callable, named export, or
+  namespace member npm APIs; README examples with a single object argument can also
+  produce `inputMode: "object"`, a derived object input schema, and an example payload.
+  The generated package uses that contract during `/health` and `/run`. Creation requests
+  can include `behaviorExamples`; examples may be single-call checks or multi-step
+  scenarios. Scenario steps call `tool.run()` repeatedly, can save prior outputs with
+  `saveAs`, and can pass values into later inputs with placeholders such as
+  `{{created.data.id}}`. QA can assert content, data paths/equality/includes, artifact
+  MIME, and PNG visual usability. ToolBuilderAgent can also infer examples from explicit
+  input/output text, README package examples with expected output comments, and simple
+  original-task text transforms such as camelCase, slug, lowercase, uppercase, and trim.
+  Operator-provided docs, OpenAPI JSON/YAML, cURL snippets, HTML endpoint pages, and docs
+  URLs are inspected during implementation discovery and can produce provider-neutral
+  `external-api` candidates plus behavior QA fixtures, including simple chained
+  `POST -> GET` scenarios. Docs URLs use a bounded same-origin crawl for relevant
+  API/auth/reference/example links. HTML docs extraction can merge base URL, method/path/
+  query examples, auth hints, and nearby JSON response examples across those pages. When
+  a chained OpenAPI scenario exists, generated standalone fixtures are limited to
+  operations that can run without hidden path/state context, so QA proves the capability
+  instead of failing on brittle docs examples.
+  Tool package manifests can also carry `integration` contracts. On-demand API clients
+  use `mode=run-on-demand`; bots, listeners, and webhooks use
+  `mode=always-on-service` with inbound/outbound event schemas, lifecycle operations,
+  callback strategy, and secret handles. `service-adapter` generation must preserve
+  inherited always-on integration contracts during edits; the UI and backend must not
+  downgrade an always-on base version to an echo/custom scaffold because of a stale
+  strategy hint, and QA rejects always-on packages without `startService()`. Activating,
+  promoting, or agent-accepting a new always-on version must restart the running service
+  supervisor process when that service is desired running; metadata-only version switches
+  leave stale provider loops alive. Known
+  messaging providers can use deterministic generated provider loops inside the source
+  bundle; for Telegram this means `getUpdates` -> generic
+  `/api/tool-services/:name/inbound`, generic outbox polling -> `sendMessage` plus
+  artifact-aware `sendPhoto`/`sendDocument`, and outbox ack. Service-event intake must record failed run creation
+  as explicit `system/failed` events, and allowing a channel identity from an inbound
+  event should replay that event once into a normal run. Outbound provider error details
+  are secret-redacted before persistence. Unknown channel senders should be reviewed in
+  the Channels page `Pending channel users` flow, where operators can map the event to an
+  existing user or create a new user before aliases are allowed and the inbound event is
+  replayed. Unknown providers may still fall back to a service
+  scaffold, but core runtime must not grow provider-specific branches. The deterministic
+  HTTP API scaffold accepts `url` or
+  `baseUrl + path`, generic `target`, `method`, `query`, JSON `body`, and safe non-secret
+  headers, then turns OpenAPI security schemes into runtime secret-handle requirements, supports
+  `operationId` dispatch with `pathParams`, derives standalone path/query examples from
+  documented examples/defaults/enums, stores OpenAPI server URLs as provider-neutral
+  integration targets, expands OpenAPI server variables into concrete targets, parses
+  adjacent uploaded YAML/OpenAPI context files independently even without YAML document
+  separators, preserves block scalar descriptions, and can add human-readable target
+  aliases when enum values line up with names in spec descriptions. It can default to the
+  only documented operation for single-operation API tools,
+  derives request/response QA examples from `$ref` component schemas,
+  and exposes parsed JSON response fields at
+  top-level `data` plus `data.response` so chained QA can pass values such as
+  `{{created.data.id}}` into later calls.
+  Do not add provider/domain-specific concepts such as blockchains, restaurant providers,
+  or messaging vendors to the core contract; represent them as generated-tool docs,
+  target aliases, schemas, settings, and metadata.
+  LLM-authored package snapshots may also return behavior examples; if the plan did not
+  already have deterministic examples, those authored criteria are executed as package
+  QA. These examples are stored in the manifest/strategy record and executed against the
+  built package before registration, so a package that compiles but misses expected
+  behavior remains `qa_failed`. ToolBuilderAgent also
+  recognizes live web-search requests as a dedicated `web-search` strategy and known-URL
+  page-reading/extraction requests as a `web-read` / `web-extract` source-bundle
+  strategy. `web.read@0.1.0` was created through Tool Creation V1, behavior-QA'd against
+  example.com, manually run against a laptopunderbudget.com article, and enabled for
+  agents so broad research can read source pages beyond shallow search snippets.
+  Creation/editing runs now emit
+  parent-linked discovery, strategy, authoring, QA, registration, reload, and
+  completion/failure spans with normalized `input`/`output` so Trace Inspector can show
+  what each lifecycle stage received and returned. The deterministic scaffold exposes
+  `query`/`limit`, tries a configurable JSON search endpoint, falls back to DuckDuckGo
+  HTML result parsing, and enriches results with short page previews so a task can finish
+  from evidence instead of only receiving links.
+  Browser screenshot requests can select a `browser-screenshot` package strategy. The
+  generated package owns `playwright-core`, exposes URL/viewport/wait options, resolves
+  Chromium from `CHROMIUM_PATH`, `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`, or standard
+  Playwright cache directories, and returns PNG bytes through an artifact-shaped result.
+  Current generated screenshot packages default to viewport capture (`fullPage: false`)
+  and support optional `focusText` / `selector` inputs so proof images scroll the
+  relevant value or page section into view instead of storing a noisy full-page dump.
+  Each creation attempt also creates a normal run and stores `runId` on the Tool
+  Creation record; Runs/Run Workspace show `tool-creation-*` trace events for discovery,
+  strategy selection, authoring, package QA, registration, and completion/failure.
+  Runs and Dashboard mark these records with a tool lifecycle badge.
+  Failed/QA-failed creation attempts can be deleted from Creation history. Cleanup removes
+  the creation record, linked trace run, package workspace under `tools/<name>/<version>`,
+  and tool-scoped secret handles such as `secret.tool.<name>.*`; registered tools still
+  use the normal generated-tool lifecycle delete.
+  Tool names are semantic capability names (`web.fetch`, `browser.screenshot`,
+  `text.slugify`), while generated/imported/OCI/external provenance belongs in manifest
+  and creation metadata.
+  `GET /api/tools/:name/source-bundle` exports portable source bundles; `POST
+  /api/tools/source-bundles` imports and re-QAs them.
+- Tool Editing V1 is active for generated source-bundle tools:
+  `POST /api/tools/generated-modules/:name/versions` and the Tools page "Request tool
+  edit" form accept an operator change request, create `tools/<name>/<new-version>`, run
+  package-local QA, register an inactive disabled candidate, reload the runtime, record
+  a Tool Creation history row and normal traceable run, then leave the previous active
+  version active until promotion. Operator edits still use manual verification/promotion;
+  agent-requested edits use scoped continuation first and auto-accept only after the
+  originating run succeeds with the candidate. Previous versions remain visible in the
+  versions panel for activation/rollback.
+- Tool onboarding/edit context is first-class per tool. `tool_context_items` stores docs,
+  OpenAPI specs, docs URLs, uploaded file text, notes, and QA examples; version edits
+  automatically feed active context items back into the builder, and the Tools UI can
+  show, edit, or delete individual context entries without touching versions or secrets.
+- Generated tool versions can be manually run without activation through
+  `POST /api/tools/generated-modules/:name/versions/:version/run` and the Tools Versions
+  panel. Use this for candidate/rollback review; it loads the pinned package through its
+  runner but does not expose that version to agents. The same panel now shows an
+  active-versus-candidate review with package refs, status, capabilities, health, run
+  counts, QA summary/checks, pinned manual-run evidence, run-scoped candidate evidence,
+  and the explicit activation action. Server-side activation and mark-available reject
+  inactive generated versions until that exact version has a successful pinned manual run
+  or completed run-scoped candidate run recorded as evidence.
+- Version lifecycle actions are first-class observable events. Creation, pinned manual
+  run, mark-available, activation, agent acceptance, rejection, and delete actions appear in
+  the Versions panel and are appended to the original tool creation/edit trace run with
+  normalized input/output payloads.
+- Rejected generated versions are not deleted. They remain in version history with
+  `reviewStatus: "rejected"` and a rejection reason, but the server blocks activation,
+  mark-available, agent-scoped loading, and future reusable-candidate selection for that
+  version.
+- The Tools page has a Candidate Review queue built from the enriched `/api/tools`
+  catalog. It groups generated versions into `needs manual run`, `ready to activate`,
+  `activated`, `failed`, `rejected`, and `superseded`; exposes select, pinned sample
+  run, activate, reject, origin-trace, evidence-run/evidence-trace, and decision-trace
+  links; and keeps accepted/rejected plus older superseded versions out of the actionable
+  queue. Superseded versions remain visible in version history for explicit rollback.
+- Tool-returned and tool-written artifacts/screenshots are saved through the normal
+  artifact store path. The React run/trace artifact gallery and the Artifacts page show
+  artifact `quality` status/check details when present.
+- Tool Creation/Editing QA distinguishes deterministic package failure from live-source
+  fragility. Structural/build/test failures and semantic behavior mismatches remain hard
+  `qa_failed` results. Public external URL/search/API behavior examples retry transient
+  network/provider failures and can register the candidate disabled with
+  `requiresManualLiveVerification` plus structured QA warnings/issues when the package
+  itself passed deterministic checks.
+- Generated `http-json` API clients treat HTML/SPA responses as API contract mismatches,
+  not successful JSON/API calls. A docs-only API tool can be created, but it is not
+  considered good just because a frontend URL returns HTTP 200. New generated HTTP
+  clients also return structured request diagnostics for every call: selected operation,
+  requested/resolved target, redacted URL, auth handle metadata, status, and bounded
+  fetch timeout/failure detail. Non-2xx provider responses must include a generic
+  `providerError` summary/category/hints plus the selected operation `inputContract`, so
+  the next agent attempt can repair parameters or choose a different operation without
+  provider-specific core code. Secret-looking query params and credentials must be
+  redacted before trace/UI exposure.
+- The BaseAgent tool-result message renderer turns `http_provider_error` diagnostics into
+  explicit repair guidance for the next model turn. The agent sees the provider error
+  summary/category, generated operation input contract, and generic retry instructions, so
+  it can correct parameters or select another operation/target without a domain-specific
+  retry branch in core runtime.
+- Runs fail when an explicitly required artifact action produced no artifact.
+- Visual screenshot QA rejects centered consent modals and lower-left consent panels over
+  blurred/low-detail page content while avoiding ordinary page sections with CTA
+  buttons. Tool package behavior examples may now require
+  `expectedArtifactMimeType` and `expectedArtifactVisualOk`, so Tool Creation/Editing QA
+  can fail browser/screenshot candidates that return blocked proof images even when the
+  package compiles and returns `ok: true`.
+- Runs that use public external URL evidence should produce a proof artifact when the
+  runtime has artifact saving wired. `BaseAgent` prompts for a screenshot/equivalent
+  artifact; screenshot proof artifacts get compact `quality` metadata and failed
+  visual/blocker/source-match/claim-match QA does not count as usable proof. Failed proof
+  QA is fed back into the next LLM step so the agent can retry with the exact source URL,
+  tighter `focusText`/selector, or another directly relevant source. When screenshot
+  proof is unavailable or repeatedly rejected, BaseAgent can save a JSON
+  `source-evidence-proof` artifact from `web.read`/search evidence. Broad
+  product-selection source proofs must match concrete final-answer candidate signals
+  such as model names, not generic words like "gaming" or "price".
+- BaseAgent extracts proof signals such as source-backed values from non-screenshot
+  evidence and includes the best one in the proof instruction as `focusText`. Screenshot
+  semantic QA receives those expected signals so a focused proof image is checked against
+  the object/value found by the earlier evidence, not only against the source URL.
+- Proof repair uses a claim-aware proof target planner. It ranks source URLs by
+  final-answer claim matches and chooses `focusText` from those matched claims, so generic
+  signals such as a year do not override a concrete product, service, version, API, or
+  value that the answer actually depends on.
+- Source-backed answers now pass a generic source-grounding gate before proof repair.
+  Concrete final-answer claim signals such as names, versions, specs, dates, prices, or
+  externally checkable identifiers must appear in non-screenshot source evidence gathered
+  during the same run. If they do not, BaseAgent emits
+  `agent-source-grounding-repair-requested` and asks the model to gather/read better
+  evidence or remove/soften unsupported claims. If budget is exhausted but the answer has
+  user value, BaseAgent preserves it with an explicit source-grounding note.
+- Final answers also pass a first deterministic consistency gate. BaseAgent checks
+  relative date/weekday claims against runtime date/timezone, checks that named proof
+  artifacts did not fail QA, and checks that proof artifacts are not attributed to a
+  different source than their artifact metadata. When a mismatch is found, it emits
+  `agent-final-answer-grounding-degraded` and appends a visible consistency note.
+  Failed proof artifact markdown/lines are stripped from the final answer before the
+  note is appended, so rejected screenshots are not still presented as proof.
+- If screenshot proof failed and the run falls back to a JSON `source-evidence-proof`
+  artifact, BaseAgent removes stale "confirmed by screenshot" wording from the preserved
+  draft before adding the actual proof artifact reference.
+- Screenshot proof regrading must not use the failed claim-check's own expected signals
+  as evidence. A rejected proof can be upgraded only from independently passed browser
+  semantic/source checks that actually contain final-answer claim signals.
+- Broad recommendation/product-selection runs have a research contract. If the model
+  tries to finish after shallow evidence, `BaseAgent` emits
+  `agent-research-contract-repair-requested` and asks for independent freshness,
+  candidate discovery, final-claim verification, and a source read/extract call on a
+  candidate URL. If search snippets are not enough or no reader exists, the model should
+  request a web read/extract tool rather than fabricate the recommendation. The repair
+  instruction must name the actually available sanitized read/extract tool actions
+  (`web_read`, `web_extract`, or equivalent) and tell the model that the next tool call is
+  a source read/extract call, not another broad search. For these frames, proof QA also
+  receives final-answer claim signals, so a screenshot of an intermediate roundup heading
+  is not enough proof for final recommendations.
+- Artifact endpoints render inline by default and support `?download=1` for attachment
+  download. React artifact cards show image previews/lightbox, text previews when
+  available, QA status, and separate Preview/Open versus Download actions.
+- For current external facts such as prices, quotes, weather, or news, screenshots are
+  proof only. The run must first use a search/fetch/data tool that returns text or
+  structured evidence; a screenshot-only answer fails the base return gate. Successful
+  API/data tools can now produce a sanitized `structured-data-proof` JSON artifact from
+  the request/response, so JSON endpoints do not need a screenshot when source-based proof
+  is sufficient.
+- Successful identical tool calls inside one run are reused by tool name plus stable
+  input JSON, and the trace records the repeated call as reused instead of executing the
+  same tool again.
+- Agent-requested tool creation should not downgrade an existing generated tool family:
+  a default `0.1.0` request is non-binding when newer non-failed versions exist, and the
+  host should attach the best healthy/latest candidate.
+- Generated tool edits receive the editable per-tool context store. Current edit context
+  can also invalidate inherited integration targets generically: if docs or operator
+  notes explicitly forbid a host, URL fragment, or target alias, matching inherited
+  targets and base URLs are removed before the builder merges the next contract.
+- Run statuses are only `queued`, `running`, `completed`, `failed`, and `cancelled`.
+- `resume` currently restarts the run; span-level resume/retry is future work.
+
+## Removed Legacy Surface
+
+The following are intentionally gone from the active product:
+
+- `/api/tool-build-runs`
+- `/api/tool-build-requests`
+- `/api/tool-investigations`
+- `/api/tool-rework-waits`
+- `/api/tool-migrations`
+- Tool Builds page
+- Coding Council settings UI
+- Trace Lab investigation/rework modal flow
+- Tools-page request-change/rework forms
+- `UniversalAgent`, recursive executor/scaffold, council tool-builder, legacy Tool Build
+  providers/workflow/worker, Tool Investigation stores, and Tool Rework Wait stores
+
+The database migration converts old `waiting_tool_rework` runs to `failed` and drops the
+removed legacy tables. API tests keep 404 coverage for the deleted endpoints.
 
 ## User Collaboration Notes
 
 - The user wants the project in TypeScript.
 - The user expects code changes to be covered by tests.
-- Before reporting completion, run automated checks and a relevant manual test.
+- Before reporting completion, run automated checks and a relevant manual test when the
+  change has user-visible behavior.
 - Manual checks must include the actual user-visible surface, API responses, trace logs,
   and database records when persistence is involved.
 - Return only working code with the expected execution result.
-- Keep this file updated with important project notes, links, commands, and decisions.
-- The user prefers a universal agent that delegates narrow, context-heavy work to
-  separate agents, then accumulates the results centrally.
-- The user does not want private hardcoded solutions such as a special market/chart
-  pipeline or a special Telegram branch. Build generic reusable capabilities through the
-  tool registry, versioned metadata, QA, documentation, and eventually a redesigned
-  out-of-tree tool builder.
-- The user expects requests to accept files and responses to return files when the task
-  calls for artifacts such as charts, screenshots, reports, datasets, or source bundles.
-- The user wants the system to eventually run for a family or enterprise, with separate
-  memory for the whole group and for each member.
-- External channels such as Telegram should be ordinary registered tools with a startup
-  mode such as `always-on`, not special runtime branches. The active preinstalled
-  channel is `channel.telegram`; future generated/rebuilt channel adapters must use the
-  same registry/versioning/QA/secret-handle flow as other capabilities, expose
-  health/lifecycle status, and translate provider events into normal runs.
-- Built-in, generated, and always-on tool changes should converge on one versioned
-  lifecycle: change request -> new version -> code review -> behavior/QA review ->
-  promotion -> reload/restart. Direct edits to reference tool source are temporary
-  operator hotfixes while the lifecycle is incomplete.
-- Tools should evolve into out-of-tree portable modules or services, not permanent
-  Agentic app source. The core should know a tool's manifest, schemas, docs, versions,
-  settings, secret handles, QA evidence, storage migrations, health, and runner/container
-  location, while the implementation stays independent of Agentic internals.
-- The default out-of-tree generated package workspace is top-level `tools/`, which is
-  gitignored. Generated packages should live under `tools/<system-name>/<version>` with
-  their own `tool.package.json`, README, Dockerfile, package metadata, TypeScript build
-  config, source, and tests.
-- Telegram identities can be mapped by numeric Telegram id or by username handle
-  (`username`/`@username`) when Telegram exposes `from.username`; the bot forwards both
-  aliases through `sourceUserAliases`.
-- Telegram outbound answers must be split into multiple messages when needed instead of
-  appending `[truncated]`; the final linked response includes a continuation button that
-  makes the next message from that chat/user continue the same thread.
-- Channel and web requests need conversation-thread continuity: the system must
-  distinguish a new task from a clarification, correction, or follow-up to a previous run.
-- Continuation runs should receive compact prior artifact metadata in thread context and
-  reuse those artifacts when they satisfy the follow-up instead of reacquiring identical
-  data by default.
-- The Thread/Run Work Ledger and Evidence Ledger are now partially wired into the
-  UniversalAgent runtime: web-search, market time-series, inferred API JSON tools,
-  declared tool inputs, and screenshot/artifact tool calls go through a shared
-  `WorkLedgerClaimCoordinator` before they execute. Common tool paths use
-  `runLedgeredToolOperation` for claim -> execute -> evidence -> complete/fail;
-  specialized artifact paths still layer semantic artifact QA and versioned tool rework
-  on top. Runtime trace now distinguishes claim-created, revalidation-created, blocked,
-  reused, and waiting-existing decisions. When the stores are not provided, the runtime
-  falls back to its previous behaviour. Dedicated URL visit tools, file read/write tools,
-  and the dedicated ledger UI are tracked for follow-up phases of the recursive-agent
-  program.
-- Work Ledger keys are compacted when payloads are large, and Postgres indexes the
-  hashed key instead of a raw unbounded text btree. Do not reintroduce indexes on the
-  full `work_key`. Browser automation is not a globally reusable data fetch:
-  non-interactive `browser.operate` discovery is scoped to the current run, while
-  interactive commands such as click/fill/select/submit are scoped to the current
-  attempt so new runs cannot inherit stale browser state or old form screenshots.
-- Work Ledger reuse is quality-gated. Completed work is not automatically reusable when
-  its evidence records are failed/blocked/limitation-only, contain hallucination/
-  mismatch/insufficient-evidence signals, or search evidence lacks reusable source URLs.
-  Broad/current search evidence should record `sourceUrls` and confidence so later runs
-  can revalidate weak findings instead of inheriting them.
-- Search/browser evidence selection should prefer concrete detail pages over generic
-  listing/search/category pages when the task needs a specific product, provider,
-  booking, price, or proof screenshot. URL-shape scoring may sort already relevant or
-  explicitly mentioned hosts, but it must not make an otherwise off-topic URL relevant.
-- External action preparation must prefer customer-facing provider/action URLs over
-  marketplace directories and provider business/admin/software landing pages. Pages such
-  as `/for-business` are not valid customer proof for booking/form tasks. Prepared
-  external-action drafts are run-scoped approval state and must not be reused across runs
-  as if they were pure data fetches.
-- When browser screenshot/artifact QA rejects a customer-action URL, the rejected final
-  URL and reason must become machine-readable evidence for the retry. Revision attempts
-  should exclude rejected URLs and try the next actionable provider URL instead of
-  repeating the same failed landing page.
-- Rejected browser pages should also expose concrete action/provider links discovered on
-  that page as machine-readable retry candidates, while still excluding the rejected
-  branch itself when it is a directory, provider-business, or admin/software path.
-- External-action approval-draft review should trust runtime `external.action.prepare`
-  evidence plus the upstream `browser.operate` preparation/proof boundary. The worker's
-  free-form draft may contain harmless browser-derived URL ids or date labels; it should
-  not block the DAG when the tool evidence proves a no-submit boundary and a concrete
-  browser-preparation artifact/page.
-- Subtasks with explicit `requiredTools: []`, no `toolInputs`, and no required artifacts
-  are no-tool subtasks. The runtime must not infer tool calls from tool names mentioned
-  in explanatory prompt text.
-- Internal project/platform questions about Agentic concepts such as the preinstalled
-  core toolbelt should be answered from Agentic project context, not from external web
-  search results for unrelated products. Direct-answer synthesis receives that context
-  before generic instance/thread context so it is not truncated away.
-- `synthesis-completed` trace events should carry a concise `detail` preview of the
-  final answer in addition to the payload so Trace Lab and timelines do not show blank
-  completed synthesis nodes.
-- `browser.operate` includes a safe `fillFormSemantically` command for external-action
-  preparation. It maps labels/placeholders/names/nearby text to task-provided values,
-  fills obvious form controls, may click safe progress controls such as Next/Continue,
-  records a structured form-fill report, and stops before final submit/confirm/pay/send.
-  Legal/privacy consent controls are not checked unless explicitly allowed. Provider or
-  marketplace directory search boxes such as "services or businesses" are not treated as
-  target form fields. SPA-style progress controls can be clicked through the visible
-  observer fallback, but external-action-safe visible clicks must skip provider-side
-  business/admin/software CTAs such as "book a demo", "for business", "list your
-  business", booking-software links, or provider SaaS pages such as `/industries`,
-  `/solutions`, `/features`, and `/use-cases`; those pages are not customer booking
-  proof.
-  action-observer fallback when form DOM markup is weak, but social/account controls
-  such as "continue with Google/Facebook/Apple" are a login boundary and must stop the
-  preparation with an explicit blocker.
-- Runs produce a deterministic, non-LLM retrospective draft after completion/failure:
-  what worked, what failed, observed weak tools, missing capabilities, duplicated-work
-  signals, and the evidence ids it considered useful. The draft is written with status
-  `proposed`; operators (or a later LLM-driven step) accept, reject, or expand it.
-  Retrospectives feed review queues and improvement tickets; they do not automatically
-  become accepted memory.
-- Council planning is an allowed universal-agent strategy for ambiguous/high-risk/
-  multi-domain work: the agent may ask several child agents or model tiers to propose or
-  critique a plan, then synthesize the result while using the Work Ledger to prevent
-  duplicate evidence gathering.
-- The first recursive-agent strategy selector is wired into the runtime. After
-  classification, `decideAgentStrategy()` emits an `agent-strategy-selected` trace event
-  with the selected primary strategy (`direct_answer`, `delegated_dag`, `tool_use`,
-  `tool_build_or_rework`, `ledger_reuse_or_wait`, or `council`), allowed actions,
-  model-tier recommendation, review strictness, ledger policy, tool policy, and council
-  participant hints.
-- The first root recursive decision loop is wired after `agent-invocation-created`.
-  `buildRecursiveAgentLoopPlan()` emits `agent-decision-loop-completed`, chooses
-  `answer`, `delegate`, or `wait_for_tool`, and can upgrade direct-classified tasks to
-  delegated execution for external tool work, Work Ledger coordination, council planning,
-  or tool build/rework. Pure direct-answer root invocations now execute through
-  `recursiveAgentExecutor.ts` and emit `agent-invocation-started`,
-  `agent-invocation-decision-selected`, `agent-invocation-completed`, and
-  `agent-invocation-return-checked`; direct tool-wait/rework paths stay on the
-  compatibility runner until span-level retry lands.
-- The Work Ledger domain claim coordinator is exposed through `POST /api/work-ledger/claim`
-  so future child agents and non-agent runtime call sites can ask for a
-  reuse/wait/revalidate decision instead of blindly creating duplicate work. The payload
-  is secret-redacted before storage and audit.
-- The React console has a first-class Ledger page at `/ledger`. It scopes by run, thread,
-  or work key; shows Work Ledger claims, Evidence Ledger records, and Run Retrospective
-  proposals together; lets operators create/test manual claims through the same endpoint
-  agents use; shows an attention queue for failed/stale/running claims, weak evidence,
-  and proposed retrospectives; provides a selected-work inspector with linked evidence
-  and manual evidence capture; allows work status updates and retrospective
-  review/archive; and Run Workspace links directly to the scoped ledger for a run.
-- Runtime retrospectives now include suspected root causes, failed work item ids,
-  duplicated-work signals, and proposed tool/policy/prompt follow-ups when the run saw
-  weak tools, missing capabilities, external blockers, or repeated work.
-- The first `AgentInvocation` contract is now emitted from that strategy decision.
-  `agent-invocation-created` records the root caller/local task/output contract/budget/
-  allowed-tool call frame for the universal agent, and `agent-council-planned` records
-  planned council participant invocation contracts. These payloads are still trace
-  contracts; later recursive-agent slices will execute child-agent/council branches
-  through them.
-- Root invocations also emit `agent-invocation-return-checked` before the run returns.
-  The generic return check validates non-empty output and required evidence against the
-  invocation output contract. Future child/council agents should use the same return gate
-  before handing results back to their caller.
-- Council participants are the first real child invocations. When strategy selection
-  chooses `council`, each planned participant runs through
-  `recursiveAgentExecutor.ts`, emits invocation started/completed/failed/return-check
-  events, returns an advisory note, and the parent appends those notes to the planning
-  prompt. The executor can also recursively spawn generic child invocations in bounded
-  parallel batches and rejects invalid decisions before dispatch, including forbidden
-  tool calls and tool names outside an invocation's `allowedToolNames`. They are
-  advisory/scaffolded only for now; full UniversalAgent worker/reviewer/tool/ledger child
-  execution remains future work.
-- Agents will eventually send auditable outbound messages/reminders to a group or
-  individual when policy allows.
-- Tools should be easy to onboard from API documentation and access credentials, but
-  credentials must be stored through secret handles, not prompts, memory, source, or
-  artifacts.
-- Model tier settings must support local OpenAI-compatible endpoints and remote providers
-  such as the OpenAI API, with remote API keys stored through secret handles.
-- In the React Models UI, tier model selection should use discovered local catalog and
-  manually registered provider model IDs as selectable options, not raw comma-separated
-  text fields. Saved-but-currently-unreachable IDs should remain visible as fallback
-  chips.
+- Keep this file, `README.md`, `docs/roadmap.md`, `docs/api-surface.md`, and relevant
+  module docs updated with architecture changes.
+- Do not hardcode private/special pipelines such as a market, chart, Telegram, or search
+  branch. Build generic reusable capabilities through the registry, tool versions, QA,
+  and documentation.
+- Do not turn tool creation into a growing set of operator-facing private templates.
+  Tool creation means: an agent receives the requested capability, defines the manifest
+  and QA contract, researches possible implementations when needed, chooses among
+  package/API/CLI/browser/custom-code/container strategies, writes a complete portable
+  source bundle, proves it works, and leaves activation to manual review.
+- Requests should eventually accept files and responses should return files when the task
+  calls for artifacts such as screenshots, reports, datasets, or source bundles.
+- The product should preserve instance/user/channel/thread/run provenance so group memory,
+  personal memory, credentials, tools, outbound messages, and policies do not leak across
+  scopes.
+- Credentials must be stored through secret handles, not prompts, memory, source,
+  artifacts, or traces. The Tools page checks required handles through
+  `POST /api/secret-handles/status`, showing registered/resolvable state while redacting
+  inline values. Manual tool runs return a structured `missing_runtime_requirements`
+  diagnostic when a package cannot start because required configuration keys or secret
+  handles are absent; the UI renders those keys/handles explicitly and links to settings
+  instead of exposing only a raw runner error. The `/api/tools` catalog also includes
+  computed `runtimeReadiness` for each tool, and healthchecks fail with the same missing
+  runtime requirements message when a tool package is healthy but cannot actually be
+  called because settings or secret handles are unresolved. `BaseAgent` receives only
+  tools whose active metadata status is `available` and whose runtime readiness is
+  `ready`; blocked tools remain visible/manual-runnable for operators but are not offered
+  as callable agent schemas.
+- Tool creation/edit requests may include raw onboarding credentials such as API keys or
+  bot tokens in the natural-language body. The server must extract those values before
+  discovery/planning/tracing/package authoring, store them as inline secret handles
+  scoped to the tool family (`secret.tool.<tool-name>.<purpose>`), and pass only redacted
+  input plus the registered handle through the rest of the lifecycle. These handles are
+  version-independent for the registered extension/tool family. The Tools create/edit UI
+  exposes this as an optional credential onboarding field and shows the resulting handle
+  names after creation without revealing values.
+- The Tools create UI is operator-facing. The normal path is tool name, description,
+  natural-language task, API docs URLs, optional YAML/JSON/Markdown/text documentation
+  files, and optional credentials. YAML/OpenAPI files are attached through the same
+  general documentation file picker as other docs, not through a separate YAML field.
+  Capabilities, dependencies, discovery mode, authoring mode, and manual behavior QA JSON
+  are advanced overrides. Empty behavior QA means the builder should derive fixtures from
+  docs/examples and the task, not require the operator to invent tests manually.
+- Docs-derived Tool Creation QA must be conservative. Templated OpenAPI server URLs,
+  incomplete rendered HTML endpoint paths, missing required path/query examples, and docs
+  examples without concrete expected response signals should create integration contracts
+  and operations, but not hard live behavior QA fixtures.
 
 ## Local Model
 
@@ -289,6 +503,8 @@ Environment overrides:
 - `LLM_BASE_URL`
 - `LLM_MODEL`
 - `LLM_TEMPERATURE`
+- `LLM_MAX_TOKENS` controls the app-side `max_tokens` sent for tool-capable chat
+  completions; default is `6000`.
 - `LLM_MODEL_TIER_S`
 - `LLM_MODEL_TIER_M`
 - `LLM_MODEL_TIER_L`
@@ -302,27 +518,9 @@ Memory embedding overrides:
 - `EMBEDDING_API_KEY` or `OPENAI_API_KEY` provides the bearer token.
 - `MEMORY_EMBEDDING_DIMENSIONS` defaults to `128`, matching the current pgvector column.
 
-Tier variables can contain one model or a comma-separated fallback list. In the web app,
-the editable tier policy is stored in Postgres and exposed through the System Inventory
-panel.
+## Durable Artifacts
 
-Embedding is a separate memory-retrieval capability, not a chat tier. The Models page
-reads `/api/models/catalog` and `/api/model-providers` to show discovered local chat
-models, the active embedding provider, and durable local/remote provider registry entries.
-Future runtime routing should resolve tier model ids through this provider registry, and
-future DB-backed embedding selection should trigger memory re-embedding.
-`/api/models/catalog` decorates discovered OpenAI-compatible model ids with inferred
-capabilities (`chat`, `embedding`, `reasoning`, `coding`, `vision`, `tool-calling`) and
-filters embedding-only ids out of chat tier options. Vision detection is currently a
-conservative name-based inference because common `/models` endpoints do not expose formal
-modality metadata. `LLM_MODEL_CAPABILITIES` can add operator-verified overrides such as
-`qwen/qwen3.6-35b-a3b=vision,reasoning,tool-calling;google/gemma-4-26b-a4b=vision`.
-Future provider records should store these overrides durably with latency/throughput
-health, context window, reasoning budget behavior, and recommended routing roles.
-`LLM_REQUEST_TIMEOUT_MS` bounds each model attempt. Keep it configured in local/dev runs
-so a slow or stuck local model cannot leave runs permanently `running`.
-
-Durable artifact storage in Docker uses:
+Docker/S3-compatible artifact storage uses:
 
 - `MINIO_ENDPOINT`
 - `MINIO_ACCESS_KEY`
@@ -330,67 +528,62 @@ Durable artifact storage in Docker uses:
 - `MINIO_BUCKET`
 - optional `S3_REGION`
 
-When those variables and `DATABASE_URL` are present, new artifact metadata is stored in
-Postgres and payloads are stored in MinIO/S3. Local artifact files under `ARTIFACT_ROOT`
-remain a fallback.
+When those variables and `DATABASE_URL` are present, artifact metadata is stored in
+Postgres and payloads are stored in MinIO/S3. Local files under `ARTIFACT_ROOT` remain a
+fallback.
+Without `ARTIFACT_ROOT`, the local fallback defaults to `workspace/artifacts` in host
+development and `/app/workspace/artifacts` inside the Docker container.
 
-Generated tool package workspace:
+## Generated Tool Workspace
 
 - `TOOL_PACKAGE_WORKSPACE_ROOT` defaults to `tools`.
 - `TOOL_PACKAGE_ROOT` can point at a specific legacy/custom source-bundle package root.
-- New server-side Tool Builds write package workspaces by default and do not write new
-  generated module/test files into `src/tools/generated` or `tests/generated`.
-- `TOOL_BUILD_LEGACY_PROJECT_FILES=enabled` temporarily restores legacy project-file
-  writes in addition to the package workspace.
-- `TOOL_BUILD_PACKAGE_WORKSPACE=disabled` disables package workspace writing and falls
-  back to the legacy local-path generated module flow.
-- `SourceBundleToolPackageRunner` searches `TOOL_PACKAGE_ROOT`,
-  `TOOL_PACKAGE_WORKSPACE_ROOT`, default `tools`, and legacy `tool-packages`.
-- The web server prefers `SourceBundleHttpProcessToolPackageRunner` for source-bundles
-  unless `TOOL_SOURCE_BUNDLE_HTTP_RUNNER=disabled` or
-  `TOOL_SOURCE_BUNDLE_RUNNER=in-process`.
-- `TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or
-  `TOOL_SOURCE_BUNDLE_RUNNER=http-process` makes generated source-bundles execute through
-  their package-local `dist/runtime/server.js` HTTP runtime as a separate local Node
-  process instead of importing `dist/index.js` into the Agentic app process.
-- `TOOL_SOURCE_BUNDLE_STARTUP_TIMEOUT_MS` and `TOOL_SOURCE_BUNDLE_POLL_INTERVAL_MS`
-  tune the local HTTP process runner readiness wait.
-- `TOOL_SOURCE_BUNDLE_CALL_TIMEOUT_MS` bounds `/run` and service lifecycle HTTP calls for
-  source-bundle local process runtimes; default is 60 seconds.
-- `TOOL_OCI_RUNNER=enabled` enables OCI-image tool package execution through Docker.
-  The container must expose `GET /health`, `POST /run`, and optional service lifecycle
-  routes on `TOOL_OCI_INTERNAL_PORT` (default `8080`).
-  Importing/loading an OCI manifest does not start the container: normal tool calls start
-  an on-demand container and stop it after `/run`, while `always-on` tools are started,
-  healthchecked, and stopped by the generic `ToolServiceSupervisor` lifecycle.
-- `TOOL_OCI_STARTUP_TIMEOUT_MS` and `TOOL_OCI_POLL_INTERVAL_MS` tune OCI runtime
-  readiness checks.
-- `TOOL_OCI_CALL_TIMEOUT_MS` bounds OCI `/run` and lifecycle HTTP calls; default is 60
-  seconds.
-- `TOOL_OCI_MEMORY`, `TOOL_OCI_CPUS`, `TOOL_OCI_PIDS_LIMIT`, `TOOL_OCI_NETWORK`, and
-  `TOOL_OCI_READ_ONLY=enabled` apply conservative Docker resource/isolation flags to
-  generated tool containers.
-- `TOOL_SOURCE_BUNDLE_AUTO_BUILD=disabled` disables the default development behavior
-  where source-bundle runners run package-local `npm run build` when the expected
-  `dist/index.js` or `dist/runtime/server.js` entrypoint is missing.
-- `TOOL_SOURCE_BUNDLE_BUILD_TIMEOUT_MS` bounds that package-local build; default is 120
-  seconds.
-- `TOOL_SERVICE_AUTO_RESTART_ON_FAILED_HEARTBEAT=disabled` disables the default bounded
-  auto-restart after a failed always-on service heartbeat.
-- `TOOL_SERVICE_MAX_AUTO_RESTARTS` defaults to `3` and limits automatic restarts per
-  service before the operator has to intervene.
-- Service-specific restart policy overrides are stored through
-  `PATCH /api/tool-services/:name/restart-policy` and shown in the Channels/Tool Detail UI.
-  The same policy can set `restartBackoffMs` for delayed recovery and
-  `restartBackoffMultiplier`/`restartBackoffMaxMs` for capped progressive recovery,
-  `restartBackoffJitterRatio` for staggered recovery, plus `restartRequiresApproval` so
-  sensitive services stop in `pendingRestartApproval` until an operator explicitly
-  restarts them.
-- Source-bundle HTTP process runtimes forward child stdout/stderr into the same tool
-  service lifecycle logs/SSE stream as built-in always-on tools.
-- The top-level `tools/` directory is intentionally gitignored; package source should be
-  exported/imported through manifests or promoted into OCI/external runtimes, not committed
-  as Agentic app code.
+- The top-level `tools/` directory is intentionally gitignored and excluded from Docker
+  build context. It contains runtime/operator package source for independent
+  source-bundle or container tools, not Agentic platform source.
+- Tool identity and agent visibility come from metadata registration in the tool store
+  (Postgres when configured, otherwise local JSON at `workspace/tool-metadata.json`).
+  Agents receive only tools that are registered, loaded, and enabled by status/policy;
+  missing or unhealthy package code can remain registered but must not be offered as
+  callable. Operator-disabled tools stay `disabled` across startup/reload health checks;
+  tools that were `available` but can no longer be loaded are marked `failed` with the
+  loader reason.
+- Generated packages should live under `tools/<system-name>/<version>` with their own
+  manifest, README, Dockerfile, package metadata, TypeScript build config, source, and
+  tests.
+- App startup and `POST /api/tools/reload-generated` scan the configured package roots
+  for `tool.package.json`, register discovered source-bundle manifests into the generated
+  tool metadata store, and then load them through package runners. This is the bootstrap
+  path for gitignored/generated packages after a restart or an empty in-memory store.
+- There is no automatic core-tool seeding. Even basic fetch/search/screenshot/artifact
+  tools must be created, imported, registered, and enabled by the same platform lifecycle
+  as any other tool.
+- `TOOL_SOURCE_BUNDLE_PLAYWRIGHT_BROWSERS_PATH` can pin Playwright browser lookup for
+  source-bundle HTTP runtimes, for example `0` when a package intentionally stores
+  browser binaries in its own workspace. By default the runner inherits the host or
+  container Playwright configuration.
+- Generated packages may depend on npm libraries, but those dependencies must be
+  declared and installed inside the package workspace only. Do not add package-specific
+  dependencies to Agentic's root `package.json`.
+- Wrapping an npm package is one generic builder strategy, not a dedicated product type.
+  The builder should choose it when research shows a suitable package exists; otherwise
+  it should fall back to another implementation strategy and record why.
+- Tool packages should be importable/exportable as manifest + source bundle, runnable
+  through `/health` and `/run`, and later promotable to OCI/container or publishable
+  npm-style distribution when the package is generic and high quality.
+- Tool creation attempts are tracked by `src/tools/toolCreationStore.ts` and persisted in
+  Postgres table `tool_creations` when `DATABASE_URL` is configured. Records include the
+  builder strategy decision, candidate/rejected implementation routes, selected
+  dependencies, QA report, package ref, file list, creation `runId`, and errors.
+- The current deterministic Tool Creation V1 flow writes packages through
+  `src/tools/toolCreationV1.ts` after `src/tools/toolBuilderAgent.ts` plans the strategy
+  and optional `src/tools/toolImplementationDiscovery.ts` / `src/tools/toolBuilderPackageAuthor.ts`
+  steps provide implementation candidates and a guarded package snapshot or fallback;
+  newly created packages start disabled for agents even though their runtime is loaded
+  for manual runs. Current scaffold strategies include echo, HTTP/JSON, npm adapter, and
+  browser screenshot artifact packages.
+- Future tool creation must produce out-of-tree packages or services, not permanent app
+  source under `src/tools/generated`.
 
 ## Commands
 
@@ -408,10 +601,22 @@ npm run verify
 
 The verification command runs:
 
+- `npm run lint`
 - `npm run typecheck`
 - `npm run test:types`
 - `npm test`
 - `npm run build`
+
+Linting uses ESLint flat config and enforces `max-lines=800` for TS/TSX source and
+tests. Any oversized file must be split by bounded context instead of growing further.
+The current allowlist is an explicit migration debt list, not permission for new large
+files.
+
+Build the React console:
+
+```bash
+npm run build --prefix web-react
+```
 
 Manual CLI smoke test:
 
@@ -430,1116 +635,198 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 
 ## Important Files
 
-- [README.md](README.md) - quick start and request execution summary.
-- [docs/agent-handoff.md](docs/agent-handoff.md) - current handoff for another AI agent:
-  philosophy, roadmap, active gaps, and do-not-reintroduce list.
-- [docs/architecture.md](docs/architecture.md) - detailed architecture and delegation model.
-- [docs/modules/instance-context.md](docs/modules/instance-context.md) - target
-  instance/user/channel memory, Telegram, outbound action, model provider, and tool
-  onboarding model.
-- [src/agents/universalAgent.ts](src/agents/universalAgent.ts) - main coordinator runtime.
-- [src/agents/callFrame.ts](src/agents/callFrame.ts) - durable agent call-frame and
-  return self-check helpers for worker/reviewer spans and future recursive agents.
-- [src/agents/agentStrategy.ts](src/agents/agentStrategy.ts) - deterministic
-  recursive-agent strategy selector for direct answers, delegation, council mode,
-  tool-use/build/rework, and Work Ledger reuse/wait decisions.
-- [src/agents/agentInvocation.ts](src/agents/agentInvocation.ts) - root and council
-  `AgentInvocation` contract builder plus generic invocation return self-check helpers
-  for future recursive call execution.
-- [src/agents/agentInvocationRunner.ts](src/agents/agentInvocationRunner.ts) - generic
-  invocation execution helper that runs a handler through depth-budget checks, output
-  contract self-check, and normalized completed/failed invocation status.
-- [src/agents/recursiveAgentExecutor.ts](src/agents/recursiveAgentExecutor.ts) - generic
-  recursive invocation executor for answer/tool-request/delegate/council decisions,
-  bounded child batches, compact child synthesis, and invocation lifecycle events.
-- [src/agents/modelTier.ts](src/agents/modelTier.ts) - model tier selection policy.
-- [src/settings/modelProviderStore.ts](src/settings/modelProviderStore.ts) - durable
-  model provider registry contract for chat and embedding endpoints.
-- [src/settings/postgresModelProviderStore.ts](src/settings/postgresModelProviderStore.ts)
-  - Postgres-backed `model_providers` adapter.
-- [docs/modules/model-providers.md](docs/modules/model-providers.md) - provider registry,
-  embedding-provider, and future runtime resolver notes.
-- [docs/model-routing-roadmap.md](docs/model-routing-roadmap.md) - model capabilities,
-  vision verification, tier routing, probes, and multimodal runtime roadmap.
-- [src/agents/prompts.ts](src/agents/prompts.ts) - prompts for classification, planning,
-  workers, reviewers, synthesis, and learning.
-- [src/agents/recursiveAgentLoop.ts](src/agents/recursiveAgentLoop.ts) - deterministic
-  root decision-loop bridge that turns strategy + invocation into an executable mode and
-  trace payload for the future recursive executor.
-- [src/instance/userStore.ts](src/instance/userStore.ts) - user and channel identity
-  resolution contract with local in-memory defaults.
-- [src/instance/postgresUserStore.ts](src/instance/postgresUserStore.ts) - Postgres-backed
-  user, role, and channel identity resolver.
-- [src/conversations/inMemoryConversationThreadStore.ts](src/conversations/inMemoryConversationThreadStore.ts)
-  and [src/conversations/postgresConversationThreadStore.ts](src/conversations/postgresConversationThreadStore.ts)
-  - conversation thread stores for new-task versus continuation flow.
-- [src/conversations/threadResolution.ts](src/conversations/threadResolution.ts) - channel
-  message resolver that decides whether an inbound message starts a new task or continues,
-  clarifies, or corrects an existing thread.
-- [src/audit/inMemoryAuditEventStore.ts](src/audit/inMemoryAuditEventStore.ts)
-  and [src/audit/postgresAuditEventStore.ts](src/audit/postgresAuditEventStore.ts)
-  - normalized audit log stores for run lifecycle, artifacts, tool use, and future
-  approvals/outbound actions.
-- [src/artifacts/artifactStore.ts](src/artifacts/artifactStore.ts) - artifact store
-  contracts, local fallback store, durable metadata/object-store composition, and
-  in-memory test stores.
-- [src/artifacts/artifactQualityMetadata.ts](src/artifacts/artifactQualityMetadata.ts)
-  - compact artifact QA metadata helpers persisted with artifact records.
-- [src/artifacts/postgresArtifactMetadataStore.ts](src/artifacts/postgresArtifactMetadataStore.ts)
-  - Postgres-backed artifact metadata table adapter.
-- [src/artifacts/s3ObjectStore.ts](src/artifacts/s3ObjectStore.ts) - minimal
-  S3-compatible object store used by MinIO for durable artifact payloads.
-- [src/artifacts/chartArtifact.ts](src/artifacts/chartArtifact.ts) - deterministic SVG
-  chart parsing/rendering helpers.
-- [src/artifacts/visualArtifactQuality.ts](src/artifacts/visualArtifactQuality.ts) -
-  deterministic PNG screenshot QA for near-empty/loader-like visual evidence.
-- [src/artifacts/semanticArtifactQuality.ts](src/artifacts/semanticArtifactQuality.ts) -
-  browser screenshot evidence QA that combines visual checks with URL/title/text/link
-  context to reject loader/blocker or task-mismatched artifacts before storage.
-- [src/tools/chartGenerateTool.ts](src/tools/chartGenerateTool.ts) - `chart.generate`
-  TypeScript tool module for data-agnostic SVG chart artifacts.
-- [src/tools/marketTimeseriesTool.ts](src/tools/marketTimeseriesTool.ts) -
-  `market.timeseries` TypeScript tool module for structured CoinGecko-backed
-  crypto time-series and CSV data artifacts.
-- [docs/modules/market-timeseries.md](docs/modules/market-timeseries.md) - module
-  contract and portability notes for `market.timeseries`.
-- [src/tools/browserOperateTool.ts](src/tools/browserOperateTool.ts) - reusable
-  `browser.operate` Playwright command executor for navigation, clicks, form fills,
-  selectors/options/checkboxes, waits, assertions, DOM text/link extraction, screenshots,
-  and returned storage state.
-- [docs/modules/browser-operate.md](docs/modules/browser-operate.md) - module contract
-  and portability notes for `browser.operate`.
-- [src/llm/client.ts](src/llm/client.ts) - OpenAI-compatible LLM client.
-- [src/memory/skillMemory.ts](src/memory/skillMemory.ts) - shared file-based skill memory.
-- [src/memory/memoryPolicy.ts](src/memory/memoryPolicy.ts) - deterministic memory access
-  policy evaluator used to simulate accepted/status, exact-scope, private requester, and
-  sensitive grant decisions in the Memory page and before runtime prompt injection.
-- [src/memory/retrievalEvaluation.ts](src/memory/retrievalEvaluation.ts) - reusable
-  memory retrieval quality harness for query fixtures, expected memory IDs, recall, and
-  top-hit checks.
-- [src/memory/textEmbedding.ts](src/memory/textEmbedding.ts) - deterministic local
-  embedding provider, OpenAI-compatible embedding adapter, fallback wrapper, projection
-  to the current pgvector width, and pgvector payload formatter for memory retrieval
-  plumbing.
-- [src/tools/registry.ts](src/tools/registry.ts) - tool registry skeleton.
-- [src/tools/tool.ts](src/tools/tool.ts) - versioned tool module contract.
-- [src/tools/toolPackage.ts](src/tools/toolPackage.ts) - portable out-of-tree tool
-  package manifest contract for source bundles, OCI images, external packages, and
-  local-path development tools.
-- [src/tools/toolPackageWorkspaceStore.ts](src/tools/toolPackageWorkspaceStore.ts) -
-  gitignored source-bundle package workspace writer for generated tools outside app
-  source.
-- [src/tools/toolPackageWorkspaceQa.ts](src/tools/toolPackageWorkspaceQa.ts) -
-  structural QA for package manifests, build scaffold, Dockerfile, and local Tool
-  contract before package snapshots become promotion candidates.
-- [src/tools/toolPackageRunner.ts](src/tools/toolPackageRunner.ts) - source-bundle,
-  external HTTP, OCI, and local-path package runners. Source-bundle runners can build
-  missing local `dist` entrypoints before loading generated package workspaces.
-- [src/tools/toolIntegrationSpec.ts](src/tools/toolIntegrationSpec.ts) - provider-neutral
-  Tool Build integration spec inferred from requests for API clients, bots, listeners,
-  webhooks, inbound/outbound services, credentials, settings, lifecycle, and QA.
-- [src/tools/toolMetadataStore.ts](src/tools/toolMetadataStore.ts) - persistent tool
-  metadata store contract and in-memory implementation.
-- [src/tools/postgresToolMetadataStore.ts](src/tools/postgresToolMetadataStore.ts) -
-  Postgres-backed `tool_modules` catalog.
-- [src/tools/toolMigrationStore.ts](src/tools/toolMigrationStore.ts) - tool-owned
-  migration metadata contract and in-memory implementation.
-- [src/tools/postgresToolMigrationStore.ts](src/tools/postgresToolMigrationStore.ts) -
-  Postgres-backed `tool_migrations` catalog for versioned tool storage changes.
-- [src/tools/toolPromotionStore.ts](src/tools/toolPromotionStore.ts) - generated tool
-  promotion journal contract and in-memory implementation.
-- [src/tools/postgresToolPromotionStore.ts](src/tools/postgresToolPromotionStore.ts) -
-  Postgres-backed `tool_promotions` journal.
-- [src/tools/toolPromotionCoordinator.ts](src/tools/toolPromotionCoordinator.ts) -
-  explicit generated-tool promotion boundary for metadata, migration manifests, and
-  promotion journal evidence.
-- [src/tools/postgresToolPromotionCoordinator.ts](src/tools/postgresToolPromotionCoordinator.ts)
-  - Postgres transaction wrapper for generated-tool metadata, migration-manifest, and
-  promotion-journal writes.
-- [src/tools/toolBuildRequestStore.ts](src/tools/toolBuildRequestStore.ts) - Tool Builder
-  request/contract/lifecycle/QA criteria model.
-- [src/tools/postgresToolBuildRequestStore.ts](src/tools/postgresToolBuildRequestStore.ts)
-  - Postgres-backed `tool_build_requests` queue.
-- [src/tools/toolInvestigationStore.ts](src/tools/toolInvestigationStore.ts) - Tool
-  Investigation Ticket model and in-memory store with secret-aware context bundle
-  sanitization.
-- [src/tools/postgresToolInvestigationStore.ts](src/tools/postgresToolInvestigationStore.ts)
-  - Postgres-backed `tool_investigations` table.
-- [src/runs/toolReworkWaitStore.ts](src/runs/toolReworkWaitStore.ts) - Tool Rework Wait
-  model, in-memory store, and lifecycle helpers that link a paused run to an
-  investigation, build request, promoted version, and optional retry pointers.
-- [src/runs/postgresToolReworkWaitStore.ts](src/runs/postgresToolReworkWaitStore.ts)
-  - Postgres-backed `tool_rework_waits` table.
-- [src/tools/toolBuildWorker.ts](src/tools/toolBuildWorker.ts) - background worker that
-  claims `requested` Tool Build queue items and runs them through the Builder/QA/
-  Registrar workflow. Now accepts `onAfterCompleted` (set at construction OR late-bound
-  via `setOnAfterCompleted`) so the HTTP layer can wire it to
-  `notifyToolBuildRegistered` and `tool_build.registered` audit. Also exposes
-  `scheduleImmediate()` for fire-and-forget triggers from
-  `ToolImprovementCoordinator`; overlapping ticks join the pending tick instead of
-  double-claiming the same `requested` build.
-- [src/tools/toolImprovementCoordinator.ts](src/tools/toolImprovementCoordinator.ts) -
-  shared in-process domain helper used by the promote endpoint, the standalone wait
-  creation/resume endpoints, the build-registered notification, and the `UniversalAgent`
-  runtime. Centralizes investigation + build + wait creation, marks the run as
-  `waiting_tool_rework`, emits audit events, and exposes `notifyBuildRegistered` /
-  `markReadyForRetry` so HTTP and agent runtime use the same auditable flow.
-- [src/tools/toolReworkAutoRetryCoordinator.ts](src/tools/toolReworkAutoRetryCoordinator.ts)
-  - automatic retry orchestrator. Hooks into
-  `ToolImprovementCoordinator.notifyBuildRegistered` through `onWaitPromoted` and turns
-  every freshly promoted `ToolReworkWait` into a linked retry run when policy allows.
-  Delegates retry-run creation to `ToolReworkRetryCoordinator` so idempotency stays in
-  one place; walks the `parentRunId` chain to enforce
-  `maxAutoRetriesPerRootRun`; refuses cancelled / orphaned source runs; uses an
-  in-process per-wait lock so fast double-calls cannot create duplicate retry runs.
-  Audits `tool_rework_wait.auto_retry_decision`. Policy comes from
-  `WebAppOptions.toolReworkAutoRetryPolicy`; defaults to enabled with depth 1, env
-  knobs `TOOL_REWORK_AUTO_RETRY` and `TOOL_REWORK_AUTO_RETRY_MAX_DEPTH`. Operator
-  endpoint: `POST /api/tool-rework-waits/:id/auto-retry`.
-- [src/tools/toolReworkRetryCoordinator.ts](src/tools/toolReworkRetryCoordinator.ts) -
-  domain helper that turns a `promoted` `ToolReworkWait` into a linked retry run. Copies
-  the original run's task and instance/user/channel/thread provenance, sets
-  `parentRunId = sourceRunId` and `wait.retryRunId`, returns the source run to `failed`,
-  and audits `tool_rework_wait.retry_run_created`. Idempotent: a second call returns the
-  existing retry run. The HTTP endpoint `POST /api/tool-rework-waits/:id/retry-run`
-  delegates to it and starts execution through the standard `executeRun` path.
-- [src/tools/toolBuildWorkflow.ts](src/tools/toolBuildWorkflow.ts) - reusable Builder/QA/
-  review/Registrar orchestration flow for missing tool capabilities.
-- [src/tools/toolBuildReviewers.ts](src/tools/toolBuildReviewers.ts) - deterministic and
-  optional LLM generated-tool code/behavior review gates that run after QA and before
-  registration.
-- [src/tools/toolBuildWorker.ts](src/tools/toolBuildWorker.ts) - background worker that
-  claims `requested` Tool Build Queue items and runs the Builder/QA/Registrar workflow.
-- [src/tools/toolServiceSupervisor.ts](src/tools/toolServiceSupervisor.ts) - generic
-  lifecycle supervisor for `always-on` tools with start/stop/restart/heartbeat status.
-- [src/tools/toolServiceStatusStore.ts](src/tools/toolServiceStatusStore.ts) - service
-  status store contract and in-memory lifecycle state.
-- [src/tools/postgresToolServiceStatusStore.ts](src/tools/postgresToolServiceStatusStore.ts)
-  - Postgres-backed `tool_service_statuses` lifecycle state.
-- [src/tools/toolServiceLogStore.ts](src/tools/toolServiceLogStore.ts) - service
-  lifecycle log store contract and in-memory implementation.
-- [src/tools/postgresToolServiceLogStore.ts](src/tools/postgresToolServiceLogStore.ts) -
-  Postgres-backed `tool_service_logs` lifecycle log store.
-- [src/tools/toolServiceEventStore.ts](src/tools/toolServiceEventStore.ts) - provider-
-  neutral always-on runtime event contract and in-memory store.
-- [src/tools/postgresToolServiceEventStore.ts](src/tools/postgresToolServiceEventStore.ts)
-  - Postgres-backed `tool_service_events` runtime event store.
-- [src/tools/telegramBotServiceTool.ts](src/tools/telegramBotServiceTool.ts) - reference
-  provider module for the generic always-on runtime: polls Telegram, forwards normalized
-  inbound events, delivers neutral outbox events, and acknowledges provider delivery.
-- [src/tools/messagingServiceToolBuildProvider.ts](src/tools/messagingServiceToolBuildProvider.ts)
-  - Provider-family Tool Build provider for always-on messaging service adapters. It
-  keeps provider specifics inside generated isolated source bundles while the core
-  runtime sees only the neutral service contract. The first provider spec is Telegram
-  Bot API; its generated module exports `tool`, `runTelegramBotServiceCycle`, and
-  `splitTelegramMessage`, never imports Agentic internals, and resolves the token
-  through `context.resolveSecret(handle)`. Registered BEFORE
-  `GenericServiceToolBuildProvider` in main.ts so provider requests that name Telegram
-  Bot API get a concrete messaging adapter (with `getUpdates` / `sendMessage` / inline
-  keyboard / ack) instead of a provider-neutral bridge.
-- [src/tools/toolBuildProviders.ts](src/tools/toolBuildProviders.ts) - provider-backed
-  generated tool source writer, including browser screenshot, document/PDF artifact, and
-  generic HTTP API and always-on service providers, plus isolated command QA runner and
-  metadata registrar.
-- [src/tools/toolBuildBlueprint.ts](src/tools/toolBuildBlueprint.ts) - generic Tool
-  Builder blueprint extractor for arbitrary docs/instructions. It turns pasted docs,
-  cURL examples, endpoints, fixtures, credential notes, lifecycle hints, and previous QA
-  failures into explicit build obligations before the LLM fallback is prompted.
-- [src/tools/llmToolBuildProvider.ts](src/tools/llmToolBuildProvider.ts) - guarded
-  LLM-backed Tool Build provider for unknown/custom capability families. It asks the
-  configured XL-tier model for a TypeScript module/test pair using the Tool Build
-  Blueprint, rejects unsafe paths, raw-looking secrets, ignored documented operations,
-  missing secret handles, missing fixture coverage, and missing always-on lifecycle
-  behavior, then hands output to the same isolated QA and registrar lifecycle.
-- [src/tools/fileTools.ts](src/tools/fileTools.ts) - sandboxed workspace file tools.
-- [src/settings/modelTierSettings.ts](src/settings/modelTierSettings.ts) - model tier
-  policy contract and in-memory implementation.
-- [src/settings/postgresModelTierSettings.ts](src/settings/postgresModelTierSettings.ts)
-  - Postgres-backed model tier policy.
-- [src/settings/toolRuntimeSettings.ts](src/settings/toolRuntimeSettings.ts) - non-secret
-  per-tool runtime settings contract and in-memory implementation.
-- [src/settings/postgresToolRuntimeSettings.ts](src/settings/postgresToolRuntimeSettings.ts)
-  - Postgres-backed `tool_runtime_settings` store.
-- [src/secrets/secretHandleStore.ts](src/secrets/secretHandleStore.ts) - secret-handle
-  metadata contract, validation, raw-secret rejection, and in-memory resolver for env refs.
-- [src/secrets/postgresSecretHandleStore.ts](src/secrets/postgresSecretHandleStore.ts) -
-  Postgres-backed `secret_handles` metadata store.
-- [src/instance/groupProfileStore.ts](src/instance/groupProfileStore.ts) - editable
-  single-instance group profile contract.
-- [src/instance/postgresGroupProfileStore.ts](src/instance/postgresGroupProfileStore.ts)
-  - Postgres-backed group profile context.
-- [src/instance/userStore.ts](src/instance/userStore.ts) - user and channel identity
-  contract, local admin defaults, requester resolution, and CRUD operations.
-- [src/instance/postgresUserStore.ts](src/instance/postgresUserStore.ts) -
-  Postgres-backed users and channel identities.
-- [src/server/main.nest.ts](src/server/main.nest.ts) - NestJS web API and static UI
-  entry point. The legacy hand-rolled API was removed after Nest parity checks.
-- [src/server/app.module.ts](src/server/app.module.ts) - Nest module graph for API,
-  persistence, workers, static assets, and domain services.
-- [src/server/modules/tool-services/](src/server/modules/tool-services/) - always-on
-  service lifecycle, neutral inbound/outbound events, outbox, logs, and channel-identity
-  allow endpoints.
-- [docs/modules/web-console.md](docs/modules/web-console.md) - web console API,
-  realtime SSE stream, dashboard behavior, conversation continuation, attachments,
-  artifacts, and trace rendering.
-- [src/runs/inMemoryRunStore.ts](src/runs/inMemoryRunStore.ts) - replaceable run store.
-- [src/runs/postgresRunStore.ts](src/runs/postgresRunStore.ts) - Postgres-backed run store.
-- [src/db/migrate.ts](src/db/migrate.ts) - database migrations.
-- [src/work-ledger/types.ts](src/work-ledger/types.ts) - shared types for the Work
-  Ledger, Evidence Ledger, and Run Retrospective domain stores. The UniversalAgent
-  runtime now writes work claims, evidence, and proposed retrospectives through these
-  contracts when the stores are wired (web-search and screenshot/artifact tool sites).
-  Threading is optional — runs without stores keep their previous behaviour.
-- [src/work-ledger/runtimeLedgerCoordinator.ts](src/work-ledger/runtimeLedgerCoordinator.ts) -
-  per-run adapter that the agent uses to claim work, record evidence, and emit a
-  proposed retrospective at run end. Resolved through a per-run map keyed by
-  `runId` so deeply nested helpers do not need to thread an extra argument.
-- [src/work-ledger/workLedgerClaimCoordinator.ts](src/work-ledger/workLedgerClaimCoordinator.ts) -
-  pure domain helper that wraps the Work / Evidence stores with a higher-level
-  claim/complete/fail/block/attach API for recursive agents. Computes deterministic
-  work keys from agent intent, returns structured `reuse_completed` /
-  `wait_for_active` / `created_new` / `revalidate` / `blocked` decisions, and writes
-  paired `limitation` evidence on failure / blockers when the evidence store is
-  wired. It is available to callers through `POST /api/work-ledger/claim`.
-- [web-react/src/routes/Ledger.tsx](web-react/src/routes/Ledger.tsx) - operator UX for
-  Work Ledger, Evidence Ledger, and Run Retrospective review, with scoped run/thread/
-  work-key views and manual claim creation.
-- [web-react/src/features/ledger/ledgerPresentation.ts](web-react/src/features/ledger/ledgerPresentation.ts)
-  - presentation helpers for ledger health metrics, search filtering, and status tones.
-- [src/work-ledger/workKey.ts](src/work-ledger/workKey.ts) - deterministic work-key
-  builders for search queries, URL visits, tool/API calls, and artifact intents.
-- [src/work-ledger/decideWorkReuse.ts](src/work-ledger/decideWorkReuse.ts) - pure
-  reuse decision (`reuse_completed`, `wait_for_inflight`, `create_revalidation`,
-  `create_new_attempt`, `blocked_by_recent_failure`).
-- [src/work-ledger/sanitize.ts](src/work-ledger/sanitize.ts) - recursive secret
-  redaction shared by every ledger store and HTTP route.
-- [src/work-ledger/workLedgerStore.ts](src/work-ledger/workLedgerStore.ts) /
-  [postgresWorkLedgerStore.ts](src/work-ledger/postgresWorkLedgerStore.ts) - Work
-  Ledger implementations.
-- [src/work-ledger/evidenceLedgerStore.ts](src/work-ledger/evidenceLedgerStore.ts) /
-  [postgresEvidenceLedgerStore.ts](src/work-ledger/postgresEvidenceLedgerStore.ts) -
-  Evidence Ledger implementations.
-- [src/work-ledger/runRetrospectiveStore.ts](src/work-ledger/runRetrospectiveStore.ts)
-  /
-  [postgresRunRetrospectiveStore.ts](src/work-ledger/postgresRunRetrospectiveStore.ts)
-  - Run Retrospective implementations.
-- [public/](public/) - browser console UI.
-- [memory/skills.json](memory/skills.json) - current long-term skill memory store.
-- [tests/](tests/) - automated tests.
-- [docs/modules/](docs/modules/) - module-level documentation.
-- [docs/roadmap.md](docs/roadmap.md) - planned memory, tools, recursive agents, and model tiers.
+- `README.md` - quick start and current execution summary.
+- `docs/roadmap.md` - active rebuild plan and phase order.
+- `docs/api-surface.md` - active HTTP API contract and removed endpoint list.
+- `docs/modules/agent-runtime.md` - current `BaseAgent` runtime contract.
+- `docs/modules/web-console.md` - current React console surface.
+- `src/agents/baseAgent.ts` - active minimal agent runtime facade and LLM loop.
+- `src/agents/baseAgentPrompt.ts`, `src/agents/baseAgentToolLifecycle.ts`,
+  `src/agents/baseAgentToolExecution.ts`, `src/agents/baseAgentFinalization.ts`,
+  `src/agents/baseAgentEvidence.ts`, `src/agents/baseAgentProof.ts`, and
+  `src/agents/baseAgentArtifacts.ts` - split `BaseAgent` prompt/schema, generated-tool
+  lifecycle calls, registered tool execution, return-gate finalization, source/proof
+  reasoning, and artifact QA helpers. Keep future runtime changes in these smaller
+  responsibility modules instead of growing `baseAgent.ts`.
+- `src/agents/taskFrame.ts` - task framing, research contracts, and broad/current task
+  return-gate repair instructions used by `BaseAgent`.
+- `src/agents/externalActionPlanning.ts` - external action policy/proposal contracts for
+  reservations, purchases, outbound messages, and write APIs.
+- `src/agents/agentToolCatalog.ts` - agent-visible tool catalog filtering, prompt
+  formatting, schema descriptions, and per-run tool call cache keys.
+- `src/agents/proofSourceUrls.ts` - shared proof-worthy URL normalization and same-page
+  comparison helpers.
+- `src/agents/modelTier.ts` - model tier selection policy.
+- `src/llm/client.ts` - OpenAI-compatible LLM client.
+- `src/server/modules/runs/runs.service.ts` - run creation/execution/cancel/restart API
+  orchestration.
+- `src/server/modules/runs/action-proposals.service.ts` - external action approval,
+  executor build planning, and commit boundary orchestration.
+- `src/server/modules/runs/external-action-run-completion.ts` and
+  `src/server/modules/runs/run-external-action-pause.ts` - shared external-action run
+  pause/resume helpers for `approval` versus `auto` mode.
+- `src/server/modules/runs/run-tool-catalog.ts` - run-side tool catalog/reuse helpers.
+- `src/server/modules/tools/tools.service.ts` - tool creation/editing orchestration
+  facade. Larger responsibilities are split into registry admin, manual run, settings,
+  version lifecycle, and package workflow services.
+- `src/server/modules/tools/tool-registry-admin.service.ts` - tool catalog, health,
+  reload, enable/disable, package runner diagnostics, manifest import/export, version
+  listing, and usage stats.
+- `src/server/modules/tools/tool-version-lifecycle.service.ts` - generated tool family
+  delete, version delete, mark available, reject, activate, replacement promotion, and
+  agent-verified candidate acceptance.
+- `src/server/modules/tools/tool-manual-run.service.ts` - manual tool execution, pinned
+  generated-version execution, and agent candidate-version loading.
+- `src/server/modules/tools/tool-settings.service.ts` - runtime setting list/set/delete
+  and schema validation for generated/external tools.
+- `src/server/modules/tools/tool-source-bundle-files.ts` and
+  `src/server/modules/tools/tool-creation-trace.ts` - small helpers for source-bundle
+  file IO/validation and tool-creation trace run events.
+- `src/runs/types.ts` - run record/status/event contracts.
+- `src/runs/inMemoryRunStore.ts` and `src/runs/postgresRunStore.ts` - run persistence.
+- `src/tools/tool.ts` - versioned tool module contract.
+- `src/tools/registry.ts` - tool registry.
+- `src/tools/toolPackage.ts` - portable tool package manifest contract.
+- `src/tools/toolBuilderAgent.ts` - first generic Tool Creation strategy planner.
+- `src/tools/toolImplementationDiscovery.ts` - npm registry implementation discovery
+  provider.
+- `src/tools/toolBuilderPackageAuthor.ts` - guarded LLM package snapshot author/parser.
+- `src/tools/toolCreationV1.ts` - guarded source-bundle package writer used by the first
+  builder strategy loop.
+- `src/tools/postgresToolCreationStore.ts` - Postgres-backed Tool Creation run records;
+  JSONB fields are explicitly serialized before writes because package dependency arrays
+  must be stored as JSON, not PostgreSQL arrays.
+- `src/tools/toolPackageRunner.ts` - barrel export for source-bundle, external HTTP,
+  OCI, and local-path package runners. Implementations live in
+  `toolPackageRunnerSourceBundle.ts`, `toolPackageRunnerHttpRuntime.ts`,
+  `toolPackageRunnerExternal.ts`, `toolPackageRunnerOci.ts`, and shared type/helper
+  modules.
+- `src/tools/toolServiceSupervisor.ts` - lifecycle supervisor for always-on tools.
+- `src/artifacts/artifactStore.ts` - artifact store contracts and local/durable
+  implementations.
+- `src/settings/modelProviderStore.ts` and `src/settings/postgresModelProviderStore.ts`
+  - durable model provider registry.
+- `src/instance/userStore.ts` and `src/instance/postgresUserStore.ts` - user and channel
+  identity resolution.
+- `src/conversations/threadResolution.ts` - new-task versus continuation resolution.
+- `src/audit/*` - audit event contracts and stores.
+- `src/work-ledger/*` - Work Ledger, Evidence Ledger, and retrospective stores.
+- `web-react/src/app/router.tsx` - React route list.
+- `web-react/src/routes/Tools.tsx` - tool registry/operator tool surface.
+- `tests/baseAgent.part*.test.ts` - current runtime unit coverage split by behavior.
+- `tests/nestApi.test.ts` - Nest API smoke coverage, including deleted endpoint 404s.
 
-## Architecture Notes
+## Current Roadmap Order
 
-### Three primary entities
+1. Finish repository cleanup and documentation alignment.
+2. Harden `BaseAgent`: context, tool-call parsing, budgets, return gates, cancellation,
+   trace detail, tool runtime context, and clearer user-facing errors. PARTIAL: the
+   task frame now includes a research plan, answer contract, proof strategy, external
+   action policy, and source read/extract requirement so broad runs reason about ideal
+   outcomes, failure modes, evidence, and approval boundaries before acting.
+   DONE (2026-06-13): default step/tool budgets from the task frame, final-step
+   wrap-up, truncation/raw-syntax repair extensions, rolling context compaction for
+   small-context local models, and event-I/O perf (O(1) appendEvent, batched list,
+   getMeta-driven SSE polling).
+3. Stabilize the tool registry/runtime UI: manifests, manual run evidence, versions,
+   active version, health, usage stats, and disabled-tool policy.
+4. Continue Tool Creation V1: richer API-doc-driven adapter synthesis, file/PDF artifact
+   tools, schema shaping from inspection evidence and behavior examples, and creation-run
+   graph polish. Live behavior QA now has retry/classification, and OpenAPI YAML/reference
+   schema plus bounded HTML docs crawling is active. Raw credentials pasted into
+   creation/edit requests are now extracted into version-independent tool-scoped secret
+   handles before builder/traces see the request; next work is generated secret mapping
+   UI and generated multi-call fixtures for less structured API docs.
+5. Finish tool editing/versioning gaps: stronger rollback evidence and less disruptive
+   candidate promotion semantics. Side-by-side active/candidate comparison and
+   pinned-manual-run activation gating are already in the Tools Versions panel/API.
+6. Add External Action Lifecycle before real-world committing tasks: generic action
+   contracts, prepare/commit split, `waiting_approval`, approval records, policy
+   checks, and proof records for bookings, outbound messages, form submissions, and
+   third-party write APIs. External actions have two execution modes: `approval` pauses
+   the same run at the final boundary and resumes it after operator reject/commit; `auto`
+   keeps the run out of the approval queue and may commit only when inputs, executor
+   readiness, and proof capture are sufficient. First slice: `BaseAgent` emits run-linked
+  external action proposals for requested write actions; Run Workspace shows the
+  run-scoped approval panel and can prepare, approve/reject, attach/build an executor,
+  and commit the approved action while the run remains `waiting_approval`. `/approvals`
+  remains a cross-run queue. Approved proposals expose a guarded commit endpoint
+  that reads the proposal's persisted `commitExecutor` contract. Commit execution is a
+  generic reusable capability: build/reuse `external.action.commit` with
+  `external-action-commit` + `external-action-commit-generic`, and keep concrete
+  provider/URL/business/user/prepared-session/proof details in the proposal payload, not
+  in a target-specific tool name or package source. Generic commit tools are not exposed
+  in normal agent tool catalogs; they are callable only through the guarded
+  approval/commit endpoint. Without a ready generated executor, commit records
+  `external-action-commit-blocked`; with a ready executor, the endpoint requires a
+  registered generic commit tool plus typed `toolInput`, executes it through
+  `ToolRegistry`, and records `external-action-committed` or
+  `external-action-commit-failed`. Missing executors can be planned/built through
+  `POST /api/action-proposals/:id/build-executor`; the endpoint records a linked build
+  request, reuses a matching registered executor when available, or starts Tool Creation
+  for a disabled candidate. The contract records executor kind, readiness, risk, missing
+  requirements, and expected proof. Automode uses the same contract without entering the
+   approval queue: it auto-attaches a matching registered generated executor, forwards
+  request-provided commit input, records committed/failed/blocked trace events, and
+  appends the automode outcome to the run final answer.
+  Safe preparation is also a generated capability: `external.action.prepare` declares
+  `external-action-prepare`, `browser-action-candidates`,
+  `browser-field-candidates`, `browser-form-schema`, and `browser-safe-advance`.
+  The platform prefers it for approval preparation and only falls back to
+  `browser.operate`; the tool must surface action controls both inside normal forms and
+  outside forms on SPA/provider pages as generic action candidates. Prepare-only runs may
+  click a generated `safe_advance` candidate such as a "book/select/continue" CTA to open
+  the next draft step, with bounded browser/DOM click fallbacks only for those
+  safe-advance commands, but must still block final submit/pay/confirm/send controls
+  until the external action commit boundary. The core owns approval state, commit
+  readiness gates, proof/artifact storage, and trace/audit records. Cookie/consent
+  dismissal should prefer rejection/deny controls when present, include common
+  provider selectors, and only report success after visible consent text disappears
+  following a real click path. Prepared sessions must count only actually successful
+  fill/type tool steps as filled fields; skipped optional fields, missing selectors, and
+  failed target interactions keep the action draft in `needs_more_input`. Run Workspace
+  and `/approvals` must hide the final external-submit button until the shared commit
+  readiness gate says the proposal is ready.
+- External action intent must distinguish “find a place/API/service that can be booked
+  or used online” from “book/use/submit it for me.” Informational availability lookups
+  must not create `waiting_approval` proposals; only explicit execution or preparation
+  requests such as “find and book”, “reserve”, “schedule”, “send”, “submit”, or approved
+  automode should pause/commit. A bookable-place lookup that includes user contact/
+  identity details, date/time or service constraints, and an approval/proof/filled-form
+  instruction is treated as an external-action preparation request even if the wording is
+  “find where I can book online,” because the user has supplied the data needed to prepare
+  the action. The same applies when a continuation supplies contact/service/time details
+  and says to use/take/select the best known target from the previous online-booking
+  lookup.
+- “Do not submit/send/book without my confirmation” is an approval boundary, not a reason
+  to suppress the proposal. The run should create the proposal, mark approval required,
+  and let the prepare/commit lifecycle handle the proof and final resume. Continuation
+  runs with only contact/service/time details should inherit the prior external-action
+  intent from thread summary/facts/questions when that thread context clearly describes
+  booking, submission, form filling, or confirmation.
+- Requirements questions such as “what data do you need from me to book/reserve/schedule”
+  are direct checklist tasks. They must not create external action proposals, trigger
+  broad research repair, or appear in `/approvals`.
+- Approval pauses require a concrete ready proposal. Draft proposals with missing
+  date/time, party size, contact, target, payload, or equivalent required inputs should
+  complete with a checklist or question instead of blocking the run on an unclear
+  approval.
+7. Add agent delegation only after the single-agent/tool/action path is stable.
 
-The platform has exactly three first-class things and every feature is a
-composition of them:
+## Working Rules
 
-1. **Agent** — `UniversalAgent` (`src/agents/universalAgent.ts`). The single
-   coordinator. Different modes (delegation, council, tool-build) are activated
-   through `decideAgentStrategy` and reflected in `AgentStrategyDecision.primary`,
-   not by spawning separate classes.
-2. **Tool** — anything in the registry. Built-in, generated, dockerized HTTP
-   service, or source-bundle — they are all called the same way: `registry.execute`.
-3. **LLM** — `LlmClient.complete(messages, { modelTier? | model? })`. Tier
-   resolution comes from `model_tier_settings`; `model` overrides tier mapping.
-
-If a feature can't be expressed as a combination of the three, the design is
-probably wrong.
-
-### Tools-as-services (Phase 13)
-
-The four runtime-heavy built-ins live in `tools/<name>-service/` as docker
-projects and are registered with `HttpToolAdapter` / `BrowserOperateHttpTool`.
-In-process tools (`web.search`, `file.read`, `file.write`,
-`channel.telegram.bot`) have README-only stub directories in `tools/` so the
-filesystem layout mirrors the live tool registry 1:1.
-
-The `tools/` directory contains exactly the tools that show up at `/api/tools`
-(plus `sdk/`, which is a shared TypeScript library, and `web-react/`, the UI
-sources — neither is a tool).
-
-### Tool-build council (Phase 14, shipped except final legacy delete)
-
-Tool creation, rework, and bugfix requests run through `UniversalAgent.runToolBuildCouncil`.
-The pipeline is brainstorm → vote → implement → review → revise → QA → repair →
-register, with the council = every model in `model_tier_settings.<codingTier>.models`.
-Settings live in `coding_council_config`. See
-`docs/architecture/tool-build-council.md` for the full design.
-
-Highlights (Phases A–F shipped, plus follow-up work):
-
-- **Council pipeline** inside `UniversalAgent` — no separate orchestrator. Brainstorm
-  + vote in parallel across models, Borda count picks winner, fallback to next-best
-  proposal when an LLM returns empty content.
-- **Canonical scaffold** owned by `CouncilToolAdapter` — every council-built tool
-  gets the same `index.ts` + `runtime/server.ts` + `src/tools/tool.ts` +
-  `package.json` + `tsconfig.json` layout. The model only emits the `Tool` body
-  file at `src/tools/generated/<name>Tool.ts`.
-- **Reference doc uploads** on the Tool Builds form. Text-like MIMEs (yaml / json /
-  md / openapi) decode in-process; binary formats (PDF, etc.) trigger an
-  auto-spawned reader sub-build via `reads:<mime>` capability lookup, then the
-  parent run resumes automatically once the reader registers.
-- **In-progress events** — every LLM call emits a `started` event with the prompt,
-  then a `completed` / `failed` event with the same span id. Trace Lab shows a live
-  timer and prompt content while the model is still streaming.
-- **Cancel propagation** — `AbortSignal` flows from `RunsService` through
-  `agent.run` into every `LlmClient.complete`, so `POST /api/runs/:id/cancel`
-  actually stops the council loop instead of just hiding events.
-- **LLM-synthesized canonical description** + diff-aware change summary, persisted
-  per version. Every other agent (planner, worker, reviewer) sees the live
-  description block via `toolCatalogBlock(tools)` in its system prompt — no
-  hard-coded tool names.
-- **Capability-aware self-check** — when no registered tool advertises the
-  capability a planner asked for, the worker isn't punished for failing to
-  produce that artifact.
-- **Pure-council registry** — `BUILTIN_TOOLS=disabled` skips the preinstalled
-  core toolbelt registrations (`web.search`, `web.read`, `browser.operate`,
-  `browser.screenshot`, `http.request`, `file.read`, `file.write`,
-  `document.extract`, `data.transform`, `external.action.prepare`,
-  `external.action.commit`, `channel.telegram`) so experiments can run with an
-  empty/runtime-built registry.
-- **Tool Builds page** rewritten around `/api/tool-build-runs`; the Tools-page
-  detail view has a Versions panel (rollback per version, change summary) and a
-  Request-changes form (file uploads supported; posts as a rework run).
-
-Pending work (Phase G of Phase 14): delete the legacy provider chain
-(`ToolBuildProvider` subclasses, `ToolBuildWorkflow`, `ToolBuildWorker`,
-deterministic/LLM reviewer suite, `toolPackageWorkspaceQa`, queue-style
-`/api/tool-build-requests` endpoints) once the council flow has logged enough
-clean live builds.
-
-### Request flow
-
-
-
-```text
-User task
-  -> Coordinator
-  -> Resolve instance/user/channel context (defaulted locally today)
-  -> Resolve conversation thread or create a new one
-  -> SkillMemory.search()
-  -> Complexity classification
-  -> Direct answer or delegated plan
-  -> Dependency-aware worker DAG
-  -> Reviewer agents, with one bounded worker revision if review returns `needs_revision`
-  -> Artifact generation for supported file-output requests
-  -> Final synthesis
-  -> SkillMemory.add()
-```
-
-Delegation is preferred when the task:
-
-- crosses multiple domains;
-- needs research and implementation;
-- can consume too much context in one thread;
-- benefits from independent review;
-- requires both creation and verification.
-
-Direct mode is acceptable when the task is narrow, stable, low risk, and does not require
-fresh research or codebase inspection.
-
-Future product flow:
-
-```text
-Web/Telegram/API request
-  -> verify channel identity and whitelist
-  -> classify new task versus continuation/correction/clarification
-  -> resolve or create conversation thread
-  -> resolve instance, requester, and permissions
-  -> attach compact thread summary when continuing
-  -> create one run
-  -> inject compact group profile and requester context
-  -> retrieve scoped global/group/user memory
-  -> execute agent DAG and tools
-  -> return answer or create auditable outbound action
-```
-
-## Testing Policy
-
-For code changes:
-
-- Add or update automated tests.
-- Run `npm run verify`.
-- Run a manual test that exercises the user-visible path.
-- Mention any untested risk explicitly if full verification is impossible.
-
-For documentation-only changes:
-
-- Automated tests are not required unless docs include generated or validated examples.
-- Run a lightweight manual check by reading the changed file and confirming links/commands
-  still make sense.
-
-## Current Test Coverage
-
-- `tests/workLedger.test.ts` covers the Work / Evidence / Run-Retrospective domain
-  foundation: deterministic work-key normalization, recursive secret redaction, the
-  full `decideWorkReuse` decision matrix, in-memory store lifecycles, and link
-  appending. The HTTP layer is covered alongside the rest of the API surface in
-  `tests/webServer.test.ts`.
-- `tests/runtimeLedgerCoordinator.test.ts` covers the runtime adapter's use of
-  `WorkLedgerClaimCoordinator`, including dedicated revalidation and blocked trace
-  events.
-- `tests/workLedgerClaimCoordinator.test.ts` covers the domain claim coordinator used by
-  `/api/work-ledger/claim`: deterministic intent keys, secret redaction, reuse/wait/
-  revalidate/blocked decisions, evidence/artifact attachment, and concurrent same-key
-  claims.
-- `web-react/src/features/ledger/ledgerPresentation.test.ts` covers React ledger health
-  summaries, shared search filtering, and status-tone mapping.
-- `tests/json.test.ts` covers JSON extraction from model output.
-- `tests/skillMemory.test.ts` covers file-backed skill memory.
-- `tests/memoryRetrievalEvaluation.test.ts` covers retrieval quality fixture scoring.
-- `tests/toolRegistry.test.ts` covers tool registration and lookup.
-- `tests/universalAgent.test.ts` covers direct and delegated orchestration with a fake
-  LLM, including accepted scoped memory retrieval, runtime sensitive/private memory
-  policy filtering, repeated similar tasks, call-frame payloads, invocation contracts,
-  recursive root decision-loop events, return self-check events, and ledgered tool
-  execution for web search, market/API tools, declared browser operations, and artifact
-  paths.
-- `tests/recursiveAgentExecutor.test.ts` covers direct recursive invocation execution,
-  child/grandchild delegation, compact child synthesis, lifecycle trace emission,
-  invalid action/tool rejection, and depth-budget failure behavior.
-- `tests/artifactStore.test.ts` covers local artifact persistence, durable
-  metadata/object payload separation, and download metadata.
-- `tests/auditEventStore.test.ts` covers normalized in-memory audit events.
-- `tests/chartArtifact.test.ts` covers SVG chart helpers and the `chart.generate` tool.
-- `tests/conversationThreadStore.test.ts` covers compact conversation-thread context.
-- `tests/browserOperateTool.test.ts` covers the generic Playwright command executor.
-- `tests/generatedToolLoader.test.ts` covers compiled generated tool loading and contract
-  rejection.
-- `tests/toolMetadataStore.test.ts` covers tool metadata and Tool Build Queue lifecycle.
-- `tests/toolInvestigationStore.test.ts` covers Tool Investigation Ticket lifecycle and
-  context-bundle secret redaction.
-- `tests/toolReworkWaitStore.test.ts` covers the Tool Rework Wait in-memory store
-  lifecycle and required-field validation.
-- `tests/toolImprovementCoordinator.test.ts` covers the shared agent/HTTP coordinator:
-  promote-with-registered-tool, refusal of fuzzy retargeting on unknown toolName,
-  agent-runtime mode (creates investigation+build+wait+marks run waiting), missing-run
-  handling, idempotent build-registered notifications, `markReadyForRetry` resuming the
-  run only when the wait is `promoted`, and protection against late completion overwriting
-  a coordinator-opened wait.
-- `tests/toolBuildWorkflow.test.ts` extended with three new ToolBuildWorker cases:
-  `onAfterCompleted` fires with the workflow result for handoff, `setOnAfterCompleted`
-  late-binds the callback after construction, and overlapping ticks (including
-  `scheduleImmediate`) never double-claim the same `requested` build.
-- `tests/webServer.test.ts` extended with a background handoff integration: promote
-  investigation -> coordinator nudges scheduler -> worker registers -> linked wait flips
-  to `promoted` automatically -> retry-run endpoint becomes reachable, all without a
-  manual PATCH and with secret-shaped audit metadata redacted.
-- `tests/messagingServiceToolBuildProvider.test.ts` covers the messaging-service provider
-  family builder: it claims provider requests that name Telegram Bot API (and skips browser/API
-  ones), produces an isolated source-bundle with `getUpdates`/`sendMessage`/inline
-  keyboard/ack, declares required secret handles + allowlist settings + storage contract,
-  runs the generated test source inside a temp workspace against a fake provider and fake
-  Agentic outbox, proves long-message splitting + Continue thread on the final chunk, and asserts the
-  shared deterministic behavior reviewer rejects a generic bridge for the same provider
-  request while accepting the new adapter when QA evidence covers the named provider API.
-- `tests/toolReworkAutoRetryCoordinator.test.ts` covers the auto-retry orchestrator:
-  promoted wait creates a linked retry run, non-promoted/cancelled/orphan waits do not,
-  idempotency on second call, disabled policy stays manual, max-depth enforcement walks
-  the parent chain, fast double-call collapses through the per-wait lock, and manual
-  `/resume` semantics are unchanged.
-- `tests/toolReworkRetryCoordinator.test.ts` covers the retry-run skeleton: rejection of
-  unknown / non-promoted / orphaned waits, creation of a linked retry run that inherits
-  the original run's task and provenance, idempotency on the second call, and the
-  contract that the coordinator never auto-executes the retry run (execution stays in the
-  HTTP layer's `executeRun`).
-- `tests/toolServiceSupervisor.test.ts` covers generic always-on tool lifecycle state,
-  status-store persistence across supervisor instances, reconciliation, and lifecycle
-  logs.
-- `tests/webServer.test.ts` covers provider-neutral always-on tool service event
-  recording, API listing, payload redaction, and audit emission.
-- `tests/toolMigrationStore.test.ts` covers tool-owned migration metadata lifecycle.
-- `tests/toolPromotionStore.test.ts` covers generated tool promotion journal entries.
-- `tests/toolPromotionCoordinator.test.ts` covers the generated-tool promotion boundary.
-- `tests/toolBuildWorkflow.test.ts` covers Builder/QA/Registrar orchestration and failed
-  QA registration blocking.
-- `tests/toolBuildBlueprint.test.ts` covers generic Tool Builder blueprint extraction,
-  repair context, operation/fixture/auth parsing, and raw-secret validation.
-- `tests/toolBuildProviders.test.ts` covers provider-backed TypeScript generation and
-  generated metadata registration, including the guarded LLM-backed provider path for
-  unknown/custom integrations and blueprint-enforced endpoint/fixture behavior.
-- `tests/toolBuildReviewers.test.ts` covers deterministic and LLM generated-tool review
-  gates, including provider-specific behavior checks that reject generic service bridges
-  when a request explicitly asks for a real provider adapter.
-- `tests/modelProviderStore.test.ts` covers model provider defaults, normalization, and
-  CRUD lifecycle.
-- `tests/userStore.test.ts` covers local user and allowed channel identity resolution.
-- `tests/nestApi.test.ts` covers the Nest API smoke path, tool rework endpoints, inline
-  credential handling, ledger endpoints, and channel-event `Allow as Admin` identity
-  mapping with audit redaction.
-- `tests/webUiStatic.test.ts` covers the page-based web console information architecture.
-- `web-react/src/features/channels/channelPresentation.test.ts` covers Channels-page
-  health summaries, event filtering, and channel identity flattening.
-
-## Maintenance Rules
-
-- Keep edits small and consistent with the existing TypeScript style.
-- Prefer Node built-ins unless a dependency clearly improves the system.
-- Do not store full transcripts in skill memory; store compressed reusable lessons.
-- Skill memory entries can be scoped to `global`, `group`, `user`, `thread`, or `run`.
-  Retrieval should use accepted memories only; proposed/rejected/archived entries are for
-  review and audit surfaces until policy says otherwise.
-- Learned memories should carry scope, confidence, sensitivity, source run/thread IDs,
-  and short evidence. Non-global or sensitive/private learned memories must enter the
-  `proposed` review state before runtime retrieval can use them. A deterministic
-  memory-specialist gate also keeps low-confidence or policy-risky learned memories in
-  review even if the learning model requested `accepted`.
-- Keep worker context narrow: original task summary, one subtask, relevant memory, output
-  expectations, and review criteria.
-- Keep instance/user/channel context explicit on future runs, memory records, tool
-  credentials, artifacts, and audit events.
-- Preserve `threadId`, `parentRunId`, and compact conversation summaries when adding
-  continuation support. Do not replay full transcripts into agent prompts by default.
-- Scope memory by default. Agents should not read another user's private memory unless the
-  task and policy allow it.
-- Telegram and other always-on generated tools should translate provider events into run
-  requests; they should not embed agent orchestration logic or become special runtime
-  branches.
-- Generated always-on tools should record inbound, outbound, ignored, and system events
-  through `tool_service_events` so Channels, Audit, Runs, and Conversations can link
-  provider activity without provider-specific core tables.
-- Tool Build QA must distinguish a provider-neutral service bridge from a provider
-  adapter. If a request asks for concrete provider behavior such as Telegram Bot API
-  polling or message delivery, review should fail unless the generated package and QA
-  evidence prove that behavior behind the portable service contract.
-- Tool Builder should be treated as a general Technical Capability Builder, not an
-  API-only generator. Requests can come from OpenAPI, Markdown/PDF docs, SDK docs, CLI
-  docs, webhook docs, browser workflow instructions, protocol notes, examples, or plain
-  operator instructions; the builder should classify the reusable capability family
-  before generating code.
-- LLM-backed generic builds must go through `ToolBuildBlueprint`: the blueprint is the
-  source of truth for documented operations, fixtures, credential handles, raw-secret
-  candidates, lifecycle, settings, and repair checks. Do not let a model ignore pasted
-  docs and emit a placeholder bridge; reject output that does not reference documented
-  operations or leaks raw credential material.
-- Always-on tools that receive external provider messages should forward normalized
-  events to `POST /api/tool-services/:name/inbound`; that path records the inbound event,
-  resolves channel identity, creates a normal run, and records the linked queued event.
-- Runs created from always-on tool inbound events write an `outbound/queued`
-  `tool_service_events` record with final answer/error payload when they finish. Provider
-  modules should poll `GET /api/tool-services/:name/outbox`, deliver from that neutral
-  outbox, and acknowledge with `POST /api/tool-services/:name/outbox/:eventId/ack`.
-- The generic service supervisor persists always-on lifecycle state and reconciles
-  desired-running services on app startup. It also writes lifecycle logs for
-  start/stop/restart/heartbeat/reconcile events and streams new log records to active UI
-  subscribers. Tools can optionally implement `startService(context)` to run an
-  in-process service loop under that supervisor; the app injects a base URL and secret
-  resolver and stops active service handles on shutdown without clearing the persisted
-  desired running state. Per-service restart policy now includes bounded auto-restarts,
-  optional capped/multiplied backoff, and a service-local approval gate before restart.
-  The Approvals page derives pending service restart decisions from that same state and
-  uses normal lifecycle actions to approve/reject. Durable external process/webhook
-  runners are still a roadmap item.
-- New chat/channel integrations must be onboarded as generated isolated packages through
-  the messaging-service provider family (POST a Tool Build request with provider docs,
-  behavior, and secret handles). Telegram is only the first provider spec. Generated
-  packages write under `tools/<system-name>/<version>` and run alongside any built-in
-  reference adapters rather than replacing them. Do not introduce provider-specific
-  branches into the core run orchestration or write generated source to
-  `src/tools/generated`; the lifecycle goes through Tool Builder + the package workspace
-  + the existing always-on supervisor.
-- The built-in `channel.telegram.bot` module is a reference always-on provider tool. It
-  resolves `secret.telegram.bot.token` (or `TELEGRAM_BOT_SECRET_HANDLE`), polls Telegram
-  updates, forwards text messages to the generic inbound endpoint with provider user/chat
-  ids, polls the neutral outbox, sends responses back to Telegram, and records sent/failed
-  acknowledgements. Channel identities must use provider `channel.telegram.bot`.
-- Operators can add Telegram users either on the Users page by adding a
-  `channel.telegram.bot` identity, or on the Channels page by approving an ignored
-  inbound event with the `Allow as Admin` shortcut. The shortcut is provider-neutral:
-  it maps the event `toolName`, `sourceUserId`, and forwarded aliases into ordinary
-  channel identities for the local admin user.
-- Outbound actions must be auditable and permission-checked before delivery.
-- Preserve trace parent links when adding orchestration steps; the UI depends on
-  `parentSpanId` to draw direct arrows.
-- Active runs can be stopped through `POST /api/runs/:id/cancel`; `cancelled` is terminal
-  and late LLM/tool events or results must not overwrite it.
-- If a completed run returns `result.learnedSkill`, the web server records a compact
-  `memory.created` audit event with scope/status/sensitivity metadata.
-- Proposed memories are exposed through `GET /api/memories/review-queue`, which applies
-  deterministic guardrails before an operator accepts a memory into retrieval.
-- For DAG dependencies, also preserve `payload.dependencySpanIds` so the UI can draw
-  additional upstream arrows.
-- Worker and reviewer spans should carry `payload.callFrame`, and agent returns should
-  emit `agent-self-check-completed` before completion. This is the Phase 4 foundation for
-  recursive agents.
-- Worker/reviewer LLM failures should emit explicit failed spans before throwing, so a
-  failed run still explains which agent failed and why.
-- Keep LLM prompt inputs compact. Tool evidence, dependency context, memories, worker
-  outputs, synthesis inputs, and learning inputs should be truncated/summarized before
-  being sent to local OpenAI-compatible models with limited context.
-- Runtime memory retrieval should pass visible scopes for the active group, requester,
-  thread, and run so unrelated scoped memory does not enter the prompt.
-- Non-global memory visibility requires exact `scopeId` matches. Do not reintroduce
-  wildcard user/group/thread/run memory access without a policy-layer check.
-- The Memory UI groups entries by status and exact scope, exposes retrieval impact, links
-  source runs/threads, and lets operators edit the memory contract fields. Keep it aligned
-  with the accepted-only runtime retrieval model when adding richer policy simulation.
-  Its current policy simulation mirrors the selected run context and flags blocked,
-  private, and sensitive retrieval decisions before those rules are backed by editable
-  policy records. The Memory page also exposes `POST /api/memories/reembed` for rebuilding
-  Postgres vector embeddings after provider changes.
-- Postgres memory search writes `memory_embedding` vectors when pgvector is available.
-  The default provider is deterministic text-feature hashing so the contract is portable.
-  Configure `EMBEDDING_MODEL` for OpenAI-compatible semantic embeddings; the provider
-  projects remote vector widths into the current 128-dimensional pgvector column and
-  falls back locally if the remote endpoint fails.
-- Add links here when introducing new core docs, modules, commands, or workflows.
-- Run creation must resolve a real requester before creating a thread or run. Explicit
-  `requesterUserId` values must exist; channel-originated requests with `sourceUserId`
-  must map to an allowed `channel_identities` row.
-- UI changes must be checked through the HTTP server, not only by reading static files.
-- The web console uses `GET /api/runs/:id/events` as an additive SSE stream for live run
-  snapshots and falls back to polling; keep `GET /api/runs` and `GET /api/runs/:id`
-  backwards compatible.
-- The web console also runs a soft background refresh for list-style pages. It
-  fingerprints fetched data, skips unchanged renders, and defers rendering while the
-  operator is editing an input/select/textarea or has an open Tool Build/span bug/tool
-  rework form to avoid focus loss, panel collapse, draft clearing, and flicker.
-- The web console uses `GET /api/tool-services/logs/events` as an additive SSE stream for
-  live always-on tool lifecycle logs; keep `GET /api/tool-services/logs` as the durable
-  history/fallback endpoint.
-- Inbound channel messages without an explicit `threadId` must pass through
-  `resolveConversationThread()`. This keeps Telegram/Slack-style follow-ups in the
-  matching source chat/thread while allowing explicit `/new` and independent tasks to
-  create new conversation threads.
-- Always-on channel continuation buttons should pass the internal Agentic `threadId`.
-  Keep `sourceThreadId` for provider-native topics/threads such as Telegram forum topics.
-- The web console renders final answers and conversation messages as sanitized Markdown.
-  Artifact list lines such as `- file.png: /api/runs/.../artifacts/...` should remain
-  clickable download links; nested bullet lists, basic emphasis, and common inline TeX
-  symbols such as `$\rightarrow$` should render cleanly.
-- Image artifacts in Run Workspace, Conversation Detail, Artifacts, and Trace Lab should
-  render compact thumbnails and open in a lightbox with zoom, previous/next, and close
-  controls instead of appearing only as raw artifact paths.
-- Trace Lab graph edges encode direct `parentSpanId` calls and additional
-  `payload.dependencySpanIds` dependencies. Edges that target failed spans must stay red
-  even without hover so failure paths remain visible.
-- Trace Lab graph hover should highlight all incoming/outgoing edges for the hovered
-  node, preserve arrowheads, and keep MiniMap nodes visible.
-- Trace Lab selected mode and graph layout are user preferences. Persist them in local
-  storage so refresh and route changes do not reset an operator's current inspection
-  workflow.
-- Trace Lab graph mode supports both category columns and call-depth columns. Preserve
-  `parentSpanId` and dependency payloads so both layouts can draw direct arrows and
-  dependency arrows correctly.
-- Trace Lab inspector should render `payload.callFrame` and `payload.selfCheck` as
-  readable operator sections, not only as raw JSON, because those are the Phase 4/6
-  contracts for recursive agent debugging.
-- Artifact cards should render a useful preview whenever possible: image thumbnails,
-  text/content previews, or a typed placeholder for binary files.
-- Text-like artifacts, including generated output files, should keep a bounded
-  `contentPreview` so Run Workspace, Conversations, Artifacts, and Trace Lab can render
-  useful previews without downloading the file. CSV/TSV previews render as compact tables
-  in the UI.
-- Typed artifact requirements are checked by `src/artifacts/artifactRequirementQuality.ts`.
-  Review gates should reject wrong MIME/extension classes and weak inspectable previews
-  before accepting a worker result as satisfying `requiredArtifacts`.
-- Artifact records may carry `quality` metadata. When deterministic QA or a tool accepts
-  an artifact, persist the compact check names, decisions, reasons, and matched signals so
-  UI/API users can understand why the file is usable and future rework requests can inherit
-  the evidence.
-- The Trace Lab "Create tool request / bug" inspector action opens a Tool Investigation
-  Ticket modal instead of submitting a build request directly. The modal previews the
-  attached run/span/tool/artifact context, accepts an operator comment, and creates a
-  `tool_investigation` ticket through `POST /api/tool-investigations`. Tool Build/rework
-  requests are created later from the Tool Builds page, where each ticket exposes a
-  one-click "Promote to Tool Build request" that links the resulting build id back to the
-  ticket. Do not silently retarget another tool from fuzzy text — when the selected span
-  has no clear matching registered tool, save the ticket with `source: "manual"` and let
-  the operator triage it.
-- Tool Investigation context bundles never store raw secrets. The store sanitizes any key
-  matching `secret`, `token`, `password`, `apiKey`, `api_key`, `credential`, or
-  `authorization` to `"[redacted]"` before persistence. Promotion to a Tool Build request
-  must continue to use scoped secret handles for credentials.
-- A run that fails because an existing tool is too weak should not stay terminal as
-  `failed`. Promote the linked investigation through `POST /api/tool-investigations/:id/
-  promote`; the server creates a Tool Build request, opens a `tool_rework_waits` row, and
-  marks the run as `waiting_tool_rework`. Promotion is deterministic: if
-  `investigation.toolName` matches the tool registry, capability and replacement target
-  come from that tool's metadata. Unknown `toolName` or missing tool metadata returns 400
-  with `code=investigation_promotion_ambiguous` so the operator must provide explicit
-  `capability` and `desiredToolName` instead of letting fuzzy text inference target the
-  wrong tool.
-- When the tool build reaches `registered` (PATCH or workflow runOnce), the matching
-  wait moves to `promoted`. The operator action `POST /api/tool-rework-waits/:id/resume`
-  is **"mark ready for retry / close wait"**: it records the decision and returns the run
-  to `failed` so the operator can re-issue the task with the new tool version. It is not
-  an automatic agent retry. The recursive retry engine (Phase 2) is what will populate
-  `retryRunId`/`retrySpanId` automatically. Audit `tool_rework_wait.created`,
-  `tool_rework_wait.updated`, and `tool_rework_wait.resumed` for every state transition.
-- Background tool build handoff: when a build request is created (operator promote OR
-  agent-driven improvement), `ToolImprovementCoordinator` calls
-  `ToolBuildWorker.scheduleImmediate()` if a worker is wired up. The worker's
-  `onAfterCompleted` callback (late-bound by the Nest runtime worker module) emits the same
-  `tool_build.registered` audit and `notifyToolBuildRegistered` linkage that the manual
-  PATCH/`/run` endpoints use, so background-driven registrations flip matching
-  `ToolReworkWait` records to `promoted` automatically. Worker audits use
-  `actorId="tool-build-worker"` and `metadata.backgroundWorker=true` for observability.
-  Do not duplicate this handoff; if a new path needs to register a build, route the
-  post-completion side effects through the same coordinator helpers.
-- Auto retry handoff: when `ToolImprovementCoordinator.notifyBuildRegistered` flips a
-  `ToolReworkWait` to `promoted`, it fires the configured `onWaitPromoted` hook. The
-  HTTP layer wires that hook to `ToolReworkAutoRetryCoordinator.tryAutoRetry`, which
-  inspects policy / source run / parent chain depth and (when allowed) reuses
-  `ToolReworkRetryCoordinator` to create a linked retry run. Operators can re-evaluate
-  the same decision through `POST /api/tool-rework-waits/:id/auto-retry`. Do not
-  bypass the orchestrator with bespoke retry logic; future capabilities should plug
-  in through this seam (with policy filters or richer triggers, but not duplicate
-  retry-run creation).
-- The autonomous full-run tool loop is now closed for the main server paths. If an agent
-  opens a tool rework wait, `RunsService` records `run.updated` with
-  `pendingToolRework=true` and does not emit `run.completed`/`run.failed`, complete the
-  conversation thread, or queue outbound delivery for the paused source run. When the
-  build later reaches `registered` through manual PATCH, Tool Build workflow `/run`, or
-  the background worker, the same auto-retry handoff creates and starts a linked retry
-  run. Keep new registration paths on this same `notifyBuildRegistered` +
-  `onWaitPromoted` route.
-- Retry-run handoff: when a `ToolReworkWait` reaches `promoted`, operators (and the
-  future recursive engine) can either close the wait without spawning a retry through
-  `POST /api/tool-rework-waits/:id/resume`, or create a linked retry run through
-  `POST /api/tool-rework-waits/:id/retry-run`. The retry-run path goes through
-  `ToolReworkRetryCoordinator` (`src/tools/toolReworkRetryCoordinator.ts`) and starts
-  execution through the same `executeRun` helper that powers `POST /api/runs`. The retry
-  run has `parentRunId = sourceRunId` and is reachable from `wait.retryRunId`. The source
-  run returns from `waiting_tool_rework` to `failed`. The endpoint is idempotent and
-  audits `tool_rework_wait.retry_run_created`. Do not duplicate this lifecycle; if a new
-  surface needs to spawn a retry run, route it through the same coordinator/endpoint.
-  Span-level recursive retry of only the failed step is still Phase 2.
-- Tool rework lifecycle (HTTP and agent runtime) is owned by a single in-process domain
-  helper, `ToolImprovementCoordinator` (`src/tools/toolImprovementCoordinator.ts`). The
-  promote endpoint, the standalone wait creation endpoint, the build-registered
-  notification (PATCH and `/run`), and the resume endpoint all delegate to it. The
-  `UniversalAgent` accepts an optional `toolImprovementCoordinator` in its `RunOptions`
-  and uses it from `handleMissingToolCapability` / `handleInsufficientToolCapability` so
-  agent-driven failures open the same investigation + build + wait + `waiting_tool_rework`
-  run state. The agent emits `tool-rework-wait-opened` trace events and appends a
-  "Pending tool rework waits" footer to the final answer when waits are still open. Do
-  not duplicate this lifecycle; if a new HTTP or agent path needs to create/promote/resume
-  a wait, route it through the coordinator and keep the audit `actorId`/`actorType`
-  consistent with the caller (operator vs agent).
-- `RunStore.complete()` and `RunStore.fail()` must not overwrite a `waiting_tool_rework`
-  run. A late agent completion or failure that arrives after the run was paused for tool
-  rework is silently ignored, so the wait stays the source of truth until the operator
-  closes it. The same protection covers `cancelled`. The Postgres run store enforces this
-  through `where status not in ('cancelled', 'waiting_tool_rework')` clauses.
-- `POST /api/tool-rework-waits` and the promote-created wait flow both validate the
-  source `runId` through `runStore.get()` before any wait is created. Errors from
-  `markWaitingForToolRework` are surfaced to the caller; they are not swallowed.
-- Conversation deletion is destructive: `DELETE /api/conversation-threads/:id` deletes the
-  thread, its messages, all runs with that `threadId`, and their trace events/artifact
-  metadata through run cascades. Keep UI copy explicit about the blast radius.
-- Prefer Docker Compose for project runtime and manual verification.
-- File tools must stay inside the configured workspace root (`FILE_TOOL_ROOT`, default
-  `workspace`).
-- The Dashboard composer is for new tasks only. Continue-thread flows belong in Run
-  Workspace or Conversation Detail, where the selected thread context is explicit.
-- Docker artifact payloads live in MinIO/S3 with metadata in Postgres. Local filesystem
-  artifacts under `ARTIFACT_ROOT`, default `/app/workspace/artifacts`, remain as fallback
-  for older runs and non-Docker development. Keep generated links in `result.artifacts`
-  and trace artifact creation with parent spans.
-- New capabilities must be implemented as TypeScript tool modules with schemas,
-  capabilities, healthchecks, tests, and registry wiring. Runtime code should request a
-  capability from `ToolRegistry` rather than embedding one-off tool logic.
-- Tool Build requests created directly by an operator are represented as root runs and
-  linked through `sourceRunId`; requests created from an existing run/span keep that
-  original run context.
-- Runtime memory injection must pass through the deterministic memory policy evaluator
-  when visible scopes are available: only accepted exact-scope memories are eligible,
-  sensitive memories require an explicit runtime grant, and private memories require the
-  same requester user or an explicit private-memory grant.
-- Built-in and future generated tool contracts should be synced into `tool_modules` so
-  source/status/health/version metadata survives restarts.
-- Non-secret tool runtime settings live in `tool_runtime_settings` and are exposed in the
-  Tools UI/API. Runtime resolution checks tool-specific settings first and then falls
-  back to process env. Validate settings against the tool's `settingsSchema` before
-  saving; typed UI controls and `/api/tool-settings/validate` should stay aligned with
-  schema semantics. API keys, bot tokens, passwords, and other secret material must stay
-  in `secret_handles`, never in runtime settings.
-- Portable generated tool packages use `agentic.tool-package.v1`. The API/UI can import
-  package manifests into registry metadata and export generated package manifests.
-  Non-local package refs are metadata-only/disabled until a generic runner exists.
-- Always-on capabilities should use the generic `Tool.startService(context)` and
-  provider-neutral service event contracts. Prefer generated service modules over adding
-  new provider branches to the Agentic core.
-- Model provider records live in `model_providers`; store remote credentials by secret
-  handle name only, keep embeddings separate from chat tiers, and avoid putting raw API
-  keys in prompts, memory, trace events, or docs.
-- Missing capabilities should create `tool_build_requests` with TypeScript module paths,
-  schemas, acceptance criteria, and QA criteria before any generated code is promoted.
-- Existing capabilities that are too weak should create a rework request for a new tool
-  version. Do not silently overwrite the old version; preserve changelog, QA evidence,
-  failure context, and promotion decision. Artifact-producing tool failures and semantic
-  artifact QA failures create contextual Tool Build rework requests with source span id,
-  tool name/version, input/output summary, `replacesToolName`, and `replacesVersion` when
-  a generated tool is the source. If the reworked version becomes available in the
-  registry synchronously, the agent may retry the failed artifact tool call once; do not
-  add unbounded rework/retry loops.
-- Memory proposal review is context-aware: proposed memories should be reviewed against
-  accepted/proposed memories in the same exact scope for deterministic duplicate and
-  same-title conflict warnings before operator acceptance.
-- Trace Lab span-originated Tool Build/Bug requests should carry rejected artifact QA
-  evidence when present, so generated-tool rework receives the artifact filename, MIME
-  type, QA reason, score, and signals rather than only a generic span detail.
-- Semantic artifact QA decision `blocked_or_loader` means the evidence likely failed due
-  to an external provider/site limitation. Record the blocker in trace and avoid creating
-  an automatic tool rework request unless there is separate evidence the tool contract is
-  actually insufficient. Browser screenshot blockers now also create/update an accepted
-  global memory entry such as `External proof blocker: instagram.com`, so later runs can
-  prefer another public evidence strategy or explain the provider limitation.
-- Generated tool versions are persisted in `tool_module_versions`. `tool_modules`
-  represents the active version, while older registered versions remain available for
-  inspection and explicit activation through the Tools UI/API.
-- Tool registry metadata should grow toward a complete operator catalog: name, version,
-  changelog, capabilities, schemas, required configuration keys, required secret handles,
-  provider URLs, limits, tool-owned storage contracts, migrations, examples,
-  success/failure counters, health, linked run/span issues, and generated source/test/QA
-  artifacts.
-- Generated service providers now emit a `ToolPackageManifest` in the build output so the
-  same generated integration can later move from in-process source to local-path,
-  source-bundle, external-package, or OCI-image execution. Postgres now persists the
-  active manifest and version-history manifests; API/UI export/import exists, and
-  `ToolPackageRunner` is the loader extension point. Local-path modules load from the
-  compiled app; pre-built source-bundle packages load from `TOOL_PACKAGE_ROOT`,
-  `TOOL_PACKAGE_WORKSPACE_ROOT`, default `tools`, or legacy `tool-packages`; source-bundle
-  packages can also run through their package-local HTTP runtime in a separate local Node
-  process when `TOOL_SOURCE_BUNDLE_HTTP_RUNNER=enabled` or
-  `TOOL_SOURCE_BUNDLE_RUNNER=http-process`; HTTP(S)
-  external-package refs load through an external runtime proxy; OCI-image refs can load
-  through the Docker runner when `TOOL_OCI_RUNNER=enabled` and the container exposes
-  `/health` and `/run`; OCI manifests register lazily without starting Docker at app
-  startup, tool calls run through short-lived on-demand containers, and `always-on` OCI
-  tools are controlled by the same service supervisor as source-bundle services; OCI
-  containers receive Agentic labels, non-secret tool identity environment variables,
-  optional memory/CPU/PID/network/read-only limits, bounded readiness and call timeouts,
-  and redacted failure logs from `docker logs`; HTTP/OCI
-  runtimes receive only declared
-  `requiredConfigurationKeys` and `requiredSecretHandles` through scoped runtime
-  envelopes; missing required runtime values fail before calling the external runtime;
-  npm-style external packages remain roadmap work.
-- `ToolPackageWorkspaceStore` can write source-bundle packages under gitignored
-  `tools/<system-name>/<version>` with manifest, README, Dockerfile, package metadata,
-  TypeScript build config, source, and tests. It is the preferred next target for Tool
-  Builder output before containerization.
-- Server-side `GeneratedToolFileBuilder` writes generated module/test output into the
-  package workspace by default and skips legacy project-file writes unless
-  `TOOL_BUILD_LEGACY_PROJECT_FILES=enabled` is set. Package builds include a package-local
-  `index.ts` entrypoint and minimal package-local
-  `src/tools/tool.ts` contract so generated source can compile against portable Tool
-  types instead of reading Agentic internals. QA reports include the sidecar
-  `tool.package.json` path when one was written, and `IsolatedCommandToolQaRunner`
-  performs package-workspace QA before returning a passing report: manifest/scaffold
-  checks, package-local TypeScript build, and package-local tests. When a package
-  workspace is present, `MetadataToolRegistrar` persists the active version as a
-  `source-bundle` package manifest so reloads use the out-of-tree bundle. Generated
-  packages also include a package-local HTTP runtime server (`GET /health`, `POST /run`,
-  optional service lifecycle routes) and Dockerfile entrypoint so the same package can be
-  promoted later to an external HTTP or OCI runtime without rewriting tool code.
-- Generated tools must not create ad hoc database pools or execute hidden SQL. If a tool
-  needs database access, it must declare storage requirements/migrations and receive a
-  scoped `ToolExecutionContext` with an approved DB client, audit writer, secret resolver,
-  `artifacts.saveGenerated(...)` writer, logger, and cancellation signal. The artifact
-  writer is intentionally narrow so generated tools can return files without importing
-  Agentic's artifact-store implementation. The scoped DB client is also intentionally
-  narrow: runtime calls require declared storage permissions, allow only one read/write
-  statement, and reject DDL, deletes, transactions, session changes, and maintenance.
-  Generated service storage contracts must use the runtime permission names
-  `tool-db:read` and `tool-db:write`; raw SQL verbs such as `select`/`insert` are
-  implementation details, not registry permissions.
-- Tool-owned migrations must be versioned, idempotent, QA-tested in an isolated database,
-  and promoted only with the tool version they belong to. Record the applied migration,
-  checksum, QA evidence, and rollback/repair notes in persistent metadata.
-  Current generated registrations record pending migration manifests with deterministic
-  checksums and QA evidence; isolated database execution remains the next migration gap.
-  `toolStorageMigrationPlanner.ts` can plan generated service-runtime migrations and run
-  them twice inside a rollback transaction when QA is given an isolated Postgres pool.
-  Server wiring uses `TOOL_BUILD_MIGRATION_QA_DATABASE_URL` as that optional isolated
-  pool; never point it at the primary application database.
-- Generated tool promotion records must carry durable `promotionEvidence` on the active
-  `tool_modules` row and matching `tool_module_versions` row. It links the promoted
-  version to the Tool Build request, QA summary/checks/reviews, package ref, and storage
-  migration ids. This is the current bridge toward fully transactional promotion; keep it
-  updated whenever registrar behavior changes.
-- Generated promotions are also appended to `tool_promotions`. Treat `tool_modules` as
-  the current active state and `tool_promotions` as the operator journal of promotion
-  decisions.
-- Keep generated-tool registration logic behind `ToolPromotionCoordinator`. When Postgres
-  is configured, `PostgresToolPromotionCoordinator` wraps metadata, migration-manifest,
-  and promotion-journal writes in one database transaction. Remaining promotion hardening
-  is package activation, migration execution, runtime reload/restart, and rollback as one
-  promotion saga.
-- Destructive database operations requested through a tool bug/rework flow must become
-  explicit auditable capabilities with exact scope, dry-run preview, policy/approval
-  checks, and audit events. Do not satisfy them by running arbitrary one-off SQL.
-- The Tools UI has a registry healthcheck action backed by `GET /api/tools/health`; keep
-  tool status and health detail in persistent metadata when changing tool contracts.
-- Tool Build Queue consumers should update durable lifecycle state through the store/API:
-  `requested`, `building`, `qa_failed`, `qa_passed`, `registered`, or `blocked`, with QA
-  evidence attached before registration.
-- Contextual tool bug/rework requests may be created from the wrong selected span; server
-  validation should compare operator feedback with installed tool metadata. If the
-  selected tool clearly does not match and another installed tool does, reject the
-  request with a clarification instead of silently retargeting it.
-- Tool Build contracts preserve the requested `startupMode`. Use `on-demand` for normal
-  call-time tools, `always-on` for bots/webhooks/listeners/services with health and
-  start/stop lifecycle, and `ephemeral` for short-lived jobs.
-- Operators can stop a Tool Build request from any lifecycle state, which marks it
-  `blocked` with a status detail, or delete it from the queue. Rework of an installed
-  failed tool should create a new Tool Build request from the Tools page with the failure
-  details prefilled.
-- `ToolBuildWorkflow` supports bounded retries. Builders receive the previous generated
-  output and failed QA/review report on retry attempts; registrars must only run after a
-  passing QA report plus all configured review gates. When an activation runner is
-  configured, the workflow reloads/activates the generated runtime before marking the
-  request `registered`; activation failure leaves the request `blocked` with the
-  registered tool name and activation QA evidence. If the activation runner exposes a
-  rollback hook, the workflow calls it before returning the blocked request and appends
-  `activation rollback pass/fail` checks to the QA report.
-- Runtime generated-tool reloads track loaded generated tool names and unregister them
-  before reloading current metadata. The default metadata-backed activation runner rolls
-  back failed activation by reactivating `replacesVersion` or deleting failed initial
-  generated metadata, then reloads the runtime again.
-- Generated-tool promotion now has separate QA and review gates. `ToolBuildQaReport`
-  may include `reviews` for code and behavior decisions; any `needs_revision` or `fail`
-  review sends findings back into the next builder attempt or ends as `qa_failed` after
-  attempts are exhausted.
-- `LlmToolBuildProvider` is enabled by default as a guarded fallback for unknown/custom
-  Tool Build requests and can be disabled with `TOOL_BUILD_LLM_PROVIDER=disabled`. Its
-  output is not trusted: generated files must match the request contract, follow the Tool
-  Build Blueprint, avoid raw secrets, cover documented fixtures when available, pass
-  isolated generated-tool tests, pass isolated build, pass promotion tests, and pass
-  promotion build before registration.
-- Optional LLM code/behavior reviewers can be enabled with `TOOL_BUILD_LLM_REVIEW=enabled`.
-  They read the durable request contract, QA report, and generated module/test previews,
-  then return structured `pass`, `needs_revision`, or `fail` decisions. Treat their output
-  as an additional review gate, not as a replacement for deterministic QA.
-- The background Tool Build worker claims the oldest `requested` queue item through
-  `claimNextRequested`, marks it `building`, runs the same workflow as the manual API, and
-  reloads generated tools after registration only when the workflow did not already run
-  activation. Disable it with `TOOL_BUILD_WORKER=disabled`
-  or tune it with `TOOL_BUILD_WORKER_INTERVAL_MS` and `TOOL_BUILD_WORKER_BATCH_SIZE`.
-- Tool Build requests can be reworked through `POST /api/tool-build-requests/:id/rework`.
-  Preserve the original request and create a new requested revision with operator feedback
-  instead of overwriting prior QA evidence. The revision reason must include the selected
-  card context: original request id/status/status detail, registered tool name when known,
-  QA summary/checks/reviews, activation failure evidence, and the operator comment.
-- Tool Build requests can include low-level `credentialHandles` from runtime callers and
-  human `credentialNotes` from the UI. Do not display raw credential notes on cards or
-  write them into source, tests, prompts, traces, memory, artifacts, or audit metadata.
-- Tool Build requests accept a human `displayName`; if the UI omits `capability`, the
-  server infers a stable internal capability from the name/description and generates the
-  system `desiredToolName`, checking existing registry/build names where possible. The UI
-  should ask for a tool name, description/docs/instructions, optional credentials text,
-  and QA criteria rather than forcing users to invent internal capability/module names.
-- Tool Build contracts infer a neutral `integration` spec for service/API-like requests.
-  Generated providers should carry that spec into docs, settings schema, storage
-  contract, examples, required secret handles, and QA requirements. Do not add
-  provider-specific core branches when a generated tool can map provider APIs to the
-  standard integration event contract.
-- Generated tool modules can be deleted from the Tools page or
-  `DELETE /api/tools/generated-modules/:name`; built-in tools are protected. Deleting a
-  generated tool removes registry metadata and unregisters the active runtime copy when
-  loaded.
-- `GenericApiToolBuildProvider` can build reusable HTTPS JSON API adapters for capability
-  names like `api.aml.score`. The capability should be a stable machine id; docs URLs,
-  endpoint examples, expected behavior, QA criteria, and credential handles belong in the
-  request description/structured fields. The generated module must keep credentials behind
-  declared secret handles and return structured HTTP status/json/text/score evidence.
-  API tools should surface useful nested `score` fields from provider JSON rather than
-  reducing a successful call to "HTTP 200" only.
-- Secret handles are metadata references, not raw secrets. Use `POST /api/secret-handles`
-  with provider `env`, `external`, or UI-created `inline`, a `secretRef`, and scopes. The
-  public API rejects raw `token`, `password`, `apiKey`, or `value` payloads; the simplified
-  Tool Builds form may accept free-form credential notes and convert them into a scoped
-  inline secret handle for the generated tool. Tools and future model/always-on modules
-  should refer to handles, then resolve them at runtime through the store/policy layer.
-- Generated tool metadata registration must reject builtin name collisions and version
-  conflicts. Generated modules are loaded only from compiled project-local paths, after
-  exported name/version/capabilities match metadata and healthcheck passes.
-- Generated tool replacements must not overwrite the active contract directly. Promote a
-  replacement with an explicit `replacesVersion`; the store rejects stale handoffs,
-  builtin replacement attempts, and same-version "upgrades".
-- The Tools UI supports search across display/system names, versions, descriptions,
-  capabilities, status/source, docs/examples, settings/secrets, and schemas. Generated
-  tool detail cards expose active-version selection and "Request change / new version",
-  which creates a Tool Build request with `replacesToolName` and `replacesVersion`.
-  Generated tool versions carry `changeSummary` changelog metadata and are exposed through
-  `GET /api/tools/generated-modules/:name/versions`; the Tools UI shows version history
-  cards with changelog, paths, required secret handles, health detail, and usage counters.
-- Trace Lab contextual "Create tool request / bug" forms should preserve run/span/task
-  context. When the selected span actor is an installed tool, include the current tool
-  name and active version so the request can become a versioned rework rather than a
-  disconnected bug report.
-- Tool Build forms may accept free-form credential notes, but after extracting a key-like
-  value into a scoped secret handle the durable request must redact the raw note. Do not
-  log or document raw keys in generated source, tests, traces, memory, artifacts, or final
-  responses.
-- Agent prompts now tell workers to identify reusable tool improvement requests when a
-  current tool is close but insufficient. Runtime support for automatically waiting on the
-  new version and retrying is still roadmap work; missing-capability builds can already be
-  run synchronously by the HTTP runtime when a Tool Build workflow is configured.
-- The generated Global Ledger AML adapter treats root `totalFunds` as the final AML Score.
-  `sources[].funds` is source-level evidence; expose unique source names with
-  top-level `sources[].share` percentages instead of using nested `funds.score` as the
-  final score. Version 1.2.0 enables Global Ledger Unified search by appending
-  `token=supported` to address and tx hash report URLs, so all supported tokens are
-  analyzed by default.
-- The first self-service generated capability is `browser-screenshot`. It should be
-  produced as an isolated source-bundle package under gitignored
-  `tools/generated.browser.screenshot/<version>` and loaded through a package runner.
-  Legacy app-source screenshot variants under `src/tools/generated` were removed so the
-  UI and registry do not show multiple indistinguishable screenshot tools.
-- `browser.operate` must remain domain-neutral and portable. It executes typed browser
-  commands and returns structured evidence plus Playwright storage state; agents decide
-  the scenario and reviewers decide whether the resulting artifact proves the task. The
-  `observe` and `clickVisible` commands inspect visible elements across both the main
-  document and embedded frames and return `frameIndex`/`frameUrl` so traces can explain
-  where an action happened. `observe` should filter hidden/decorative DOM candidates,
-  prefer viewport-visible form controls/buttons over offscreen/footer links, and expose
-  safe metadata such as `href`, form `name`, `inputType`, `placeholder`, and `checked`
-  without duplicating current field values into traces.
-- `browser.operate` `clickVisible` accepts `externalActionSafe` for customer-side
-  booking/reservation/checkout/contact preparation. In that mode it must skip generic
-  provider onboarding/admin/software CTAs such as `/for-business`, "book a demo",
-  pricing/software/business-management links, or "list your business" even when their
-  visible text partially matches "Book" or "Appointment".
-- `browser.operate` `dismissDialogs` should poll within its timeout for consent banners
-  that appear after navigation or after a click. Appointment flows such as Booksy may
-  reach service/time preparation and then require login/social auth; that is an external
-  blocker to report with proof, not a successful booking.
-- `browser.operate` also accepts screenshot-style `{ url, label?, filename?, fullPage? }`
-  input and expands it into navigate/extract/screenshot commands. On command failure it
-  should return any diagnostic screenshot payloads so the runtime can attach proof of
-  blockers instead of losing evidence.
-- Declared `browser.operate` plans may come from LLM-generated subtask JSON and can
-  contain placeholders. Never execute placeholder navigation such as
-  `URL_FROM_PREVIOUS_STEP` directly; rewrite it from concrete upstream dependency or
-  prior evidence URLs, or skip it as not runnable so traces show the planning problem
-  instead of a bogus browser failure.
-- Missing document/report/PDF artifact capabilities can be handled by the generic
-  `DocumentArtifactToolBuildProvider`, which writes TypeScript generated tools returning
-  `application/pdf` artifact payloads. This is intentionally an abstract document
-  capability, not a special one-off PDF fix.
-- Telegram file attachments and artifact delivery are not complete yet. The roadmap target
-  is a generic media/file service capability: provider file download -> input artifact
-  storage -> run context attachment, and output artifact -> provider `sendDocument` or
-  equivalent with audit evidence.
-- Telegram voice recognition is also future generic media intake: download audio, store
-  the original, call a registry-selected speech-to-text tool, and attach transcript plus
-  audio artifact to the thread/run.
-- Media/file/voice work must stay provider-neutral: implement generic transport,
-  provider adapters, media intake, and speech-to-text capability layers first, then let
-  Telegram/Slack/WhatsApp/email map provider APIs onto those contracts.
-- Data-driven chart tasks should prefer a registered structured-data acquisition
-  capability before rendering. Web search can still provide narrative context and source
-  discovery, but chart data should not be invented from snippets when a structured tool
-  can provide validated dataset artifacts.
-- Agents must self-check browser and screenshot evidence before returning it. Blank
-  pages, endless loaders, login walls, access-denied screens, bot checks, unrelated pages,
-  or screenshots without task-relevant content are weak evidence; the agent should retry
-  a better source or report the blocker instead of presenting the artifact as proof.
-- PNG browser screenshots also pass through deterministic visual and semantic artifact QA
-  before storage. Near-empty/mostly single-color screenshots, loader/blocker browser
-  evidence, and task-mismatched browser context are rejected with a failed artifact trace
-  event instead of being attached as useful proof.
+- Keep edits scoped to the active rebuild path.
+- Do not restore deleted legacy runtime pieces unless the user explicitly asks for an
+  archeology task.
+- Prefer existing TypeScript/Nest/React patterns in the repo.
+- Use `rg`/`rg --files` for search.
+- Use `apply_patch` for manual file edits.
+- Do not revert user changes.
+- Run tests before reporting completion when code changed.
+- Run-scoped generated/edited tool candidates are promoted only after the base return
+  gate passes. Step-budget exhaustion is a failed run and must not accept candidates.
+- Operator-explicit tests of disabled generated tools are run-scoped but manual-promotion
+  only; they prove whether a candidate can be called without accidentally enabling a bad
+  API contract for all future agents.
+- Tool-call dedupe is scoped by tool name, tool version, and input so edited candidates
+  execute instead of reusing stale results from the previous version.

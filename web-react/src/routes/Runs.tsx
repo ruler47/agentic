@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { useRuns } from "@/api/runs";
@@ -10,6 +11,7 @@ const STATUS_FILTERS: Array<RunStatus | "all"> = [
   "all",
   "running",
   "queued",
+  "waiting_approval",
   "completed",
   "failed",
   "cancelled",
@@ -29,7 +31,9 @@ export function RunsPage() {
         if (
           !run.task.toLowerCase().includes(needle) &&
           !run.id.toLowerCase().includes(needle) &&
-          !(run.requesterUserId ?? "").toLowerCase().includes(needle)
+          !(run.requesterUserId ?? "").toLowerCase().includes(needle) &&
+          !(run.channel ?? "").toLowerCase().includes(needle) &&
+          !runKindLabel(run).toLowerCase().includes(needle)
         ) {
           return false;
         }
@@ -97,14 +101,21 @@ export function RunsPage() {
 
 function RunRow({ run }: { run: AgentRunRecord }) {
   const toolCalls = (run.events ?? []).filter((event) => event.activity === "tool").length;
+  const toolLifecycleSteps = (run.events ?? []).filter((event) =>
+    typeof event.type === "string" && event.type.startsWith("tool-creation")
+  ).length;
   const artifactCount = run.result?.artifacts?.length ?? 0;
+  const isToolLifecycle = isToolLifecycleRun(run);
   return (
     <li>
       <Link
         to={`/run/${run.id}`}
         className="grid grid-cols-[1.5fr_repeat(5,auto)_auto] items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-app-surface-2"
       >
-        <span className="min-w-0 truncate">{truncate(run.task, 120)}</span>
+        <span className="flex min-w-0 items-center gap-2">
+          {isToolLifecycle ? <ToolLifecycleBadge /> : null}
+          <span className="min-w-0 truncate">{truncate(run.task, 120)}</span>
+        </span>
         <RunStatusBadge status={run.status} />
         <span className="hidden font-mono text-[11px] text-app-text-muted sm:block">
           {run.requesterUserId ?? "user-admin"}
@@ -116,10 +127,32 @@ function RunRow({ run }: { run: AgentRunRecord }) {
           {formatDuration(runDurationMs(run))}
         </span>
         <span className="hidden text-[11px] text-app-text-muted md:block">
-          {toolCalls} tools · {artifactCount} files
+          {isToolLifecycle ? `${toolLifecycleSteps} steps` : `${toolCalls} tools`} · {artifactCount} files
         </span>
         <span className="text-[11px] text-app-text-muted">{formatRelative(run.createdAt)}</span>
       </Link>
     </li>
   );
+}
+
+function ToolLifecycleBadge() {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1 rounded-full bg-app-warning-soft px-2 py-0.5 text-[11px] font-medium text-app-warning"
+      title="Tool creation or tool update run"
+    >
+      <Wrench size={12} strokeWidth={2.2} aria-hidden="true" />
+      tool
+    </span>
+  );
+}
+
+function isToolLifecycleRun(run: AgentRunRecord): boolean {
+  return run.channel === "tool-builder" || (run.events ?? []).some((event) =>
+    typeof event.type === "string" && event.type.startsWith("tool-creation")
+  );
+}
+
+function runKindLabel(run: AgentRunRecord): string {
+  return isToolLifecycleRun(run) ? "tool tool-builder tool creation tool update" : "agent";
 }

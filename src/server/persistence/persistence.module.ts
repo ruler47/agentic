@@ -17,16 +17,18 @@ import { PostgresModelTierSettingsStore } from "../../settings/postgresModelTier
 import { InMemoryModelProviderStore } from "../../settings/modelProviderStore.js";
 import { PostgresModelProviderStore } from "../../settings/postgresModelProviderStore.js";
 import { InMemoryToolRuntimeSettingsStore } from "../../settings/toolRuntimeSettings.js";
-import {
-  InMemoryCodingCouncilStore,
-  PostgresCodingCouncilStore,
-} from "../../settings/codingCouncilStore.js";
 import { PostgresToolRuntimeSettingsStore } from "../../settings/postgresToolRuntimeSettings.js";
 import { SkillMemory } from "../../memory/skillMemory.js";
 import { PostgresSkillMemory } from "../../memory/postgresSkillMemory.js";
 import { createTextEmbeddingProviderFromEnv } from "../../memory/textEmbedding.js";
-import { InMemoryToolMetadataStore } from "../../tools/toolMetadataStore.js";
+import { LocalJsonToolMetadataStore } from "../../tools/toolMetadataStore.js";
 import { PostgresToolMetadataStore } from "../../tools/postgresToolMetadataStore.js";
+import { InMemoryToolCreationStore } from "../../tools/toolCreationStore.js";
+import { PostgresToolCreationStore } from "../../tools/postgresToolCreationStore.js";
+import { InMemoryToolContextStore } from "../../tools/toolContextStore.js";
+import { PostgresToolContextStore } from "../../tools/postgresToolContextStore.js";
+import { InMemoryToolMigrationStore } from "../../tools/toolMigrationStore.js";
+import { PostgresToolMigrationStore } from "../../tools/postgresToolMigrationStore.js";
 import { InMemoryToolPromotionStore } from "../../tools/toolPromotionStore.js";
 import { PostgresToolPromotionStore } from "../../tools/postgresToolPromotionStore.js";
 import { InMemoryToolServiceStatusStore } from "../../tools/toolServiceStatusStore.js";
@@ -45,7 +47,6 @@ import { PostgresArtifactMetadataStore } from "../../artifacts/postgresArtifactM
 import { S3ObjectStore, s3ConfigFromEnv } from "../../artifacts/s3ObjectStore.js";
 import { APP_ENV } from "../config/config.module.js";
 import type { AppEnv } from "../config/env.js";
-import { UniversalAgent } from "../../agents/universalAgent.js";
 import { LlmClient, readLlmConfigFromEnv } from "../../llm/client.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createCoreToolbelt } from "../../tools/coreToolbelt.js";
@@ -73,64 +74,21 @@ import {
   SECRET_HANDLE_STORE,
   SKILL_MEMORY,
   TEXT_EMBEDDING_PROVIDER,
+  TOOL_CREATION_STORE,
+  TOOL_CONTEXT_STORE,
   TOOL_METADATA_STORE,
+  TOOL_MIGRATION_STORE,
   TOOL_PROMOTION_STORE,
   TOOL_REGISTRY,
   TOOL_CALLBACK_TOKEN_ISSUER,
   TOOL_RUNTIME_SETTINGS,
-  CODING_COUNCIL_STORE,
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_LOG_STORE,
   TOOL_SERVICE_STATUS_STORE,
-  UNIVERSAL_AGENT,
   USER_STORE,
   WORK_LEDGER_STORE,
 } from "./tokens.js";
 import { ToolCallbackTokenIssuer } from "../../tools/toolCallbackToken.js";
-
-export async function withStartupRetry<T>(
-  label: string,
-  operation: () => Promise<T>,
-  options: { attempts?: number; delayMs?: number } = {},
-): Promise<T> {
-  const attempts = Math.max(1, options.attempts ?? 5);
-  const delayMs = Math.max(0, options.delayMs ?? 500);
-  let lastError: unknown;
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error;
-      if (attempt >= attempts || !isTransientStartupError(error)) break;
-      console.warn(
-        `[startup] ${label} failed with ${formatStartupError(error)}; retrying ${attempt + 1}/${attempts}`,
-      );
-      await sleep(delayMs * attempt);
-    }
-  }
-
-  throw lastError;
-}
-
-function isTransientStartupError(error: unknown): boolean {
-  const code = typeof error === "object" && error !== null && "code" in error
-    ? String((error as { code?: unknown }).code)
-    : "";
-  return ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN"].includes(code);
-}
-
-function formatStartupError(error: unknown): string {
-  if (error instanceof Error) {
-    const code = "code" in error ? ` ${(error as Error & { code?: unknown }).code}` : "";
-    return `${error.message}${code}`;
-  }
-  return String(error);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 const providers: Provider[] = [
   {
@@ -202,18 +160,28 @@ const providers: Provider[] = [
       pool ? new PostgresToolRuntimeSettingsStore(pool) : new InMemoryToolRuntimeSettingsStore(),
   },
   {
-    // Phase 14: coding council settings (which tier acts as the
-    // tool-build council + loop limits).
-    provide: CODING_COUNCIL_STORE,
-    inject: [PG_POOL],
-    useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresCodingCouncilStore(pool) : new InMemoryCodingCouncilStore(),
-  },
-  {
     provide: TOOL_METADATA_STORE,
     inject: [PG_POOL],
     useFactory: (pool: PgPool | undefined) =>
-      pool ? new PostgresToolMetadataStore(pool) : new InMemoryToolMetadataStore(),
+      pool ? new PostgresToolMetadataStore(pool) : new LocalJsonToolMetadataStore("workspace/tool-metadata.json"),
+  },
+  {
+    provide: TOOL_CREATION_STORE,
+    inject: [PG_POOL],
+    useFactory: (pool: PgPool | undefined) =>
+      pool ? new PostgresToolCreationStore(pool) : new InMemoryToolCreationStore(),
+  },
+  {
+    provide: TOOL_CONTEXT_STORE,
+    inject: [PG_POOL],
+    useFactory: (pool: PgPool | undefined) =>
+      pool ? new PostgresToolContextStore(pool) : new InMemoryToolContextStore(),
+  },
+  {
+    provide: TOOL_MIGRATION_STORE,
+    inject: [PG_POOL],
+    useFactory: (pool: PgPool | undefined) =>
+      pool ? new PostgresToolMigrationStore(pool) : new InMemoryToolMigrationStore(),
   },
   {
     provide: TOOL_PROMOTION_STORE,
@@ -272,9 +240,8 @@ const providers: Provider[] = [
     useFactory: (pool: PgPool | undefined) =>
       pool ? new PostgresRunRetrospectiveStore(pool) : new InMemoryRunRetrospectiveStore(),
   },
-  // Runtime singletons. The registry hosts built-in tools immediately; the
-  // generated-tool loader and supervisors wire in later phases through
-  // OnModuleInit hooks.
+  // Runtime singletons. The rebuilt product starts from generated/package
+  // tools; legacy built-in/reference registrations are opt-in only.
   {
     provide: TOOL_REGISTRY,
     inject: [TOOL_METADATA_STORE, PG_POOL, SECRET_HANDLE_STORE, TOOL_RUNTIME_SETTINGS, APP_ENV],
@@ -290,7 +257,7 @@ const providers: Provider[] = [
         registry.register(tool);
       }
       if (metadata) {
-        await withStartupRetry("tool metadata builtin sync", () => metadata.syncBuiltins(registry.list()));
+        await metadata.syncBuiltins(registry.list());
         registry.setUsageReporter((event) =>
           metadata.recordUsage(event.toolName, event.outcome, event.at),
         );
@@ -312,31 +279,6 @@ const providers: Provider[] = [
   {
     provide: TOOL_CALLBACK_TOKEN_ISSUER,
     useFactory: () => new ToolCallbackTokenIssuer(),
-  },
-  {
-    provide: UNIVERSAL_AGENT,
-    inject: [LLM_CLIENT, SKILL_MEMORY, TOOL_REGISTRY, TOOL_CALLBACK_TOKEN_ISSUER, APP_ENV],
-    useFactory: (
-      llm,
-      memory,
-      registry,
-      issuer: ToolCallbackTokenIssuer,
-      env: AppEnv,
-    ) => {
-      const agent = new UniversalAgent(llm, memory, registry);
-      // Phase 13: wire the callback envelope source so dockerized
-      // tool services receive a short-lived bearer token + callback
-      // base URL with every /run invocation. The base URL points at
-      // the runtime's own HTTP API; tools running inside the same
-      // docker network reach it as `http://app:3000/api/tools/callbacks`.
-      const baseUrl = env.toolCallbackBaseUrl
-        ?? `http://app:${env.port ?? 3000}/api/tools/callbacks`;
-      agent.setCallbackEnvelopeSource({
-        issuer,
-        baseUrl,
-      });
-      return agent;
-    },
   },
 ];
 

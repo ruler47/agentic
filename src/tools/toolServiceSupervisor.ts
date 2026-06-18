@@ -72,15 +72,17 @@ export class ToolServiceSupervisor {
 
   async start(toolName: string): Promise<ToolServiceStatus> {
     const tool = this.requiredAlwaysOnTool(toolName);
+    const existing = await this.statusFor(toolName);
     const now = new Date();
     const starting = await this.write({
-      ...(await this.statusFor(toolName)),
+      ...existing,
       status: "starting",
       desiredState: "running",
       detail: "Starting service and checking health.",
       updatedAt: now.toISOString(),
     });
     let active = this.activeServices.get(toolName);
+    let startedNewRuntime = false;
     if (!active && tool.startService) {
       const controller = new AbortController();
       try {
@@ -96,6 +98,7 @@ export class ToolServiceSupervisor {
         });
         active = { controller, handle };
         this.activeServices.set(toolName, active);
+        startedNewRuntime = true;
         await this.logLifecycle(toolName, "info", "Service runtime started.", starting);
       } catch (error) {
         controller.abort();
@@ -115,6 +118,7 @@ export class ToolServiceSupervisor {
 
     const health = await this.runHealthcheck(toolName);
     const nextNow = new Date().toISOString();
+    const isFreshStart = startedNewRuntime || (!tool.startService && existing.status !== "running");
     const next = await this.write({
       ...starting,
       status: health.ok ? "running" : "failed",
@@ -122,7 +126,7 @@ export class ToolServiceSupervisor {
       detail: health.detail,
       lastHealthOk: health.ok,
       lastHeartbeatAt: nextNow,
-      startedAt: health.ok ? (starting.startedAt ?? nextNow) : starting.startedAt,
+      startedAt: health.ok ? (isFreshStart ? nextNow : (starting.startedAt ?? nextNow)) : starting.startedAt,
       consecutiveFailureCount: health.ok ? 0 : starting.consecutiveFailureCount + 1,
       lastFailureAt: health.ok ? starting.lastFailureAt : nextNow,
       nextRestartAt: health.ok ? undefined : starting.nextRestartAt,
@@ -174,6 +178,7 @@ export class ToolServiceSupervisor {
 
   async restart(toolName: string): Promise<ToolServiceStatus> {
     const existing = await this.statusFor(toolName);
+    await this.stopRuntime(toolName, "Service runtime stopped before manual restart.");
     await this.write({
       ...existing,
       restartCount: existing.restartCount + 1,

@@ -1,7 +1,5 @@
 /**
- * Single source of truth for sidebar navigation. Mirrors the legacy
- * `routes` constant in public/app.js so users see the same information
- * architecture across both UIs while we port screens.
+ * Single source of truth for sidebar navigation.
  */
 
 export type NavItem = {

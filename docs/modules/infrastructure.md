@@ -8,7 +8,7 @@ The project is intended to run through Docker Compose:
 - `postgres`: primary run/event store using `pgvector/pgvector:pg16`.
 - `redis`: future queue and event stream.
 - `minio`: S3-compatible durable artifact payload storage.
-- `searxng`: local metasearch service for `web.search`.
+- `searxng`: local metasearch service available for future generated search tools.
 - local OpenAI-compatible LLM endpoint exposed to the app as `host.docker.internal`, or a
   remote OpenAI-compatible provider such as the OpenAI API.
 
@@ -140,6 +140,8 @@ The Docker runtime stores new request/response artifact metadata in Postgres and
 in MinIO through an S3-compatible object store. The app still keeps a local filesystem
 fallback so old `workspace/artifacts` manifests and simple non-Docker development remain
 readable through the same artifact download API.
+Without `ARTIFACT_ROOT`, host development writes local artifacts to `workspace/artifacts`;
+the Docker container writes to `/app/workspace/artifacts`.
 
 The durable store is used for:
 
@@ -191,27 +193,30 @@ deployment-appropriate backend.
 
 ### Workspace Files
 
-The app container mounts `./workspace` to `/app/workspace`. The `file.read` and
-`file.write` tools are restricted to that workspace root so generated reports, code
-prototypes, and intermediate text artifacts do not escape into the project tree unless
-explicitly copied or promoted.
+The app container mounts `./workspace` to `/app/workspace` for generated tool packages
+and artifact workflows that need shared local files. The old built-in `file.read` /
+`file.write` tools are no longer part of the default registry; file capabilities should
+return as generated/imported tools with explicit manifests and QA.
 
 ### Web Search
 
-SearXNG is part of Docker Compose and powers the `web.search` tool. Worker agents can use
-it when a subtask looks research-oriented. Search calls are visible as tool cards in the
-execution map.
+SearXNG remains available in Docker Compose as infrastructure, but the old built-in
+`web.search` tool is no longer registered by default. Search should return as a generated
+or imported tool package that wraps SearXNG or another provider behind the normal tool
+manifest.
 
-`web.search` and `chart.generate` are registered as versioned TypeScript tool modules with
-input/output schemas, startup mode, capabilities, and healthchecks exposed through
-`GET /api/tools/health`.
-
-Built-in tool contracts are also synced into the Postgres `tool_modules` table on app
-startup. This table is the durable catalog for future generated tools: it stores stable
+The Postgres `tool_modules` table is the durable catalog for generated/imported tools: it stores stable
 system name, optional human display name, version, capabilities, schemas, source, status,
 configuration/secret requirements, storage contracts, docs/examples, usage counters, and
-the latest health result. Generated tools can be deleted from the catalog; built-in tools
-are protected.
+the latest health result. When `BUILTIN_TOOLS` is not explicitly enabled, startup prunes
+old `source='builtin'` catalog rows so stale reference tools do not appear in `/api/tools`.
+Without Postgres, local development persists the same active generated-tool metadata to
+`workspace/tool-metadata.json`, which is runtime data and remains outside git. Generated
+package source still lives under the gitignored `tools/` workspace; the JSON file is only
+the local catalog/activation state that lets accepted tools survive dev-server restarts.
+Startup and `POST /api/tools/reload-generated` reconcile this catalog with load results:
+operator-disabled tools stay `disabled`, while previously `available` tools that can no
+longer be loaded are marked `failed` with the loader or missing-runner reason.
 
 Tools with `startupMode=always-on` are exposed through a generic service supervisor. The
 current supervisor persists lifecycle state in `tool_service_statuses` when Postgres is
@@ -237,7 +242,7 @@ keeps the returned service handle, prefers the handle healthcheck while the serv
 active, and stops active handles during shutdown without clearing the desired running
 state. Source-bundle HTTP process runtimes bridge child `stdout`/`stderr` into this
 lifecycle logger, so isolated package processes surface useful diagnostics in the same
-`tool_service_logs` API/SSE feed as built-in tools. This is useful for local/reference
+`tool_service_logs` API/SSE feed. This is useful for local/reference
 providers, but it is not a durable process manager yet. The next infrastructure step is
 to move long-running generated modules to queue-backed or process-backed workers that can
 survive app restarts.
@@ -276,10 +281,21 @@ runtime layer so self-service generated tools can be written, tested, built, reg
 and loaded inside Docker. `CHROMIUM_PATH=/usr/bin/chromium` is configured for generated
 browser screenshot tools. Docker Compose bind-mounts `./tools` into `/app/tools` so
 source-bundle packages under `tools/<system-name>/<version>` survive container
-recreation without writing new generated code into the main `src/` tree. The legacy
-`src/tools/generated` and `tests/generated` paths are still available for older local-path
-tools, but new server-side Tool Builds use the package workspace unless
-`TOOL_BUILD_LEGACY_PROJECT_FILES=enabled` or `TOOL_BUILD_PACKAGE_WORKSPACE=disabled`.
+recreation without writing new generated code into the main `src/` tree. The top-level
+`tools/` directory is gitignored and excluded from Docker build context; it is
+runtime/operator data, not Agentic platform source. Tool existence and agent visibility
+come from metadata registration, not from tracked files in that directory.
+Startup and generated-tool reload scan the configured package roots for
+`tool.package.json`, register discovered source-bundle manifests into the generated tool
+catalog, and then load them through source-bundle/OCI/external runners. This lets
+gitignored package workspaces survive an app restart even when the metadata store is
+empty, while keeping old built-in/reference tools out of the default registry.
+The app does not auto-create core tools. Even basic fetch/search/screenshot/artifact
+capabilities must enter through Tool Creation or import so their metadata, package
+source, QA evidence, and enabled/disabled status are explicit.
+Source-bundle HTTP runtimes inherit the host/container Playwright browser setup by
+default. Set `TOOL_SOURCE_BUNDLE_PLAYWRIGHT_BROWSERS_PATH=0` only for packages that
+intentionally keep Playwright browser binaries inside their own workspace.
 
 ### Telegram
 
@@ -299,6 +315,11 @@ The tool:
 - polls `GET /api/tool-services/channel.telegram.bot/outbox`;
 - sends final answers or errors back to Telegram with `sendMessage`, splitting long
   answers into multiple messages instead of truncating them;
+- treats Agentic's final answer Markdown as the neutral internal message format and
+  converts it at the channel boundary into Telegram-supported markup. Generated Telegram
+  adapters should prefer Telegram HTML `parse_mode` for bold/italic, headings, links,
+  lists, quotes, code, and compact table text, then fall back to plain text if Telegram
+  rejects the formatted payload;
 - adds a `Продолжить тред` inline button to the final message when a run/thread link is
   known, so the user's next message can continue that conversation thread;
 - acknowledges delivery through `POST /api/tool-services/:name/outbox/:eventId/ack`.

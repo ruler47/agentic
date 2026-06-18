@@ -14,6 +14,7 @@ export type TraceNode = {
   type?: AgentEventType;
   title: string;
   actor: string;
+  toolVersion?: string;
   activity: AgentActivity;
   status: AgentEventStatus;
   detail?: string;
@@ -37,6 +38,7 @@ export function buildTraceNodes(events: AgentEvent[]): TraceNode[] {
       type: event.type ?? previous?.type,
       title: event.title || previous?.title || event.spanId,
       actor: event.actor || previous?.actor || "unknown",
+      toolVersion: toolVersionFromPayload(event.payload) ?? previous?.toolVersion,
       activity: event.activity ?? previous?.activity ?? "coordination",
       status: event.status ?? previous?.status ?? "started",
       detail: event.detail ?? previous?.detail,
@@ -60,6 +62,12 @@ export function buildTraceNodes(events: AgentEvent[]): TraceNode[] {
     ...node,
     parentTitle: node.parentSpanId ? titleBySpan.get(node.parentSpanId) : undefined,
   }));
+}
+
+function toolVersionFromPayload(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const value = (payload as { toolVersion?: unknown }).toolVersion;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 export function dependencySpanIdsFor(node: { payload?: unknown }): string[] {
@@ -111,6 +119,20 @@ export function applyTraceFilters(nodes: TraceNode[], filters: TraceFilters): Tr
       return traceFilterValue(node, key) === selected;
     }),
   );
+}
+
+export function sortTraceTimelineNodes(nodes: TraceNode[]): TraceNode[] {
+  return [...nodes].sort((a, b) => {
+    const activeDelta = traceTimelinePriority(a) - traceTimelinePriority(b);
+    if (activeDelta !== 0) return activeDelta;
+    const lastDelta = b.lastTimestamp.localeCompare(a.lastTimestamp);
+    if (lastDelta !== 0) return lastDelta;
+    return b.firstTimestamp.localeCompare(a.firstTimestamp);
+  });
+}
+
+function traceTimelinePriority(node: TraceNode): number {
+  return node.status === "started" ? 0 : 1;
 }
 
 export function traceFilterOptions(nodes: TraceNode[], key: TraceFilterKey): string[] {

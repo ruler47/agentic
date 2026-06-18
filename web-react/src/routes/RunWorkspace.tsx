@@ -10,6 +10,8 @@ import { useRunStream } from "@/api/sse";
 import { ArtifactGallery } from "@/components/ArtifactPreview";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { RunStatusBadge } from "@/components/StatusBadge";
+import { RunActionApprovalPanel } from "@/features/run-workspace/RunActionApprovalPanel";
+import { RunCandidateReviewPanel } from "@/features/run-workspace/RunCandidateReviewPanel";
 import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
 import type { AgentEvent, AgentRunRecord } from "@/api/types";
 
@@ -190,6 +192,10 @@ export function RunWorkspacePage() {
           proposedRetrospectiveCount={(retrospectives.data ?? []).filter((record) => record.status === "proposed").length}
         />
 
+        <RunCandidateReviewPanel run={data} />
+
+        <RunActionApprovalPanel run={data} />
+
         <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-5">
           <h3 className="text-sm font-semibold">Final answer</h3>
           <div className="mt-2">
@@ -344,6 +350,9 @@ function RunLedgerPanel({
 function runStatusMessage(run: AgentRunRecord): string {
   if (run.status === "failed") return run.error ?? "Run failed.";
   if (run.status === "cancelled") return run.error ?? "Run cancelled.";
+  if (run.status === "waiting_approval") {
+    return run.result?.finalAnswer ?? run.error ?? "Run is waiting for approval.";
+  }
   return run.result?.finalAnswer ?? "Agent is working…";
 }
 
@@ -365,9 +374,20 @@ function TimelineRow({ event }: { event: AgentEvent }) {
         </span>
       </div>
       <p className="mt-0.5 break-words font-medium">{event.title}</p>
+      {event.activity === "tool" && toolVersionFromPayload(event.payload) ? (
+        <p className="mt-0.5 font-mono text-[10px] text-app-text-muted">
+          {event.actor}@{toolVersionFromPayload(event.payload)}
+        </p>
+      ) : null}
       {event.detail ? (
         <p className="mt-0.5 text-[11px] text-app-text-muted">{truncate(event.detail, 160)}</p>
       ) : null}
     </li>
   );
+}
+
+function toolVersionFromPayload(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const value = (payload as { toolVersion?: unknown }).toolVersion;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

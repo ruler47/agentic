@@ -5,9 +5,16 @@ import type {
   ToolServiceEventRecord,
   ToolServiceRestartPolicyInput,
   ToolServiceStatus,
+  UserCreateInput,
 } from "@/api/types";
 
 export type ServiceLifecycleAction = "start" | "stop" | "restart" | "heartbeat";
+
+export type AllowChannelEventIdentityInput = {
+  eventId: string;
+  userId?: string;
+  createUser?: UserCreateInput;
+};
 
 export type ServiceLogRecord = {
   id: string;
@@ -110,14 +117,25 @@ export function useUpdateToolServiceRestartPolicy() {
 export function useAllowChannelEventIdentity() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (eventId: string) =>
-      apiFetch<{ identities: Array<{ id: string }> }>(
+    mutationFn: (input: string | AllowChannelEventIdentityInput) => {
+      const eventId = typeof input === "string" ? input : input.eventId;
+      const body =
+        typeof input === "string"
+          ? undefined
+          : {
+              userId: input.userId,
+              createUser: input.createUser,
+            };
+      return apiFetch<{ identities: Array<{ id: string }> }>(
         `/api/tool-service-events/${encodeURIComponent(eventId)}/allow-identity`,
-        { method: "POST" },
-      ),
+        { method: "POST", body },
+      );
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.toolServiceEvents });
       void queryClient.invalidateQueries({ queryKey: queryKeys.users });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
     },
   });
 }

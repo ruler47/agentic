@@ -3,9 +3,10 @@ import { Link } from "react-router-dom";
 
 import { useDeleteArtifact, useRuns } from "@/api/runs";
 import { flattenArtifactsFromRuns } from "@/api/conversations";
+import { artifactDownloadUrl, ArtifactQualityBadge } from "@/components/ArtifactPreview";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
-import type { AgentArtifact, AgentRunRecord, ArtifactQualityMetadata } from "@/api/types";
+import type { AgentArtifact, AgentRunRecord } from "@/api/types";
 
 const KIND_FILTERS = ["all", "input", "output"] as const;
 
@@ -85,6 +86,7 @@ export function ArtifactsPage() {
 function ArtifactCard({ artifact, run }: { artifact: AgentArtifact; run: AgentRunRecord }) {
   const isImage = artifact.mimeType?.startsWith("image/");
   const sizeKb = Math.max(0, Math.round((artifact.sizeBytes ?? 0) / 1024));
+  const downloadUrl = artifactDownloadUrl(artifact.url);
   const deleteArtifact = useDeleteArtifact();
   const onDelete = () => {
     if (deleteArtifact.isPending) return;
@@ -130,12 +132,19 @@ function ArtifactCard({ artifact, run }: { artifact: AgentArtifact; run: AgentRu
       {artifact.description ? (
         <p className="text-[11px] text-app-text-muted">{truncate(artifact.description, 200)}</p>
       ) : null}
-      <QualityBadge quality={artifact.quality} />
+      <ArtifactQualityBadge quality={artifact.quality} />
       <div className="mt-1 flex flex-wrap gap-2">
         <a
           href={artifact.url}
           target="_blank"
           rel="noreferrer"
+          className="rounded-md border border-app-border bg-app-surface-2 px-2.5 py-1 text-[11px] hover:border-app-accent/40"
+        >
+          {isImage ? "Preview" : "Open"}
+        </a>
+        <a
+          href={downloadUrl}
+          download={artifact.filename}
           className="rounded-md border border-app-border bg-app-surface-2 px-2.5 py-1 text-[11px] hover:border-app-accent/40"
         >
           Download
@@ -166,29 +175,5 @@ function ArtifactCard({ artifact, run }: { artifact: AgentArtifact; run: AgentRu
         <p className="text-[11px] text-app-danger">Delete failed: {deleteArtifact.error.message}</p>
       ) : null}
     </article>
-  );
-}
-
-function QualityBadge({ quality }: { quality?: ArtifactQualityMetadata }) {
-  if (!quality) return null;
-  const tone =
-    quality.status === "passed" ? "ok" : quality.status === "failed" ? "danger" : "warn";
-  return (
-    <details className="rounded-md border border-app-border bg-app-surface-2 p-2 text-[11px]">
-      <summary className="flex items-center gap-2 text-[11px]">
-        <GenericBadge tone={tone}>QA: {quality.status}</GenericBadge>
-        <span className="text-app-text-muted">
-          {(quality.checks ?? []).length} check{(quality.checks ?? []).length === 1 ? "" : "s"}
-        </span>
-      </summary>
-      <ul className="mt-2 list-disc space-y-0.5 pl-5">
-        {(quality.checks ?? []).map((check, index) => (
-          <li key={index} className={check.ok ? "" : "text-app-danger"}>
-            <strong>{check.ok ? "pass" : "fail"}</strong> · {check.name}
-            {check.reason ? <span className="text-app-text-muted"> — {truncate(check.reason, 140)}</span> : null}
-          </li>
-        ))}
-      </ul>
-    </details>
   );
 }

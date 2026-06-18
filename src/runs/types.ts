@@ -3,6 +3,7 @@ import { AgentEvent, AgentRunResult } from "../types.js";
 export type RunStatus =
   | "queued"
   | "running"
+  | "waiting_approval"
   | "completed"
   | "failed"
   | "cancelled";
@@ -43,11 +44,23 @@ export type RunCreateContext = {
   sourceThreadId?: string;
 };
 
+export type RunMeta = {
+  status: RunStatus;
+  updatedAt: string;
+  eventCount: number;
+};
+
 export type RunStore = {
   create(task: string, context?: RunCreateContext): Promise<AgentRunRecord>;
   list(): Promise<AgentRunRecord[]>;
   get(id: string): Promise<AgentRunRecord | undefined>;
+  /**
+   * Cheap change-detection projection for pollers (SSE stream): status,
+   * updated-at, and event count without hydrating the event list.
+   */
+  getMeta(id: string): Promise<RunMeta | undefined>;
   markRunning(id: string): Promise<void>;
+  waitForApproval(id: string, result: AgentRunResult, reason: string): Promise<void>;
   appendEvent(id: string, event: AgentEvent): Promise<void>;
   complete(id: string, result: AgentRunResult): Promise<void>;
   fail(id: string, error: string): Promise<void>;
@@ -60,5 +73,6 @@ export type RunStore = {
    * killed. Default 0 = no filter (legacy behaviour).
    */
   recoverInterrupted(error: string, options?: { staleAfterMs?: number }): Promise<number>;
+  delete(id: string): Promise<boolean>;
   deleteByThreadId(threadId: string): Promise<number>;
 };

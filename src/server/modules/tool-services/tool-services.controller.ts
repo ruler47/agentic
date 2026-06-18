@@ -100,8 +100,8 @@ export class ToolServicesController {
 
   @Post("tool-service-events/:eventId/allow-identity")
   @HttpCode(201)
-  async allowIdentity(@Param("eventId") eventId: string) {
-    return this.service.allowIdentity(decodeURIComponent(eventId));
+  async allowIdentity(@Param("eventId") eventId: string, @Body() body: unknown) {
+    return this.service.allowIdentity(decodeURIComponent(eventId), body);
   }
 
   @Get("tool-services/logs")

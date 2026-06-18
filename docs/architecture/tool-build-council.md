@@ -248,9 +248,10 @@ not the operator's form input.
 Setting `BUILTIN_TOOLS=disabled` in the app env skips registration of
 the seven hard-coded built-in tools (`web.search`, `file.read`,
 `file.write`, `chart.generate`, `market.timeseries`, `telegram.bot`,
-`browser.operate`). The only tools visible to the agent become the
-council-built ones. Default is `BUILTIN_TOOLS=enabled` for backwards
-compatibility.
+`browser.operate`). The rebuilt product defaults to
+`BUILTIN_TOOLS=disabled`; the only tools visible to the agent are
+generated/imported packages that are registered, loaded, and enabled.
+There is no automatic core-tool seeding.
 
 The `tools/` directory is reconciled on bootstrap by
 `reconcileToolsDirectory(toolsRoot, knownVersions)`:
@@ -288,4 +289,3 @@ catalog block.
   payload, then a `completed`/`failed` event with the raw output. The
   Trace inspector shows live timer + prompt while the model is
   streaming.
-

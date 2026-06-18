@@ -17,6 +17,8 @@ function runStatusTone(status: string): Tone {
     case "running":
     case "queued":
       return "running";
+    case "waiting_approval":
+      return "warn";
     case "failed":
       return "danger";
     case "cancelled":
@@ -24,6 +26,10 @@ function runStatusTone(status: string): Tone {
     default:
       return "muted";
   }
+}
+
+function runStatusLabel(status: string): string {
+  return status.replace(/_/g, " ");
 }
 
 export function RunStatusBadge({ status }: { status: RunStatus | string }) {
@@ -35,7 +41,7 @@ export function RunStatusBadge({ status }: { status: RunStatus | string }) {
         toneClass[tone],
       ].join(" ")}
     >
-      {status.replace(/_/g, " ")}
+      {runStatusLabel(status)}
     </span>
   );
 }

@@ -1,4 +1,7 @@
 import { useImageLightbox, type LightboxImage } from "@/components/ImageLightbox";
+import { GenericBadge } from "@/components/StatusBadge";
+import { truncate } from "@/lib/format";
+import type { ArtifactQualityMetadata } from "@/api/types";
 
 type ArtifactLike = {
   id?: string;
@@ -7,6 +10,9 @@ type ArtifactLike = {
   mimeType?: string;
   kind?: string;
   sizeBytes?: number;
+  contentPreview?: string;
+  description?: string;
+  quality?: ArtifactQualityMetadata;
 };
 
 type ArtifactGalleryProps = {
@@ -54,6 +60,7 @@ export function ArtifactCard({
   compact?: boolean;
 }) {
   const isImage = isImageArtifact(artifact);
+  const downloadUrl = artifactDownloadUrl(artifact.url);
   return (
     <article className="overflow-hidden rounded-md border border-app-border bg-app-surface-2 text-xs">
       {isImage ? (
@@ -84,16 +91,63 @@ export function ArtifactCard({
             ? ` · ${Math.max(0, Math.round(artifact.sizeBytes / 1024))} KB`
             : ""}
         </p>
-        <a
-          href={artifact.url}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-1 inline-block text-[11px] text-app-accent underline"
-        >
-          Download
-        </a>
+        {!isImage && artifact.contentPreview ? (
+          <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded-md border border-app-border bg-app-surface px-2 py-1 font-mono text-[10px]">
+            {truncate(artifact.contentPreview, compact ? 320 : 800)}
+          </pre>
+        ) : null}
+        {artifact.description ? (
+          <p className="mt-2 text-[11px] text-app-text-muted">{truncate(artifact.description, 180)}</p>
+        ) : null}
+        <ArtifactQualityBadge quality={artifact.quality} />
+        <div className="mt-2 flex flex-wrap gap-2">
+          <a
+            href={artifact.url}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
+          >
+            {isImage ? "Preview" : "Open"}
+          </a>
+          <a
+            href={downloadUrl}
+            download={artifact.filename}
+            className="rounded-md border border-app-border bg-app-surface px-2.5 py-1 text-[11px] hover:border-app-accent/40"
+          >
+            Download
+          </a>
+        </div>
       </div>
     </article>
+  );
+}
+
+export function ArtifactQualityBadge({ quality }: { quality?: ArtifactQualityMetadata }) {
+  if (!quality) return null;
+  const checks = quality.checks ?? [];
+  const tone =
+    quality.status === "passed" ? "ok" : quality.status === "failed" ? "danger" : "warn";
+  return (
+    <details className="mt-2 rounded-md border border-app-border bg-app-surface p-2 text-[11px]">
+      <summary className="flex cursor-pointer items-center gap-2">
+        <GenericBadge tone={tone}>QA: {quality.status}</GenericBadge>
+        <span className="text-app-text-muted">
+          {checks.length} check{checks.length === 1 ? "" : "s"}
+        </span>
+      </summary>
+      {checks.length > 0 ? (
+        <ul className="mt-2 list-disc space-y-0.5 pl-5">
+          {checks.map((check, index) => (
+            <li key={`${check.name}-${index}`} className={check.ok ? "" : "text-app-danger"}>
+              <strong>{check.ok ? "pass" : "fail"}</strong> · {check.name}
+              {check.reason ? (
+                <span className="text-app-text-muted"> - {truncate(check.reason, 140)}</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </details>
   );
 }
 
@@ -113,4 +167,10 @@ function toLightboxImage(artifact: ArtifactLike): LightboxImage {
     url: artifact.url,
     title: artifact.filename,
   };
+}
+
+export function artifactDownloadUrl(url: string): string {
+  if (!url) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}download=1`;
 }

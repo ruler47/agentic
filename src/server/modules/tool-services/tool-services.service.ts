@@ -24,7 +24,7 @@ import type {
   ToolServiceEventStatus,
   ToolServiceEventStore,
 } from "../../../tools/toolServiceEventStore.js";
-import type { ChannelIdentityRecord, UserStore } from "../../../instance/userStore.js";
+import type { ChannelIdentityRecord, UserRecord, UserStore } from "../../../instance/userStore.js";
 import { AuditService } from "../../common/services/audit.service.js";
 import {
   TOOL_SERVICE_EVENT_STORE,
@@ -32,6 +32,15 @@ import {
   USER_STORE,
 } from "../../persistence/tokens.js";
 import { RunsService } from "../runs/runs.service.js";
+import { redactRuntimeText } from "../../../tools/toolPackageRunnerShared.js";
+import {
+  outboundProviderMessageIds,
+  parseAllowIdentityRequest,
+  sourceAliasesFromPayload,
+  uniqueStrings,
+} from "./tool-service-identity.js";
+
+type ParsedInbound = ReturnType<ToolServicesService["parseInbound"]>;
 
 @Injectable()
 export class ToolServicesService {
@@ -100,7 +109,7 @@ export class ToolServicesService {
       payload: {
         sourceEventId: queued.id,
         providerMessageId: input.providerMessageId,
-        detail: input.detail,
+        detail: input.detail ? redactRuntimeText(input.detail) : undefined,
         ...(input.payload ?? {}),
       },
     });
@@ -170,9 +179,11 @@ export class ToolServicesService {
     return event;
   }
 
-  async allowIdentity(eventId: string): Promise<{
+  async allowIdentity(eventId: string, rawBody?: unknown): Promise<{
     event: ToolServiceEventRecord;
     identities: ChannelIdentityRecord[];
+    user: UserRecord;
+    run?: unknown;
   }> {
     if (!this.events) {
       throw new ServiceUnavailableException("Tool service event store is not configured");
@@ -183,7 +194,7 @@ export class ToolServicesService {
       throw new BadRequestException("tool service event has no sourceUserId to allow");
     }
 
-    const adminUser = await this.resolveAdminUser();
+    const targetUser = await this.resolveIdentityTargetUser(rawBody);
     const provider = event.toolName;
     const now = new Date().toISOString();
     const providerUserIds = uniqueStrings([
@@ -209,6 +220,11 @@ export class ToolServicesService {
         sourceMessageId: event.sourceMessageId,
         alias: providerUserId !== event.sourceUserId,
       };
+      if (existing && existing.userId !== targetUser.id) {
+        throw new BadRequestException(
+          `Channel identity ${provider}/${providerUserId} already belongs to ${existing.userId}`,
+        );
+      }
       if (existing) {
         identities.push(
           await this.users.updateIdentity(existing.id, {
@@ -222,7 +238,7 @@ export class ToolServicesService {
           await this.users.createIdentity({
             provider,
             providerUserId,
-            userId: adminUser.id,
+            userId: targetUser.id,
             allowStatus: "allowed",
             displayMetadata: metadata,
             lastSeenAt: event.createdAt ?? now,
@@ -241,18 +257,20 @@ export class ToolServicesService {
       status: "success",
       threadId: event.threadId,
       runId: event.runId,
-      requesterUserId: adminUser.id,
+      requesterUserId: targetUser.id,
       channel: provider,
-      summary: `Allowed ${identities.length} channel identity mapping(s) from ${provider}`,
+      summary: `Allowed ${identities.length} channel identity mapping(s) from ${provider} for ${targetUser.id}`,
       metadata: {
         eventId: event.id,
         provider,
+        userId: targetUser.id,
         identityIds: identities.map((identity) => identity.id),
         providerUserIds: identities.map((identity) => identity.providerUserId),
       },
     });
 
-    return { event, identities };
+    const run = await this.replayInboundEventAfterAllow(event);
+    return { event, identities, user: targetUser, run };
   }
 
   async listLogs(toolName: string | undefined, limit: number) {
@@ -408,31 +426,34 @@ export class ToolServicesService {
       },
     });
 
-    const created = await this.runs.createAndStart({
-      ...inbound.originalBody,
-      task: inbound.task,
-      channel: inbound.channel,
-      sourceUserId: inbound.sourceUserId,
-      sourceUserAliases: inbound.sourceUserAliases,
-      sourceChatId: inbound.sourceChatId,
-      threadId: inbound.threadId,
-      sourceThreadId: inbound.sourceThreadId,
-      sourceMessageId: inbound.sourceMessageId,
-    });
+    const resolvedInbound = await this.resolveInboundReplyContext(toolName, inbound);
+    const created = await this.createRunFromInboundOrRecordFailure(
+      toolName,
+      receivedEvent,
+      resolvedInbound,
+    );
     const run = created.run;
     const queuedEvent = await this.events.record({
       toolName,
       direction: "system",
       status: "queued",
-      summary: `Run created from inbound event: ${inbound.task.slice(0, 160)}`,
-      sourceUserId: inbound.sourceUserId,
-      sourceChatId: inbound.sourceChatId,
-      sourceMessageId: inbound.sourceMessageId,
+      summary: `Run created from inbound event: ${resolvedInbound.task.slice(0, 160)}`,
+      sourceUserId: resolvedInbound.sourceUserId,
+      sourceChatId: resolvedInbound.sourceChatId,
+      sourceMessageId: resolvedInbound.sourceMessageId,
       threadId: run?.threadId ?? created.threadResolution?.threadId,
       runId: run?.id,
       payload: {
         sourceEventId: receivedEvent.id,
         threadResolution: created.threadResolution,
+        replyResolution: resolvedInbound.replyResolvedFromEventId
+          ? {
+              eventId: resolvedInbound.replyResolvedFromEventId,
+              threadId: resolvedInbound.threadId,
+              parentRunId: resolvedInbound.parentRunId,
+              replyToMessageId: resolvedInbound.replyToProviderMessageId ?? resolvedInbound.replyToSourceMessageId,
+            }
+          : undefined,
       },
     });
     await this.audit.record({
@@ -454,6 +475,127 @@ export class ToolServicesService {
       },
     });
     return { event: receivedEvent, queuedEvent, ...created };
+  }
+
+  private async createRunFromInboundOrRecordFailure(
+    toolName: string,
+    sourceEvent: ToolServiceEventRecord,
+    inbound: ParsedInbound,
+  ) {
+    try {
+      return await this.runs.createAndStart({
+        ...inbound.originalBody,
+        task: inbound.task,
+        channel: inbound.channel,
+        sourceUserId: inbound.sourceUserId,
+        sourceUserAliases: inbound.sourceUserAliases,
+        sourceChatId: inbound.sourceChatId,
+        threadId: inbound.threadId,
+        sourceThreadId: inbound.sourceThreadId,
+        sourceMessageId: inbound.sourceMessageId,
+        parentRunId: inbound.parentRunId,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Inbound event could not create a run";
+      await this.events?.record({
+        toolName,
+        direction: "system",
+        status: "failed",
+        summary: `Inbound event did not create a run: ${message.slice(0, 180)}`,
+        sourceUserId: inbound.sourceUserId,
+        sourceChatId: inbound.sourceChatId,
+        sourceMessageId: inbound.sourceMessageId,
+        payload: {
+          sourceEventId: sourceEvent.id,
+          reason: message,
+        },
+      });
+      await this.audit.record({
+        instanceId: "instance-local",
+        actorId: toolName,
+        actorType: "tool",
+        action: "tool_service.event_recorded",
+        targetType: "tool_service_event",
+        targetId: sourceEvent.id,
+        status: "failure",
+        requesterUserId: inbound.sourceUserId,
+        channel: inbound.channel,
+        summary: `Inbound event did not create a run: ${message.slice(0, 160)}`,
+        metadata: {
+          sourceEventId: sourceEvent.id,
+          sourceChatId: inbound.sourceChatId,
+          sourceMessageId: inbound.sourceMessageId,
+        },
+      });
+      throw error;
+    }
+  }
+
+  private async replayInboundEventAfterAllow(event: ToolServiceEventRecord) {
+    if (!this.events || event.direction !== "inbound" || event.runId || !event.payload) {
+      return undefined;
+    }
+    const existingReplay = (await this.events.list({ toolName: event.toolName, limit: 500 }))
+      .find((candidate) =>
+        candidate.direction === "system" &&
+        candidate.status === "queued" &&
+        parseOptionalText(candidate.payload?.sourceEventId) === event.id,
+      );
+    if (existingReplay?.runId) return { id: existingReplay.runId };
+
+    const inbound = await this.resolveInboundReplyContext(
+      event.toolName,
+      this.parseInbound(event.payload, event.toolName),
+    );
+    const created = await this.createRunFromInboundOrRecordFailure(event.toolName, event, inbound);
+    const run = created.run;
+    await this.events.record({
+      toolName: event.toolName,
+      direction: "system",
+      status: "queued",
+      summary: `Run created after identity approval: ${inbound.task.slice(0, 160)}`,
+      sourceUserId: inbound.sourceUserId,
+      sourceChatId: inbound.sourceChatId,
+      sourceMessageId: inbound.sourceMessageId,
+      threadId: run?.threadId ?? created.threadResolution?.threadId,
+      runId: run?.id,
+      payload: {
+        sourceEventId: event.id,
+        threadResolution: created.threadResolution,
+        replyResolution: inbound.replyResolvedFromEventId
+          ? {
+              eventId: inbound.replyResolvedFromEventId,
+              threadId: inbound.threadId,
+              parentRunId: inbound.parentRunId,
+              replyToMessageId: inbound.replyToProviderMessageId ?? inbound.replyToSourceMessageId,
+            }
+          : undefined,
+        replayedAfterIdentityApproval: true,
+      },
+    });
+    return run;
+  }
+
+  private async resolveInboundReplyContext(toolName: string, inbound: ParsedInbound): Promise<ParsedInbound> {
+    if (inbound.threadId || inbound.sourceThreadId || !this.events) return inbound;
+    const replyIds = uniqueStrings([
+      inbound.replyToProviderMessageId,
+      inbound.replyToSourceMessageId,
+    ]);
+    if (replyIds.length === 0) return inbound;
+    const events = await this.events.list({ toolName, direction: "outbound", limit: 200 });
+    const target = events.find((event) => {
+      if (!event.threadId) return false;
+      if (inbound.sourceChatId && event.sourceChatId && inbound.sourceChatId !== event.sourceChatId) return false;
+      return outboundProviderMessageIds(event).some((messageId) => replyIds.includes(messageId));
+    });
+    if (!target) return inbound;
+    return {
+      ...inbound,
+      threadId: target.threadId,
+      parentRunId: target.runId,
+      replyResolvedFromEventId: target.id,
+    };
   }
 
   parseLimit = parseLimit;
@@ -487,6 +629,43 @@ export class ToolServicesService {
     const user = users.find((candidate) => candidate.roles.includes("admin")) ?? users[0];
     if (!user) throw new ServiceUnavailableException("No local user exists for channel identity mapping");
     return user;
+  }
+
+  private async resolveIdentityTargetUser(rawBody: unknown): Promise<UserRecord> {
+    const request = parseAllowIdentityRequest(rawBody);
+    if (request.createUser) {
+      try {
+        const user = await this.users.create({
+          id: request.createUser.id,
+          displayName: request.createUser.displayName ?? "",
+          role: request.createUser.role ?? "member",
+          roles: request.createUser.roles,
+        });
+        await this.audit.record({
+          instanceId: "instance-local",
+          actorId: "user-admin",
+          actorType: "user",
+          action: "user.created",
+          targetType: "user",
+          targetId: user.id,
+          status: "success",
+          requesterUserId: user.id,
+          summary: `User created from pending channel identity: ${user.displayName}`,
+          metadata: { role: user.role, roles: user.roles, source: "tool-service-event-allow" },
+        });
+        return user;
+      } catch (error) {
+        throw new BadRequestException(
+          this.errorMessage(error, "Could not create user for channel identity"),
+        );
+      }
+    }
+    if (request.userId) {
+      const user = await this.users.get(request.userId);
+      if (!user) throw new BadRequestException(`User was not found: ${request.userId}`);
+      return user;
+    }
+    return this.resolveAdminUser();
   }
 
   private parseEventInput(value: unknown): ToolServiceEventInput {
@@ -573,6 +752,10 @@ export class ToolServicesService {
       threadId: parseOptionalText(value.threadId),
       sourceThreadId: parseOptionalText(value.sourceThreadId),
       sourceMessageId: parseOptionalText(value.sourceMessageId),
+      parentRunId: parseOptionalText(value.parentRunId),
+      replyToSourceMessageId: parseOptionalText(value.replyToSourceMessageId),
+      replyToProviderMessageId: parseOptionalText(value.replyToProviderMessageId),
+      replyResolvedFromEventId: undefined as string | undefined,
     };
   }
 
@@ -587,28 +770,8 @@ export class ToolServicesService {
       sourceMessageId: parseOptionalText(value.sourceMessageId),
     };
   }
-}
 
-function sourceAliasesFromPayload(payload: unknown): string[] {
-  if (!isRecord(payload)) return [];
-  const aliases = parseOptionalTextArray(payload.sourceUserAliases) ?? [];
-  const username =
-    parseOptionalText(payload.username) ??
-    parseOptionalText(payload.sourceUsername) ??
-    parseOptionalText(payload.sourceUserName);
-  return uniqueStrings([
-    ...aliases,
-    username,
-    username && !username.startsWith("@") ? `@${username}` : undefined,
-  ]);
-}
-
-function uniqueStrings(values: Array<string | undefined>): string[] {
-  return [
-    ...new Set(
-      values
-        .map((value) => value?.trim())
-        .filter((value): value is string => Boolean(value)),
-    ),
-  ];
+  private errorMessage(error: unknown, fallback: string): string {
+    return error instanceof Error ? error.message : fallback;
+  }
 }

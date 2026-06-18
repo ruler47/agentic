@@ -1,6 +1,6 @@
-import { UniversalAgent } from "./agents/universalAgent.js";
+import { BaseAgent } from "./agents/baseAgent.js";
 import { LlmClient, readLlmConfigFromEnv } from "./llm/client.js";
-import { SkillMemory } from "./memory/skillMemory.js";
+import { ToolRegistry } from "./tools/registry.js";
 
 async function main(): Promise<void> {
   const task = process.argv.slice(2).join(" ").trim();
@@ -12,8 +12,8 @@ async function main(): Promise<void> {
   }
 
   const llm = new LlmClient(readLlmConfigFromEnv());
-  const memory = new SkillMemory();
-  const agent = new UniversalAgent(llm, memory);
+  const registry = new ToolRegistry();
+  const agent = new BaseAgent(llm, registry);
 
   const result = await agent.run(task);
 

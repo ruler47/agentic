@@ -244,7 +244,7 @@ export const RUN_RETROSPECTIVE_OUTCOMES: readonly RunRetrospectiveOutcome[] = [
 
 export type RunRetrospectiveProposalKind =
   | "memory"
-  | "tool_investigation"
+  | "tool_follow_up"
   | "policy_change"
   | "prompt_change";
 
@@ -264,7 +264,7 @@ export type RunRetrospectiveRecord = {
   missingCapabilities: string[];
   usefulEvidenceIds: string[];
   proposedMemoryIds: string[];
-  proposedToolInvestigationIds: string[];
+  proposedToolFollowUpIds: string[];
   proposedPolicyChanges: string[];
   proposedPromptChanges: string[];
   summary?: string;
@@ -288,7 +288,7 @@ export type RunRetrospectiveCreateInput = {
   missingCapabilities?: string[];
   usefulEvidenceIds?: string[];
   proposedMemoryIds?: string[];
-  proposedToolInvestigationIds?: string[];
+  proposedToolFollowUpIds?: string[];
   proposedPolicyChanges?: string[];
   proposedPromptChanges?: string[];
   summary?: string;

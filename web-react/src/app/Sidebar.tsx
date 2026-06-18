@@ -18,9 +18,15 @@ export function Sidebar() {
   const healthLabel = health.isError
     ? "Backend unreachable"
     : health.data?.ok
-      ? "Backend ready"
+      ? `Backend ready · ${health.data.persistence?.database.mode ?? "unknown"}`
       : "Checking backend...";
-  const healthTone = health.isError ? "danger" : health.data?.ok ? "ok" : "muted";
+  const healthTone = health.isError
+    ? "danger"
+    : health.data?.persistence?.database.mode === "in-memory"
+      ? "warn"
+      : health.data?.ok
+        ? "ok"
+        : "muted";
 
   return (
     <aside className="flex w-[260px] shrink-0 flex-col border-r border-app-border bg-app-surface">
@@ -71,6 +77,8 @@ export function Sidebar() {
             "flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs",
             healthTone === "danger"
               ? "bg-app-danger-soft text-app-danger"
+              : healthTone === "warn"
+                ? "bg-app-warning-soft text-app-warning"
               : healthTone === "ok"
                 ? "bg-app-accent-soft text-app-accent"
                 : "bg-app-surface-2 text-app-text-muted",

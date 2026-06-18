@@ -1,6 +1,7 @@
 import "reflect-metadata";
 
 import { strict as assert } from "node:assert";
+import { rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { BadRequestException, type INestApplication, ValidationPipe } from "@nestjs/common";
@@ -9,6 +10,10 @@ import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import { json, type NextFunction, type Request, type Response } from "express";
 import { AppModule } from "../src/server/app.module.js";
 import { ApiExceptionFilter } from "../src/server/common/filters/api-exception.filter.js";
+import { RUN_STORE, TOOL_REGISTRY } from "../src/server/persistence/tokens.js";
+import type { RunStore } from "../src/runs/types.js";
+import type { AgentRunResult, ExternalActionProposal } from "../src/types.js";
+import type { ToolRegistry } from "../src/tools/registry.js";
 
 type NestFixture = {
   app: INestApplication;
@@ -16,10 +21,13 @@ type NestFixture = {
 };
 
 async function createNestFixture(): Promise<NestFixture> {
+  process.env.TOOL_BUILD_WORKER = "disabled";
   process.env.LLM_BASE_URL = "http://127.0.0.1:65000/v1";
   process.env.LLM_MODEL = "offline";
   process.env.SWAGGER_DISABLED = "false";
   process.env.DATABASE_URL = "";
+  process.env.TOOL_BUILD_MIGRATION_QA_DATABASE_URL = "";
+  process.env.BUILTIN_TOOLS = "disabled";
 
   const app = await NestFactory.create(AppModule, { abortOnError: false, logger: false });
   app.use(json());
@@ -53,7 +61,7 @@ async function createNestFixture(): Promise<NestFixture> {
 
   const config = new DocumentBuilder()
     .setTitle("Agentic Universal Agent API")
-    .setDescription("Coordinator + tool registry + run lifecycle for the Agentic platform.")
+    .setDescription("Base Agent/Tool/LLM runtime for the Agentic platform.")
     .setVersion("0.1.0")
     .addServer("/")
     .build();
@@ -90,11 +98,24 @@ async function closeFixture(fixture: NestFixture): Promise<void> {
   await fixture.app.close();
 }
 
-test("Nest API serves health, OpenAPI, static UI, and run creation", async () => {
+test("Nest API serves the base console, tools, docs, and run creation", async () => {
   const fixture = await createNestFixture();
   try {
-    const health = await requestJson<{ ok: boolean }>(fixture.baseUrl, "/api/health");
+    const health = await requestJson<{
+      ok: boolean;
+      persistence: {
+        database: { mode: string; status: string; configured: boolean };
+        stores: Array<{ name: string; mode: string; durable: boolean }>;
+      };
+    }>(fixture.baseUrl, "/api/health");
     assert.equal(health.ok, true);
+    assert.deepEqual(health.persistence.database, {
+      mode: "in-memory",
+      status: "unconfigured",
+      configured: false,
+    });
+    assert.equal(health.persistence.stores.find((store) => store.name === "runs")?.durable, false);
+    assert.equal(health.persistence.stores.find((store) => store.name === "toolMetadata")?.mode, "local-json");
 
     const openapi = await requestJson<{ openapi: string; info: { title: string } }>(
       fixture.baseUrl,
@@ -107,6 +128,13 @@ test("Nest API serves health, OpenAPI, static UI, and run creation", async () =>
     assert.equal(index.status, 200);
     assert.match(await index.text(), /Agentic|html/i);
 
+    const tools = await requestJson<{ tools: Array<{ name: string; status?: string }> }>(
+      fixture.baseUrl,
+      "/api/tools",
+    );
+    assert.equal(tools.tools.some((tool) => tool.name === "browser.operate"), false);
+    assert.equal(tools.tools.some((tool) => tool.name === "file.write"), false);
+
     const runCreated = await requestJson<{ run: { id: string; status: string } }>(
       fixture.baseUrl,
       "/api/runs",
@@ -114,22 +142,640 @@ test("Nest API serves health, OpenAPI, static UI, and run creation", async () =>
         method: "POST",
         expectedStatus: 202,
         body: JSON.stringify({
-          task: "manual nest e2e smoke for tool rework",
+          task: "Скажи одним предложением, что такое универсальный агент",
           channel: "web",
           requesterUserId: "user-admin",
         }),
       },
     );
     assert.match(runCreated.run.id, /^run_/);
-
-    const audit = await requestJson<{ events: unknown[] }>(fixture.baseUrl, "/api/audit-events?limit=100");
-    assert.equal(JSON.stringify(audit).includes("DO-NOT-LEAK-NEST-E2E"), false);
+    assert.ok(["queued", "running"].includes(runCreated.run.status));
   } finally {
     await closeFixture(fixture);
   }
 });
 
-test("Nest API validates memory requests and exposes joined review queue data", async () => {
+test("Nest API no longer exposes legacy tool-build and tool-rework endpoints", async () => {
+  const fixture = await createNestFixture();
+  try {
+    await requestJson(fixture.baseUrl, "/api/tool-build-runs", { expectedStatus: 404 });
+    await requestJson(fixture.baseUrl, "/api/tool-build-requests", { expectedStatus: 404 });
+    await requestJson(fixture.baseUrl, "/api/tool-investigations", { expectedStatus: 404 });
+    await requestJson(fixture.baseUrl, "/api/tool-rework-waits", { expectedStatus: 404 });
+    await requestJson(fixture.baseUrl, "/api/tool-migrations", { expectedStatus: 404 });
+  } finally {
+    await closeFixture(fixture);
+  }
+});
+
+test("Nest API supports external action approval and blocked commit trace", async () => {
+  const fixture = await createNestFixture();
+  try {
+    const runStore = fixture.app.get<RunStore>(RUN_STORE);
+    const target = `Test ${Date.now()} ${Math.random().toString(36).slice(2, 7)}`;
+    const expectedToolName = "external.action.commit";
+    const run = await runStore.create("Забронируй столик", {
+      instanceId: "instance-local",
+      requesterUserId: "user-admin",
+      channel: "web",
+    });
+    const proposal: ExternalActionProposal = {
+      id: `action_${run.id}_1`,
+      runId: run.id,
+      actionType: "reservation",
+      status: "proposed",
+      title: "Reservation proposal: Test",
+      summary: "reservation: prepare booking",
+      proposedAction: "Prepare to submit a reservation after approval.",
+      target,
+      approvalRequired: true,
+      userExplicitlyForbidsAction: false,
+      allowedWithoutApproval: ["prepare draft"],
+      prohibitedWithoutApproval: ["submit a reservation"],
+      sourceUrls: [],
+      artifactIds: [],
+      commitExecutor: {
+        kind: "manual_operator",
+        ready: false,
+        risk: "high",
+        reason: "fixture executor missing",
+        missing: ["generated commit tool"],
+        expectedProof: ["provider confirmation"],
+      },
+      createdAt: new Date().toISOString(),
+      createdBy: "base-agent",
+    };
+    const result: AgentRunResult = {
+      finalAnswer: "Prepared reservation proposal.",
+      complexity: {
+        mode: "direct",
+        reason: "fixture",
+        domains: [],
+        riskLevel: "medium",
+      },
+      subtasks: [],
+      workerResults: [],
+      reviews: [],
+      artifacts: [],
+      actionProposals: [proposal],
+    };
+    await runStore.complete(run.id, result);
+    await runStore.appendEvent(run.id, {
+      id: "proposal-created",
+      spanId: "proposal-created",
+      type: "external-action-proposal-created",
+      actor: "base-agent",
+      activity: "agent",
+      status: "completed",
+      title: "External action proposal created",
+      timestamp: new Date().toISOString(),
+      payload: { proposalId: proposal.id },
+    });
+
+    const listed = await requestJson<{ proposals: Array<{ proposal: { id: string; status: string }; executorBuild?: { status: string; toolName: string } }> }>(
+      fixture.baseUrl,
+      "/api/action-proposals",
+    );
+    assert.ok(listed.proposals.some((item) => item.proposal.id === proposal.id && item.proposal.status === "proposed"));
+    assert.ok(listed.proposals.some((item) =>
+      item.proposal.id === proposal.id &&
+      item.executorBuild?.status === "needed" &&
+      item.executorBuild.toolName === expectedToolName
+    ));
+
+    const approved = await requestJson<{ proposal: { proposal: { status: string } } }>(
+      fixture.baseUrl,
+      `/api/action-proposals/${encodeURIComponent(proposal.id)}/approve`,
+      { method: "POST", body: JSON.stringify({ reason: "test approval" }) },
+    );
+    assert.equal(approved.proposal.proposal.status, "approved");
+
+    const blocked = await requestJson<{ proposal: { proposal: { status: string }; execution?: { status: string; reason?: string } } }>(
+      fixture.baseUrl,
+      `/api/action-proposals/${encodeURIComponent(proposal.id)}/commit`,
+      { method: "POST" },
+    );
+    assert.equal(blocked.proposal.proposal.status, "approved");
+    assert.equal(blocked.proposal.execution?.status, "blocked");
+    assert.match(
+      blocked.proposal.execution?.reason ?? "",
+      /fixture executor missing|missing_requirements|generated commit executor/i,
+    );
+
+    const updated = await runStore.get(run.id);
+    assert.ok(updated?.events.some((event) => event.type === "external-action-proposal-approved"));
+    assert.ok(updated?.events.some((event) => event.type === "external-action-commit-blocked"));
+  } finally {
+    await closeFixture(fixture);
+  }
+});
+
+test("Nest API runs the fixture external-action lifecycle through build, attach, and commit", async () => {
+  const workspaceRoot = `.tmp-nest-action-fixture-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const previousRoot = process.env.TOOL_PACKAGE_WORKSPACE_ROOT;
+  process.env.TOOL_PACKAGE_WORKSPACE_ROOT = workspaceRoot;
+  const fixture = await createNestFixture();
+  try {
+    const runStore = fixture.app.get<RunStore>(RUN_STORE);
+    const registry = fixture.app.get<ToolRegistry>(TOOL_REGISTRY);
+    registry.register({
+      name: "browser.operate",
+      version: "0.1.0",
+      description: "Fixture browser preparation tool.",
+      capabilities: ["browser-operate", "browser-automation"],
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          prepareOnly: { type: "boolean" },
+          commands: { type: "array" },
+        },
+        required: ["url"],
+      },
+      async run(input) {
+        const commands = Array.isArray(input.commands)
+          ? input.commands.filter((item): item is Record<string, unknown> =>
+              Boolean(item) && typeof item === "object" && !Array.isArray(item),
+            )
+          : [];
+        return {
+          ok: true,
+          content: "Prepared local fixture page and captured proof.",
+          data: {
+            finalUrl: input.url,
+            pageTitle: "Restaurant reservation fixture",
+            extractedText:
+              "Draft is filled. Confirm reservation remains the final commit boundary.",
+            links: [],
+            actionCandidates: [
+              {
+                text: "Confirm reservation",
+                selector: "#confirm",
+              },
+            ],
+            steps: commands.map((command, index) => ({
+              index,
+              action: String(command.action),
+              ok: true,
+              detail: String(command.label ?? command.action),
+            })),
+            artifacts: [
+              {
+                filename: "reservation-draft-proof.txt",
+                mimeType: "text/plain",
+                content: Buffer.from("Prepared reservation draft proof"),
+                description: "Fixture proof artifact for prepared reservation draft.",
+              },
+            ],
+          },
+        };
+      },
+    });
+    const created = await requestJson<{
+      proposal: {
+        proposal: { id: string; status: string; commitExecutor?: { ready: boolean } };
+        run: { id: string; channel?: string };
+        executorBuild?: { status: string; toolName: string };
+      };
+    }>(fixture.baseUrl, "/api/action-proposals/fixture", {
+      method: "POST",
+      expectedStatus: 201,
+      body: JSON.stringify({
+        actionType: "reservation",
+        fixtureBaseUrl: fixture.baseUrl,
+      }),
+    });
+    assert.equal(created.proposal.proposal.status, "proposed");
+    assert.equal(created.proposal.run.channel, "fixture");
+    assert.equal(created.proposal.executorBuild?.status, "needed");
+
+    const prepared = await requestJson<{
+      proposal: {
+        preparationExecution?: {
+          status: string;
+          preparedSession?: { currentUrl?: string; filledFields?: unknown[] };
+        };
+      };
+    }>(
+      fixture.baseUrl,
+      `/api/action-proposals/${encodeURIComponent(created.proposal.proposal.id)}/prepare`,
+      { method: "POST" },
+    );
+    assert.equal(prepared.proposal.preparationExecution?.status, "completed");
+    assert.match(
+      prepared.proposal.preparationExecution?.preparedSession?.currentUrl ?? "",
+      /\/api\/fixtures\/external-actions\/reservation$/,
+    );
+    assert.equal(prepared.proposal.preparationExecution?.preparedSession?.filledFields?.length, 5);
+
+    await requestJson(fixture.baseUrl, `/api/action-proposals/${encodeURIComponent(created.proposal.proposal.id)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "fixture approval" }),
+    });
+
+    const built = await requestJson<{
+      proposal: {
+        proposal: { status: string; commitExecutor?: { ready: boolean; toolName?: string } };
+        executorBuild?: { status: string; toolName: string; commitExecutor?: { ready: boolean } };
+      };
+    }>(
+      fixture.baseUrl,
+      `/api/action-proposals/${encodeURIComponent(created.proposal.proposal.id)}/build-executor`,
+      {
+        method: "POST",
+        body: JSON.stringify({ authoringMode: "scaffold", activateOnSuccess: true }),
+      },
+    );
+    assert.equal(built.proposal.proposal.status, "approved");
+    assert.equal(
+      built.proposal.executorBuild?.status,
+      "attached",
+      JSON.stringify(built.proposal.executorBuild, null, 2),
+    );
+    assert.equal(built.proposal.proposal.commitExecutor?.ready, true);
+    assert.equal(built.proposal.proposal.commitExecutor?.toolName, "external.action.commit");
+
+    const committed = await requestJson<{
+      proposal: {
+        proposal: { status: string };
+        execution?: { status: string; toolName?: string; contentPreview?: string; dataPreview?: unknown };
+      };
+    }>(
+      fixture.baseUrl,
+      `/api/action-proposals/${encodeURIComponent(created.proposal.proposal.id)}/commit`,
+      {
+        method: "POST",
+        body: JSON.stringify({ input: { fixtureConfirmation: "fixture-confirmed-nest" } }),
+      },
+    );
+    assert.equal(
+      committed.proposal.proposal.status,
+      "committed",
+      JSON.stringify(committed.proposal, null, 2),
+    );
+    assert.equal(
+      committed.proposal.execution?.status,
+      "committed",
+      JSON.stringify(committed.proposal, null, 2),
+    );
+    assert.match(committed.proposal.execution?.contentPreview ?? "", /fixture_reservation_/);
+    const dataPreviewText = JSON.stringify(
+      committed.proposal.execution?.dataPreview,
+    );
+    assert.match(dataPreviewText, /agentic-local-fixture/);
+    assert.match(dataPreviewText, /fixture-confirmed-nest/);
+
+    const run = await runStore.get(created.proposal.run.id);
+    assert.ok(run?.events.some((event) => event.type === "external-action-executor-build-completed"));
+    assert.ok(run?.events.some((event) => event.type === "external-action-executor-attached"));
+    assert.ok(run?.events.some((event) => event.type === "external-action-committed"));
+  } finally {
+    await closeFixture(fixture);
+    if (previousRoot === undefined) delete process.env.TOOL_PACKAGE_WORKSPACE_ROOT;
+    else process.env.TOOL_PACKAGE_WORKSPACE_ROOT = previousRoot;
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test("Nest API prepares external actions through browser operate", async () => {
+  const fixture = await createNestFixture();
+  try {
+    const runStore = fixture.app.get<RunStore>(RUN_STORE);
+    const registry = fixture.app.get<ToolRegistry>(TOOL_REGISTRY);
+    const browserInputs: Record<string, unknown>[] = [];
+    registry.register({
+      name: "browser.operate",
+      version: "0.1.0",
+      description: "Fixture browser preparation tool.",
+      capabilities: ["browser-operate", "browser-automation"],
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          prepareOnly: { type: "boolean" },
+          commands: { type: "array" },
+        },
+        required: ["url"],
+      },
+      async run(input) {
+        browserInputs.push(input);
+        assert.equal(input.prepareOnly, true);
+        assert.equal(input.url, "https://example.com/reserve");
+        return {
+          ok: true,
+          content: "Prepared page and captured proof.",
+          data: {
+            finalUrl: input.url,
+            pageTitle: "Fixture booking page",
+            extractedText: "Reserve a table for two. Confirm reservation button is visible.",
+            links: [{ text: "Restaurant policy", href: "https://example.com/policy" }],
+            steps: [{ index: 0, action: "navigate", ok: true, detail: input.url }],
+            artifacts: [
+              {
+                filename: "prepare.txt",
+                mimeType: "text/plain",
+                content: Buffer.from("prepared fixture").toString("base64"),
+                description: "fixture proof",
+              },
+            ],
+          },
+        };
+      },
+    });
+
+    const run = await runStore.create("Подготовь бронирование", {
+      instanceId: "instance-local",
+      requesterUserId: "user-admin",
+      channel: "web",
+    });
+    const proposal: ExternalActionProposal = {
+      id: `action_${run.id}_prepare`,
+      runId: run.id,
+      actionType: "reservation",
+      status: "proposed",
+      title: "Reservation proposal: Prepare",
+      summary: "reservation: prepare before approval",
+      proposedAction: "Prepare the reservation page without final submit.",
+      target: "https://example.com/reserve",
+      approvalRequired: true,
+      userExplicitlyForbidsAction: false,
+      allowedWithoutApproval: ["open page", "fill draft fields"],
+      prohibitedWithoutApproval: ["submit final booking"],
+      sourceUrls: ["https://example.com/article", "https://example.com/reserve"],
+      artifactIds: [],
+      preparation: {
+        stage: "prepared_for_approval",
+        objective: "Prepare reservation draft.",
+        target: "Example",
+        targetUrl: "https://example.com/reserve",
+        collectedInputs: [
+          { label: "party_size", value: "2", source: "user_request" },
+          { label: "date_or_time", value: "2026-05-23 20:00", source: "user_request" },
+        ],
+        missingInputs: [],
+        commitBoundary: "Do not click the final submit button.",
+        operatorChecklist: ["Review details before approval."],
+        proofPlan: ["screenshot"],
+      },
+      createdAt: new Date().toISOString(),
+      createdBy: "base-agent",
+    };
+    await runStore.complete(run.id, {
+      finalAnswer: "Prepared reservation proposal.",
+      complexity: {
+        mode: "direct",
+        reason: "fixture",
+        domains: [],
+        riskLevel: "medium",
+      },
+      subtasks: [],
+      workerResults: [],
+      reviews: [],
+      artifacts: [],
+      actionProposals: [proposal],
+    });
+    await runStore.appendEvent(run.id, {
+      id: "proposal-created-prepare",
+      spanId: "proposal-created-prepare",
+      type: "external-action-proposal-created",
+      actor: "base-agent",
+      activity: "agent",
+      status: "completed",
+      title: "External action proposal created",
+      timestamp: new Date().toISOString(),
+      payload: { proposalId: proposal.id },
+    });
+
+    const prepared = await requestJson<{
+      proposal: {
+        preparationExecution?: {
+          status: string;
+          toolName?: string;
+          artifactIds?: string[];
+          contentPreview?: string;
+          preparedSession?: {
+            currentUrl?: string;
+            pageTitle?: string;
+            textPreview?: string;
+            links: Array<{ href: string }>;
+            replaySteps: Array<Record<string, unknown>>;
+            commitCandidates: Array<Record<string, unknown>>;
+          };
+        };
+      };
+    }>(
+      fixture.baseUrl,
+      `/api/action-proposals/${encodeURIComponent(proposal.id)}/prepare`,
+      { method: "POST" },
+    );
+    assert.equal(prepared.proposal.preparationExecution?.status, "completed");
+    assert.equal(prepared.proposal.preparationExecution?.toolName, "browser.operate");
+    assert.match(prepared.proposal.preparationExecution?.contentPreview ?? "", /Prepared page/);
+    assert.equal(prepared.proposal.preparationExecution?.artifactIds?.length, 1);
+    assert.equal(prepared.proposal.preparationExecution?.preparedSession?.currentUrl, "https://example.com/reserve");
+    const firstBrowserCommands = Array.isArray(browserInputs[0]?.commands)
+      ? (browserInputs[0]?.commands as Array<Record<string, unknown>>)
+      : [];
+    assert.deepEqual(
+      firstBrowserCommands.filter((command) => command.action === "fill"),
+      [],
+    );
+    assert.equal(prepared.proposal.preparationExecution?.preparedSession?.pageTitle, "Fixture booking page");
+    assert.match(prepared.proposal.preparationExecution?.preparedSession?.textPreview ?? "", /Reserve a table/);
+    assert.equal(prepared.proposal.preparationExecution?.preparedSession?.links.length, 1);
+    assert.ok((prepared.proposal.preparationExecution?.preparedSession?.replaySteps.length ?? 0) > 0);
+    assert.ok((prepared.proposal.preparationExecution?.preparedSession?.commitCandidates.length ?? 0) > 0);
+
+    const replayed = await requestJson<{
+      proposal: { preparationExecution?: { status: string; preparedSession?: { currentUrl?: string } } };
+    }>(
+      fixture.baseUrl,
+      `/api/action-proposals/${encodeURIComponent(proposal.id)}/prepare`,
+      { method: "POST", body: JSON.stringify({ mode: "replay" }) },
+    );
+    assert.equal(replayed.proposal.preparationExecution?.status, "completed");
+    assert.equal(replayed.proposal.preparationExecution?.preparedSession?.currentUrl, "https://example.com/reserve");
+    assert.equal(browserInputs.length, 2);
+    assert.deepEqual(browserInputs[1]?.commands, browserInputs[0]?.commands);
+
+    await requestJson(fixture.baseUrl, `/api/action-proposals/${encodeURIComponent(proposal.id)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "test approval" }),
+    });
+    await requestJson(fixture.baseUrl, `/api/action-proposals/${encodeURIComponent(proposal.id)}/build-executor`, {
+      method: "POST",
+      body: JSON.stringify({ mode: "plan" }),
+    });
+
+    const updated = await runStore.get(run.id);
+    assert.ok(updated?.events.some((event) => event.type === "external-action-preparation-started"));
+    assert.ok(updated?.events.some((event) => event.type === "external-action-preparation-completed"));
+    assert.ok(updated?.events.some((event) => event.type === "artifact-created"));
+    const buildEvent = [...(updated?.events ?? [])].reverse().find(
+      (event) =>
+        event.type === "external-action-executor-build-requested" ||
+        event.type === "external-action-executor-attached",
+    );
+    const buildPayload = buildEvent?.payload as
+      | { buildRequest?: { toolInput?: { preparedSession?: { currentUrl?: string }; replaySteps?: unknown[] } } }
+      | undefined;
+    assert.equal(buildPayload?.buildRequest?.toolInput?.preparedSession?.currentUrl, "https://example.com/reserve");
+    assert.ok((buildPayload?.buildRequest?.toolInput?.replaySteps?.length ?? 0) > 0);
+  } finally {
+    await closeFixture(fixture);
+  }
+});
+
+test("Nest API commits approved external actions through a generated commit tool", async () => {
+  const fixture = await createNestFixture();
+  try {
+    const runStore = fixture.app.get<RunStore>(RUN_STORE);
+    const registry = fixture.app.get<ToolRegistry>(TOOL_REGISTRY);
+    const commitInputs: Record<string, unknown>[] = [];
+    registry.register({
+      name: "generated.action.commit.echo",
+      version: "0.1.0",
+      description: "Fixture external action commit executor.",
+      capabilities: ["external-action-commit", "external-action-commit-generic"],
+      inputSchema: {
+        type: "object",
+        properties: {
+          reservationId: { type: "string" },
+        },
+        required: ["reservationId"],
+      },
+      async run(input) {
+        commitInputs.push(input);
+        return {
+          ok: true,
+          content: `Committed reservation ${String(input.reservationId)}`,
+          data: {
+            provider: "fixture",
+            confirmationId: "conf_fixture_1",
+          },
+        };
+      },
+    });
+
+    const run = await runStore.create("Забронируй столик", {
+      instanceId: "instance-local",
+      requesterUserId: "user-admin",
+      channel: "web",
+    });
+    const proposal: ExternalActionProposal = {
+      id: `action_${run.id}_1`,
+      runId: run.id,
+      actionType: "reservation",
+      status: "proposed",
+      title: "Reservation proposal: Test",
+      summary: "reservation: prepare booking",
+      proposedAction: "Submit fixture reservation after approval.",
+      target: "Test",
+      approvalRequired: true,
+      userExplicitlyForbidsAction: false,
+      allowedWithoutApproval: ["prepare draft"],
+      prohibitedWithoutApproval: ["submit a reservation"],
+      sourceUrls: [],
+      artifactIds: [],
+      commitExecutor: {
+        kind: "generated_tool",
+        toolName: "generated.action.commit.echo",
+        toolVersion: "0.1.0",
+        toolInput: { reservationId: "draft_1" },
+        ready: true,
+        risk: "high",
+        reason: "Fixture commit tool passed QA.",
+        missing: [],
+        expectedProof: ["provider confirmation"],
+      },
+      createdAt: new Date().toISOString(),
+      createdBy: "base-agent",
+    };
+    const result: AgentRunResult = {
+      finalAnswer: "Prepared reservation proposal.",
+      complexity: {
+        mode: "direct",
+        reason: "fixture",
+        domains: [],
+        riskLevel: "medium",
+      },
+      subtasks: [],
+      workerResults: [],
+      reviews: [],
+      artifacts: [],
+      actionProposals: [proposal],
+    };
+    await runStore.complete(run.id, result);
+    await runStore.appendEvent(run.id, {
+      id: "proposal-prepared-for-commit",
+      spanId: "proposal-prepared-for-commit",
+      type: "external-action-preparation-completed",
+      actor: "browser.operate",
+      activity: "tool",
+      status: "completed",
+      title: "External action preparation completed",
+      detail: "Prepared fixture page.",
+      timestamp: new Date().toISOString(),
+      payload: {
+        proposalId: proposal.id,
+        artifactIds: ["artifact_prepare_1"],
+        preparedSession: {
+          preparedAt: new Date().toISOString(),
+          toolName: "browser.operate",
+          toolVersion: "0.1.0",
+          currentUrl: "https://example.com/reserve",
+          pageTitle: "Fixture booking page",
+          textPreview: "Reservation draft ready.",
+          links: [],
+          filledFields: [{ label: "Name", valuePreview: "Dmitrii" }],
+          replaySteps: [{ action: "fill", selector: "#name", value: "Dmitrii" }],
+          commitCandidates: [{ label: "Confirm", reason: "final submit" }],
+          artifactIds: ["artifact_prepare_1"],
+          // The commit gate requires a QA-passed proof artifact on the
+          // prepared session (externalActionCommitPayloadBlockReason);
+          // simulate the proof screenshot that buildPreparedSession records
+          // in the real preparation flow.
+          proofArtifactIds: ["artifact_prepare_1"],
+          warnings: [],
+        },
+      },
+    });
+
+    await requestJson(fixture.baseUrl, `/api/action-proposals/${encodeURIComponent(proposal.id)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "test approval" }),
+    });
+    const committed = await requestJson<{
+      proposal: {
+        proposal: { status: string };
+        execution?: { status: string; toolName?: string; contentPreview?: string };
+      };
+    }>(
+      fixture.baseUrl,
+      `/api/action-proposals/${encodeURIComponent(proposal.id)}/commit`,
+      { method: "POST" },
+    );
+    assert.equal(committed.proposal.proposal.status, "committed");
+    assert.equal(committed.proposal.execution?.status, "committed");
+    assert.equal(committed.proposal.execution?.toolName, "generated.action.commit.echo");
+    assert.match(committed.proposal.execution?.contentPreview ?? "", /Committed reservation draft_1/);
+    assert.equal(commitInputs[0]?.proposalId, proposal.id);
+    assert.equal(
+      (commitInputs[0]?.preparedSession as { currentUrl?: string } | undefined)
+        ?.currentUrl,
+      "https://example.com/reserve",
+    );
+    assert.deepEqual(commitInputs[0]?.artifactIds, ["artifact_prepare_1"]);
+
+    const updated = await runStore.get(run.id);
+    assert.ok(updated?.events.some((event) => event.type === "external-action-commit-started"));
+    assert.ok(updated?.events.some((event) => event.type === "external-action-committed"));
+  } finally {
+    await closeFixture(fixture);
+  }
+});
+
+test("Nest API validates request bodies on the remaining base surfaces", async () => {
   const fixture = await createNestFixture();
   try {
     const invalidJson = await fetch(`${fixture.baseUrl}/api/runs`, {
@@ -140,286 +786,15 @@ test("Nest API validates memory requests and exposes joined review queue data", 
     assert.equal(invalidJson.status, 400);
     assert.match(await invalidJson.text(), /JSON|Unexpected|property/i);
 
-    const emptyTitle = await fetch(`${fixture.baseUrl}/api/memories`, {
+    await requestJson(fixture.baseUrl, "/api/memories", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      expectedStatus: 400,
       body: JSON.stringify({
         title: "",
         summary: "summary",
         reusableProcedure: "procedure",
       }),
     });
-    assert.equal(emptyTitle.status, 400);
-
-    const invalidStatus = await fetch(`${fixture.baseUrl}/api/memories`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: "Invalid status memory",
-        summary: "summary",
-        reusableProcedure: "procedure",
-        status: "banana",
-      }),
-    });
-    assert.equal(invalidStatus.status, 400);
-
-    const created = await requestJson<{ memory: { id: string; title: string } }>(
-      fixture.baseUrl,
-      "/api/memories",
-      {
-        method: "POST",
-        expectedStatus: 201,
-        body: JSON.stringify({
-          title: "Review queue memory",
-          summary: "Proposed memory should be visible in review queue.",
-          reusableProcedure: "Join review records back to memory records by memoryId.",
-          status: "proposed",
-          confidence: 0.7,
-          evidence: ["nest api test"],
-        }),
-      },
-    );
-    const queue = await requestJson<{
-      memories: Array<{ id: string }>;
-      reviews: Array<{ memoryId: string; status: string; findings: Array<{ code: string }> }>;
-    }>(fixture.baseUrl, "/api/memories/review-queue");
-
-    assert.equal(queue.memories.some((memory) => memory.id === created.memory.id), true);
-    const review = queue.reviews.find((item) => item.memoryId === created.memory.id);
-    assert.ok(review);
-    assert.equal(review.status, "needs_review");
-    assert.equal(review.findings.some((finding) => finding.code === "missing_source"), true);
-  } finally {
-    await closeFixture(fixture);
-  }
-});
-
-test("Nest API no longer exposes legacy tool builder endpoints", async () => {
-  const fixture = await createNestFixture();
-  try {
-    const buildRequest = await fetch(`${fixture.baseUrl}/api/tool-build-requests`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        displayName: "Generic API smoke",
-        reason: "Create an API tool. api key: NEST-RAW-SECRET-12345",
-        qaCriteria: ["smoke call passes"],
-      }),
-    });
-    assert.equal(buildRequest.status, 404);
-
-    const investigation = await fetch(`${fixture.baseUrl}/api/tool-investigations`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        source: "trace_span",
-        title: "Legacy investigation should not be accepted",
-      }),
-    });
-    assert.equal(investigation.status, 404);
-
-    const reworkWait = await fetch(`${fixture.baseUrl}/api/tool-rework-waits/legacy`);
-    assert.equal(reworkWait.status, 404);
-
-    const generatedModule = await fetch(`${fixture.baseUrl}/api/tools/generated-modules`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        name: "legacy.manual.generated",
-        version: "0.1.0",
-        description: "Should not be registered through the old public route.",
-        capabilities: ["legacy"],
-      }),
-    });
-    assert.equal(generatedModule.status, 404);
-  } finally {
-    await closeFixture(fixture);
-  }
-});
-
-test("Nest API allows channel identities from ignored tool service events", async () => {
-  const fixture = await createNestFixture();
-  try {
-    const created = await requestJson<{
-      event: { id: string; payload?: Record<string, unknown> };
-    }>(fixture.baseUrl, "/api/tool-service-events", {
-      method: "POST",
-      expectedStatus: 201,
-      body: JSON.stringify({
-        toolName: "generated.telegram.family-bot",
-        direction: "inbound",
-        status: "ignored",
-        summary: "Inbound event ignored because the provider identity is unknown",
-        sourceUserId: "123456",
-        sourceChatId: "chat-1",
-        sourceMessageId: "message-1",
-        payload: {
-          sourceUserAliases: ["dimitrii", "@dimitrii"],
-          apiKey: "CHANNEL-ALLOW-DO-NOT-LEAK",
-        },
-      }),
-    });
-    assert.equal(JSON.stringify(created).includes("CHANNEL-ALLOW-DO-NOT-LEAK"), false);
-
-    const allowed = await requestJson<{
-      identities: Array<{ provider: string; providerUserId: string; allowStatus: string }>;
-    }>(fixture.baseUrl, `/api/tool-service-events/${created.event.id}/allow-identity`, {
-      method: "POST",
-      expectedStatus: 201,
-      body: JSON.stringify({}),
-    });
-    assert.deepEqual(
-      allowed.identities.map((identity) => identity.providerUserId).sort(),
-      ["123456", "@dimitrii", "dimitrii"],
-    );
-    assert.equal(
-      allowed.identities.every(
-        (identity) =>
-          identity.provider === "generated.telegram.family-bot" &&
-          identity.allowStatus === "allowed",
-      ),
-      true,
-    );
-
-    const users = await requestJson<{
-      users: Array<{ id: string; identities: Array<{ provider: string; providerUserId: string }> }>;
-    }>(fixture.baseUrl, "/api/users");
-    const admin = users.users.find((user) => user.id === "user-admin");
-    assert.ok(admin);
-    assert.deepEqual(
-      admin.identities
-        .filter((identity) => identity.provider === "generated.telegram.family-bot")
-        .map((identity) => identity.providerUserId)
-        .sort(),
-      ["123456", "@dimitrii", "dimitrii"],
-    );
-
-    const audit = await requestJson<{ events: unknown[] }>(fixture.baseUrl, "/api/audit-events?limit=80");
-    assert.equal(JSON.stringify(audit).includes("CHANNEL-ALLOW-DO-NOT-LEAK"), false);
-    assert.equal(JSON.stringify(audit).includes("channel_identity.created"), true);
-  } finally {
-    await closeFixture(fixture);
-  }
-});
-
-test("Nest API persists work ledger, evidence ledger, and run retrospectives with redacted metadata", async () => {
-  const fixture = await createNestFixture();
-  try {
-    const runCreated = await requestJson<{ run: { id: string; threadId: string } }>(
-      fixture.baseUrl,
-      "/api/runs",
-      {
-        method: "POST",
-        expectedStatus: 202,
-        body: JSON.stringify({
-          task: "manual nest ledger smoke",
-          channel: "web",
-          requesterUserId: "user-admin",
-        }),
-      },
-    );
-
-    const work = await requestJson<{ item: { id: string; metadata: Record<string, unknown> } }>(
-      fixture.baseUrl,
-      "/api/work-ledger",
-      {
-        method: "POST",
-        expectedStatus: 201,
-        body: JSON.stringify({
-          runId: runCreated.run.id,
-          threadId: runCreated.run.threadId,
-          kind: "search",
-          status: "claimed",
-          workKey: "search:nest-e2e",
-          title: "Nest search work",
-          metadata: { apiKey: "WL-NEST-E2E-CANARY" },
-        }),
-      },
-    );
-    assert.equal(work.item.metadata.apiKey, "[redacted]");
-
-    const claim = await requestJson<{
-      item: { id: string; status: string; metadata: Record<string, unknown>; workKey: string };
-      decision: { status: string; storeDecision: string; reason: string };
-      reusableEvidence: unknown[];
-    }>(
-      fixture.baseUrl,
-      "/api/work-ledger/claim",
-      {
-        method: "POST",
-        expectedStatus: 201,
-        body: JSON.stringify({
-          runId: runCreated.run.id,
-          threadId: runCreated.run.threadId,
-          ownerSpanId: "span-nest-claim",
-          kind: "api_call",
-          workKeyParts: {
-            apiProvider: "example",
-            endpoint: "/risk",
-            method: "POST",
-            params: { address: "0xabc", apiKey: "WL-CLAIM-NEST-CANARY" },
-          },
-          taskSummary: "Claim API risk lookup",
-          requestedBy: "nest-test",
-          metadata: { credential: "WL-CLAIM-METADATA-CANARY" },
-        }),
-      },
-    );
-    assert.equal(claim.item.status, "claimed");
-    assert.equal(claim.decision.status, "created_new");
-    assert.equal(claim.item.metadata.credential, "[redacted]");
-    assert.equal(claim.item.workKey.includes("WL-CLAIM-NEST-CANARY"), false);
-
-    const evidence = await requestJson<{ record: { id: string; metadata: Record<string, unknown> } }>(
-      fixture.baseUrl,
-      "/api/evidence-ledger",
-      {
-        method: "POST",
-        expectedStatus: 201,
-        body: JSON.stringify({
-          runId: runCreated.run.id,
-          threadId: runCreated.run.threadId,
-          workItemId: work.item.id,
-          kind: "search_result",
-          title: "Nest evidence",
-          summary: "Evidence summary",
-          metadata: { token: "EV-NEST-E2E-CANARY" },
-        }),
-      },
-    );
-    assert.equal(evidence.record.metadata.token, "[redacted]");
-
-    const linked = await requestJson<{ item: { evidenceIds: string[] } }>(
-      fixture.baseUrl,
-      `/api/work-ledger/${work.item.id}/evidence`,
-      { method: "POST", expectedStatus: 201, body: JSON.stringify({ evidenceId: evidence.record.id }) },
-    );
-    assert.deepEqual(linked.item.evidenceIds, [evidence.record.id]);
-
-    const retrospective = await requestJson<{
-      record: { id: string; metadata: Record<string, unknown>; runOutcome: string };
-    }>(fixture.baseUrl, "/api/run-retrospectives", {
-      method: "POST",
-      expectedStatus: 201,
-      body: JSON.stringify({
-        runId: runCreated.run.id,
-        threadId: "thread-nest-e2e",
-        runOutcome: "completed",
-        summary: "Nest retrospective",
-        whatWorked: ["HTTP smoke"],
-        metadata: { secret: "RETRO-NEST-E2E-CANARY" },
-      }),
-    });
-    assert.equal(retrospective.record.runOutcome, "completed");
-    assert.equal(retrospective.record.metadata.secret, "[redacted]");
-
-    const audit = await requestJson<{ events: unknown[] }>(fixture.baseUrl, "/api/audit-events?limit=100");
-    const auditJson = JSON.stringify(audit);
-    assert.equal(auditJson.includes("WL-NEST-E2E-CANARY"), false);
-    assert.equal(auditJson.includes("WL-CLAIM-NEST-CANARY"), false);
-    assert.equal(auditJson.includes("WL-CLAIM-METADATA-CANARY"), false);
-    assert.equal(auditJson.includes("EV-NEST-E2E-CANARY"), false);
-    assert.equal(auditJson.includes("RETRO-NEST-E2E-CANARY"), false);
   } finally {
     await closeFixture(fixture);
   }

@@ -34,6 +34,12 @@ export class InMemoryRunStore implements RunStore {
       .map(cloneRun);
   }
 
+  async getMeta(id: string): Promise<{ status: AgentRunRecord["status"]; updatedAt: string; eventCount: number } | undefined> {
+    const run = this.runs.get(id);
+    if (!run) return undefined;
+    return { status: run.status, updatedAt: run.updatedAt, eventCount: run.events.length };
+  }
+
   async get(id: string): Promise<AgentRunRecord | undefined> {
     const run = this.runs.get(id);
     return run ? cloneRun(run) : undefined;
@@ -41,21 +47,34 @@ export class InMemoryRunStore implements RunStore {
 
   async markRunning(id: string): Promise<void> {
     const run = this.mustGet(id);
-    if (run.status !== "queued") return;
+    if (run.status === "cancelled") return;
     run.status = "running";
+    run.updatedAt = new Date().toISOString();
+  }
+
+  async waitForApproval(
+    id: string,
+    result: AgentRunResult,
+    reason: string,
+  ): Promise<void> {
+    const run = this.mustGet(id);
+    if (run.status === "cancelled") return;
+    run.status = "waiting_approval";
+    run.result = result;
+    run.error = reason;
     run.updatedAt = new Date().toISOString();
   }
 
   async appendEvent(id: string, event: AgentEvent): Promise<void> {
     const run = this.mustGet(id);
-    if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") return;
+    if (run.status === "cancelled") return;
     run.events.push(event);
     run.updatedAt = event.timestamp;
   }
 
   async complete(id: string, result: AgentRunResult): Promise<void> {
     const run = this.mustGet(id);
-    if (run.status !== "queued" && run.status !== "running") return;
+    if (run.status === "cancelled") return;
     run.status = "completed";
     run.result = result;
     run.updatedAt = new Date().toISOString();
@@ -63,7 +82,7 @@ export class InMemoryRunStore implements RunStore {
 
   async fail(id: string, error: string): Promise<void> {
     const run = this.mustGet(id);
-    if (run.status !== "queued" && run.status !== "running") return;
+    if (run.status === "cancelled") return;
     run.status = "failed";
     run.error = error;
     run.updatedAt = new Date().toISOString();
@@ -112,6 +131,10 @@ export class InMemoryRunStore implements RunStore {
     return deleted;
   }
 
+  async delete(id: string): Promise<boolean> {
+    return this.runs.delete(id);
+  }
+
   private mustGet(id: string): AgentRunRecord {
     const run = this.runs.get(id);
     if (!run) {
@@ -136,6 +159,29 @@ function cloneRun(run: AgentRunRecord): AgentRunRecord {
           subtasks: [...run.result.subtasks],
           workerResults: [...run.result.workerResults],
           reviews: [...run.result.reviews],
+          actionProposals: run.result.actionProposals
+            ? run.result.actionProposals.map((proposal) => ({
+                ...proposal,
+                allowedWithoutApproval: [...proposal.allowedWithoutApproval],
+                prohibitedWithoutApproval: [...proposal.prohibitedWithoutApproval],
+                sourceUrls: [...proposal.sourceUrls],
+                artifactIds: [...proposal.artifactIds],
+                commitExecutor: proposal.commitExecutor
+                  ? {
+                      ...proposal.commitExecutor,
+                      toolInput: proposal.commitExecutor.toolInput
+                        ? { ...proposal.commitExecutor.toolInput }
+                        : undefined,
+                      expectedProof: proposal.commitExecutor.expectedProof
+                        ? [...proposal.commitExecutor.expectedProof]
+                        : undefined,
+                      missing: proposal.commitExecutor.missing
+                        ? [...proposal.commitExecutor.missing]
+                        : undefined,
+                    }
+                  : undefined,
+              }))
+            : undefined,
         }
       : undefined,
   };

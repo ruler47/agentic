@@ -6,6 +6,7 @@ import {
   emptyTraceFilters,
   hasActiveTraceFilters,
   modelTierForNode,
+  sortTraceTimelineNodes,
   traceFilterOptions,
 } from "@/features/trace/buildTraceNodes";
 import type { AgentEvent } from "@/api/types";
@@ -148,5 +149,43 @@ describe("applyTraceFilters", () => {
     expect(traceFilterOptions(nodes, "modelTier")).toEqual(["L"]);
     // status="failed" appears once
     expect(traceFilterOptions(nodes, "status").sort()).toEqual(["completed", "failed"]);
+  });
+});
+
+describe("sortTraceTimelineNodes", () => {
+  it("puts active spans first, then newest spans first within each group", () => {
+    const nodes = buildTraceNodes([
+      makeEvent({
+        id: "old-active",
+        spanId: "old-active",
+        status: "started",
+        timestamp: "2026-05-07T12:00:02.000Z",
+      }),
+      makeEvent({
+        id: "new-completed",
+        spanId: "new-completed",
+        status: "completed",
+        timestamp: "2026-05-07T12:00:05.000Z",
+      }),
+      makeEvent({
+        id: "new-active",
+        spanId: "new-active",
+        status: "started",
+        timestamp: "2026-05-07T12:00:06.000Z",
+      }),
+      makeEvent({
+        id: "old-completed",
+        spanId: "old-completed",
+        status: "completed",
+        timestamp: "2026-05-07T12:00:01.000Z",
+      }),
+    ]);
+
+    expect(sortTraceTimelineNodes(nodes).map((node) => node.spanId)).toEqual([
+      "new-active",
+      "old-active",
+      "new-completed",
+      "old-completed",
+    ]);
   });
 });

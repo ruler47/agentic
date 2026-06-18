@@ -83,8 +83,29 @@ export class PostgresRunStore implements RunStore {
       order by created_at desc
       limit 100
     `);
+    if (rows.rows.length === 0) return [];
 
-    return Promise.all(rows.rows.map((row) => this.hydrateRun(row)));
+    // One batched events query for the whole page instead of one query per
+    // run — the dashboard polls this endpoint every few seconds.
+    const eventRows = await this.pool.query<EventRow & { run_id: string }>(
+      `
+        select
+          run_id, id, span_id, parent_span_id, type, actor, activity, status, title, detail,
+          timestamp, started_at, completed_at, duration_ms, payload
+        from run_events
+        where run_id = any($1)
+        order by sequence asc
+      `,
+      [rows.rows.map((row) => row.id)],
+    );
+    const eventsByRun = new Map<string, AgentEvent[]>();
+    for (const eventRow of eventRows.rows) {
+      const bucket = eventsByRun.get(eventRow.run_id);
+      if (bucket) bucket.push(mapEventRow(eventRow));
+      else eventsByRun.set(eventRow.run_id, [mapEventRow(eventRow)]);
+    }
+
+    return rows.rows.map((row) => this.mapRunRow(row, eventsByRun.get(row.id) ?? []));
   }
 
   async get(id: string): Promise<AgentRunRecord | undefined> {
@@ -104,27 +125,37 @@ export class PostgresRunStore implements RunStore {
   }
 
   async markRunning(id: string): Promise<void> {
+    await this.updateStatus(id, "running", { skipCancelled: true });
+  }
+
+  async waitForApproval(
+    id: string,
+    result: AgentRunResult,
+    reason: string,
+  ): Promise<void> {
     await this.pool.query(
       `
         update runs
-        set status = 'running', updated_at = $1
-        where id = $2 and status = 'queued'
+        set status = 'waiting_approval', result = $1, error = $2, updated_at = $3
+        where id = $4 and status <> 'cancelled'
       `,
-      [new Date(), id],
+      [JSON.stringify(result), reason, new Date(), id],
     );
   }
 
   async appendEvent(id: string, event: AgentEvent): Promise<void> {
-    const run = await this.get(id);
-    if (!run || run.status === "completed" || run.status === "failed" || run.status === "cancelled") return;
-
+    // The cancelled-guard lives inside the INSERT: one round trip instead of
+    // hydrating the run (ALL run_events rows) per append, which made event
+    // writes O(N²) over a run's life. Post-completion lifecycle events
+    // (external-action approve/prepare/commit) stay accepted by design.
     await this.pool.query(
       `
         insert into run_events (
           id, run_id, span_id, parent_span_id, type, actor, activity, status,
           title, detail, timestamp, started_at, completed_at, duration_ms, payload
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+        where exists (select 1 from runs where id = $2 and status <> 'cancelled')
       `,
       [
         event.id,
@@ -145,10 +176,10 @@ export class PostgresRunStore implements RunStore {
       ],
     );
 
-    await this.pool.query("update runs set updated_at = $1 where id = $2 and status in ('queued', 'running')", [
-      event.timestamp,
-      id,
-    ]);
+    await this.pool.query(
+      "update runs set updated_at = $1 where id = $2 and status <> 'cancelled'",
+      [event.timestamp, id],
+    );
   }
 
   async complete(id: string, result: AgentRunResult): Promise<void> {
@@ -156,7 +187,7 @@ export class PostgresRunStore implements RunStore {
       `
         update runs
         set status = 'completed', result = $1, updated_at = $2, error = null
-        where id = $3 and status in ('queued', 'running')
+        where id = $3 and status <> 'cancelled'
       `,
       [JSON.stringify(result), new Date(), id],
     );
@@ -167,7 +198,7 @@ export class PostgresRunStore implements RunStore {
       `
         update runs
         set status = 'failed', error = $1, updated_at = $2
-        where id = $3 and status in ('queued', 'running')
+        where id = $3 and status <> 'cancelled'
       `,
       [error, new Date(), id],
     );
@@ -221,6 +252,11 @@ export class PostgresRunStore implements RunStore {
     return result.rowCount ?? 0;
   }
 
+  async delete(id: string): Promise<boolean> {
+    const result = await this.pool.query("delete from runs where id = $1", [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
   private async updateStatus(
     id: string,
     status: RunStatus,
@@ -237,6 +273,25 @@ export class PostgresRunStore implements RunStore {
     );
   }
 
+  async getMeta(id: string): Promise<{ status: RunStatus; updatedAt: string; eventCount: number } | undefined> {
+    const rows = await this.pool.query<{ status: RunStatus; updated_at: Date; event_count: string }>(
+      `
+        select r.status, r.updated_at,
+               (select count(*) from run_events e where e.run_id = r.id) as event_count
+        from runs r
+        where r.id = $1
+      `,
+      [id],
+    );
+    const row = rows.rows[0];
+    if (!row) return undefined;
+    return {
+      status: row.status,
+      updatedAt: row.updated_at.toISOString(),
+      eventCount: Number(row.event_count),
+    };
+  }
+
   private async hydrateRun(row: RunRow): Promise<AgentRunRecord> {
     const eventRows = await this.pool.query<EventRow>(
       `
@@ -250,6 +305,10 @@ export class PostgresRunStore implements RunStore {
       [row.id],
     );
 
+    return this.mapRunRow(row, eventRows.rows.map(mapEventRow));
+  }
+
+  private mapRunRow(row: RunRow, events: AgentEvent[]): AgentRunRecord {
     return {
       id: row.id,
       task: row.task,
@@ -265,7 +324,7 @@ export class PostgresRunStore implements RunStore {
       sourceThreadId: row.source_thread_id ?? undefined,
       createdAt: row.created_at.toISOString(),
       updatedAt: row.updated_at.toISOString(),
-      events: eventRows.rows.map(mapEventRow),
+      events,
       result: row.result ?? undefined,
       error: row.error ?? undefined,
     };

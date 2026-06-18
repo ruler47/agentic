@@ -10,6 +10,7 @@ import {
 } from "@nestjs/common";
 import {
   ExternalHttpToolPackageRunner,
+  loadGeneratedTools,
   LocalPathToolPackageRunner,
   OciImageToolPackageRunner,
   SourceBundleHttpProcessToolPackageRunner,
@@ -17,17 +18,19 @@ import {
   type ToolPackageRunner,
 } from "../../tools/toolPackageRunner.js";
 import { ToolServiceSupervisor } from "../../tools/toolServiceSupervisor.js";
+import { createAtomicReloader } from "../../tools/atomicReload.js";
 import type { ToolRegistry } from "../../tools/registry.js";
+import type { ToolMetadataStore } from "../../tools/toolMetadataStore.js";
 import type { ToolServiceStatusStore } from "../../tools/toolServiceStatusStore.js";
 import type { ToolServiceLogStore } from "../../tools/toolServiceLogStore.js";
 import type { SecretHandleStore } from "../../secrets/secretHandleStore.js";
 import type { ToolRuntimeSettingsStore } from "../../settings/toolRuntimeSettings.js";
 import { APP_ENV } from "../config/config.module.js";
 import type { AppEnv } from "../config/env.js";
-import { CommonModule } from "../common/common.module.js";
 import {
   RELOAD_GENERATED_TOOLS,
   SECRET_HANDLE_STORE,
+  TOOL_METADATA_STORE,
   TOOL_PACKAGE_RUNNERS,
   TOOL_REGISTRY,
   TOOL_RUNTIME_SETTINGS,
@@ -52,9 +55,30 @@ const packageRunnersProvider: Provider = {
 
 const reloadGeneratedToolsProvider: Provider = {
   provide: RELOAD_GENERATED_TOOLS,
-  useFactory: (): (() => Promise<void>) => async () => {
-    logger.warn("Generated tool reload is disabled while the core toolbelt roadmap is active.");
-  },
+  inject: [TOOL_REGISTRY, TOOL_METADATA_STORE, TOOL_PACKAGE_RUNNERS],
+  useFactory: (
+    registry: ToolRegistry,
+    metadata: ToolMetadataStore | undefined,
+    runners: ToolPackageRunner[],
+  ): (() => Promise<void>) =>
+    // Phase 16 Slice A — atomic reload (see `src/tools/atomicReload.ts`
+    // for the rationale). The orchestrator now (1) loads first and
+    // only unregisters stale tools AFTER the new set is in place, so
+    // there is no empty window for concurrent QA reads, and (2)
+    // serializes calls via a promise chain so parallel council
+    // builds cannot race on the shared "loaded names" state.
+    createAtomicReloader({
+      load: async () => {
+        const results = metadata
+          ? await loadGeneratedTools(registry, metadata, process.cwd(), runners)
+          : [];
+        return results.filter((entry) => entry.loaded).map((entry) => entry.name);
+      },
+      unregister: (name) => {
+        registry.unregister(name);
+      },
+      log: (message) => logger.log(message),
+    }),
 };
 
 const supervisorProvider: Provider = {
@@ -96,10 +120,19 @@ const supervisorProvider: Provider = {
 @Injectable()
 class RuntimeBootstrapper implements OnApplicationBootstrap, OnApplicationShutdown {
   constructor(
+    @Inject(RELOAD_GENERATED_TOOLS) private readonly reloadGeneratedTools: () => Promise<void>,
     @Inject(TOOL_SERVICE_SUPERVISOR) private readonly supervisor: ToolServiceSupervisor,
   ) {}
 
   async onApplicationBootstrap() {
+    try {
+      await this.reloadGeneratedTools();
+      logger.log("Bootstrapped generated tool packages.");
+    } catch (error) {
+      logger.error(
+        error instanceof Error ? error.message : "Generated tool bootstrap failed.",
+      );
+    }
     const reconciled = await this.supervisor.reconcileDesiredServices();
     if (reconciled.length > 0) {
       logger.log(`Reconciled ${reconciled.length} desired always-on tool service(s).`);
@@ -113,7 +146,6 @@ class RuntimeBootstrapper implements OnApplicationBootstrap, OnApplicationShutdo
 
 @Global()
 @Module({
-  imports: [CommonModule],
   providers: [
     packageRunnersProvider,
     reloadGeneratedToolsProvider,

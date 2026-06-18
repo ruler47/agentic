@@ -1,4 +1,8 @@
 import { ToolSchema, ToolStartupMode, ToolStorageContract } from "./tool.js";
+import {
+  normalizeToolIntegrationContract,
+  type ToolIntegrationContract,
+} from "./toolIntegrationContract.js";
 
 export type ToolPackageReferenceType =
   | "source-bundle"
@@ -27,6 +31,7 @@ export type ToolPackageManifest = {
   requiredSecretHandles?: string[];
   settingsSchema?: ToolSchema;
   storage?: ToolStorageContract;
+  integration?: ToolIntegrationContract;
   docsMarkdown?: string;
   examples?: unknown[];
   qa?: {
@@ -60,6 +65,9 @@ export function normalizeToolPackageManifest(input: unknown): ToolPackageManifes
     requiredSecretHandles: parseOptionalStringArray(candidate.requiredSecretHandles, "requiredSecretHandles"),
     settingsSchema: parseOptionalToolSchema(candidate.settingsSchema, "settingsSchema"),
     storage: parseOptionalRecord<ToolStorageContract>(candidate.storage, "storage"),
+    integration: candidate.integration === undefined
+      ? undefined
+      : normalizeToolIntegrationContract(candidate.integration),
     docsMarkdown: parseOptionalText(candidate.docsMarkdown, "docsMarkdown"),
     examples: Array.isArray(candidate.examples) ? [...candidate.examples] : undefined,
     qa: parseOptionalQa(candidate.qa),

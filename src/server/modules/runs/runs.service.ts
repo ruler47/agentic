@@ -1,33 +1,26 @@
 import { readFile } from "node:fs/promises";
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException, OnApplicationBootstrap, Optional, ServiceUnavailableException } from "@nestjs/common";
 import {
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
-  Inject,
-  Injectable,
-  Logger,
-  NotFoundException,
-  OnApplicationBootstrap,
-  ServiceUnavailableException,
-} from "@nestjs/common";
-import type { UniversalAgent } from "../../../agents/universalAgent.js";
+  BaseAgent,
+  type BaseAgentRunContext,
+  type BaseAgentToolCandidateAccepted,
+  type BaseAgentToolCatalogEntry,
+  type BaseAgentToolCreationRequest,
+  type BaseAgentToolCreationResult,
+  type BaseAgentToolEditRequest,
+} from "../../../agents/baseAgent.js";
 import type { ArtifactStore } from "../../../artifacts/artifactStore.js";
-import type {
-  ConversationThreadContext,
-  ConversationThreadRecord,
-  ConversationThreadStore,
-} from "../../../conversations/types.js";
+import type { ConversationThreadContext, ConversationThreadRecord, ConversationThreadStore } from "../../../conversations/types.js";
+import type { AppEnv } from "../../config/env.js";
 import type { GroupProfileStore } from "../../../instance/groupProfileStore.js";
 import type { UserRecord, UserStore } from "../../../instance/userStore.js";
-import {
-  resolveConversationThread,
-  type ThreadResolutionResult,
-} from "../../../conversations/threadResolution.js";
-import type {
-  AgentRunRecord,
-  RunCreateContext,
-  RunStore,
-} from "../../../runs/types.js";
+import type { SecretHandleStore } from "../../../secrets/secretHandleStore.js";
+import type { ToolRuntimeSettingsStore } from "../../../settings/toolRuntimeSettings.js";
+import { resolveConversationThread, type ThreadResolutionResult } from "../../../conversations/threadResolution.js";
+import { RunContextError, RunContextResolver } from "./run-context-resolver.js";
+import { RunAgentRuntimeHelpers } from "./run-agent-runtime-helpers.js";
+import { RunRecoveryService } from "./run-recovery.service.js";
+import type { AgentRunRecord, RunCreateContext, RunStore } from "../../../runs/types.js";
 import type {
   AgentArtifact,
   AgentEvent,
@@ -37,15 +30,11 @@ import type {
 import type { AuditEventInput } from "../../../audit/types.js";
 import type { ToolServiceSupervisor } from "../../../tools/toolServiceSupervisor.js";
 import type { ToolServiceEventStore } from "../../../tools/toolServiceEventStore.js";
-import type { SecretHandleStore } from "../../../secrets/secretHandleStore.js";
-import type { ToolRuntimeSettingsStore } from "../../../settings/toolRuntimeSettings.js";
-import type {
-  EvidenceLedgerStore,
-  RunRetrospectiveStore,
-  WorkLedgerStore,
-} from "../../../work-ledger/types.js";
+import { ToolCallbackTokenIssuer } from "../../../tools/toolCallbackToken.js";
+import type { ToolMetadataStore } from "../../../tools/toolMetadataStore.js";
 import { AuditService } from "../../common/services/audit.service.js";
 import { ToolsService } from "../tools/tools.service.js";
+import { APP_ENV } from "../../config/config.module.js";
 import {
   isRecord,
   parseOptionalReason,
@@ -57,246 +46,96 @@ import {
   ARTIFACT_STORE,
   CONVERSATION_STORE,
   GROUP_PROFILE_STORE,
-  EVIDENCE_LEDGER_STORE,
   RUN_STORE,
-  RUN_RETROSPECTIVE_STORE,
   SECRET_HANDLE_STORE,
+  TOOL_CALLBACK_TOKEN_ISSUER,
+  TOOL_METADATA_STORE,
   TOOL_RUNTIME_SETTINGS,
   TOOL_SERVICE_EVENT_STORE,
   TOOL_SERVICE_SUPERVISOR,
-  CODING_COUNCIL_STORE,
-  MODEL_TIER_SETTINGS,
-  TOOL_METADATA_STORE,
   TOOL_REGISTRY,
-  UNIVERSAL_AGENT,
   USER_STORE,
-  WORK_LEDGER_STORE,
   LLM_CLIENT,
-  SKILL_MEMORY,
 } from "../../persistence/tokens.js";
+import {
+  agentCallableToolNames,
+  availableToolCatalog,
+  findReusableCreatedCandidate,
+} from "./run-tool-catalog.js";
+import { buildRunOutboundDelivery } from "./run-outbound-delivery.js";
+import { ActionProposalAutoModeService } from "./action-proposal-auto-mode.service.js";
+import {
+  externalActionApprovalPauseReason,
+  externalActionApprovalProposalIds,
+  shouldPauseForExternalActionApproval,
+} from "./run-external-action-pause.js";
+export { agentCallableToolNames, findReusableCreatedCandidate } from "./run-tool-catalog.js";
 
 const TERMINAL: AgentRunRecord["status"][] = ["completed", "failed", "cancelled"];
-
-class RunContextError extends Error {
-  constructor(
-    readonly statusCode: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-function readRunIdleTimeoutMs(): number {
-  const raw = process.env.RUN_IDLE_TIMEOUT_MS;
-  if (!raw) return DEFAULT_RUN_IDLE_TIMEOUT_MS;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return DEFAULT_RUN_IDLE_TIMEOUT_MS;
-  return Math.max(0, parsed);
-}
-
-/**
- * Phase 12 follow-up: a Docker / process restart leaves any in-flight run
- * stuck at status=running forever — the originating coordinator promise died
- * with the old process. We sweep on application bootstrap and offer a
- * `restart` action so operators can re-launch the same task without losing
- * the audit trail.
- */
 const ORPHAN_STALE_AFTER_MS = 5 * 60 * 1000; // 5 minutes
 const ORPHAN_RECOVERY_REASON =
   "Run was interrupted by an application restart and never resumed; restart it to retry.";
-const DEFAULT_RUN_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
-/**
- * Phase 13 follow-up: collapse identical POST /api/runs submissions that
- * arrive within this window into the same run. Defends against double-clicks
- * in the UI and naive client-side network retries from spawning two
- * parallel runs on the same conversation thread. Window is intentionally
- * short (10 seconds) — anything longer is a legitimate "user repeated
- * themselves" signal that should produce a fresh run.
- */
 const DEDUP_WINDOW_MS = 10 * 1000;
 
 @Injectable()
 export class RunsService implements OnApplicationBootstrap {
   private readonly logger = new Logger(RunsService.name);
 
-  /**
-   * In-memory dedup cache keyed by `(threadId, requesterUserId, task)`.
-   * Survives the lifetime of the Nest process; the worktree-wide DB is the
-   * source of truth, so this is a soft guard rather than a strong lock. Two
-   * simultaneous requests on different replicas could still slip past — at
-   * which point the work-ledger inside the agent loop dedups the actual
-   * tool calls (`work-ledger-reused` events) anyway.
-   */
-  private readonly recentSubmissions = new Map<string, { runId: string; expiresAt: number }>();
+  private readonly recentSubmissions = new Map<
+    string,
+    { runId: string; expiresAt: number }
+  >();
 
-  /**
-   * AbortController per in-flight run. Lets `cancel()` interrupt the
-   * agent loop (and any underlying LLM HTTP request) immediately
-   * instead of only suppressing event emission while the agent keeps
-   * burning tokens. Entries are deleted when the run reaches a
-   * terminal state.
-   */
   private readonly runAbortControllers = new Map<string, AbortController>();
 
   constructor(
     @Inject(RUN_STORE) private readonly runs: RunStore,
-    @Inject(UNIVERSAL_AGENT) private readonly agent: UniversalAgent,
-    @Inject(ARTIFACT_STORE) private readonly artifacts: ArtifactStore | undefined,
-    @Inject(CONVERSATION_STORE) private readonly threads: ConversationThreadStore | undefined,
-    @Inject(GROUP_PROFILE_STORE) private readonly groupProfiles: GroupProfileStore | undefined,
+    @Inject(ARTIFACT_STORE)
+    private readonly artifacts: ArtifactStore | undefined,
+    @Inject(CONVERSATION_STORE)
+    private readonly threads: ConversationThreadStore | undefined,
+    @Inject(GROUP_PROFILE_STORE)
+    private readonly groupProfiles: GroupProfileStore | undefined,
     @Inject(USER_STORE) private readonly users: UserStore,
-    @Inject(TOOL_SERVICE_SUPERVISOR) private readonly toolServiceSupervisor: ToolServiceSupervisor | undefined,
-    @Inject(TOOL_SERVICE_EVENT_STORE) private readonly toolServiceEvents: ToolServiceEventStore | undefined,
-    @Inject(SECRET_HANDLE_STORE) private readonly secrets: SecretHandleStore | undefined,
-    @Inject(TOOL_RUNTIME_SETTINGS) private readonly runtimeSettings: ToolRuntimeSettingsStore | undefined,
-    @Inject(WORK_LEDGER_STORE) private readonly workLedger: WorkLedgerStore | undefined,
-    @Inject(EVIDENCE_LEDGER_STORE) private readonly evidenceLedger: EvidenceLedgerStore | undefined,
-    @Inject(RUN_RETROSPECTIVE_STORE) private readonly retrospectives: RunRetrospectiveStore | undefined,
+    @Inject(SECRET_HANDLE_STORE)
+    private readonly secrets: SecretHandleStore | undefined,
+    @Inject(TOOL_RUNTIME_SETTINGS)
+    private readonly runtimeSettings: ToolRuntimeSettingsStore | undefined,
+    @Inject(TOOL_SERVICE_SUPERVISOR)
+    private readonly toolServiceSupervisor: ToolServiceSupervisor | undefined,
+    @Inject(TOOL_SERVICE_EVENT_STORE)
+    private readonly toolServiceEvents: ToolServiceEventStore | undefined,
     @Inject(AuditService) private readonly audit: AuditService,
-    @Inject(CODING_COUNCIL_STORE) private readonly codingCouncil:
-      | import("../../../settings/codingCouncilStore.js").CodingCouncilStore
-      | undefined,
-    @Inject(MODEL_TIER_SETTINGS) private readonly modelTierSettings:
-      | import("../../../settings/modelTierSettings.js").ModelTierSettingsStore
-      | undefined,
-    @Inject(TOOL_METADATA_STORE) private readonly toolMetadata:
-      | import("../../../tools/toolMetadataStore.js").ToolMetadataStore
-      | undefined,
-    @Inject(ToolsService) private readonly toolsService: ToolsService | undefined,
-    @Inject(TOOL_REGISTRY) private readonly toolRegistry:
+    @Inject(APP_ENV) private readonly env: AppEnv,
+    @Inject(TOOL_CALLBACK_TOKEN_ISSUER)
+    private readonly callbackTokens: ToolCallbackTokenIssuer,
+    @Inject(TOOL_METADATA_STORE)
+    private readonly toolMetadata: ToolMetadataStore | undefined,
+    @Inject(TOOL_REGISTRY)
+    private readonly toolRegistry:
       | import("../../../tools/registry.js").ToolRegistry
       | undefined,
-    // Phase 28 — recursive agent mode wiring. All three optional so
-    // legacy unit-test wiring without LLM/memory still constructs
-    // the service; the recursive path itself errors clearly when
-    // any of them is missing.
-    @Inject(LLM_CLIENT) private readonly llm: import("../../../llm/client.js").LlmClient | undefined,
-    @Inject(SKILL_MEMORY) private readonly skillMemory: import("../../../memory/skillMemory.js").SkillMemory | undefined,
+    @Inject(LLM_CLIENT)
+    private readonly llm:
+      | import("../../../llm/client.js").LlmClient
+      | undefined,
+    @Optional()
+    @Inject(ToolsService)
+    private readonly toolsService?: ToolsService,
+    @Optional()
+    @Inject(ActionProposalAutoModeService)
+    private readonly actionProposalAutoMode?: ActionProposalAutoModeService,
   ) {}
 
-  /**
-   * Phase 12 follow-up: sweep stuck `running` / `queued` runs at app bootstrap
-   * so a Docker restart cannot leave them looping forever in the UI. The
-   * stale threshold (5 minutes) protects newly-started runs that the *same*
-   * coordinator just kicked off in the same process. Each recovered run gets
-   * an audit event so the timeline shows why it transitioned to `failed`.
-   */
   async onApplicationBootstrap(): Promise<void> {
-    try {
-      const recovered = await this.runs.recoverInterrupted(ORPHAN_RECOVERY_REASON, {
-        staleAfterMs: ORPHAN_STALE_AFTER_MS,
-      });
-      if (recovered > 0) {
-        this.logger.warn(`Recovered ${recovered} interrupted run(s) at bootstrap`);
-        await this.audit.record({
-          instanceId: "instance-local",
-          actorId: "system",
-          actorType: "agent",
-          action: "run.recovered_at_bootstrap",
-          targetType: "run",
-          targetId: "all",
-          status: "success",
-          summary: `Recovered ${recovered} run(s) interrupted by app restart`,
-          metadata: { recovered, staleAfterMs: ORPHAN_STALE_AFTER_MS },
-        });
-      }
-    } catch (error) {
-      this.logger.error(
-        `Failed to recover interrupted runs at bootstrap: ${error instanceof Error ? error.message : "unknown error"}`,
-      );
-    }
+    return this.recoveryService().onApplicationBootstrap();
   }
 
-  list(): Promise<AgentRunRecord[]> {
-    return this.runs.list();
-  }
-
-  /**
-   * Phase 12 follow-up: restart an interrupted / failed / cancelled run by
-   * creating a fresh run from the same task and metadata, with
-   * `parentRunId = source.id` so the chain is auditable. The new run goes
-   * through the regular execute pipeline (classification, planning, work
-   * ledger, …). Stuck `running` / `queued` runs that are older than the
-   * stale threshold are recovered first.
-   */
   async restart(sourceId: string): Promise<{ source: AgentRunRecord; restart: AgentRunRecord }> {
-    const source = await this.runs.get(sourceId);
-    if (!source) throw new NotFoundException(`Run ${sourceId} not found`);
-
-    // If the source is "running" but stale, fail it first so the restart
-    // chain has a clean predecessor. Fresh active runs cannot be restarted —
-    // user is asked to cancel them explicitly.
-    if (source.status === "running" || source.status === "queued") {
-      const updated = Date.parse(source.updatedAt);
-      const stale = Number.isFinite(updated) && Date.now() - updated > ORPHAN_STALE_AFTER_MS;
-      if (!stale) {
-        throw new ConflictException(
-          `Run ${sourceId} is currently active (status=${source.status}, last activity ${source.updatedAt}). Cancel it before restarting.`,
-        );
-      }
-      await this.runs.fail(sourceId, ORPHAN_RECOVERY_REASON);
-    }
-
-    const reloaded = await this.runs.get(sourceId);
-    if (!reloaded) throw new NotFoundException(`Run ${sourceId} disappeared during restart`);
-
-    const context: RunCreateContext = {
-      instanceId: reloaded.instanceId,
-      requesterUserId: reloaded.requesterUserId,
-      channel: reloaded.channel,
-      threadId: reloaded.threadId,
-      parentRunId: reloaded.id,
-      sourceUserId: reloaded.sourceUserId,
-      sourceMessageId: reloaded.sourceMessageId,
-      sourceChatId: reloaded.sourceChatId,
-      sourceThreadId: reloaded.sourceThreadId,
-    };
-    const restart = await this.runs.create(reloaded.task, context);
-    await this.audit.record({
-      instanceId: context.instanceId,
-      actorId: context.requesterUserId ?? "user-admin",
-      actorType: "user",
-      action: "run.restarted",
-      targetType: "run",
-      targetId: restart.id,
-      status: "pending",
-      runId: restart.id,
-      threadId: context.threadId,
-      requesterUserId: context.requesterUserId,
-      channel: context.channel,
-      summary: `Run restarted from ${sourceId}`,
-      metadata: {
-        sourceRunId: sourceId,
-        sourceStatus: reloaded.status,
-        sourceError: reloaded.error,
-      },
-    });
-
-    void this.executeRun(restart.id, reloaded.task, [], {
-      threadId: context.threadId,
-    });
-
-    const updated = await this.runs.get(restart.id);
-    return { source: reloaded, restart: updated ?? restart };
+    return this.recoveryService().restart(sourceId);
   }
 
-  /**
-   * Phase 12 follow-up: continue an interrupted run from where it left
-   * off instead of redoing every phase. The runtime replays the source
-   * run's events to recover its `TaskComplexity`, planned subtasks,
-   * completed worker results, and review verdicts. The new run skips
-   * classify and plan, treats `verdict=pass` subtasks as already done
-   * (it re-emits their events for trace continuity), and only executes
-   * subtasks that were missing or marked `needs_revision`. The Work
-   * Ledger handles external evidence reuse (web.search,
-   * browser.operate) so even subtasks that DO re-run pull cached
-   * evidence rather than calling the tools fresh.
-   *
-   * If the source run had no usable progress (classifier never ran,
-   * etc.), we fall back to a plain `restart` — there's nothing
-   * meaningful to resume from.
-   */
   async resume(sourceId: string): Promise<{
     source: AgentRunRecord;
     resume: AgentRunRecord;
@@ -308,100 +147,19 @@ export class RunsService implements OnApplicationBootstrap {
       lastEventType?: string;
     };
   }> {
-    const { reconstructProgress, toResumptionState, hasResumableProgress } = await import(
-      "../../../agents/runResumption.js"
+    return this.recoveryService().resume(sourceId);
+  }
+
+  private recoveryService(): RunRecoveryService {
+    return new RunRecoveryService(
+      this.runs,
+      this.audit,
+      (runId, task, inputArtifacts, input) => this.executeRun(runId, task, inputArtifacts, input),
     );
-    const source = await this.runs.get(sourceId);
-    if (!source) throw new NotFoundException(`Run ${sourceId} not found`);
+  }
 
-    if (source.status === "running" || source.status === "queued") {
-      const updated = Date.parse(source.updatedAt);
-      const stale = Number.isFinite(updated) && Date.now() - updated > ORPHAN_STALE_AFTER_MS;
-      if (!stale) {
-        throw new ConflictException(
-          `Run ${sourceId} is currently active (status=${source.status}, last activity ${source.updatedAt}). Cancel it before resuming.`,
-        );
-      }
-      await this.runs.fail(sourceId, ORPHAN_RECOVERY_REASON);
-    }
-
-    const reloaded = await this.runs.get(sourceId);
-    if (!reloaded) throw new NotFoundException(`Run ${sourceId} disappeared during resume`);
-    const progress = reconstructProgress(reloaded.events ?? []);
-    const passedSubtaskCount = [...progress.completedReviews.values()].filter((review) => review.verdict === "pass").length;
-    const fallback: "resume" | "restart" = hasResumableProgress(progress) ? "resume" : "restart";
-
-    if (fallback === "restart") {
-      // Nothing to resume from; defer to the regular restart flow so the
-      // operator's intent ("continue this run") still produces a fresh
-      // run linked to the source — just without any state injection.
-      const result = await this.restart(sourceId);
-      return {
-        source: result.source,
-        resume: result.restart,
-        fallback: "restart",
-        progress: {
-          hasComplexity: false,
-          subtaskCount: 0,
-          passedSubtaskCount: 0,
-          lastEventType: progress.lastEventType,
-        },
-      };
-    }
-
-    const context: RunCreateContext = {
-      instanceId: reloaded.instanceId,
-      requesterUserId: reloaded.requesterUserId,
-      channel: reloaded.channel,
-      threadId: reloaded.threadId,
-      parentRunId: reloaded.id,
-      sourceUserId: reloaded.sourceUserId,
-      sourceMessageId: reloaded.sourceMessageId,
-      sourceChatId: reloaded.sourceChatId,
-      sourceThreadId: reloaded.sourceThreadId,
-    };
-    const resume = await this.runs.create(reloaded.task, context);
-    await this.audit.record({
-      instanceId: context.instanceId,
-      actorId: context.requesterUserId ?? "user-admin",
-      actorType: "user",
-      action: "run.restarted",
-      targetType: "run",
-      targetId: resume.id,
-      status: "pending",
-      runId: resume.id,
-      threadId: context.threadId,
-      requesterUserId: context.requesterUserId,
-      channel: context.channel,
-      summary: `Run resumed from ${sourceId} (${passedSubtaskCount}/${progress.subtasks?.length ?? 0} subtasks reused)`,
-      metadata: {
-        sourceRunId: sourceId,
-        sourceStatus: reloaded.status,
-        sourceError: reloaded.error,
-        kind: "resume",
-        passedSubtaskCount,
-        plannedSubtaskCount: progress.subtasks?.length ?? 0,
-      },
-    });
-
-    const resumeFrom = toResumptionState(progress, sourceId);
-    void this.executeRun(resume.id, reloaded.task, [], {
-      threadId: context.threadId,
-      resumeFrom,
-    });
-
-    const updated = await this.runs.get(resume.id);
-    return {
-      source: reloaded,
-      resume: updated ?? resume,
-      fallback: "resume",
-      progress: {
-        hasComplexity: Boolean(progress.complexity),
-        subtaskCount: progress.subtasks?.length ?? 0,
-        passedSubtaskCount,
-        lastEventType: progress.lastEventType,
-      },
-    };
+  list(): Promise<AgentRunRecord[]> {
+    return this.runs.list();
   }
 
   async get(id: string): Promise<AgentRunRecord> {
@@ -424,41 +182,54 @@ export class RunsService implements OnApplicationBootstrap {
       resolved = await this.resolveContext(body, task);
     } catch (error) {
       if (error instanceof RunContextError) {
-        if (error.statusCode === 403) throw new ForbiddenException(error.message);
-        if (error.statusCode === 404) throw new NotFoundException(error.message);
+        if (error.statusCode === 403)
+          throw new ForbiddenException(error.message);
+        if (error.statusCode === 404)
+          throw new NotFoundException(error.message);
         throw new BadRequestException(error.message);
       }
-      throw new BadRequestException(error instanceof Error ? error.message : "Invalid run context");
+      throw new BadRequestException(
+        error instanceof Error ? error.message : "Invalid run context",
+      );
     }
 
     const { context, thread, threadContext, threadResolution } = resolved;
 
-    // Phase 13 follow-up: idempotent submission window. If the very same
-    // (threadId, requesterUserId, task) tuple was just accepted within
-    // DEDUP_WINDOW_MS, return the existing run instead of starting a
-    // duplicate parallel one. Excludes terminal-failed runs so a real
-    // retry after an error works.
-    const dedupKey = this.dedupKeyFor(context.threadId, context.requesterUserId, task);
+    const dedupKey = this.dedupKeyFor(
+      context.threadId,
+      context.requesterUserId,
+      task,
+    );
     const dedupNow = Date.now();
     this.gcDedupCache(dedupNow);
     const cached = this.recentSubmissions.get(dedupKey);
     if (cached && cached.expiresAt > dedupNow) {
       const existing = await this.runs.get(cached.runId).catch(() => undefined);
-      if (existing && existing.status !== "failed" && existing.status !== "cancelled") {
+      if (
+        existing &&
+        existing.status !== "failed" &&
+        existing.status !== "cancelled"
+      ) {
         return {
           run: existing,
           thread,
           threadResolution: threadResolution
-            ? { decision: threadResolution.decision, reason: threadResolution.reason, threadId: threadResolution.thread?.id }
+            ? {
+                decision: threadResolution.decision,
+                reason: threadResolution.reason,
+                threadId: threadResolution.thread?.id,
+              }
             : undefined,
         };
       }
-      // Cached id no longer usable (failed/cancelled/missing): drop and proceed.
       this.recentSubmissions.delete(dedupKey);
     }
 
     const run = await this.runs.create(task, context);
-    this.recentSubmissions.set(dedupKey, { runId: run.id, expiresAt: dedupNow + DEDUP_WINDOW_MS });
+    this.recentSubmissions.set(dedupKey, {
+      runId: run.id,
+      expiresAt: dedupNow + DEDUP_WINDOW_MS,
+    });
     await this.audit.record({
       instanceId: context.instanceId,
       actorId: context.requesterUserId,
@@ -515,8 +286,13 @@ export class RunsService implements OnApplicationBootstrap {
         ),
       );
     } catch (error) {
-      await this.runs.fail(run.id, error instanceof Error ? error.message : "Failed to save attachments");
-      throw new BadRequestException(error instanceof Error ? error.message : "Failed to save attachments");
+      await this.runs.fail(
+        run.id,
+        error instanceof Error ? error.message : "Failed to save attachments",
+      );
+      throw new BadRequestException(
+        error instanceof Error ? error.message : "Failed to save attachments",
+      );
     }
 
     await this.threads?.appendMessage({
@@ -556,10 +332,6 @@ export class RunsService implements OnApplicationBootstrap {
       parseOptionalReason(rawBody) ??
       "Cancelled by operator. In-flight LLM/tool calls may finish, but their result will not replace this terminal state.";
     await this.runs.cancel(id, reason);
-    // Trip the AbortController so the agent loop unblocks immediately
-    // — without this the council pipeline would keep firing LLM
-    // requests for the remaining steps, even though their events are
-    // silently dropped by the cancelled-status guard.
     const controller = this.runAbortControllers.get(id);
     if (controller && !controller.signal.aborted) {
       controller.abort(new Error(`Run ${id} cancelled by operator`));
@@ -590,16 +362,12 @@ export class RunsService implements OnApplicationBootstrap {
     }
     const stored = await this.artifacts.read(runId, artifactId);
     if (!stored) throw new NotFoundException("Artifact not found");
-    const buffer = stored.content ?? (stored.path ? await readFile(stored.path) : Buffer.alloc(0));
+    const buffer =
+      stored.content ??
+      (stored.path ? await readFile(stored.path) : Buffer.alloc(0));
     return { stored, buffer };
   }
 
-  /**
-   * Phase 13 follow-up: delete a single artifact (metadata + underlying
-   * object). Idempotent — returns 404 only when nothing matched the
-   * (runId, artifactId) tuple. Audited so the timeline shows who removed
-   * which file.
-   */
   async deleteArtifact(
     runId: string,
     artifactId: string,
@@ -623,6 +391,26 @@ export class RunsService implements OnApplicationBootstrap {
     return { deleted: true, id: artifactId, runId };
   }
 
+  private runtimeHelpers(): RunAgentRuntimeHelpers {
+    return new RunAgentRuntimeHelpers(
+      this.users,
+      this.groupProfiles,
+      this.env,
+      this.toolServiceSupervisor,
+      this.toolServiceEvents,
+      this.audit,
+      this.toolsService,
+      this.toolMetadata,
+      this.toolRegistry,
+      this.runtimeSettings,
+      this.secrets,
+    );
+  }
+
+  private contextResolver(): RunContextResolver {
+    return new RunContextResolver(this.runs, this.threads, this.users);
+  }
+
   async resolveContext(
     body: Record<string, unknown>,
     task: string,
@@ -632,235 +420,38 @@ export class RunsService implements OnApplicationBootstrap {
     threadContext?: ConversationThreadContext;
     threadResolution?: ThreadResolutionResult;
   }> {
-    const instanceId = parseOptionalText(body.instanceId) ?? "instance-local";
-    const bodyRequesterUserId = parseOptionalText(body.requesterUserId);
-    const bodyChannel = parseOptionalText(body.channel);
-    const sourceUserId = parseOptionalText(body.sourceUserId);
-    const sourceUserAliases = parseOptionalTextArray(body.sourceUserAliases);
-    const sourceMessageId = parseOptionalText(body.sourceMessageId);
-    const sourceChatId = parseOptionalText(body.sourceChatId);
-    const sourceThreadId = parseOptionalText(body.sourceThreadId);
-    const requestedThreadId = parseOptionalText(body.threadId);
-    let parentRunId = parseOptionalText(body.parentRunId);
-    let thread: ConversationThreadRecord | undefined;
-    let threadResolution: ThreadResolutionResult | undefined;
-    let requesterUser: UserRecord | undefined;
-
-    if (this.threads) {
-      if (requestedThreadId) {
-        thread = await this.threads.get(requestedThreadId);
-        if (!thread) throw new RunContextError(404, "Conversation thread not found");
-        const channel = bodyChannel ?? thread.channel;
-        requesterUser = await this.users.resolve({
-          requesterUserId: bodyRequesterUserId,
-          channel,
-          sourceUserId,
-          sourceUserAliases,
-          fallbackUserId: thread.requesterUserId,
-        });
-        if (!requesterUser) {
-          throw this.requesterError({ requesterUserId: bodyRequesterUserId, channel, sourceUserId, sourceUserAliases });
-        }
-        if (requesterUser.id !== thread.requesterUserId) {
-          throw new RunContextError(
-            403,
-            "Requester user cannot continue a conversation thread owned by another user",
-          );
-        }
-        threadResolution = {
-          decision: "explicit_thread",
-          thread,
-          reason: "The request explicitly selected an existing conversation thread.",
-        };
-      } else {
-        const channel = bodyChannel ?? "web";
-        requesterUser = await this.users.resolve({
-          requesterUserId: bodyRequesterUserId,
-          channel,
-          sourceUserId,
-          sourceUserAliases,
-        });
-        if (!requesterUser) {
-          throw this.requesterError({ requesterUserId: bodyRequesterUserId, channel, sourceUserId });
-        }
-        threadResolution = resolveConversationThread({
-          task,
-          requesterUserId: requesterUser.id,
-          channel,
-          sourceChatId,
-          sourceThreadId,
-          threads: await this.threads.list(),
-        });
-        thread =
-          threadResolution.thread ??
-          (await this.threads.create({
-            title: task,
-            requesterUserId: requesterUser.id,
-            channel,
-            sourceChatId,
-            sourceThreadId,
-          }));
-      }
-      parentRunId = parentRunId ?? thread.latestRunId;
-    }
-
-    requesterUser =
-      requesterUser ??
-      (await this.users.resolve({
-        requesterUserId: bodyRequesterUserId,
-        channel: bodyChannel ?? thread?.channel ?? "web",
-        sourceUserId,
-        sourceUserAliases,
-        fallbackUserId: thread?.requesterUserId,
-      }));
-    if (!requesterUser) {
-      throw this.requesterError({
-        requesterUserId: bodyRequesterUserId,
-        channel: bodyChannel ?? thread?.channel ?? "web",
-        sourceUserId,
-      });
-    }
-
-    const requesterUserId = requesterUser.id;
-    const channel = bodyChannel ?? thread?.channel ?? "web";
-
-    const context: RunCreateContext = {
-      instanceId,
-      requesterUserId,
-      channel,
-      threadId: thread?.id ?? requestedThreadId,
-      parentRunId,
-      sourceUserId,
-      sourceMessageId,
-      sourceChatId,
-      sourceThreadId,
-    };
-
-    return {
-      context,
-      thread,
-      threadResolution,
-      threadContext: thread ? await this.buildThreadContext(thread) : undefined,
-    };
+    return this.contextResolver().resolveContext(body, task);
   }
 
-  private async buildThreadContext(thread: ConversationThreadRecord): Promise<ConversationThreadContext> {
-    const artifacts = await this.collectThreadArtifacts(thread);
-    return {
-      summary: thread.summary,
-      acceptedFacts: thread.acceptedFacts,
-      rejectedAttempts: thread.rejectedAttempts,
-      openQuestions: thread.openQuestions,
-      relevantArtifactIds: thread.artifactIds,
-      relevantArtifacts: artifacts,
-    };
+  parseAttachments(value: unknown): ArtifactUploadInput[] {
+    return this.contextResolver().parseAttachments(value);
   }
 
-  private async collectThreadArtifacts(thread: ConversationThreadRecord): Promise<AgentArtifact[]> {
-    if (thread.artifactIds.length === 0) return [];
-    const wantedIds = new Set(thread.artifactIds);
-    const runs = (await this.runs.list())
-      .filter((run) => run.threadId === thread.id)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    const artifacts: AgentArtifact[] = [];
-    const seen = new Set<string>();
-    for (const run of runs) {
-      for (const artifact of run.result?.artifacts ?? []) {
-        if (!wantedIds.has(artifact.id) || seen.has(artifact.id)) continue;
-        artifacts.push(artifact);
-        seen.add(artifact.id);
-        if (artifacts.length >= 12) return artifacts;
-      }
-    }
-    return artifacts;
-  }
-
-  /**
-   * Phase 13 follow-up: build a stable dedup cache key for the
-   * idempotent submission window (`createAndStart`). Trims the task and
-   * tolerates undefined thread / requester ids so single-shot anonymous
-   * fixtures still benefit from the dedup window.
-   */
-  private dedupKeyFor(threadId: string | undefined, requesterUserId: string | undefined, task: string): string {
+  private dedupKeyFor(
+    threadId: string | undefined,
+    requesterUserId: string | undefined,
+    task: string,
+  ): string {
     return `${threadId ?? "-"}::${requesterUserId ?? "-"}::${task.trim()}`;
   }
 
-  /**
-   * Drop entries whose `expiresAt` is in the past. Called once per
-   * `createAndStart` so the cache stays bounded even on a long-running
-   * process; the work is O(N) on the cache size which is bounded by
-   * `submissions per DEDUP_WINDOW_MS`.
-   */
   private gcDedupCache(now: number): void {
     for (const [key, entry] of this.recentSubmissions) {
       if (entry.expiresAt <= now) this.recentSubmissions.delete(key);
     }
   }
 
-  /**
-   * Test hook: lets unit tests inspect dedup cache state and simulate
-   * different points in time without exposing the Map directly.
-   */
   __testing_dedup__() {
     return {
       cache: this.recentSubmissions,
-      key: (threadId: string | undefined, requesterUserId: string | undefined, task: string) =>
-        this.dedupKeyFor(threadId, requesterUserId, task),
+      key: (
+        threadId: string | undefined,
+        requesterUserId: string | undefined,
+        task: string,
+      ) => this.dedupKeyFor(threadId, requesterUserId, task),
       gc: (now: number) => this.gcDedupCache(now),
       windowMs: DEDUP_WINDOW_MS,
     };
-  }
-
-  private requesterError(input: {
-    requesterUserId?: string;
-    channel?: string;
-    sourceUserId?: string;
-    sourceUserAliases?: string[];
-  }): RunContextError {
-    if (input.requesterUserId) {
-      return new RunContextError(400, `Requester user not found: ${input.requesterUserId}`);
-    }
-    if (input.sourceUserId) {
-      const aliases = input.sourceUserAliases?.length ? ` aliases=${input.sourceUserAliases.join(",")}` : "";
-      return new RunContextError(
-        403,
-        `Channel identity is not allowed or not mapped: ${input.channel ?? "unknown"}/${input.sourceUserId}${aliases}`,
-      );
-    }
-    return new RunContextError(400, "Requester user could not be resolved");
-  }
-
-  parseAttachments(value: unknown): ArtifactUploadInput[] {
-    if (value === undefined) return [];
-    if (!Array.isArray(value)) {
-      throw new Error("attachments must be an array");
-    }
-    return value.map((item) => {
-      if (!item || typeof item !== "object") {
-        throw new Error("attachments must contain objects");
-      }
-      const candidate = item as Record<string, unknown>;
-      if (typeof candidate.filename !== "string" || candidate.filename.trim() === "") {
-        throw new Error("attachment filename is required");
-      }
-      const filename = candidate.filename.trim();
-      const mimeType =
-        typeof candidate.mimeType === "string" && candidate.mimeType.trim()
-          ? candidate.mimeType.trim()
-          : "application/octet-stream";
-      const dataField =
-        candidate.contentBase64 ?? candidate.data ?? candidate.content;
-      if (typeof dataField !== "string") {
-        throw new Error(`attachment ${filename} must include base64 data`);
-      }
-      const description = typeof candidate.description === "string" ? candidate.description : undefined;
-      return {
-        filename,
-        mimeType,
-        contentBase64: dataField,
-        description,
-      };
-    });
   }
 
   async executeRun(
@@ -870,18 +461,17 @@ export class RunsService implements OnApplicationBootstrap {
     context: {
       threadId?: string;
       threadContext?: ConversationThreadContext;
-      /**
-       * Phase 12 follow-up: when set, the agent skips classify and plan
-       * phases that produced the supplied state and treats subtasks
-       * with `verdict=pass` as already-done. The Work Ledger covers
-       * external evidence reuse for any subtasks that still need to
-       * re-run.
-       */
-      resumeFrom?: import("../../../agents/runResumption.js").RunResumptionState;
     } = {},
   ): Promise<void> {
     await this.runs.markRunning(id);
     const run = await this.runs.get(id);
+    // Restart/resume callers pass only threadId; rebuild the conversation
+    // context so follow-up runs keep their thread memory.
+    if (!context.threadContext && (context.threadId ?? run?.threadId)) {
+      context.threadContext = await this.contextResolver()
+        .threadContextForThreadId((context.threadId ?? run?.threadId)!)
+        .catch(() => undefined);
+    }
     await this.audit.record({
       instanceId: run?.instanceId,
       actorId: "coordinator",
@@ -897,118 +487,127 @@ export class RunsService implements OnApplicationBootstrap {
       summary: `Run started: ${task.slice(0, 160)}`,
     });
 
-    // One AbortController per run, owned by RunsService. Tripped by
-    // `cancel()`; cleared in the finally block below regardless of
-    // outcome. The agent passes this signal into LlmClient.complete
-    // and checks it between council phases.
     const runAbort = new AbortController();
     this.runAbortControllers.set(id, runAbort);
 
     try {
-      const [groupProfile, requesterUser] = await Promise.all([
-        this.groupProfiles?.get().catch(() => undefined) ?? Promise.resolve(undefined),
-        run?.requesterUserId ? this.users.get(run.requesterUserId).catch(() => undefined) : Promise.resolve(undefined),
-      ]);
-
-      // Phase 28 — agent mode switch. The classic delegated_dag
-      // pipeline still drives every existing fixture and resume path;
-      // the recursive loop runs only when AGENT_MODE=recursive is set
-      // or the task body explicitly opts in.
-      const recursiveMode =
-        (process.env.AGENT_MODE === "recursive" || /\[recursive\]/i.test(task));
-      if (recursiveMode) {
-        const { RecursiveAgent } = await import("../../../agents/recursiveAgent.js");
-        if (!this.toolRegistry || !this.llm || !this.skillMemory) {
-          throw new Error("Recursive agent requires LLM_CLIENT, SKILL_MEMORY, and TOOL_REGISTRY to be wired");
-        }
-        const recursive = new RecursiveAgent(this.llm, this.skillMemory, this.toolRegistry);
-        const recursiveResult = await this.withRunIdleGuard(id, runAbort, () => recursive.run(task, {
-          signal: runAbort.signal,
-          saveArtifact: this.artifacts
-            ? async (artifact) => this.artifacts!.saveGenerated(id, artifact)
-            : undefined,
-          onEvent: async (ev) => {
-            const now = new Date().toISOString();
-            const spanId = `recursive-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-            const type = ev.type === "tool-call"
-              ? "tool-completed"
-              : ev.type === "subagent-spawned"
-                ? "worker-started"
-                : ev.type === "subagent-finished"
-                  ? "worker-completed"
-                  : ev.type === "finish"
-                    ? "synthesis-completed"
-                    : "agent-self-check-completed";
-            try {
-              await this.runs.appendEvent(id, {
-                id: `${spanId}-evt`,
-                spanId,
-                type,
-                actor: ev.type === "subagent-spawned" || ev.type === "subagent-finished"
-                  ? `recursive:depth-${ev.depth}`
-                  : "recursive-agent",
-                activity: ev.type === "tool-call" ? "tool" : "agent",
-                status: ev.type === "tool-call" ? (ev.ok ? "completed" : "failed") : "completed",
-                title:
-                  ev.type === "tool-call"
-                    ? `Tool: ${ev.tool}`
-                    : ev.type === "subagent-spawned"
-                      ? `Sub-agent spawned: ${ev.childTask.slice(0, 80)}`
-                      : ev.type === "subagent-finished"
-                        ? `Sub-agent finished`
-                        : ev.type === "finish"
-                          ? "Final answer"
-                          : `iteration ${ev.depth}/${("iteration" in ev) ? ev.iteration : "?"}`,
-                detail: "contentPreview" in ev ? ev.contentPreview : undefined,
-                timestamp: now,
-                startedAt: now,
-                completedAt: now,
-                payload: ev as unknown as Record<string, unknown>,
-              });
-            } catch (err) {
-              // Don't kill the loop on event-store hiccups; the agent's
-              // own output is the source of truth. Logged so we notice.
-              console.warn(`[recursive] appendEvent failed:`, err instanceof Error ? err.message : err);
-            }
-          },
-        }));
-        await this.runs.complete(id, {
-          finalAnswer: recursiveResult.finalAnswer,
-          complexity: recursiveResult.complexity,
-          subtasks: [],
-          workerResults: [],
-          reviews: [],
-          artifacts: recursiveResult.artifacts ?? [],
-        });
-        return;
+      if (!this.llm || !this.toolRegistry) {
+        throw new ServiceUnavailableException(
+          "Base runtime requires LLM_CLIENT and TOOL_REGISTRY.",
+        );
       }
-      const result = await this.withRunIdleGuard(id, runAbort, () => this.agent.run(task, {
+      const base = new BaseAgent(this.llm, this.toolRegistry);
+      const runContext = await this.runtimeHelpers().buildBaseAgentRunContext(
+        run,
         inputArtifacts,
-        threadContext: context.threadContext,
-        instanceContext: { groupProfile, requesterUser },
-        resumeFrom: context.resumeFrom,
-        workLedgerStore: this.workLedger,
-        evidenceLedgerStore: this.evidenceLedger,
-        runRetrospectiveStore: this.retrospectives,
-        signal: runAbort.signal,
+        context.threadContext,
+      );
+      let callableToolNames = await this.runtimeHelpers().callableToolNames();
+      const explicitScopedCandidate = await this.runtimeHelpers()
+        .explicitRunScopedToolCandidate(task, callableToolNames)
+        .catch((error) => {
+          this.logger.warn(
+            `Failed to attach explicit tool candidate for run ${id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          return undefined;
+        });
+      if (explicitScopedCandidate) {
+        callableToolNames = [...new Set([...callableToolNames, explicitScopedCandidate.tool.name])]
+          .sort((a, b) => a.localeCompare(b));
+      }
+      const toolCatalog = await availableToolCatalog({
+        allowedNames: callableToolNames,
+        toolMetadata: this.toolMetadata,
+      });
+      const effectiveToolCatalog = explicitScopedCandidate
+        ? [
+            ...toolCatalog.filter(
+              (entry) => entry.name !== explicitScopedCandidate.catalogEntry.name,
+            ),
+            explicitScopedCandidate.catalogEntry,
+          ].sort((a, b) => a.name.localeCompare(b.name))
+        : toolCatalog;
+      const result: AgentRunResult = await base.run(task, {
         runId: id,
-        instanceId: run?.instanceId ?? "group-local",
-        requesterUserId: run?.requesterUserId ?? "user-admin",
-        threadId: run?.threadId,
-        memoryScopes: [
-          { scope: "global" },
-          { scope: "group", scopeId: run?.instanceId ?? "group-local" },
-          { scope: "group", scopeId: "group-local" },
-          { scope: "user", scopeId: run?.requesterUserId ?? "user-admin" },
-          ...(run?.threadId ? [{ scope: "thread" as const, scopeId: run.threadId }] : []),
-          { scope: "run", scopeId: id },
-        ],
+        runContext,
+        toolPolicy: {
+          allowedToolNames: callableToolNames,
+          reason:
+            explicitScopedCandidate
+              ? "Only available tools are offered globally; the explicitly requested generated tool was attached as a run-scoped candidate for this run."
+              : "Only tools whose active metadata status is available and whose runtime requirements are resolvable are offered to the agent.",
+        },
+        toolCatalog: effectiveToolCatalog,
+        initialScopedToolCandidates: explicitScopedCandidate
+          ? [{
+              tool: explicitScopedCandidate.tool,
+              catalogEntry: explicitScopedCandidate.catalogEntry,
+              reason: explicitScopedCandidate.reason,
+              promotionPolicy: "manual",
+            }]
+          : undefined,
+        signal: runAbort.signal,
+        resolveSecret: this.secrets?.resolve
+          ? (handle) => this.secrets!.resolve!(handle)
+          : undefined,
+        resolveConfiguration: async (key, toolName) =>
+          (toolName && this.runtimeSettings
+            ? await this.runtimeSettings.resolve(toolName, key)
+            : undefined) ?? process.env[key],
+        createToolCallback: (toolName) => ({
+          baseUrl: this.runtimeHelpers().toolCallbackBaseUrl(),
+          token: this.callbackTokens.issue({
+            runId: id,
+            toolName,
+              scope: ["artifacts.save", "ledger.claim", "memory.search", "events.emit"],
+            }),
+          scope: ["artifacts.save", "ledger.claim", "memory.search", "events.emit"],
+        }),
+        onToolCreationRequested: (request) =>
+          this.runtimeHelpers().handleAgentToolCreationRequest(request, run),
+        onToolEditRequested: (request) =>
+          this.runtimeHelpers().handleAgentToolEditRequest(request, run),
+        onToolCandidateAccepted: (candidate) =>
+          this.runtimeHelpers().handleAgentToolCandidateAccepted(candidate),
+        audit: async (event) => {
+          await this.audit.record({
+            instanceId: run?.instanceId,
+            actorId: "tool-runtime",
+            actorType: "tool",
+            action: event.action as AuditEventInput["action"],
+            targetType: event.targetType,
+            targetId: event.targetId,
+            status: event.status,
+            runId: id,
+            threadId: run?.threadId,
+            requesterUserId: run?.requesterUserId,
+            channel: run?.channel,
+            summary: event.summary,
+            metadata: sanitizeAuditMetadata(event.metadata),
+          });
+        },
+        logger: {
+          info: (message, metadata) =>
+            this.logger.log(
+              `[tool:${id}] ${message} ${metadata ? JSON.stringify(sanitizeAuditMetadata(metadata)) : ""}`,
+            ),
+          warn: (message, metadata) =>
+            this.logger.warn(
+              `[tool:${id}] ${message} ${metadata ? JSON.stringify(sanitizeAuditMetadata(metadata)) : ""}`,
+            ),
+          error: (message, metadata) =>
+            this.logger.error(
+              `[tool:${id}] ${message} ${metadata ? JSON.stringify(sanitizeAuditMetadata(metadata)) : ""}`,
+            ),
+        },
         saveArtifact: this.artifacts
           ? async (artifact) => {
               const saved = await this.artifacts!.saveGenerated(id, artifact);
               await this.audit.record({
                 instanceId: run?.instanceId,
-                actorId: "coordinator",
+                actorId: "base-agent",
                 actorType: "agent",
                 action: "artifact.generated",
                 targetType: "artifact",
@@ -1027,72 +626,56 @@ export class RunsService implements OnApplicationBootstrap {
               return saved;
             }
           : undefined,
-        toolExecutionContext: {
-          resolveSecret: this.secrets?.resolve ? (handle) => this.secrets!.resolve!(handle) : undefined,
-          resolveConfiguration: async (key, toolName) =>
-            (toolName && this.runtimeSettings
-              ? await this.runtimeSettings.resolve(toolName, key)
-              : undefined) ?? process.env[key],
-          audit: async (event) => {
-            await this.audit.record({
-              instanceId: run?.instanceId,
-              actorId: "tool-runtime",
-              actorType: "tool",
-              action: event.action as AuditEventInput["action"],
-              targetType: event.targetType,
-              targetId: event.targetId,
-              status: event.status,
-              runId: id,
-              threadId: run?.threadId,
-              requesterUserId: run?.requesterUserId,
-              channel: run?.channel,
-              summary: event.summary,
-              metadata: event.metadata,
-            });
-          },
-          logger: {
-            info(message, metadata) {
-              console.info(`[tool:${id}] ${message}`, metadata ?? "");
-            },
-            warn(message, metadata) {
-              console.warn(`[tool:${id}] ${message}`, metadata ?? "");
-            },
-            error(message, metadata) {
-              console.error(`[tool:${id}] ${message}`, metadata ?? "");
-            },
-          },
-        },
         onEvent: async (event) => {
           const current = await this.runs.get(id);
           if (!current || current.status === "cancelled") return;
           await this.runs.appendEvent(id, event);
-          await this.auditTraceEvent(id, event, run);
+          await this.runtimeHelpers().auditTraceEvent(id, event, run);
         },
-      }));
+      });
+      let finalResult = result;
       const current = await this.runs.get(id);
       if (!current || current.status === "cancelled") return;
-      // Phase 16 Slice D: respect the optional `runStatus` override
-      // on the agent result. Tool-build council runs that finish the
-      // pipeline but never pass QA set `runStatus: "failed"` so the
-      // runs row and the Runs page show `failed`, matching the final
-      // trace span. Without this, runs were marked `completed`
-      // whenever the agent function returned normally — even when
-      // its own final event was a red `run-started:failed`.
+      const waitingForApproval = shouldPauseForExternalActionApproval(result);
       if (result.runStatus === "failed") {
         await this.runs.fail(
           id,
-          result.runFailureReason ?? "Run finished without meeting its acceptance criteria.",
+          result.runFailureReason ??
+            "Run finished without meeting its acceptance criteria.",
         );
+      } else if (waitingForApproval) {
+        const reason = externalActionApprovalPauseReason(result);
+        await this.runs.waitForApproval(id, result, reason);
+        await this.runs.appendEvent(id, {
+          id: `run-waiting-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          spanId: `${id}:waiting-approval`,
+          type: "run-waiting-approval",
+          actor: "coordinator",
+          activity: "coordination",
+          status: "completed",
+          title: "Run waiting for approval",
+          detail: reason,
+          timestamp: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          payload: {
+            input: { runId: id },
+            output: {
+              status: "waiting_approval",
+              proposalIds: externalActionApprovalProposalIds(result),
+            },
+          },
+        });
       } else {
         await this.runs.complete(id, result);
+        if (hasAutoExternalActionProposals(result)) {
+          await this.actionProposalAutoMode?.commitReadyAutoProposalsForRun(id);
+          finalResult = (await this.runs.get(id))?.result ?? result;
+        }
       }
-      await this.auditLearnedMemory(id, result, run);
-      // Phase 16 Slice D: keep the audit log honest. When the agent
-      // marked the run as failed via `runStatus`, we record a
-      // `run.failed` event with the failure reason instead of
-      // `run.completed`. The Activity feed and downstream consumers
-      // get a single coherent label across runs row + audit + trace.
-      if (result.runStatus === "failed") {
+      await this.runtimeHelpers().auditLearnedMemory(id, finalResult, run);
+      await this.runtimeHelpers().auditActionProposals(id, finalResult, run);
+      if (finalResult.runStatus === "failed") {
         await this.audit.record({
           instanceId: run?.instanceId,
           actorId: "coordinator",
@@ -1107,8 +690,26 @@ export class RunsService implements OnApplicationBootstrap {
           channel: run?.channel,
           summary: `Run failed: ${task.slice(0, 160)}`,
           metadata: {
-            reason: result.runFailureReason,
-            artifacts: result.artifacts?.length ?? 0,
+            reason: finalResult.runFailureReason,
+            artifacts: finalResult.artifacts?.length ?? 0,
+          },
+        });
+      } else if (waitingForApproval) {
+        await this.audit.record({
+          instanceId: run?.instanceId,
+          actorId: "coordinator",
+          actorType: "agent",
+          action: "run.waiting_approval",
+          targetType: "run",
+          targetId: id,
+          status: "pending",
+          runId: id,
+          threadId: run?.threadId,
+          requesterUserId: run?.requesterUserId,
+          channel: run?.channel,
+          summary: `Run waiting for external action approval: ${task.slice(0, 160)}`,
+          metadata: {
+            proposalIds: externalActionApprovalProposalIds(result),
           },
         });
       } else {
@@ -1131,28 +732,30 @@ export class RunsService implements OnApplicationBootstrap {
           },
         });
       }
-      if (context.threadId) {
+      if (context.threadId && !waitingForApproval) {
         await this.threads?.completeRun({
           threadId: context.threadId,
           runId: id,
           task,
-          finalAnswer: result.finalAnswer,
-          artifacts: result.artifacts,
+          finalAnswer: finalResult.runStatus === "failed" ? undefined : finalResult.finalAnswer,
+          artifacts: finalResult.runStatus === "failed" ? undefined : finalResult.artifacts,
+          failedError: finalResult.runStatus === "failed" ? finalResult.runFailureReason : undefined,
         });
       }
-      await this.recordToolServiceOutbound(run, {
-        runId: id,
-        status: "completed",
-        summary: `Run completed: ${result.finalAnswer.slice(0, 200)}`,
-        payload: {
-          finalAnswer: result.finalAnswer,
-          artifacts: result.artifacts,
-        },
-      });
+      if (!waitingForApproval) {
+        const outbound = buildRunOutboundDelivery(finalResult);
+        await this.runtimeHelpers().recordToolServiceOutbound(run, {
+          runId: id,
+          status: outbound.status,
+          summary: outbound.summary,
+          payload: outbound.payload,
+        });
+      }
     } catch (error) {
       const current = await this.runs.get(id);
       if (!current || current.status === "cancelled") return;
-      const message = error instanceof Error ? error.message : "Unknown run error";
+      const message =
+        error instanceof Error ? error.message : "Unknown run error";
       await this.runs.fail(id, message);
       await this.audit.record({
         instanceId: run?.instanceId,
@@ -1177,173 +780,25 @@ export class RunsService implements OnApplicationBootstrap {
           failedError: message,
         });
       }
-      await this.recordToolServiceOutbound(run, {
+      await this.runtimeHelpers().recordToolServiceOutbound(run, {
         runId: id,
         status: "failed",
         summary: `Run failed: ${message.slice(0, 200)}`,
         payload: { error: message },
       });
     } finally {
-      // Always release the controller — if the operator cancels mid-run
-      // we already cleared it in cancel(); if the run finished naturally
-      // we clear it here. Leaving stale entries would slowly leak
-      // controllers + abort-signal subscriptions.
       const existing = this.runAbortControllers.get(id);
       if (existing === runAbort) this.runAbortControllers.delete(id);
     }
   }
 
-  private async withRunIdleGuard<T>(
-    runId: string,
-    controller: AbortController,
-    work: () => Promise<T>,
-  ): Promise<T> {
-    const timeoutMs = readRunIdleTimeoutMs();
-    if (timeoutMs <= 0) return work();
+}
 
-    let timer: NodeJS.Timeout | undefined;
-    let settled = false;
-    const workPromise = work();
-    workPromise.catch(() => undefined);
-
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timer = setInterval(() => {
-        if (settled) return;
-        void this.runs.get(runId)
-          .then((run) => {
-            if (!run || TERMINAL.includes(run.status)) return;
-            const updatedAt = Date.parse(run.updatedAt);
-            const idleMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : 0;
-            if (idleMs < timeoutMs) return;
-            const message = `Run made no observable progress for ${Math.round(idleMs / 1000)}s; aborting stalled execution.`;
-            if (!controller.signal.aborted) controller.abort(new Error(message));
-            reject(new Error(message));
-          })
-          .catch((error) => {
-            reject(error instanceof Error ? error : new Error("Run idle guard failed"));
-          });
-      }, Math.min(Math.max(5_000, Math.floor(timeoutMs / 6)), 30_000));
-    });
-
-    try {
-      return await Promise.race([workPromise, timeoutPromise]);
-    } finally {
-      settled = true;
-      if (timer) clearInterval(timer);
-    }
-  }
-
-  private async recordToolServiceOutbound(
-    run: AgentRunRecord | undefined,
-    delivery: {
-      runId: string;
-      status: "completed" | "failed";
-      summary: string;
-      payload: Record<string, unknown>;
-    },
-  ): Promise<void> {
-    if (!run?.channel || !this.toolServiceSupervisor || !this.toolServiceEvents) return;
-    if (!run.sourceChatId && !run.sourceUserId) return;
-    const service = (await this.toolServiceSupervisor.list()).find(
-      (candidate) => candidate.toolName === run.channel,
-    );
-    if (!service) return;
-
-    const event = await this.toolServiceEvents.record({
-      toolName: run.channel,
-      direction: "outbound",
-      status: "queued",
-      summary: delivery.summary,
-      sourceUserId: run.sourceUserId,
-      sourceChatId: run.sourceChatId,
-      sourceMessageId: run.sourceMessageId,
-      threadId: run.threadId,
-      runId: delivery.runId,
-      payload: {
-        ...delivery.payload,
-        runStatus: delivery.status,
-        requesterUserId: run.requesterUserId,
-      },
-    });
-
-    await this.audit.record({
-      instanceId: run.instanceId,
-      actorId: run.channel,
-      actorType: "tool",
-      action: "tool_service.event_recorded",
-      targetType: "tool",
-      targetId: run.channel,
-      status: delivery.status === "completed" ? "pending" : "failure",
-      runId: delivery.runId,
-      threadId: run.threadId,
-      requesterUserId: run.requesterUserId,
-      channel: run.channel,
-      summary: `Outbound event queued for ${run.channel}: ${delivery.summary.slice(0, 160)}`,
-      metadata: {
-        serviceEventId: event.id,
-        runStatus: delivery.status,
-      },
-    });
-  }
-
-  private async auditLearnedMemory(
-    runId: string,
-    result: AgentRunResult,
-    run: AgentRunRecord | undefined,
-  ): Promise<void> {
-    if (!result.learnedSkill) return;
-    await this.audit.record({
-      instanceId: run?.instanceId,
-      actorId: "coordinator",
-      actorType: "agent",
-      action: "memory.created",
-      targetType: "memory",
-      targetId: result.learnedSkill.id,
-      status: result.learnedSkill.status === "proposed" ? "pending" : "success",
-      runId,
-      threadId: run?.threadId ?? result.learnedSkill.sourceThreadId,
-      requesterUserId: run?.requesterUserId,
-      channel: run?.channel,
-      summary: `Memory created from run: ${result.learnedSkill.title}`,
-      metadata: {
-        scope: result.learnedSkill.scope,
-        scopeId: result.learnedSkill.scopeId,
-        confidence: result.learnedSkill.confidence,
-        memoryStatus: result.learnedSkill.status,
-        sensitivity: result.learnedSkill.sensitivity,
-      },
-    });
-  }
-
-  private async auditTraceEvent(
-    runId: string,
-    event: AgentEvent,
-    run?: { instanceId?: string; threadId?: string; requesterUserId?: string; channel?: string },
-  ): Promise<void> {
-    if (event.activity !== "tool") return;
-    if (event.status !== "completed" && event.status !== "failed") return;
-    const payload = event.payload && typeof event.payload === "object"
-      ? (event.payload as Record<string, unknown>)
-      : {};
-    await this.audit.record({
-      instanceId: run?.instanceId,
-      actorId: event.actor,
-      actorType: "tool",
-      action: event.status === "failed" ? "tool.failed" : "tool.used",
-      targetType: "tool",
-      targetId: String(payload.toolName ?? event.actor),
-      status: event.status === "failed" ? "failure" : "success",
-      runId,
-      threadId: run?.threadId,
-      requesterUserId: run?.requesterUserId,
-      channel: run?.channel,
-      summary: event.title,
-      metadata: sanitizeAuditMetadata({
-        spanId: event.spanId,
-        detail: event.detail,
-        payload,
-        durationMs: event.durationMs,
-      }),
-    });
-  }
+function hasAutoExternalActionProposals(result: AgentRunResult): boolean {
+  return Boolean(
+    result.actionProposals?.some(
+      (proposal) =>
+        proposal.executionMode === "auto" && !proposal.approvalRequired,
+    ),
+  );
 }

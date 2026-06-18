@@ -1,3 +1,5 @@
+import { loadDefaultEnvFiles } from "../../config/envFile.js";
+
 export type AppEnv = {
   port: number;
   publicDir: string;
@@ -7,9 +9,11 @@ export type AppEnv = {
   toolServiceMaxAutoRestarts: number;
   toolSourceBundleHttpRunnerEnabled: boolean;
   /**
-   * Gate the preinstalled core toolbelt on a single env flag. Defaults
-   * to `enabled`; set BUILTIN_TOOLS=disabled to start with an empty
-   * registry for isolated experiments.
+   * Gate the legacy built-in/reference tools
+   * (web.search, file.read/write, chart.generate, browser.operate,
+   * telegram.bot, market.timeseries) on a single env flag. The rebuilt
+   * product defaults to generated/package tools only; set
+   * BUILTIN_TOOLS=enabled only for old compatibility smoke tests.
    */
   builtinToolsEnabled: boolean;
   internalBaseUrl?: string;
@@ -21,9 +25,18 @@ export type AppEnv = {
    * `TOOL_CALLBACK_BASE_URL` for non-default deployments.
    */
   toolCallbackBaseUrl?: string;
+  /**
+   * Opt-in shared API token. When set, every /api/* request must present
+   * it (Authorization: Bearer, x-agentic-token header, or ?token= query
+   * for SSE/links). Unset keeps the open localhost-dev behavior.
+   * Exempt: /api/health, /api/tools/callbacks/* (own HMAC tokens), and
+   * /api/fixtures/* (local browser fixture pages).
+   */
+  apiAuthToken?: string;
 };
 
 export function readEnv(): AppEnv {
+  loadDefaultEnvFiles();
   const port = Number(process.env.PORT ?? "3000");
   return {
     port,
@@ -36,8 +49,9 @@ export function readEnv(): AppEnv {
     toolSourceBundleHttpRunnerEnabled:
       process.env.TOOL_SOURCE_BUNDLE_HTTP_RUNNER !== "disabled" &&
       process.env.TOOL_SOURCE_BUNDLE_RUNNER !== "in-process",
-    builtinToolsEnabled: process.env.BUILTIN_TOOLS !== "disabled",
+    builtinToolsEnabled: process.env.BUILTIN_TOOLS === "enabled",
     internalBaseUrl: process.env.AGENTIC_INTERNAL_BASE_URL,
     toolCallbackBaseUrl: process.env.TOOL_CALLBACK_BASE_URL,
+    apiAuthToken: process.env.AGENTIC_API_TOKEN?.trim() || undefined,
   };
 }

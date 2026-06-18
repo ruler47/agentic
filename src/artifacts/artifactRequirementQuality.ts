@@ -2,7 +2,7 @@ import { AgentArtifact, ArtifactRequirement } from "../types.js";
 
 export type ArtifactRequirementQualityReport = {
   ok: boolean;
-  decision: "usable" | "type_mismatch" | "weak_preview" | "semantic_mismatch";
+  decision: "usable" | "type_mismatch" | "weak_preview";
   reason: string;
 };
 
@@ -25,7 +25,7 @@ export function artifactMatchesRequirement(
   artifact: AgentArtifact,
   requirement: ArtifactRequirement,
 ): boolean {
-  return inspectArtifactRequirement(artifact, requirement).ok;
+  return inspectArtifactRequirement(artifact, requirement).decision !== "type_mismatch";
 }
 
 export function inspectArtifactRequirement(
@@ -34,9 +34,6 @@ export function inspectArtifactRequirement(
 ): ArtifactRequirementQualityReport {
   const typeReport = inspectArtifactType(artifact, requirement);
   if (!typeReport.ok) return typeReport;
-
-  const semanticReport = inspectArtifactSemanticFit(artifact, requirement);
-  if (!semanticReport.ok) return semanticReport;
 
   if ((requirement.kind === "data" || requirement.kind === "source") && hasEmptyPreview(artifact)) {
     return {
@@ -58,39 +55,6 @@ export function inspectArtifactRequirement(
     ok: true,
     decision: "usable",
     reason: `${artifact.filename} satisfies ${requirement.kind}/${requirement.capability}.`,
-  };
-}
-
-function inspectArtifactSemanticFit(
-  artifact: AgentArtifact,
-  requirement: ArtifactRequirement,
-): ArtifactRequirementQualityReport {
-  if (requirement.kind !== "screenshot" && requirement.capability !== "browser-screenshot") {
-    return usable(artifact, requirement);
-  }
-
-  const requirementText = requirement.description.toLowerCase();
-  const requiresFilledFormProof =
-    /filled|fill(?:ed)?\s+form|form fields|before submission|pre-submit|booking form|appointment form|reservation form|заполн|форма|перед отправк|до отправк/i.test(
-      requirementText,
-    );
-  if (!requiresFilledFormProof) return usable(artifact, requirement);
-
-  const artifactText = [
-    artifact.filename,
-    artifact.description ?? "",
-    artifact.contentPreview ?? "",
-  ].join("\n").toLowerCase();
-  const looksLikeFilledFormProof =
-    /filled|fill(?:ed)?[-_\s]?form|pre[-_\s]?submit|before[-_\s]?submit|booking[-_\s]?form|appointment[-_\s]?form|reservation[-_\s]?form|form[-_\s]?proof|заполн|форма/i.test(
-      artifactText,
-    );
-  if (looksLikeFilledFormProof) return usable(artifact, requirement);
-
-  return {
-    ok: false,
-    decision: "semantic_mismatch",
-    reason: `Screenshot artifact ${artifact.filename} is a generic page screenshot, but ${requirement.kind}/${requirement.capability} requires proof of a filled or pre-submit form.`,
   };
 }
 
