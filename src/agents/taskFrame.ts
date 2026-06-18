@@ -4,6 +4,7 @@ import {
   isExternalActionRequirementsQuestion,
   type ExternalActionPolicy,
 } from "./externalActionPlanning.js";
+import { THREAD_CONTEXT_ANSWER_FRAME_MARKER } from "./baseAgentThreadContext.js";
 import { uniqueProofWorthyUrls } from "./proofSourceUrls.js";
 
 const DEFAULT_MAX_STEPS = 10;
@@ -13,7 +14,8 @@ export type TaskFrameMode =
   | "current_lookup"
   | "exploratory_research"
   | "product_selection"
-  | "tool_build_or_rework";
+  | "tool_build_or_rework"
+  | "thread_context_answer";
 
 export type ResearchDepth = "none" | "single_source" | "multi_source" | "structured_selection";
 
@@ -79,6 +81,33 @@ export function taskNeedsCurrentExternalData(task: string): boolean {
 }
 
 export function frameTask(task: string): TaskFrame {
+  if (task.includes(THREAD_CONTEXT_ANSWER_FRAME_MARKER)) {
+    return {
+      mode: "thread_context_answer",
+      reason: "The current request is a follow-up that can be answered from the existing conversation thread context.",
+      researchDepth: "none",
+      idealOutcome: "Answer from prior thread summary, accepted facts, open questions, and artifact metadata before doing fresh research.",
+      userSuccessCriteria: ["use prior answer context", "do not reacquire the same data", "say when the thread context is insufficient"],
+      likelyFailureModes: ["repeating the original web search", "treating prior-answer questions as fresh current lookups", "inventing missing prior context"],
+      exceedExpectations: ["quote the relevant prior source/fact when available", "clearly identify when a fresh check would be needed"],
+      requiredEvidence: ["thread summary or accepted thread fact"],
+      researchPlan: [],
+      answerContract: {
+        mustDo: ["answer against the previous conversation context", "state if the requested detail is missing from the thread context"],
+        mustAvoid: ["fresh web/API lookup unless the user explicitly asks to refresh", "claiming a source/fact that is absent from thread context"],
+        finalAnswerShape: ["answer from prior context", "source/fact reference or limitation"],
+        proofStrategy: "Conversation context is the evidence; no new proof artifact is required unless the user asks for a refreshed external fact.",
+      },
+      researchContract: {
+        minResearchToolCalls: 0,
+        minIndependentSourceUrls: 0,
+        minSourceReadToolCalls: 0,
+        mustCheckFreshness: false,
+        requiresClaimBasedProof: false,
+      },
+    };
+  }
+
   if (isToolLifecycleOnlyTask(task)) {
     return {
       mode: "tool_build_or_rework",

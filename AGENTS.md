@@ -29,13 +29,16 @@ Build queue, investigation flow, and tool-rework wait flow were removed from the
 tree on 2026-05-15. Reintroduce those ideas only through the roadmap, not by reviving the
 deleted pipeline.
 
-As of 2026-06-02, the active roadmap is `docs/roadmap-core-toolbelt.md`: stabilize a
+As of 2026-06-18, the active roadmap is `docs/roadmap-core-toolbelt.md`: stabilize a
 preinstalled portable core toolbelt before expanding Tool Creation V1 or external-action
 automation. Tool builder and external actions remain useful infrastructure, but new
 feature work in those areas should be frozen unless it fixes baseline operation. Core
 tools should be first-party portable packages registered through the same manifest,
 versioning, settings, secret-handle, runner, artifact, health, and trace contracts as
 generated tools.
+The companion handoff is `docs/agent-handoff.md`. Do not continue from
+`claude/phase17-research-delegation` as the active base; it was audited and still uses a
+large legacy `UniversalAgent` runtime.
 
 ## Current Runtime
 
@@ -88,6 +91,10 @@ generated tools.
   (`RunContextResolver.threadContextForThreadId`). The thread summary appends the
   newest "Answered:" digest at the END; prompt rendering must keep enough tail
   (currently 1 400 chars) so the latest answer is not truncated away.
+- Follow-up questions about prior answers, sources, artifacts, or already-discussed facts
+  can frame as `thread_context_answer`. That mode answers from thread summary, accepted
+  facts, and open questions, and it must not force a fresh web/current lookup just to cite
+  what the previous answer already used.
 - The whole `/api` surface supports an opt-in shared operator token:
   `AGENTIC_API_TOKEN` set -> every request needs `Authorization: Bearer`,
   `x-agentic-token`, or `?token=` (timing-safe compare); unset keeps the open
@@ -117,6 +124,10 @@ generated tools.
   preparation proof artifacts are visual-QA checked before they count as usable commit
   proof; failed/blocked screenshots can remain visible in UI diagnostics but are not
   returned as prepared-session proof ids.
+- Explicit API/HTTP/JSON or local-utility tasks that forbid screenshots, or that only need
+  structured protocol/source evidence, must not trigger visual proof repair. They may still
+  save a sanitized structured/source proof artifact such as HTTP status, response fields,
+  and source URL.
 - BaseAgent is offered only operator-enabled tools with active status `available`.
   `loaded`, `disabled`, and `failed` tools remain visible in Tools for manual checks but
   are omitted from agent prompts/tool schemas.

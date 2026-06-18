@@ -76,3 +76,11 @@ export async function runWithTimeout<T>(
     parentSignal?.removeEventListener("abort", onAbort);
   }
 }
+
+export function hasRemainingToolCalls(attemptedToolCalls: number, maxToolCalls?: number): boolean {
+  return maxToolCalls === undefined || attemptedToolCalls < maxToolCalls;
+}
+
+export function hasRemainingSteps(step: number, maxSteps?: number): boolean {
+  return maxSteps === undefined || step < maxSteps;
+}

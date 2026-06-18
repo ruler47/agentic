@@ -52,6 +52,22 @@ UI smoke:
 - Run Workspace and Trace Lab show the Bitcoin proof artifact, tool versions, timeline,
   trace inputs/outputs, and approval controls.
 
+Follow-up checkpoint on branch `codex/split-mainline`:
+
+- Audited Claude's separate `claude/phase17-research-delegation` worktree. It is a
+  legacy/monolithic branch with `src/agents/universalAgent.ts` still above 9k lines, so it
+  is not the base for the current rebuild. Continue from the split `BaseAgent` branch
+  instead.
+- `npm run verify` passed after the P0 split-branch fixes: lint, typecheck, type tests,
+  493 unit tests, and build.
+- Added regression coverage in `tests/baseAgent.p0.test.ts` for:
+  - explicit API/no-screenshot tasks using structured HTTP proof without visual proof
+    repair;
+  - follow-up questions about prior answers using thread context instead of doing a fresh
+    lookup.
+- `src/agents/baseAgent.ts` is back under the line limit at 793 lines after moving thread
+  framing helpers into `src/agents/baseAgentThreadContext.ts`.
+
 Current blockers before declaring the base ready:
 
 - Only 5 of the 20 registered tools are currently `available` and offered to agents:
@@ -59,21 +75,15 @@ Current blockers before declaring the base ready:
   `external.action.prepare`. The intended core tools `http.request`, `file.read`,
   `file.write`, `document.extract`, `data.transform`/`data.table`, and
   `channel.telegram` are not yet active agent capabilities in this branch.
-- The explicit "do not screenshot" API-read task still triggered proof repair and a
-  screenshot. API/local utility tasks must respect negative proof instructions and the
-  roadmap rule that API-only tasks do not request visual proof unless asked.
-- Follow-up questions that ask about prior answers can be misclassified as
-  `current_lookup`. Thread context is present in the prompt payload, but task framing and
-  return gates do not yet treat "answer from previous context" as sufficient evidence.
 - External-action tasks still stop before preparation in ordinary approval mode. The
   proposal card is clearer than before, but the user still cannot complete "find,
   prepare, show proof, then submit after one approval" in one simple flow.
 - Work/Evidence Ledger cards on tested runs show `0 claims` and `0 evidence records`
   despite tool activity. Either BaseAgent is not writing ledger claims yet, or the UI
   is not reading the relevant records.
-- Files slightly above the preferred 800-line limit remain:
+- Files slightly above the preferred 800-line limit remain after the P0 split:
   `src/server/modules/runs/action-proposal-preparation-runner.ts`,
-  `src/agents/baseAgent.ts`, `tests/actionProposalPreparationRunner.test.ts`,
+  `tests/actionProposalPreparationRunner.test.ts`,
   `src/server/modules/runs/runs.service.ts`, and `tests/nestApi.test.ts`.
 
 This is the active product roadmap after the tool-builder/external-action stress phase.

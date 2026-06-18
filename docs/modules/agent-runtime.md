@@ -1,6 +1,6 @@
 # Agent Runtime Module
 
-Status date: 2026-05-18.
+Status date: 2026-06-18.
 
 ## Purpose
 
@@ -19,6 +19,8 @@ Main files:
   candidate acceptance, action proposal emission, and run result assembly.
 - `src/agents/baseAgentEvidence.ts`, `src/agents/baseAgentProof.ts`, and
   `src/agents/baseAgentArtifacts.ts` - source/proof reasoning and artifact QA helpers.
+- `src/agents/baseAgentThreadContext.ts` - compact task rewriting for follow-up questions
+  that can be answered from conversation context.
 - `src/llm/client.ts`
 - `src/tools/tool.ts`
 - `src/tools/registry.ts`
@@ -34,7 +36,8 @@ only through the roadmap with new contracts.
 Run created
   -> RunsService resolves context and stores the run
   -> BaseAgent starts
-      -> LLM receives task, context, tool schemas, and finish action
+      -> task is framed, including direct/thread/tool/research/proof needs
+      -> LLM receives task, bounded context, tool schemas, and finish action
       -> LLM may call registered tools
       -> ToolRegistry executes calls with run-scoped runtime context
       -> artifacts/screenshots returned or written by tools are saved
@@ -55,6 +58,10 @@ Run created
   research contract. Broad/current recommendation, comparison, and product-selection
   tasks require multiple research steps, independent source URLs, and at least one
   source read/extract call instead of a one-search/snippet answer;
+- treating source/artifact questions about a prior answer as `thread_context_answer` when
+  thread summary, accepted facts, or open questions can answer them. That frame suppresses
+  fresh lookup/proof requirements and makes the model answer from existing conversation
+  context with a visible limitation when the context is insufficient;
 - exposing tool schemas to the LLM;
 - executing only registered tool calls through `ToolRegistry`;
 - passing run/thread/user/instance provenance into tool calls;
@@ -79,6 +86,10 @@ Run created
   quote, weather, news, and similar tasks must use a search/fetch/data tool that returns
   text or structured evidence before answering; a screenshot-only answer fails the return
   gate;
+- respecting explicit no-screenshot/API-only instructions. HTTP/API/JSON and local utility
+  tasks can satisfy proof with structured source evidence, and the visual proof repair loop
+  must not request screenshots when the task explicitly forbids them or when visual proof is
+  irrelevant to the user request;
 - blocking shallow final answers for broad research/product-selection frames with
   `agent-research-contract-repair-requested`. The model receives a repair instruction to
   check freshness/current baseline, discover candidates, verify final claims, and call

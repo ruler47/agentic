@@ -33,7 +33,7 @@ import {
   proofRepairInstructionForModel,
   sourceGroundingRepairInstructionForModel,
 } from "./baseAgentProof.js";
-import { emit, runWithTimeout } from "./baseAgentRuntime.js";
+import { emit, hasRemainingSteps, hasRemainingToolCalls, runWithTimeout } from "./baseAgentRuntime.js";
 import { emitBaseAgentToolEvent, resolveBaseAgentTool } from "./baseAgentToolRuntimeHelpers.js";
 import {
   limitText,
@@ -49,6 +49,7 @@ import {
   recoverFromContextOverflow,
   requestTruncatedAnswerRepair,
 } from "./baseAgentTruncation.js";
+import { taskWithThreadContextForFraming } from "./baseAgentThreadContext.js";
 import {
   containsRawToolCallSyntax,
   contextSummary,
@@ -789,39 +790,4 @@ export class BaseAgent {
     });
   }
 
-}
-
-function taskWithThreadContextForFraming(
-  task: string,
-  runContext: ReturnType<typeof normalizeRunContext>,
-): string {
-  const thread = runContext.thread;
-  if (!thread) return task;
-  const threadText = [
-    thread.summary,
-    ...(thread.acceptedFacts ?? []),
-    ...(thread.openQuestions ?? []),
-  ].filter(Boolean).join("\n");
-  if (!threadContextLooksLikeExternalAction(threadText)) return task;
-  const context = [
-    thread.summary ? `Thread summary: ${thread.summary}` : undefined,
-    ...(thread.acceptedFacts ?? []).map((fact) => `Accepted fact: ${fact}`),
-    ...(thread.openQuestions ?? []).map((question) => `Open question: ${question}`),
-    `Current request: ${task}`,
-  ].filter((line): line is string => Boolean(line));
-  return context.length > 1 ? context.join("\n") : task;
-}
-
-function threadContextLooksLikeExternalAction(text: string): boolean {
-  return /(?:book|booking|reserve|reservation|appointment|schedule|submit|confirmation|запис|брон|брониров|резерв|отправ|подтвержд|форм)/iu.test(
-    text,
-  );
-}
-
-function hasRemainingToolCalls(attemptedToolCalls: number, maxToolCalls?: number): boolean {
-  return maxToolCalls === undefined || attemptedToolCalls < maxToolCalls;
-}
-
-function hasRemainingSteps(step: number, maxSteps?: number): boolean {
-  return maxSteps === undefined || step < maxSteps;
 }

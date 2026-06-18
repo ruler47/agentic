@@ -25,6 +25,7 @@ import {
   normalizeProofSignal,
   normalizeSemanticSignal,
   shouldRequireProofArtifact,
+  taskShouldSkipVisualProofRepair,
 } from "./baseAgentEvidence.js";
 
 export function shouldRequireSourceGrounding(input: {
@@ -236,8 +237,10 @@ export function slugFromSourceUrl(sourceUrl: string): string {
 export function shouldRequireExternalDataEvidence(input: {
   task: string;
   sourceUrls: string[];
+  taskFrame?: TaskFrame;
 }): boolean | undefined {
   if (isToolLifecycleOnlyTask(input.task)) return undefined;
+  if (input.taskFrame?.mode === "thread_context_answer") return undefined;
   if (!taskNeedsCurrentExternalData(input.task)) return undefined;
   return input.sourceUrls.filter(isProofWorthySourceUrl).length === 0 ? true : undefined;
 }
@@ -251,6 +254,7 @@ export function proofInstructionForModel(input: {
   tools: Tool[];
   artifactSavingAvailable: boolean;
 }): string | undefined {
+  if (taskShouldSkipVisualProofRepair(input.task)) return undefined;
   const missingProof = shouldRequireProofArtifact({
     task: input.task,
     sourceUrls: input.sourceUrls,

@@ -315,6 +315,7 @@ export async function finalizeBaseAgentRun(input: BaseAgentFinalizationInput): P
     missingExternalDataEvidence: shouldRequireExternalDataEvidence({
       task,
       sourceUrls: [...externalDataEvidenceUrls],
+      taskFrame,
     }),
     actionProposalCount: actionProposals.length,
   });

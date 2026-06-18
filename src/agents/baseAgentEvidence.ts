@@ -190,10 +190,32 @@ export function cleanUrl(value: string): string {
 }
 
 export function inferRequiredArtifacts(task: string): { screenshot: boolean } {
-  const lower = task.toLowerCase();
   return {
-    screenshot: /(?:скриншот|screenshot|screen shot)/i.test(lower) && /https?:\/\//i.test(task),
+    screenshot: taskExplicitlyRequestsScreenshot(task) && !taskForbidsScreenshotProof(task) && /https?:\/\//i.test(task),
   };
+}
+
+export function taskExplicitlyRequestsScreenshot(task: string): boolean {
+  return /(?:скриншот|скрин|screenshot|screen shot|visual proof|видимый\s+пруф)/iu.test(task);
+}
+
+export function taskForbidsAnyProof(task: string): boolean {
+  return /(?:\bno\s+proof\b|\bwithout\s+proof\b|do\s+not\s+(?:attach|provide|capture)\s+proof|не\s+(?:нужен|надо|прикладывай|давай|делай).{0,24}(?:пруф|доказательств)|без\s+(?:пруф|доказательств))/iu.test(task);
+}
+
+export function taskForbidsScreenshotProof(task: string): boolean {
+  return /(?:\bno\s+screenshot\b|\bwithout\s+screenshot\b|do\s+not\s+(?:take|capture|attach|provide|make).{0,24}(?:screenshot|screen\s+shot)|don't\s+(?:take|capture|attach|provide|make).{0,24}(?:screenshot|screen\s+shot)|не\s+(?:делай|надо|нужен|прикладывай|давай|снимай|создавай).{0,30}(?:скриншот|скрин)|без\s+(?:скриншот|скрина))/iu.test(task);
+}
+
+export function taskLooksLikeApiOnlyProofTask(task: string): boolean {
+  return /(?:\bapi\b|\bjson\b|\bhttp\b|\bendpoint\b|\bcurl\b|апи|json|эндпоинт|http)/iu.test(task)
+    && /https?:\/\//iu.test(task)
+    && !/(?:page|страниц|сайт|браузер|browser|visual|видим|скриншот|screenshot)/iu.test(task);
+}
+
+export function taskShouldSkipVisualProofRepair(task: string): boolean {
+  if (taskForbidsAnyProof(task) || taskForbidsScreenshotProof(task)) return true;
+  return taskLooksLikeApiOnlyProofTask(task) && !taskExplicitlyRequestsScreenshot(task);
 }
 
 export function determineFailure(input: {
@@ -266,7 +288,7 @@ export function shouldRequireProofArtifact(input: {
   if (!input.artifactSavingAvailable) return undefined;
   if (input.artifacts.some(isUsableProofArtifact)) return undefined;
   if (isToolLifecycleOnlyTask(input.task)) return undefined;
-  if (/\b(?:без\s+скриншот|без\s+пруф|no\s+proof|no\s+screenshot)\b/i.test(input.task)) return undefined;
+  if (taskForbidsAnyProof(input.task)) return undefined;
   const urls = input.sourceUrls.filter(isProofWorthySourceUrl);
   return urls.length > 0 ? { sourceUrls: urls } : undefined;
 }
