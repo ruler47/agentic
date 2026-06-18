@@ -36,6 +36,9 @@ feature work in those areas should be frozen unless it fixes baseline operation.
 tools should be first-party portable packages registered through the same manifest,
 versioning, settings, secret-handle, runner, artifact, health, and trace contracts as
 generated tools.
+The primary branch is now `main` at merge commit `cac5b9d`, which merges the verified
+split `BaseAgent` runtime and core toolbelt from `codex/split-mainline`. Continue from
+`main`; keep `codex/split-mainline` only as a preserved checkpoint branch.
 The companion handoff is `docs/agent-handoff.md`. Do not continue from
 `claude/phase17-research-delegation` as the active base; it was audited and still uses a
 large legacy `UniversalAgent` runtime.

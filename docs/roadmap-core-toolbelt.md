@@ -4,7 +4,9 @@ Status date: 2026-06-18.
 
 ## 2026-06-18 Validation Checkpoint
 
-Branch: `codex/rewrite-from-agentic-main-next`.
+Historical branch: `codex/rewrite-from-agentic-main-next`.
+Current primary branch: `main`.
+Preserved split branch: `codex/split-mainline`.
 
 Automated verification:
 
@@ -73,12 +75,16 @@ Follow-up checkpoint on branch `codex/split-mainline`:
   `document.extract`, `data.transform`, `external.action.prepare`,
   `external.action.commit`, and `channel.telegram` at bootstrap when built-ins are enabled.
   Typecheck and focused BaseAgent/core-toolbelt tests passed after the port.
+- `main` was then updated through merge commit `cac5b9d` so the primary branch now uses
+  the verified split `BaseAgent` tree with the preinstalled core toolbelt. `npm run
+  verify` passed on `main` after the merge: lint, typecheck, test typecheck, 506 unit
+  tests, and build.
 
-Current blockers before declaring the base ready:
+Current blockers before declaring the base ready for product testing:
 
-- Core toolbelt code and bootstrap registration are now present on the split branch, but
-  the running API/UI smoke still needs to confirm that metadata/readiness exposes every
-  intended tool to agents.
+- Core toolbelt code and bootstrap registration are present on `main`, but the running
+  API/UI smoke still needs to confirm that metadata/readiness exposes every intended tool
+  to agents.
 - External-action tasks still stop before preparation in ordinary approval mode. The
   proposal card is clearer than before, but the user still cannot complete "find,
   prepare, show proof, then submit after one approval" in one simple flow.
@@ -89,6 +95,45 @@ Current blockers before declaring the base ready:
   `src/server/modules/runs/action-proposal-preparation-runner.ts`,
   `tests/actionProposalPreparationRunner.test.ts`,
   `src/server/modules/runs/runs.service.ts`, and `tests/nestApi.test.ts`.
+
+## Active Priority Order After Main Merge
+
+P0: prove the core-toolbelt baseline through the live product surface.
+
+- Start the API/UI from `main`.
+- Confirm `/api/tools`, `/api/tools/health`, manual tool runs, agent catalog exposure,
+  trace input/output, and artifact preview/download for every preinstalled tool class.
+- Run practical tasks:
+  - simple direct answer without tools;
+  - current web fact with source and screenshot proof;
+  - explicit API/JSON task through `http.request` without screenshot;
+  - local file/document/data task through file/document/data tools;
+  - broad research task using search plus read;
+  - Telegram/channel smoke if service credentials are configured.
+
+P1: make the agent operationally coherent.
+
+- Ensure follow-up runs reuse thread context and artifact metadata before reacquiring data.
+- Add a clear memory model for run memory, conversation/thread memory, user memory, group
+  memory, and accepted retrospective memory.
+- Wire BaseAgent tool calls into Work/Evidence Ledger, or fix the UI if records are
+  already persisted under a different scope.
+
+P2: reduce friction and complexity.
+
+- Simplify external-action approval to one understandable path: proposed action, prepared
+  proof, one approval, commit, final report.
+- Keep the active codebase near the 800-line file target and split the remaining oversized
+  files when touching those areas.
+- Freeze/delete inactive builder paths only after tests prove they are not used by the
+  core-toolbelt phase.
+
+P3: route models and revive builder later.
+
+- Route models by tier plus capability requirements: vision, reasoning, coding,
+  tool-calling, context window, and operator preference.
+- Redesign Tool Builder around the same manifest/version/runner/QA contract as the
+  preinstalled tools. Do not make generated tools permanent app-source branches.
 
 This is the active product roadmap after the tool-builder/external-action stress phase.
 The immediate goal is to make agents useful with a stable, generic toolbelt before adding

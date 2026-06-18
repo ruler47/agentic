@@ -4,10 +4,13 @@ Status date: 2026-06-18.
 
 ## Active Base
 
-Continue from the split rebuild branch, not from legacy monolithic branches.
+Continue from `main`. It has been updated to the split rebuild runtime and should be the
+new primary branch.
 
-- Current working branch: `codex/split-mainline`.
-- Base branch: `codex/rewrite-from-agentic-main-next`.
+- Current primary branch: `main`.
+- Merge commit: `cac5b9d` (`Merge split BaseAgent mainline with core toolbelt`).
+- Preserved source branch: `codex/split-mainline`.
+- Split base branch: `codex/rewrite-from-agentic-main-next`.
 - Active runtime: `BaseAgent`.
 - Active roadmap: `docs/roadmap-core-toolbelt.md`.
 
@@ -28,10 +31,9 @@ that generated tools will use later.
 
 ## Current Verified State
 
-`npm run verify` passed on 2026-06-18 from `codex/split-mainline` after the P0 fixes:
-lint, typecheck, test typecheck, 493 unit tests, and build. After that checkpoint, the
-preinstalled core toolbelt from `main` was ported onto the split BaseAgent branch and wired
-into bootstrap through `createCoreToolbelt()`.
+`npm run verify` passed on 2026-06-18 from `main` after merging the split runtime:
+lint, typecheck, test typecheck, 506 unit tests, and build. The final `main` tree matches
+the verified `codex/split-mainline` tree and is pushed to `origin/main`.
 
 Recent P0 fixes:
 
@@ -41,7 +43,7 @@ Recent P0 fixes:
   from thread summary/facts/open questions instead of doing a fresh lookup.
 - `src/agents/baseAgent.ts` is below the 800-line limit again; thread-context framing moved
   into `src/agents/baseAgentThreadContext.ts`.
-- Preinstalled tools now exist on the split branch: `web.search`, `web.read`,
+- Preinstalled tools now exist on the primary branch: `web.search`, `web.read`,
   `browser.operate`, `browser.screenshot`, `http.request`, `file.read`, `file.write`,
   `document.extract`, `data.transform`, `external.action.prepare`,
   `external.action.commit`, and `channel.telegram`.
@@ -50,32 +52,42 @@ Recent P0 fixes:
 
 P0:
 
-- Make simple runs fast and correct.
-- Keep proof policy proportional: screenshot proof for visual/current web tasks, structured
-  proof for API/local utility tasks, and no visual proof when the user explicitly forbids it.
-- Keep follow-ups from redoing work when thread context already contains the answer.
+- Confirm the running API/UI exposes the core toolbelt to agents: metadata, readiness,
+  manual run, agent run, trace input/output, and artifact handling.
+- Make simple runs fast and correct in practice: API/local utility tasks should use the
+  direct core-tool path, avoid browser/search when unnecessary, and finish with structured
+  proof instead of screenshots.
+- Keep proof policy proportional: screenshot proof for visual/current web tasks,
+  structured proof for API/local utility tasks, and no visual proof when the user
+  explicitly forbids it.
 
 P1:
 
-- Verify the full core toolbelt through the running API/UI and confirm all intended tools
-  are offered to agents through metadata/readiness, not only present in code.
-- Wire Work/Evidence Ledger records for BaseAgent tool calls, or fix the UI if records are
-  being written but not shown.
+- Conversation and memory continuity: follow-ups should reuse thread facts/artifacts;
+  run memory should know already completed steps; user/group profile memory should be
+  visible to the agent without polluting every prompt.
+- Work/Evidence Ledger records for BaseAgent tool calls: either wire missing writes or fix
+  the UI if records exist but are not shown.
+- Code hygiene: keep active files near the 800-line target, and prune/freeze builder code
+  that is not needed for the core-toolbelt phase.
 
 P2:
 
 - Simplify external-action approval/preparation so a user can ask for a booking/action and
   get one clear proposal, proof, one approval boundary, submit/commit, and final report.
+- Model routing: resolve from available local/remote providers by tier plus required
+  capability flags such as vision, reasoning, coding, tool-calling, context window, and
+  operator preferences.
 
 P3:
 
-- Reintroduce Tool Builder only after the core tool contract is stable. Generated tools
-  must be out-of-tree portable packages/services, not app-specific code branches.
+- Redesign Tool Builder only after the core tool contract is stable. Generated tools must
+  be out-of-tree portable packages/services, not app-specific code branches.
 
 ## Known Gaps
 
-- Core toolbelt wiring has type/unit coverage, but still needs a running API/UI smoke to
-  confirm metadata availability and agent catalog exposure.
+- Core toolbelt wiring has type/unit coverage, but still needs a running API/UI smoke from
+  the updated `main` branch to confirm metadata availability and agent catalog exposure.
 - External actions remain too hard to understand from the UI and still stop too early in
   ordinary approval mode.
 - Work/Evidence Ledger cards on tested runs showed zero records despite tool activity.
