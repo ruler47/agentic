@@ -63,6 +63,12 @@ large legacy `UniversalAgent` runtime.
 - Tool calls execute only through `ToolRegistry` with run-scoped runtime context:
   run/thread/user/instance provenance, per-call span id, artifact writer, callback
   envelope, secret/configuration resolvers, audit, and logger.
+- BaseAgent tool calls write Work/Evidence Ledger records through the per-run
+  `RuntimeLedgerCoordinator`: claim a run-local execution work item before execution,
+  store the canonical reusable work key in metadata, complete or fail the work item after
+  execution, record evidence with tool/source/artifact/QA metadata, and link generated
+  artifact ids back to the work item. Ledger writes are observability-only and must not
+  fail the user run when a ledger store is unavailable.
 - BaseAgent loops are budgeted BY DEFAULT: `maxSteps` comes from the task frame
   (`defaultMaxStepsForTaskFrame` — 10 base, 12 for product selection, 18 for external
   action preparation) and `maxToolCalls` defaults to `maxSteps * 4`. Unbounded research
@@ -122,9 +128,12 @@ large legacy `UniversalAgent` runtime.
   required for future containerized tools that do not share the app filesystem.
 - Every migration statement that recreates `runs_status_check` must include
   `waiting_approval`; durable databases can already contain paused approval runs.
-- BaseAgent core-tool calls currently show in Trace Lab and artifacts, but not yet in
-  Work/Evidence Ledger records. Treat ledger wiring for core tool calls as the next P0
-  correctness task.
+- Automated P0 coverage verifies `http.request` creates `api_call` work plus
+  `api_response` evidence, and `file.write` links generated file artifacts through both
+  Work Ledger and Evidence Ledger. Durable live smoke also passed across a backend
+  restart: `run_1781818681262_rpvsg59u` keeps one completed `api_call`, one
+  `api_response`, linked artifact `artifact_1781818687616_9q389ujl`, and the same data is
+  visible in the React Ledger page in `Backend ready · postgres` mode.
 - BaseAgent trace spans now use stable parent/child ids for the root agent, context,
   every LLM step, every tool call, artifact saves, and the return gate. LLM spans record
   safe normalized `input`/`output`; tool spans record summarized tool `input`/`output`.

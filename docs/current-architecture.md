@@ -28,10 +28,12 @@ flowchart TD
   BA --> LLM["LlmClient\nmodel tier policy"]
   LLM --> BA
   BA --> TR["ToolRegistry"]
+  BA --> WL["Work/Evidence Ledger\nclaim, evidence, artifact links"]
   TR --> CT["Core toolbelt\nweb, browser, http, file, document, data, external.action, telegram"]
   TR --> GT["Generated/imported tools\nsource-bundle / HTTP process / OCI"]
   CT --> AR["ArtifactStore"]
   GT --> AR
+  WL --> Stores
   BA --> FG["Finalization gates\nproof, source grounding, raw tool syntax, truncation"]
   FG --> RS
   RS --> API["Run result, trace events, artifacts, proposals"]
@@ -48,6 +50,8 @@ flowchart TD
 - `src/agents/baseAgentPrompt.ts`: system prompt and tool schemas passed to the model.
 - `src/agents/baseAgentToolExecution.ts`: registered tool execution, tool-call cache,
   evidence capture, artifact save hooks.
+- `src/agents/baseAgentToolLedger.ts`: Work/Evidence Ledger classification and
+  best-effort claim/evidence writes for BaseAgent tool calls.
 - `src/agents/baseAgentFinalization.ts`: final-answer gates, action proposal creation,
   result assembly.
 - `src/agents/baseAgentEvidence.ts` and `src/agents/baseAgentProof.ts`: source/proof
@@ -65,6 +69,8 @@ flowchart TD
   thread context rebuild, attachment parsing.
 - `src/server/modules/runs/run-agent-runtime-helpers.ts`: bridges runs to BaseAgent,
   tool creation/edit callbacks, secrets/configuration, channel outbound events.
+- `src/server/modules/runs/run-ledger-runtime.ts`: durable run event sink plus
+  Work/Evidence Ledger coordinator wiring for each run.
 - `src/server/modules/runs/action-proposals.service.ts` plus
   `action-proposal-*.ts`: external-action proposal, approval, prepare, profile
   hydration, commit readiness, fixture/commit support.
@@ -117,6 +123,7 @@ sequenceDiagram
   participant Tools as ToolRegistry
   participant Search as web.search
   participant Shot as browser.screenshot
+  participant Ledger as Work/Evidence Ledger
   participant Store as Run/Artifact stores
 
   User->>API: POST /api/runs { task }
@@ -128,17 +135,21 @@ sequenceDiagram
   Agent->>Agent: frameTask() => current_lookup
   Agent->>LLM: system prompt + context + tool schemas
   LLM-->>Agent: call web.search
+  Agent->>Ledger: claim search work item
   Agent->>Tools: run web.search
   Tools->>Search: query current BTC price
   Search-->>Tools: source URLs/snippets/data
   Tools-->>Agent: tool result + evidence
+  Agent->>Ledger: complete work + record search evidence
   Agent->>LLM: summarized evidence
   LLM-->>Agent: call browser.screenshot for proof URL
+  Agent->>Ledger: claim screenshot work item
   Agent->>Tools: run browser.screenshot
   Tools->>Shot: viewport screenshot
   Shot-->>Tools: PNG artifact candidate
   Tools-->>Agent: screenshot result
   Agent->>Store: save artifact + trace event
+  Agent->>Ledger: link screenshot evidence + artifact id
   Agent->>LLM: proof evidence
   LLM-->>Agent: finish(final answer)
   Agent->>Agent: finalization gates\nsource grounding, proof, no raw tool syntax
@@ -161,6 +172,7 @@ sequenceDiagram
   participant Tools as ToolRegistry
   participant Data as data.transform
   participant File as file.write
+  participant Ledger as Work/Evidence Ledger
   participant Artifacts as ArtifactStore
   participant UI as React Run Workspace
 
@@ -169,16 +181,20 @@ sequenceDiagram
   Agent->>Agent: frameTask() => local utility / file artifact
   Agent->>LLM: bounded prompt + data/file tool schemas
   LLM-->>Agent: call data.transform
+  Agent->>Ledger: claim analysis work item
   Agent->>Tools: run data.transform
   Tools->>Data: parse JSON-looking input, sort by age desc, serialize CSV
   Data-->>Tools: CSV content + transformed data
   Tools-->>Agent: tool result
+  Agent->>Ledger: complete analysis + record evidence
   LLM-->>Agent: call file.write
+  Agent->>Ledger: claim artifact-generation work item
   Agent->>Tools: run file.write
   Tools->>File: write path + content
   File-->>Tools: ok result
   Agent->>Artifacts: save file.write content as smoke-people.csv
   Artifacts-->>Agent: artifact id + download URL
+  Agent->>Ledger: complete work + record file evidence + artifact link
   Agent-->>API: completed answer + artifact metadata
   UI-->>User: Final answer, timeline, preview, download
 ```
@@ -216,12 +232,14 @@ Current memory is split but not finished:
 - **Group memory**: `GroupProfileStore` is wired into runtime context.
 - **Longer-term skill memory**: `SkillMemory` / `PostgresSkillMemory` exists, but accepted
   retrospective-to-memory flow still needs product-level review.
-- **Work/Evidence Ledger**: stores are wired; BaseAgent/tool-call coverage and UI visibility
-  still need verification/improvement.
+- **Work/Evidence Ledger**: BaseAgent tool calls claim a run-local execution work item
+  before execution, store the canonical reusable work key in metadata, complete or fail
+  the item after execution, record evidence with source/tool/artifact metadata, and link
+  artifact ids when a tool produces files or screenshots.
 
 ## Verified State
 
-- `npm run verify` passed on 2026-06-18: lint, typecheck, test typecheck, 508 tests, build.
+- `npm run verify` passed on 2026-06-18: lint, typecheck, test typecheck, 511 tests, build.
 - Targeted suites passed:
   - BaseAgent runtime: 49 tests.
   - External action preparation/approval: 29 tests.
@@ -239,15 +257,22 @@ Current memory is split but not finished:
   - Current web fact with QA-passed screenshot proof: `run_1781798630478_7gakwrcv`.
   - Data/file artifact path with preview/download in React:
     `run_1781799687705_rtayd8nl`.
+- Automated BaseAgent P0 coverage confirms `http.request` writes an `api_call` work
+  item plus `api_response` evidence, and `file.write` links the saved artifact id to
+  both Work Ledger and Evidence Ledger records.
+- Durable Ledger product smoke passed on Postgres/S3 and survived server restart:
+  `run_1781818681262_rpvsg59u` completed an `http.request` JSON task, `/api/work-ledger`
+  shows one completed `api_call`, `/api/evidence-ledger` shows one `api_response`, both
+  records link `artifact_1781818687616_9q389ujl`, and the React Ledger page shows
+  `Backend ready · postgres` with the same work/evidence/artifact records.
 
 ## Current Gaps
 
 - `npm run web` without `DATABASE_URL` starts in-memory stores. That is acceptable for
   smoke tests, but real persistence testing must set Postgres env.
-- Work/Evidence Ledger stores are present, but tested BaseAgent core-tool runs currently
-  show zero Work Ledger claims and zero Evidence Ledger records even when Trace Lab shows
-  real tool calls. The next runtime slice should make tool execution write ledger claims
-  and evidence records, then verify the Ledger page against the same run.
+- Work/Evidence Ledger writes are covered in BaseAgent unit tests and durable live
+  smoke. The next product step is using these records for operator-visible reuse,
+  debugging, and external-action recovery flows.
 - External-action UI is safer than before but still complex. The next UX target is one
   understandable proposal/proof/approval/commit path.
 - Tool Builder V1 still exists and works for source-bundle candidates, but strategic

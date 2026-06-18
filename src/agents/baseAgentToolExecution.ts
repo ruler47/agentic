@@ -6,6 +6,11 @@ import { maybeSaveArtifact, saveStructuredDataProofArtifact, shouldSaveStructure
 import { extractClaimProofSignals, extractProofEvidenceForSourceUrls, extractSourceUrls, finalAnswerWithProofArtifact, isUsableProofArtifact } from "./baseAgentEvidence.js";
 import { isScreenshotProofTool, proofInstructionForModel } from "./baseAgentProof.js";
 import { emit, runWithTimeout } from "./baseAgentRuntime.js";
+import {
+  claimBaseAgentToolWork,
+  completeBaseAgentToolWork,
+  failBaseAgentToolWork,
+} from "./baseAgentToolLedger.js";
 import { extractPrimaryResultFields, renderToolResultForModel, runtimeDiagnosticFromError, safeToolName, toolMessage } from "./baseAgentToolMessages.js";
 import { createToolSpanId, summarizeToolResultForTrace } from "./baseAgentTrace.js";
 import type { BaseAgentRunContext, BaseAgentRunOptions, BaseAgentToolCandidateAccepted, CachedToolCall, FailedToolCall, ProofEvidence, ToolPrimaryResult } from "./baseAgentTypes.js";
@@ -310,6 +315,19 @@ export async function handleBaseAgentRegisteredToolCall(
       input: call.arguments,
     },
   });
+  const ledgerClaim = await claimBaseAgentToolWork({
+    ledger: options.ledger,
+    tool,
+    toolInput: call.arguments,
+    runId: runContext.runId,
+    threadId: runContext.threadId,
+    instanceId: runContext.instanceId,
+    toolSpanId,
+    task,
+    step,
+    attemptedToolCalls,
+    artifactCount: artifacts.length,
+  });
   let result: ToolResult;
   try {
     result = await runWithTimeout(
@@ -334,6 +352,15 @@ export async function handleBaseAgentRegisteredToolCall(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    await failBaseAgentToolWork({
+      ledger: options.ledger,
+      claim: ledgerClaim,
+      tool,
+      toolInput: call.arguments,
+      error: message,
+      toolSpanId,
+      durationMs: Date.now() - toolStartedAt,
+    });
     const diagnostic = runtimeDiagnosticFromError(error);
     const modelMessage = diagnostic
       ? [
@@ -463,6 +490,17 @@ export async function handleBaseAgentRegisteredToolCall(
   } else {
     failedToolCalls.push({ toolName: tool.name, message: result.content });
   }
+  await completeBaseAgentToolWork({
+    ledger: options.ledger,
+    claim: ledgerClaim,
+    tool,
+    toolInput: call.arguments,
+    result,
+    preview,
+    artifacts,
+    toolSpanId,
+    durationMs: Date.now() - toolStartedAt,
+  });
 
   messages.push(toolMessage(
     call.id,

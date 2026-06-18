@@ -5,6 +5,9 @@ import { BaseAgent } from "../src/agents/baseAgent.js";
 import type { LlmClient, LlmToolReply, LlmToolSchema } from "../src/llm/client.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import type { AgentArtifact, AgentEvent, ArtifactCreateInput, Message } from "../src/types.js";
+import { RuntimeLedgerCoordinator, type RuntimeLedgerEventDraft } from "../src/work-ledger/runtimeLedgerCoordinator.js";
+import { InMemoryEvidenceLedgerStore } from "../src/work-ledger/evidenceLedgerStore.js";
+import { InMemoryWorkLedgerStore } from "../src/work-ledger/workLedgerStore.js";
 
 class SequenceLlm {
   calls = 0;
@@ -24,6 +27,19 @@ test("BaseAgent respects explicit no-screenshot API tasks and uses structured pr
   const registry = new ToolRegistry();
   const httpCalls: unknown[] = [];
   let screenshotCalls = 0;
+  const workLedger = new InMemoryWorkLedgerStore();
+  const evidenceLedger = new InMemoryEvidenceLedgerStore();
+  const ledgerEvents: RuntimeLedgerEventDraft[] = [];
+  const ledger = new RuntimeLedgerCoordinator({
+    runId: "run_no_screenshot_api",
+    threadId: "thread_api",
+    instanceId: "instance-local",
+    workLedgerStore: workLedger,
+    evidenceLedgerStore: evidenceLedger,
+    emit: async (event) => {
+      ledgerEvents.push(event);
+    },
+  });
   registry.register({
     name: "http.request",
     version: "0.1.0",
@@ -38,6 +54,9 @@ test("BaseAgent respects explicit no-screenshot API tasks and uses structured pr
         data: {
           url: "https://jsonplaceholder.typicode.com/todos/1",
           status: 200,
+          headers: {
+            reportTo: "https://nel.heroku.com/reports?sid=telemetry",
+          },
           body: { id: 1, title: "delectus aut autem", completed: false },
         },
       };
@@ -84,6 +103,12 @@ test("BaseAgent respects explicit no-screenshot API tasks and uses structured pr
   const agent = new BaseAgent(llm as unknown as LlmClient, registry);
   const result = await agent.run("Прочитай API https://jsonplaceholder.typicode.com/todos/1 и скажи title. Не делай скриншот.", {
     runId: "run_no_screenshot_api",
+    ledger,
+    runContext: {
+      runId: "run_no_screenshot_api",
+      threadId: "thread_api",
+      instanceId: "instance-local",
+    },
     onEvent: (event) => {
       events.push(event);
     },
@@ -111,11 +136,37 @@ test("BaseAgent respects explicit no-screenshot API tasks and uses structured pr
   assert.match(result.finalAnswer, /delectus aut autem/);
   assert.ok((result.artifacts ?? []).some((artifact) => artifact.filename === "http_request-structured-proof.json"));
   assert.equal(events.some((event) => event.type === "agent-proof-repair-requested"), false);
+
+  const workItems = await workLedger.listByRun("run_no_screenshot_api");
+  assert.equal(workItems.length, 1);
+  assert.equal(workItems[0]?.kind, "api_call");
+  assert.equal(workItems[0]?.status, "completed");
+  assert.equal(workItems[0]?.sourceUrls[0], "https://jsonplaceholder.typicode.com/todos/1");
+  assert.deepEqual(workItems[0]?.sourceUrls, ["https://jsonplaceholder.typicode.com/todos/1"]);
+
+  const evidence = await evidenceLedger.listByRun("run_no_screenshot_api");
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0]?.kind, "api_response");
+  assert.equal(evidence[0]?.toolName, "http.request");
+  assert.equal(evidence[0]?.workItemId, workItems[0]?.id);
+  assert.equal(evidence[0]?.sourceUrl, "https://jsonplaceholder.typicode.com/todos/1");
+  assert.equal((await workLedger.get(workItems[0]!.id))?.evidenceIds[0], evidence[0]?.id);
+  assert.ok(ledgerEvents.some((event) => event.type === "work-ledger-claim-created"));
+  assert.ok(ledgerEvents.some((event) => event.type === "evidence-ledger-recorded"));
 });
 
 test("BaseAgent registers successful file.write output as a downloadable artifact", async () => {
   const registry = new ToolRegistry();
   const writeCalls: unknown[] = [];
+  const workLedger = new InMemoryWorkLedgerStore();
+  const evidenceLedger = new InMemoryEvidenceLedgerStore();
+  const ledger = new RuntimeLedgerCoordinator({
+    runId: "run_file_write_artifact",
+    threadId: "thread_file",
+    instanceId: "instance-local",
+    workLedgerStore: workLedger,
+    evidenceLedgerStore: evidenceLedger,
+  });
   registry.register({
     name: "file.write",
     version: "1.0.0",
@@ -169,6 +220,12 @@ test("BaseAgent registers successful file.write output as a downloadable artifac
   const agent = new BaseAgent(llm as unknown as LlmClient, registry);
   const result = await agent.run("Сохрани CSV в smoke-people.csv и приложи файл как артефакт.", {
     runId: "run_file_write_artifact",
+    ledger,
+    runContext: {
+      runId: "run_file_write_artifact",
+      threadId: "thread_file",
+      instanceId: "instance-local",
+    },
     saveArtifact: async (artifact: ArtifactCreateInput) => {
       savedInputs.push(artifact);
       const saved: AgentArtifact = {
@@ -195,6 +252,18 @@ test("BaseAgent registers successful file.write output as a downloadable artifac
   assert.equal(result.artifacts?.[0]?.mimeType, "text/csv");
   assert.equal(savedInputs[0]?.description, "File written to workspace path smoke-people.csv");
   assert.equal(savedInputs[0]?.content.toString("utf8"), csv);
+
+  const workItems = await workLedger.listByRun("run_file_write_artifact");
+  assert.equal(workItems.length, 1);
+  assert.equal(workItems[0]?.kind, "artifact_generation");
+  assert.equal(workItems[0]?.status, "completed");
+  assert.equal(workItems[0]?.artifactIds[0], result.artifacts?.[0]?.id);
+
+  const evidence = await evidenceLedger.listByRun("run_file_write_artifact");
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0]?.kind, "file");
+  assert.equal(evidence[0]?.artifactId, result.artifacts?.[0]?.id);
+  assert.equal(evidence[0]?.workItemId, workItems[0]?.id);
 });
 
 test("BaseAgent frames prior-answer source questions as thread-context answers", async () => {

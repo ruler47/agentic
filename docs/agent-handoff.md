@@ -33,9 +33,9 @@ that generated tools will use later.
 ## Current Verified State
 
 `npm run verify` passed on 2026-06-18 from `main` after merging the split runtime and
-after the default-core-toolbelt fix: lint, typecheck, test typecheck, 508 unit tests,
-and build. Targeted suites also passed: BaseAgent runtime 49/49, external-action
-preparation/approval 29/29, and focused env/core-toolbelt/auth 12/12.
+after the default-core-toolbelt plus Ledger fixes: lint, typecheck, test typecheck,
+511 unit tests, and build. Targeted suites also passed: BaseAgent runtime 49/49,
+external-action preparation/approval 29/29, and focused env/core-toolbelt/auth 12/12.
 
 Durable-stack agent smoke was then repeated with Postgres, SearXNG, browser-operate,
 local artifacts, and local LM Studio tiers enabled:
@@ -46,7 +46,7 @@ flowchart LR
   B["HTTP JSON task"] --> B1["PASS\nrun_1781798586255_qgomrub6\nhttp.request + structured JSON proof"]
   C["Current web fact"] --> C1["PASS\nrun_1781798630478_7gakwrcv\nweb.search + QA-passed screenshot"]
   D["Data/file task"] --> D1["PASS\nrun_1781799687705_rtayd8nl\ndata.transform + file.write artifact"]
-  E["Ledger cards"] --> E1["GAP\n0 claims / 0 evidence despite tool work"]
+  E["Ledger writes"] --> E1["PASS\nrun_1781818681262_rpvsg59u\napi_call + api_response + artifact link\nvisible after restart"]
 ```
 
 React UI smoke confirmed the data/file run page shows the final answer, timeline,
@@ -72,6 +72,14 @@ Recent P0 fixes:
   sort direction accepts `direction` or `order`.
 - Successful `file.write` calls now become downloadable run artifacts using the content
   already sent to the tool, so this survives later container isolation.
+- BaseAgent core-tool execution now writes Work/Evidence Ledger records: each real tool
+  call creates a run-local execution work item before execution, stores the canonical
+  reusable work key in metadata, completes or fails that item after execution, records
+  source/tool/artifact evidence, and links generated artifact ids back to the work item.
+- Durable Ledger smoke passed after backend restart: `run_1781818681262_rpvsg59u` keeps
+  one completed `api_call` work item, one `api_response` evidence record, and linked
+  artifact `artifact_1781818687616_9q389ujl`; the React Ledger page shows the same data
+  in `Backend ready · postgres` mode.
 - Run status migrations must preserve `waiting_approval` in every recreated
   `runs_status_check` constraint.
 
@@ -79,15 +87,15 @@ Recent P0 fixes:
 
 P0:
 
-- Wire BaseAgent core-tool execution into Work/Evidence Ledger. The latest durable smoke
-  proves tool work happens, but `/api/work-ledger?runId=...` and
-  `/api/evidence-ledger?runId=...` still return empty records.
 - Keep simple runs fast and correct in practice: API/local utility tasks should use the
   direct core-tool path, avoid browser/search when unnecessary, and finish with structured
   proof instead of screenshots.
 - Keep proof policy proportional: screenshot proof for visual/current web tasks,
   structured proof for API/local utility tasks, and no visual proof when the user
   explicitly forbids it.
+- Use the now-durable Work/Evidence Ledger records in product flows: operator debugging,
+  reuse decisions, and external-action recovery should read the same records shown in the
+  Ledger page.
 
 P1:
 
@@ -118,8 +126,9 @@ P3:
   current web fact with screenshot proof, and data/file artifact tasks.
 - External actions remain too hard to understand from the UI and still stop too early in
   ordinary approval mode.
-- Work/Evidence Ledger cards on tested runs show zero records despite tool activity; this
-  is now the highest-priority system correctness gap.
+- Work/Evidence Ledger unit coverage and durable live UI/API verification are green for
+  BaseAgent `http.request` and `file.write` paths. Broader tool-family coverage should be
+  added as those flows are touched.
 - Four files remain slightly above the preferred 800-line limit:
   `src/server/modules/runs/action-proposal-preparation-runner.ts`,
   `tests/actionProposalPreparationRunner.test.ts`,

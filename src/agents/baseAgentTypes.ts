@@ -1,5 +1,6 @@
 import type { AgentArtifact, AgentEventSink, ArtifactCreateInput, ModelTier } from "../types.js";
 import type { Tool, ToolExecutionContext, ToolResult } from "../tools/tool.js";
+import type { RuntimeLedgerCoordinator } from "../work-ledger/runtimeLedgerCoordinator.js";
 import type { BaseAgentToolCatalogEntry } from "./agentToolCatalog.js";
 
 export type BaseAgentRunContext = {
@@ -76,6 +77,7 @@ export type BaseAgentRunOptions = {
   audit?: ToolExecutionContext["audit"];
   logger?: ToolExecutionContext["logger"];
   createToolCallback?: (toolName: string) => ToolExecutionContext["callback"] | undefined;
+  ledger?: RuntimeLedgerCoordinator;
   onToolCreationRequested?: BaseAgentToolCreationHandler;
   onToolEditRequested?: BaseAgentToolEditHandler;
   onToolCandidateAccepted?: BaseAgentToolCandidateAcceptedHandler;

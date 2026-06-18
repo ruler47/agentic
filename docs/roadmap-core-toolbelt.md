@@ -19,7 +19,8 @@ Runtime smoke:
   `http://127.0.0.1:3001`.
 - `/api/health` reports Postgres-backed durable stores for runs, run events, secrets,
   tool metadata, tool creations, audit, conversations, work ledger, and evidence ledger;
-  artifacts use the local-files durable fallback.
+  artifacts use the configured S3/MinIO store when the local durable stack is started
+  with `MINIO_*` env.
 - The generated registry reloads 20 tool packages.
 
 Manual tool calls that passed through `/api/tools/:name/run`:
@@ -92,8 +93,8 @@ Follow-up checkpoint on branch `codex/split-mainline`:
   `https://jsonplaceholder.typicode.com/todos/1` and for `data.transform` JSON-to-CSV
   sorting. This smoke was run with the local dev server and no `DATABASE_URL`, so the
   remaining product smoke must use the durable Postgres stack.
-- `npm run verify` passed after the default-core-toolbelt fix: lint, typecheck, test
-  typecheck, 508 unit tests, and build.
+- `npm run verify` passed after the BaseAgent Ledger fix: lint, typecheck, test
+  typecheck, 511 unit tests, and build.
 
 Durable agent-level smoke then passed on `main` with Postgres-backed persistence:
 
@@ -139,6 +140,10 @@ Passed runs:
 - `run_1781799687705_rtayd8nl`: JSON array sorted by `age desc`, written to
   `smoke-people.csv`, surfaced as a run artifact, and verified in React with preview and
   download.
+- `run_1781818681262_rpvsg59u`: JSONPlaceholder API task completed through
+  `http.request`, wrote one completed `api_call` Work Ledger item, one `api_response`
+  Evidence Ledger record, linked artifact `artifact_1781818687616_9q389ujl`, rendered in
+  the Ledger page, and remained visible after a backend restart.
 
 Code fixes from that smoke:
 
@@ -148,15 +153,19 @@ Code fixes from that smoke:
   aliases such as `key`/`field`/`column` and `order: "desc"`.
 - `file.write` output is registered as a downloadable artifact from the tool input
   content, not from a shared filesystem read.
+- BaseAgent tool execution now claims run-local Work Ledger execution items before real
+  tool calls, stores canonical reusable work keys in metadata, completes or fails the
+  items after execution, records Evidence Ledger records with source/tool/artifact
+  metadata, and links saved artifact ids back to work items.
 
 Current blockers before declaring the base ready for broader product testing:
 
 - External-action tasks still stop before preparation in ordinary approval mode. The
   proposal card is clearer than before, but the user still cannot complete "find,
   prepare, show proof, then submit after one approval" in one simple flow.
-- Work/Evidence Ledger cards on tested durable runs still show `0 claims` and
-  `0 evidence records` despite tool activity. Either BaseAgent is not writing ledger
-  claims yet, or the UI is not reading the relevant records. Treat this as the next P0.
+- Work/Evidence Ledger writes are now covered by unit tests and durable live smoke for
+  the `http.request` path. Broader tool-family coverage should be added as those flows
+  are touched.
 - Files slightly above the preferred 800-line limit remain after the P0 split:
   `src/server/modules/runs/action-proposal-preparation-runner.ts`,
   `tests/actionProposalPreparationRunner.test.ts`,
@@ -164,14 +173,34 @@ Current blockers before declaring the base ready for broader product testing:
 
 ## Active Priority Order After Durable Smoke
 
-P0: make BaseAgent tool work auditable.
+P0: keep simple runs fast, correct, and auditable.
 
-- Wire BaseAgent core-tool calls into Work/Evidence Ledger, including claim keys, source
-  URLs, evidence ids, artifact ids, reuse/revalidation status, and failure reasons.
-- Confirm `/api/work-ledger`, `/api/evidence-ledger`, Run Workspace, and Ledger page show
-  the same tool work visible in Trace Lab.
-- Confirm run records, events, artifacts, approval state, and ledger records survive a
-  server restart.
+- BaseAgent core-tool calls now write Work/Evidence Ledger records: run-local execution
+  keys, canonical reusable work keys, source URLs, evidence ids, artifact ids, status,
+  and failure reasons.
+- `/api/work-ledger`, `/api/evidence-ledger`, and the React Ledger page show the same
+  tool work visible in Trace Lab for `run_1781818681262_rpvsg59u`.
+- Run records, events, artifacts, and ledger records survived backend restart in the
+  durable Postgres/S3 smoke.
+- Next: use these records for reuse decisions, debugging, and external-action recovery
+  instead of treating them as a passive audit page only.
+
+Current expected runtime shape:
+
+```mermaid
+sequenceDiagram
+  participant Agent as BaseAgent
+  participant Ledger as RuntimeLedgerCoordinator
+  participant Tool as ToolRegistry/Core Tool
+  participant Artifacts as ArtifactStore
+
+  Agent->>Ledger: claim(workKey, kind, spanId, inputSummary)
+  Agent->>Tool: execute registered tool
+  Tool-->>Agent: ToolResult + optional generated artifacts
+  Agent->>Artifacts: save artifact when produced
+  Agent->>Ledger: markCompleted/markFailed(workItemId)
+  Agent->>Ledger: recordEvidence(sourceUrl, toolName, artifactId, qaStatus)
+```
 
 P1: make the agent operationally coherent.
 

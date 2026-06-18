@@ -23,7 +23,6 @@ import { RunRecoveryService } from "./run-recovery.service.js";
 import type { AgentRunRecord, RunCreateContext, RunStore } from "../../../runs/types.js";
 import type {
   AgentArtifact,
-  AgentEvent,
   AgentRunResult,
   ArtifactUploadInput,
 } from "../../../types.js";
@@ -32,6 +31,11 @@ import type { ToolServiceSupervisor } from "../../../tools/toolServiceSupervisor
 import type { ToolServiceEventStore } from "../../../tools/toolServiceEventStore.js";
 import { ToolCallbackTokenIssuer } from "../../../tools/toolCallbackToken.js";
 import type { ToolMetadataStore } from "../../../tools/toolMetadataStore.js";
+import type {
+  EvidenceLedgerStore,
+  RunRetrospectiveStore,
+  WorkLedgerStore,
+} from "../../../work-ledger/types.js";
 import { AuditService } from "../../common/services/audit.service.js";
 import { ToolsService } from "../tools/tools.service.js";
 import { APP_ENV } from "../../config/config.module.js";
@@ -45,8 +49,10 @@ import {
 import {
   ARTIFACT_STORE,
   CONVERSATION_STORE,
+  EVIDENCE_LEDGER_STORE,
   GROUP_PROFILE_STORE,
   RUN_STORE,
+  RUN_RETROSPECTIVE_STORE,
   SECRET_HANDLE_STORE,
   TOOL_CALLBACK_TOKEN_ISSUER,
   TOOL_METADATA_STORE,
@@ -55,6 +61,7 @@ import {
   TOOL_SERVICE_SUPERVISOR,
   TOOL_REGISTRY,
   USER_STORE,
+  WORK_LEDGER_STORE,
   LLM_CLIENT,
 } from "../../persistence/tokens.js";
 import {
@@ -69,6 +76,10 @@ import {
   externalActionApprovalProposalIds,
   shouldPauseForExternalActionApproval,
 } from "./run-external-action-pause.js";
+import {
+  createRunEventSink,
+  createRunLedgerCoordinator,
+} from "./run-ledger-runtime.js";
 export { agentCallableToolNames, findReusableCreatedCandidate } from "./run-tool-catalog.js";
 
 const TERMINAL: AgentRunRecord["status"][] = ["completed", "failed", "cancelled"];
@@ -112,6 +123,12 @@ export class RunsService implements OnApplicationBootstrap {
     private readonly callbackTokens: ToolCallbackTokenIssuer,
     @Inject(TOOL_METADATA_STORE)
     private readonly toolMetadata: ToolMetadataStore | undefined,
+    @Inject(WORK_LEDGER_STORE)
+    private readonly workLedger: WorkLedgerStore | undefined,
+    @Inject(EVIDENCE_LEDGER_STORE)
+    private readonly evidenceLedger: EvidenceLedgerStore | undefined,
+    @Inject(RUN_RETROSPECTIVE_STORE)
+    private readonly runRetrospectives: RunRetrospectiveStore | undefined,
     @Inject(TOOL_REGISTRY)
     private readonly toolRegistry:
       | import("../../../tools/registry.js").ToolRegistry
@@ -502,6 +519,21 @@ export class RunsService implements OnApplicationBootstrap {
         inputArtifacts,
         context.threadContext,
       );
+      const appendRunEvent = createRunEventSink({
+        runs: this.runs,
+        runtimeHelpers: this.runtimeHelpers(),
+        runId: id,
+        run,
+      });
+      const ledger = createRunLedgerCoordinator({
+        workLedger: this.workLedger,
+        evidenceLedger: this.evidenceLedger,
+        runRetrospectives: this.runRetrospectives,
+        runId: id,
+        threadId: run?.threadId ?? context.threadId,
+        instanceId: run?.instanceId,
+        appendRunEvent,
+      });
       let callableToolNames = await this.runtimeHelpers().callableToolNames();
       const explicitScopedCandidate = await this.runtimeHelpers()
         .explicitRunScopedToolCandidate(task, callableToolNames)
@@ -565,6 +597,7 @@ export class RunsService implements OnApplicationBootstrap {
             }),
           scope: ["artifacts.save", "ledger.claim", "memory.search", "events.emit"],
         }),
+        ledger,
         onToolCreationRequested: (request) =>
           this.runtimeHelpers().handleAgentToolCreationRequest(request, run),
         onToolEditRequested: (request) =>
@@ -626,12 +659,7 @@ export class RunsService implements OnApplicationBootstrap {
               return saved;
             }
           : undefined,
-        onEvent: async (event) => {
-          const current = await this.runs.get(id);
-          if (!current || current.status === "cancelled") return;
-          await this.runs.appendEvent(id, event);
-          await this.runtimeHelpers().auditTraceEvent(id, event, run);
-        },
+        onEvent: appendRunEvent,
       });
       let finalResult = result;
       const current = await this.runs.get(id);
