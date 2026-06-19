@@ -9,6 +9,11 @@ import type {
   ToolEditOutcome,
 } from "./baseAgentTypes.js";
 import { formatPriorWorkContextForPrompt } from "../work-ledger/priorWorkResolver.js";
+import {
+  buildMemoryContextView,
+  formatMemoryContextForPrompt,
+  publicMemoryContextForTrace,
+} from "./memoryContext.js";
 import { isToolLifecycleOnlyTask } from "./taskFrame.js";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -85,10 +90,14 @@ export function normalizeRunContext(
   fallbackRunId: string | undefined,
   now: Date,
 ): BaseAgentRunContext {
-  return {
+  const normalized = {
     ...context,
     runId: context?.runId ?? fallbackRunId,
     currentDateTimeIso: context?.currentDateTimeIso ?? now.toISOString(),
+  };
+  return {
+    ...normalized,
+    memory: normalized.memory ?? buildMemoryContextView(normalized, now),
   };
 }
 
@@ -123,6 +132,7 @@ export function publicContextSummary(context: BaseAgentRunContext): Record<strin
     currentDateTimeIso: context.currentDateTimeIso,
     timeZone: context.timeZone,
     locale: context.locale,
+    memory: context.memory ? publicMemoryContextForTrace(context.memory) : undefined,
     groupProfile: context.groupProfile,
     thread: context.thread,
     inputArtifacts: context.inputArtifacts,
@@ -224,6 +234,10 @@ export function formatContextForPrompt(context: BaseAgentRunContext): string {
     `- Channel: ${context.channel ?? "unknown"}`,
     `- Thread: ${context.threadId ?? "none"}`,
   ];
+  if (context.memory) {
+    lines.push(formatMemoryContextForPrompt(context.memory));
+    return lines.join("\n");
+  }
   if (context.groupProfile) {
     lines.push(
       `- Group profile: ${context.groupProfile.name}${context.groupProfile.description ? ` - ${limitText(context.groupProfile.description, 280)}` : ""}`,

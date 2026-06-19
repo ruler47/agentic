@@ -4,11 +4,11 @@ import type { ToolRegistry } from "../tools/registry.js";
 import {
   attachInitialScopedCandidates,
   buildToolCatalog,
-  publicToolCatalogEntry,
   selectTools,
   type BaseAgentToolCatalogEntry,
 } from "./agentToolCatalog.js";
 import { DEFAULT_AGENT_LOOP_TIER, DEFAULT_LLM_MAX_TOKENS, DEFAULT_TOOL_TIMEOUT_MS } from "./baseAgentConstants.js";
+import { emitBaseAgentContextEvents } from "./baseAgentContextEvents.js";
 import { inferRequiredArtifacts } from "./baseAgentEvidence.js";
 import { tryRunCurrentFactFastPath } from "./baseAgentCurrentFact.js";
 import { finalizeBaseAgentRun } from "./baseAgentFinalization.js";
@@ -39,13 +39,11 @@ import {
 import { taskWithThreadContextForFraming } from "./baseAgentThreadContext.js";
 import {
   containsRawToolCallSyntax,
-  contextSummary,
   createAgentSpanId,
   createLlmSpanId,
   failedResult,
   normalizeRunContext,
   publicArtifactForTrace,
-  publicContextSummary,
   publicMessageForTrace,
   publicProofEvidenceForTrace,
 } from "./baseAgentTrace.js";
@@ -131,40 +129,19 @@ export class BaseAgent {
       startedAt,
     });
 
-    await emit(options.onEvent, {
-      spanId: contextSpanId,
-      parentSpanId: rootSpanId,
-      type: "agent-context-prepared",
-      actor: "base-agent",
-      activity: "agent",
-      status: "completed",
-      title: "Agent context prepared",
-      detail: contextSummary(runContext, tools.length),
+    await emitBaseAgentContextEvents({
+      onEvent: options.onEvent,
+      rootSpanId,
+      contextSpanId,
+      runContext,
+      tools,
+      toolCatalog,
       startedAt,
-      completedAt: new Date(),
-      payload: {
-        context: publicContextSummary(runContext),
-        toolCount: tools.length,
-        tools: tools.map((tool) => ({
-          name: tool.name,
-          version: tool.version,
-          capabilities: tool.capabilities,
-        })),
-        toolCatalog: toolCatalog.map(publicToolCatalogEntry),
-        budget: {
-          maxSteps: maxSteps ?? "unlimited",
-          maxToolCalls: maxToolCalls ?? "unlimited",
-          llmTimeoutMs: llmTimeoutMs ?? "unlimited",
-          toolTimeoutMs,
-        },
-        toolPolicy: options.toolPolicy
-          ? {
-              allowedToolNames: options.toolPolicy.allowedToolNames,
-              deniedToolNames: options.toolPolicy.deniedToolNames,
-              reason: options.toolPolicy.reason,
-            }
-          : undefined,
-      },
+      maxSteps,
+      maxToolCalls,
+      llmTimeoutMs,
+      toolTimeoutMs,
+      toolPolicy: options.toolPolicy,
     });
 
     await emit(options.onEvent, {

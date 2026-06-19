@@ -403,6 +403,7 @@ export type AgentEventType =
   | "agent-strategy-selected"
   | "agent-task-framed"
   | "agent-context-prepared"
+  | "memory-context-prepared"
   | "local-utility-fast-path-selected"
   | "current-fact-fast-path-selected"
   | "current-fact-source-rejected"

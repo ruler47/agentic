@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException, OnApplicationBootstrap, Optional, ServiceUnavailableException } from "@nestjs/common";
 import {
   BaseAgent,
@@ -16,26 +15,19 @@ import type { GroupProfileStore } from "../../../instance/groupProfileStore.js";
 import type { UserRecord, UserStore } from "../../../instance/userStore.js";
 import type { SecretHandleStore } from "../../../secrets/secretHandleStore.js";
 import type { ToolRuntimeSettingsStore } from "../../../settings/toolRuntimeSettings.js";
+import type { SkillMemoryStore } from "../../../memory/skillMemory.js";
 import { resolveConversationThread, type ThreadResolutionResult } from "../../../conversations/threadResolution.js";
 import { RunContextError, RunContextResolver } from "./run-context-resolver.js";
 import { RunAgentRuntimeHelpers } from "./run-agent-runtime-helpers.js";
 import { RunRecoveryService } from "./run-recovery.service.js";
 import type { AgentRunRecord, RunCreateContext, RunStore } from "../../../runs/types.js";
-import type {
-  AgentArtifact,
-  AgentRunResult,
-  ArtifactUploadInput,
-} from "../../../types.js";
+import type { AgentArtifact, AgentRunResult, ArtifactUploadInput } from "../../../types.js";
 import type { AuditEventInput } from "../../../audit/types.js";
 import type { ToolServiceSupervisor } from "../../../tools/toolServiceSupervisor.js";
 import type { ToolServiceEventStore } from "../../../tools/toolServiceEventStore.js";
 import { ToolCallbackTokenIssuer } from "../../../tools/toolCallbackToken.js";
 import type { ToolMetadataStore } from "../../../tools/toolMetadataStore.js";
-import type {
-  EvidenceLedgerStore,
-  RunRetrospectiveStore,
-  WorkLedgerStore,
-} from "../../../work-ledger/types.js";
+import type { EvidenceLedgerStore, RunRetrospectiveStore, WorkLedgerStore } from "../../../work-ledger/types.js";
 import { AuditService } from "../../common/services/audit.service.js";
 import { ToolsService } from "../tools/tools.service.js";
 import { APP_ENV } from "../../config/config.module.js";
@@ -54,6 +46,7 @@ import {
   RUN_STORE,
   RUN_RETROSPECTIVE_STORE,
   SECRET_HANDLE_STORE,
+  SKILL_MEMORY,
   TOOL_CALLBACK_TOKEN_ISSUER,
   TOOL_METADATA_STORE,
   TOOL_RUNTIME_SETTINGS,
@@ -80,6 +73,7 @@ import {
   createRunEventSink,
   createRunLedgerCoordinator,
 } from "./run-ledger-runtime.js";
+import { deleteRunArtifact, getRunArtifact } from "./run-artifact-actions.js";
 export { agentCallableToolNames, findReusableCreatedCandidate } from "./run-tool-catalog.js";
 
 const TERMINAL: AgentRunRecord["status"][] = ["completed", "failed", "cancelled"];
@@ -129,6 +123,9 @@ export class RunsService implements OnApplicationBootstrap {
     private readonly evidenceLedger: EvidenceLedgerStore | undefined,
     @Inject(RUN_RETROSPECTIVE_STORE)
     private readonly runRetrospectives: RunRetrospectiveStore | undefined,
+    @Optional()
+    @Inject(SKILL_MEMORY)
+    private readonly memory: SkillMemoryStore | undefined,
     @Inject(TOOL_REGISTRY)
     private readonly toolRegistry:
       | import("../../../tools/registry.js").ToolRegistry
@@ -374,53 +371,21 @@ export class RunsService implements OnApplicationBootstrap {
   }
 
   async getArtifact(runId: string, artifactId: string) {
-    if (!this.artifacts) {
-      throw new ServiceUnavailableException("Artifact store is not configured");
-    }
-    const stored = await this.artifacts.read(runId, artifactId);
-    if (!stored) throw new NotFoundException("Artifact not found");
-    const buffer =
-      stored.content ??
-      (stored.path ? await readFile(stored.path) : Buffer.alloc(0));
-    return { stored, buffer };
+    return getRunArtifact({ artifacts: this.artifacts, runId, artifactId });
   }
 
   async deleteArtifact(
     runId: string,
     artifactId: string,
   ): Promise<{ deleted: true; id: string; runId: string }> {
-    if (!this.artifacts) {
-      throw new ServiceUnavailableException("Artifact store is not configured");
-    }
-    const deleted = await this.artifacts.delete(runId, artifactId);
-    if (!deleted) throw new NotFoundException("Artifact not found");
-    await this.audit.record({
-      instanceId: "instance-local",
-      actorId: "user-admin",
-      actorType: "user",
-      action: "artifact.deleted",
-      targetType: "artifact",
-      targetId: artifactId,
-      runId,
-      status: "success",
-      summary: `Artifact deleted: ${artifactId} (run ${runId})`,
-    });
-    return { deleted: true, id: artifactId, runId };
+    return deleteRunArtifact({ artifacts: this.artifacts, audit: this.audit, runId, artifactId });
   }
 
   private runtimeHelpers(): RunAgentRuntimeHelpers {
     return new RunAgentRuntimeHelpers(
-      this.users,
-      this.groupProfiles,
-      this.env,
-      this.toolServiceSupervisor,
-      this.toolServiceEvents,
-      this.audit,
-      this.toolsService,
-      this.toolMetadata,
-      this.toolRegistry,
-      this.runtimeSettings,
-      this.secrets,
+      this.users, this.groupProfiles, this.env, this.toolServiceSupervisor, this.toolServiceEvents,
+      this.audit, this.toolsService, this.toolMetadata, this.toolRegistry, this.runtimeSettings,
+      this.secrets, this.memory,
     );
   }
 
@@ -516,6 +481,7 @@ export class RunsService implements OnApplicationBootstrap {
       const base = new BaseAgent(this.llm, this.toolRegistry);
       const runContext = await this.runtimeHelpers().buildBaseAgentRunContext(
         run,
+        task,
         inputArtifacts,
         context.threadContext,
       );

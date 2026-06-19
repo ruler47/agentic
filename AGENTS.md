@@ -143,6 +143,11 @@ large legacy `UniversalAgent` runtime.
   Fresh/current requests treat prior evidence as context only and continue to fresh
   tools. Failed or blocked prior evidence is never reused as truth; it is exposed as
   `retryExclusions` so browser/search/external-action retries can avoid rejected URLs.
+- Run/thread/user/group/accepted-learning memory is assembled through
+  `MemoryContextView` in `src/agents/memoryContext.ts`. `RunAgentRuntimeHelpers` retrieves
+  accepted visible memories from `SkillMemoryStore`, `BaseAgent` filters them through
+  memory policy, injects the compact view into the prompt, and emits
+  `memory-context-prepared`. Do not add ad hoc memory prompt sections elsewhere.
 - The whole `/api` surface supports an opt-in shared operator token:
   `AGENTIC_API_TOKEN` set -> every request needs `Authorization: Bearer`,
   `x-agentic-token`, or `?token=` (timing-safe compare); unset keeps the open

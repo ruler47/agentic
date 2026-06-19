@@ -257,15 +257,21 @@ flowchart TD
 
 ## Memory Model In Code
 
-Current memory is split but not finished:
+Current memory is split and now enters each run through an explicit runtime memory view:
 
 - **Run memory**: run events, tool results, artifacts, and trace spans in the run store.
 - **Thread memory**: `ConversationThreadStore` summary, accepted facts, rejected attempts,
   open questions, artifact ids. Restart/resume paths rebuild this context by thread id.
 - **User/channel memory**: `UserStore` maps local users and channel identities.
 - **Group memory**: `GroupProfileStore` is wired into runtime context.
-- **Longer-term skill memory**: `SkillMemory` / `PostgresSkillMemory` exists, but accepted
-  retrospective-to-memory flow still needs product-level review.
+- **Longer-term skill memory**: `SkillMemory` / `PostgresSkillMemory` accepted entries are
+  retrieved by `RunAgentRuntimeHelpers` for visible run/thread/user/group scopes and then
+  filtered by `evaluateMemoryPolicy`.
+- **Runtime memory context**: `src/agents/memoryContext.ts` builds `MemoryContextView`
+  with run/thread/user/group/accepted-learning/prior-work sections. `BaseAgent` formats
+  this compact view into the prompt and emits `memory-context-prepared` so Trace Lab can
+  show which memory influenced the run. Proposed/rejected memories and other-user private
+  memories are not injected; sensitive memories require an explicit policy grant.
 - **Work/Evidence Ledger**: BaseAgent tool calls claim a run-local execution work item
   before execution, store the canonical reusable work key in metadata, complete or fail
   the item after execution, record evidence with source/tool/artifact metadata, and link
@@ -283,6 +289,19 @@ Current memory is split but not finished:
   call. Failed/blocked evidence is not reused; its URLs are surfaced as
   `retryExclusions` for subsequent search/browser/external-action retries. Empty threads
   do not create trace or Ledger noise.
+
+```mermaid
+flowchart TD
+  Runs["RunsService"] --> Helper["RunAgentRuntimeHelpers"]
+  Helper --> User["UserStore"]
+  Helper --> Group["GroupProfileStore"]
+  Helper --> Thread["ConversationThreadContext"]
+  Helper --> Memory["SkillMemoryStore accepted memories"]
+  Helper --> Context["BaseAgentRunContext"]
+  Context --> View["MemoryContextView"]
+  View --> Prompt["BaseAgent prompt Runtime context"]
+  View --> Trace["memory-context-prepared trace event"]
+```
 
 ```mermaid
 sequenceDiagram

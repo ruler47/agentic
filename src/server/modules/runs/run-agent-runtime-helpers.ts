@@ -3,16 +3,18 @@ import type { ConversationThreadContext } from "../../../conversations/types.js"
 import type { GroupProfileStore } from "../../../instance/groupProfileStore.js";
 import type { UserStore } from "../../../instance/userStore.js";
 import type { SecretHandleStore } from "../../../secrets/secretHandleStore.js";
+import { normalizeMemoryScope, tokenizeMemoryText, type SkillMemoryStore } from "../../../memory/skillMemory.js";
 import type { ToolRuntimeSettingsStore } from "../../../settings/toolRuntimeSettings.js";
 import type { ToolRegistry } from "../../../tools/registry.js";
 import type { ToolMetadataStore } from "../../../tools/toolMetadataStore.js";
 import type { ToolServiceEventStore } from "../../../tools/toolServiceEventStore.js";
 import type { ToolServiceSupervisor } from "../../../tools/toolServiceSupervisor.js";
-import type { AgentArtifact, AgentEvent, AgentRunResult } from "../../../types.js";
+import type { AgentArtifact, AgentEvent, AgentRunResult, SkillMemoryEntry } from "../../../types.js";
 import type { AgentRunRecord } from "../../../runs/types.js";
 import type { AppEnv } from "../../config/env.js";
 import { sanitizeAuditMetadata } from "../../common/parsers.js";
 import { AuditService } from "../../common/services/audit.service.js";
+import { visibleMemoryScopesForRunContext } from "../../../agents/memoryContext.js";
 import { ToolsService } from "../tools/tools.service.js";
 import {
   agentCallableToolNames,
@@ -36,6 +38,7 @@ export class RunAgentRuntimeHelpers {
     private readonly toolRegistry: ToolRegistry | undefined,
     private readonly runtimeSettings: ToolRuntimeSettingsStore | undefined,
     private readonly secrets: SecretHandleStore | undefined,
+    private readonly memory: SkillMemoryStore | undefined,
   ) {}
 
   async recordToolServiceOutbound(
@@ -416,6 +419,7 @@ export class RunAgentRuntimeHelpers {
 
   async buildBaseAgentRunContext(
     run: AgentRunRecord | undefined,
+    task: string,
     inputArtifacts: AgentArtifact[],
     threadContext: ConversationThreadContext | undefined,
   ): Promise<BaseAgentRunContext> {
@@ -423,7 +427,7 @@ export class RunAgentRuntimeHelpers {
       ? await this.users.get(run.requesterUserId).catch(() => undefined)
       : undefined;
     const groupProfile = await this.groupProfiles?.get().catch(() => undefined);
-    return {
+    const context: BaseAgentRunContext = {
       runId: run?.id,
       instanceId:
         run?.instanceId ?? groupProfile?.instanceId ?? "instance-local",
@@ -484,6 +488,29 @@ export class RunAgentRuntimeHelpers {
         description: artifact.description,
       })),
     };
+    context.acceptedMemories = await this.acceptedMemoriesForContext(task || run?.task || "", context);
+    return context;
+  }
+
+  private async acceptedMemoriesForContext(
+    task: string,
+    context: BaseAgentRunContext,
+  ): Promise<SkillMemoryEntry[]> {
+    if (!this.memory) return [];
+    const visibleScopes = visibleMemoryScopesForRunContext(context);
+    const options = { visibleScopes, status: "accepted" as const, limit: 64 };
+    const query = [
+      task,
+      context.thread?.summary,
+      ...(context.thread?.acceptedFacts ?? []),
+      context.groupProfile?.name,
+      context.requester?.displayName,
+    ].filter(Boolean).join("\n");
+    const [searchHits, visibleEntries] = await Promise.all([
+      query.trim() ? this.memory.search(query, 24, options).catch(() => []) : Promise.resolve([]),
+      this.memory.list(options).catch(() => []),
+    ]);
+    return rankAcceptedMemories([...searchHits, ...visibleEntries], query).slice(0, 8);
   }
 
   async auditLearnedMemory(
@@ -580,6 +607,55 @@ export class RunAgentRuntimeHelpers {
         durationMs: event.durationMs,
       }),
     });
+  }
+}
+
+function rankAcceptedMemories(
+  entries: SkillMemoryEntry[],
+  query: string,
+): SkillMemoryEntry[] {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const queryTokens = tokenizeMemoryText(query);
+  return [...byId.values()]
+    .map((entry) => ({ entry, score: scoreMemoryForRun(entry, queryTokens) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return (b.entry.updatedAt ?? b.entry.createdAt).localeCompare(a.entry.updatedAt ?? a.entry.createdAt);
+    })
+    .map(({ entry }) => entry);
+}
+
+function scoreMemoryForRun(entry: SkillMemoryEntry, queryTokens: Set<string>): number {
+  const titleAndTags = tokenizeMemoryText(`${entry.title} ${entry.tags.join(" ")}`);
+  const memoryText = tokenizeMemoryText(
+    `${entry.title} ${entry.tags.join(" ")} ${entry.summary} ${entry.reusableProcedure} ${(entry.evidence ?? []).join(" ")}`,
+  );
+  let lexicalScore = 0;
+  let exactLabelScore = 0;
+  for (const token of queryTokens) {
+    if (memoryText.has(token)) lexicalScore += 1;
+    if (titleAndTags.has(token)) exactLabelScore += 1;
+  }
+  return (
+    exactLabelScore * 40 +
+    lexicalScore * 20 +
+    scopeSpecificity(entry) * 5 +
+    Math.min(entry.match?.score ?? 0, 5)
+  );
+}
+
+function scopeSpecificity(entry: SkillMemoryEntry): number {
+  switch (normalizeMemoryScope(entry.scope)) {
+    case "run":
+      return 5;
+    case "thread":
+      return 4;
+    case "user":
+      return 3;
+    case "group":
+      return 2;
+    default:
+      return 1;
   }
 }
 

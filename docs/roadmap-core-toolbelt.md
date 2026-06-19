@@ -10,11 +10,10 @@ verification, documentation update, and merge.
 
 Current order:
 
-1. [`03-p1-memory-continuity-model.md`](tasks/03-p1-memory-continuity-model.md)
-2. [`04-p1-tool-catalog-cleanup.md`](tasks/04-p1-tool-catalog-cleanup.md)
-3. [`05-p2-external-action-ux.md`](tasks/05-p2-external-action-ux.md)
-4. [`06-p2-model-routing.md`](tasks/06-p2-model-routing.md)
-5. [`07-p3-tool-builder-redesign.md`](tasks/07-p3-tool-builder-redesign.md)
+1. [`04-p1-tool-catalog-cleanup.md`](tasks/04-p1-tool-catalog-cleanup.md)
+2. [`05-p2-external-action-ux.md`](tasks/05-p2-external-action-ux.md)
+3. [`06-p2-model-routing.md`](tasks/06-p2-model-routing.md)
+4. [`07-p3-tool-builder-redesign.md`](tasks/07-p3-tool-builder-redesign.md)
 
 Cross-cutting quality gate:
 
@@ -252,9 +251,12 @@ P0: keep simple runs fast, correct, and auditable.
   tool work visible in Trace Lab for `run_1781818681262_rpvsg59u`.
 - Run records, events, artifacts, and ledger records survived backend restart in the
   durable Postgres/S3 smoke.
-- Next: finish the explicit memory continuity model so prior-work recovery, thread
-  summaries, accepted facts, user/group profile, and retrospective memory have one clear
-  promotion/reuse policy.
+- The explicit memory continuity model now has a runtime baseline: API runs retrieve
+  accepted visible memories, policy-filter them, inject them into BaseAgent prompts, and
+  emit `memory-context-prepared` for Trace Lab/operator inspection. Manual durable smoke
+  `run_1781874414255_yy0s68ik` completed from accepted group memory with zero tool calls.
+- Next: clean the active tool catalog so operators see the stable preinstalled toolbelt
+  first and legacy/generated failed entries cannot confuse runtime capability selection.
 
 Current expected runtime shape:
 

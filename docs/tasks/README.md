@@ -17,11 +17,10 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P1 Memory Continuity Model](03-p1-memory-continuity-model.md)
-2. [P1 Tool Catalog Cleanup](04-p1-tool-catalog-cleanup.md)
-3. [P2 External Action UX](05-p2-external-action-ux.md)
-4. [P2 Model Routing](06-p2-model-routing.md)
-5. [P3 Tool Builder Redesign](07-p3-tool-builder-redesign.md)
+1. [P1 Tool Catalog Cleanup](04-p1-tool-catalog-cleanup.md)
+2. [P2 External Action UX](05-p2-external-action-ux.md)
+3. [P2 Model Routing](06-p2-model-routing.md)
+4. [P3 Tool Builder Redesign](07-p3-tool-builder-redesign.md)
 
 Cross-cutting gates apply to every task:
 
@@ -29,6 +28,16 @@ Cross-cutting gates apply to every task:
 
 ## Recently Completed
 
+- 2026-06-19: P1 Memory Continuity Model was completed and its task file was removed.
+  Implementation: `src/agents/memoryContext.ts`,
+  `src/agents/baseAgentContextEvents.ts`, BaseAgent context normalization, and
+  `RunAgentRuntimeHelpers` accepted-memory retrieval. Focused tests cover memory scope
+  calculation, accepted-only policy filtering, prompt/trace injection, runtime retrieval,
+  exact scoped-memory ranking, and partial memory PATCH updates. Full `npm run verify`
+  passed with 539 tests. Manual durable smoke:
+  `run_1781874414255_yy0s68ik` used an accepted group memory via
+  `memory-context-prepared` without any tool calls; the smoke memory was archived and DB
+  records were checked.
 - 2026-06-19: P0 Ledger Recovery And Reuse was completed and its task file was removed.
   Implementation: `src/work-ledger/priorWorkResolver.ts`,
   `src/work-ledger/runtimePriorWork.ts`, `src/agents/baseAgentPriorWork.ts`, and

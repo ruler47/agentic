@@ -218,7 +218,7 @@ export class MemoryService {
   }
 
   private validateUpdateInput(dto: UpdateMemoryDto): UpdateMemoryDto {
-    return {
+    const update: UpdateMemoryDto = {
       ...dto,
       title: dto.title === undefined ? undefined : this.requireNonEmptyString(dto.title, "title"),
       summary: dto.summary === undefined ? undefined : this.requireNonEmptyString(dto.summary, "summary"),
@@ -236,6 +236,9 @@ export class MemoryService {
       sourceThreadId: this.optionalTrimmedString(dto.sourceThreadId, "sourceThreadId"),
       evidence: this.optionalStringArray(dto.evidence, "evidence"),
     };
+    return Object.fromEntries(
+      Object.entries(update).filter(([, value]) => value !== undefined),
+    ) as UpdateMemoryDto;
   }
 
   private requireNonEmptyString(value: unknown, field: string): string {

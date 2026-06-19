@@ -141,7 +141,11 @@ P1:
 
 - Conversation and memory continuity: follow-ups should reuse thread facts/artifacts;
   run memory should know already completed steps; user/group profile memory should be
-  visible to the agent without polluting every prompt.
+  visible to the agent without polluting every prompt. Baseline `MemoryContextView`
+  wiring is complete: accepted visible memories are retrieved for real API runs,
+  policy-filtered, ranked, injected into the BaseAgent prompt, and emitted as
+  `memory-context-prepared`. Full `npm run verify` passed, and durable smoke
+  `run_1781874414255_yy0s68ik` completed from accepted group memory with zero tool calls.
 - Clean/segregate legacy generated failed tools from the active tool catalog/UI so
   operators see the stable preinstalled toolbelt first.
 - Code hygiene: keep active files near the 800-line target, and prune/freeze builder code
