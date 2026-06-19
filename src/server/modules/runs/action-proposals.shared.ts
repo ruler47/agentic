@@ -301,12 +301,21 @@ export function buildExternalActionExecutorBuildRequest(
   const actionSlug = proposal.actionType.replace(/_/g, "-");
   const toolName = "external.action.commit";
   const toolInput = {
+    preparedActionId: proposal.id,
+    approved: true,
+    provider: isFixtureExternalActionTarget(proposal.target) ? "fixture" : "generic",
     proposalId: proposal.id,
     runId: run.id,
     threadId: run.threadId,
     actionType: proposal.actionType,
     target: proposal.target,
     proposedAction: proposal.proposedAction,
+    commitPayload: {
+      target: proposal.target,
+      proposedAction: proposal.proposedAction,
+      payloadPreview: proposal.payloadPreview,
+      collectedInputs: proposal.preparation?.collectedInputs ?? [],
+    },
     payloadPreview: proposal.payloadPreview,
     preparation: proposal.preparation,
     commitBoundary: proposal.preparation?.commitBoundary,
@@ -320,6 +329,7 @@ export function buildExternalActionExecutorBuildRequest(
         ...(preparedSession?.artifactIds ?? []),
       ]),
     ],
+    proofArtifactIds: preparedSession?.proofArtifactIds ?? [],
   };
   const expectedProof = [
     "provider confirmation id/status or durable provider response",
@@ -392,6 +402,10 @@ export function buildExternalActionExecutorBuildRequest(
       },
     ],
   };
+}
+
+function isFixtureExternalActionTarget(target: string | undefined): boolean {
+  return /\/api\/fixtures\/external-actions\//i.test(target ?? "");
 }
 
 export function stableToolSegment(value: string | undefined): string | undefined {

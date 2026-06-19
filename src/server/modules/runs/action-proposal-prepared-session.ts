@@ -59,7 +59,10 @@ export function buildPreparedSession(input: {
   );
   const fieldCommands = commands
     .map((command, index) => ({ command, index }))
-    .filter(({ command }) => command.action === "fill" || command.action === "type");
+    .filter(({ command }) => {
+      const name = commandName(command);
+      return name === "fill" || name === "type";
+    });
   const filledFields = fieldCommands
     .filter(({ index }) => fieldCommandSucceeded(index, steps))
     .map(({ command }) => ({
@@ -82,7 +85,13 @@ export function buildPreparedSession(input: {
     filledFields,
     profileValues: input.profileValues,
   });
-  const commitCandidates = inferCommitCandidates(commands, data.forms, data.actionCandidates, input.proposal);
+  const commitCandidates = inferCommitCandidates(
+    commands,
+    data.forms,
+    data.actionCandidates,
+    input.proposal,
+    data,
+  );
   const warnings = inferPreparationWarnings(steps, input.proposal, data, formFieldGaps);
   return {
     preparedAt: new Date().toISOString(),
@@ -214,10 +223,13 @@ function fieldCommandSucceeded(
   commandIndex: number,
   steps: Record<string, unknown>[],
 ): boolean {
-  const step = steps.find((item) => item.index === commandIndex + 1);
+  const step =
+    steps.find((item) => item.index === commandIndex) ??
+    steps.find((item) => item.index === commandIndex + 1);
   if (!step) return true;
-  if (step.ok === false) return false;
-  const detail = parseOptionalText(step.detail)?.toLowerCase() ?? "";
+  if (step.ok === false || step.status === "failed") return false;
+  const detail =
+    parseOptionalText(step.detail ?? step.summary)?.toLowerCase() ?? "";
   if (detail.includes("optional skipped")) return false;
   if (detail.includes("target not found")) return false;
   if (detail.includes("target failed")) return false;
@@ -299,6 +311,7 @@ function inferCommitCandidates(
   forms: unknown,
   actionCandidates: unknown,
   proposal: ExternalActionProposal,
+  data?: Record<string, unknown>,
 ): Array<{ label?: string; selector?: string; reason: string }> {
   const formSubmitCandidates = extractSubmitCandidates(forms);
   if (formSubmitCandidates.length) {
@@ -309,7 +322,7 @@ function inferCommitCandidates(
     return filterLikelyCommitCandidates(globalActionCandidates).slice(0, 8);
   }
   const explicit = commands
-    .filter((command) => command.action === "click")
+    .filter((command) => commandName(command) === "click")
     .map((command) => ({
       label: parseOptionalText(command.text ?? command.name ?? command.label),
       selector: parseOptionalText(command.selector),
@@ -317,9 +330,69 @@ function inferCommitCandidates(
     }))
     .filter((item) => item.label || item.selector);
   if (explicit.length) return explicit.slice(0, 5);
+  const textCandidates = inferTextCommitCandidates(data, proposal);
+  if (textCandidates.length) return textCandidates;
   return proposal.prohibitedWithoutApproval.slice(0, 3).map((item) => ({
     reason: item,
   }));
+}
+
+function inferTextCommitCandidates(
+  data: Record<string, unknown> | undefined,
+  proposal: ExternalActionProposal,
+): Array<{ label?: string; selector?: string; reason: string }> {
+  const text = extractPreparedPageText(data);
+  if (!text) return [];
+  const matches = candidateLabelsForActionType(proposal.actionType)
+    .filter((label) => new RegExp(`\\b${escapeRegExp(label)}\\b`, "iu").test(text))
+    .filter(
+      (label, index, labels) =>
+        !labels.some(
+          (other, otherIndex) =>
+            otherIndex !== index &&
+            other.length > label.length &&
+            other.toLowerCase().includes(label.toLowerCase()),
+        ),
+    );
+  return matches
+    .slice(0, 3)
+    .map((label) => ({
+      label,
+      reason: "Submit/control text was observed on the prepared browser page.",
+    }));
+}
+
+function extractPreparedPageText(data: Record<string, unknown> | undefined): string {
+  if (!data) return "";
+  const direct =
+    parseOptionalText(data.extractedText) ??
+    parseOptionalText(data.text) ??
+    parseOptionalText(data.content);
+  if (direct) return direct;
+  if (!Array.isArray(data.extractedText)) return "";
+  return data.extractedText
+    .filter(isRecord)
+    .map((item) => parseOptionalText(item.text))
+    .filter((text): text is string => Boolean(text))
+    .join("\n")
+    .slice(0, 10_000);
+}
+
+function candidateLabelsForActionType(actionType: string): string[] {
+  const common = ["Submit", "Send", "Confirm", "Continue", "Next"];
+  if (actionType === "reservation") {
+    return ["Confirm reservation", "Reserve", "Book", ...common];
+  }
+  if (actionType === "appointment") {
+    return ["Confirm appointment", "Schedule", "Book appointment", "Book", ...common];
+  }
+  if (actionType === "purchase") return ["Place order", "Confirm order", "Pay", ...common];
+  if (actionType === "outbound_message") return ["Send message", ...common];
+  return common;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function filterLikelyCommitCandidates(
@@ -437,4 +510,8 @@ function compactPreview(value: string | undefined, maxLength: number): string {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function commandName(command: Record<string, unknown>): string | undefined {
+  return parseOptionalText(command.action) ?? parseOptionalText(command.type);
 }

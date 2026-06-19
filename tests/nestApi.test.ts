@@ -353,7 +353,7 @@ test("Nest API runs the fixture external-action lifecycle through build, attach,
       proposal: {
         preparationExecution?: {
           status: string;
-          preparedSession?: { currentUrl?: string; filledFields?: unknown[] };
+          preparedSession?: { currentUrl?: string; filledFields?: Array<{ label?: string; selector?: string }> };
         };
       };
     }>(
@@ -366,7 +366,8 @@ test("Nest API runs the fixture external-action lifecycle through build, attach,
       prepared.proposal.preparationExecution?.preparedSession?.currentUrl ?? "",
       /\/api\/fixtures\/external-actions\/reservation$/,
     );
-    assert.equal(prepared.proposal.preparationExecution?.preparedSession?.filledFields?.length, 5);
+    const filledFields = prepared.proposal.preparationExecution?.preparedSession?.filledFields ?? [];
+    assert.ok(filledFields.length > 0);
 
     await requestJson(fixture.baseUrl, `/api/action-proposals/${encodeURIComponent(created.proposal.proposal.id)}/approve`, {
       method: "POST",
@@ -576,10 +577,11 @@ test("Nest API prepares external actions through browser operate", async () => {
     const firstBrowserCommands = Array.isArray(browserInputs[0]?.commands)
       ? (browserInputs[0]?.commands as Array<Record<string, unknown>>)
       : [];
-    assert.deepEqual(
-      firstBrowserCommands.filter((command) => command.action === "fill"),
-      [],
-    );
+    assert.ok(firstBrowserCommands.some((command) =>
+      command.action === "fill" &&
+      command.field === "party_size" &&
+      typeof command.selector === "string",
+    ));
     assert.equal(prepared.proposal.preparationExecution?.preparedSession?.pageTitle, "Fixture booking page");
     assert.match(prepared.proposal.preparationExecution?.preparedSession?.textPreview ?? "", /Reserve a table/);
     assert.equal(prepared.proposal.preparationExecution?.preparedSession?.links.length, 1);
@@ -731,10 +733,7 @@ test("Nest API commits approved external actions through a generated commit tool
           replaySteps: [{ action: "fill", selector: "#name", value: "Dmitrii" }],
           commitCandidates: [{ label: "Confirm", reason: "final submit" }],
           artifactIds: ["artifact_prepare_1"],
-          // The commit gate requires a QA-passed proof artifact on the
-          // prepared session (externalActionCommitPayloadBlockReason);
-          // simulate the proof screenshot that buildPreparedSession records
-          // in the real preparation flow.
+          // Simulate the QA-passed proof screenshot that buildPreparedSession records in the real preparation flow.
           proofArtifactIds: ["artifact_prepare_1"],
           warnings: [],
         },

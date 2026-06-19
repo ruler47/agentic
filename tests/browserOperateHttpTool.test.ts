@@ -48,6 +48,40 @@ test("BrowserOperateHttpTool.run forwards POST /run and rehydrates contentBase64
   assert.equal(data.screenshots[0].content.toString("utf8"), "hello");
 });
 
+test("BrowserOperateHttpTool.run rewrites localhost URLs for remote browser runtimes", async () => {
+  const fetchMock = fakeFetch(async (_url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    assert.equal(body.input.url, "http://browser-host:3000/start");
+    assert.equal(body.input.commands[0].url, "http://browser-host:3000/next");
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        content: "ok",
+        data: {
+          finalUrl: "http://browser-host:3000/next",
+          steps: [],
+          extractedText: [],
+          extractedLinks: [],
+          screenshots: [],
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  });
+  const tool = new BrowserOperateHttpTool({
+    baseUrl: "http://test-host",
+    fetchImpl: fetchMock,
+    localhostAlias: "browser-host",
+  });
+
+  const result = await tool.run({
+    url: "http://127.0.0.1:3000/start",
+    commands: [{ type: "navigate", url: "http://localhost:3000/next" }],
+  });
+
+  assert.equal(result.ok, true);
+});
+
 test("BrowserOperateHttpTool.run reports HTTP errors with the error body", async () => {
   const fetchMock = fakeFetch(async () =>
     new Response(JSON.stringify({ error: "browser crashed" }), { status: 500 }),

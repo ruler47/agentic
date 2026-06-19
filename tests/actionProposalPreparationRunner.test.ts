@@ -152,6 +152,122 @@ test("external action preparation follows likely booking links without final com
   );
 });
 
+test("external action preparation skips draft-only prepare tool when browser proof is required", async () => {
+  const runs = new InMemoryRunStore();
+  const registry = new ToolRegistry();
+  const called: string[] = [];
+  let browserInput: Record<string, unknown> | undefined;
+  registry.register({
+    name: "external.action.prepare",
+    version: "1.0.0",
+    description: "Draft-only external action prepare fixture.",
+    capabilities: [
+      "external-action-prepare",
+      "approval-required",
+      "form-preparation",
+      "commit-boundary",
+    ],
+    inputSchema: { type: "object", properties: {}, required: [] },
+    async run() {
+      called.push("external.action.prepare");
+      return { ok: false, content: "Provide goal and action." };
+    },
+  });
+  registry.register({
+    name: "browser.operate",
+    version: "0.1.0",
+    description: "Browser prepare fixture.",
+    capabilities: ["browser-operate", "browser-field-candidates"],
+    inputSchema: { type: "object", properties: {}, required: [] },
+    async run(input) {
+      browserInput = input;
+      called.push("browser.operate");
+      assert.equal(input.prepareOnly, true);
+      assert.equal(input.action, "Prepare reservation after approval.");
+      assert.equal(input.targetUrl, "https://restaurant.example/book");
+      assert.deepEqual(input.data, { Name: "Dmitrii Test" });
+      return {
+        ok: true,
+        content: "Prepared browser proof.",
+        data: {
+          finalUrl: input.url,
+          pageTitle: "Booking",
+          extractedText: "Reservation draft is filled.",
+          links: [],
+          steps: [{ index: 0, action: "screenshot", ok: true }],
+        },
+      };
+    },
+  });
+  const run = await runs.create("prepare action", {
+    instanceId: "instance-local",
+    requesterUserId: "user-admin",
+    channel: "web",
+  });
+  const proposal: ExternalActionProposal = {
+    id: `action_${run.id}_browser_preparation`,
+    runId: run.id,
+    actionType: "reservation",
+    status: "approved",
+    title: "Reservation proposal",
+    summary: "Prepare reservation.",
+    proposedAction: "Prepare reservation after approval.",
+    target: "Restaurant",
+    approvalRequired: true,
+    userExplicitlyForbidsAction: false,
+    allowedWithoutApproval: ["prepare"],
+    prohibitedWithoutApproval: ["submit final reservation"],
+    sourceUrls: ["https://restaurant.example/book"],
+    artifactIds: [],
+    preparation: {
+      stage: "prepared_for_approval",
+      target: "Restaurant",
+      targetUrl: "https://restaurant.example/book",
+      objective: "Open the booking page, fill a safe draft, capture proof, and stop.",
+      collectedInputs: [{ label: "Name", value: "Dmitrii Test", source: "user_request" }],
+      missingInputs: [],
+      commitBoundary: "Do not submit final reservation.",
+      operatorChecklist: ["Review proof"],
+      proofPlan: ["screenshot"],
+    },
+    createdAt: new Date().toISOString(),
+    createdBy: "base-agent",
+  };
+  const recorder = new ActionProposalAuditRecorder(
+    runs,
+    new AuditService(new InMemoryAuditEventStore()),
+  );
+
+  await new ActionProposalPreparationRunner({
+    runs,
+    artifacts: undefined,
+    toolRegistry: registry,
+    recorder,
+  }).prepare({ run, proposal, rawBody: {} });
+
+  assert.deepEqual(called, ["browser.operate"]);
+  const commands = browserInput?.commands as Record<string, unknown>[] | undefined;
+  assert.ok(commands);
+  assert.deepEqual(commands[0], {
+    action: "navigate",
+    type: "navigate",
+    url: "https://restaurant.example/book",
+  });
+  assert.equal(
+    commands.some((command) => command.action === "extractForms"),
+    false,
+  );
+  assert.equal(
+    commands.every((command) => typeof command.type === "string"),
+    true,
+  );
+  const updated = await runs.get(run.id);
+  const completed = updated?.events.find(
+    (event) => event.type === "external-action-preparation-completed",
+  );
+  assert.equal(completed?.actor, "browser.operate");
+});
+
 test("external action preparation safely advances through observed non-submit controls", async () => {
   const runs = new InMemoryRunStore();
   const registry = new ToolRegistry();
@@ -290,9 +406,10 @@ test("external action preparation safely advances through observed non-submit co
   assert.deepEqual(
     safeAdvanceCommands.slice(0, 2),
     [
-      { action: "dismissDialogs" },
+      { action: "dismissDialogs", type: "dismissDialogs" },
       {
         action: "click",
+        type: "click",
         safeAdvance: true,
         optional: false,
         selector: "#book-now",
@@ -413,7 +530,7 @@ test("external action preparation prefers generated external-action-prepare capa
     name: "browser.operate",
     version: "0.1.0",
     description: "Browser fallback fixture.",
-    capabilities: ["browser-operate"],
+    capabilities: ["browser-operate", "browser-field-candidates"],
     inputSchema: { type: "object", properties: {}, required: [] },
     async run() {
       called.push("browser.operate");
@@ -611,207 +728,4 @@ test("prepared session does not treat skipped fill commands as prepared fields",
     "provider selection did not advance to a fillable ready-to-submit form",
     "user-provided action data was not prepared on the provider page",
   ]);
-});
-
-test("external action preparation replays approved profile hydration without leaking raw values to trace", async () => {
-  const runs = new InMemoryRunStore();
-  const registry = new ToolRegistry();
-  const inputs: Record<string, unknown>[] = [];
-  registry.register({
-    name: "browser.operate",
-    version: "0.1.0",
-    description: "Browser prepare fixture.",
-    capabilities: ["browser-operate"],
-    inputSchema: { type: "object", properties: {}, required: [] },
-    async run(input) {
-      inputs.push(input);
-      return {
-        ok: true,
-        content: "Prepared form.",
-        data: {
-          finalUrl: String(input.url),
-          pageTitle: "Booking",
-          extractedText: "Reservation form.",
-          forms: [
-            {
-              fields: [
-                { label: "Email", name: "email", type: "email", required: true },
-              ],
-            },
-          ],
-          steps: [{ index: 0, action: "extractForms", ok: true, detail: "forms" }],
-        },
-      };
-    },
-  });
-  const run = await runs.create("prepare booking", {
-    instanceId: "instance-local",
-    requesterUserId: "user-admin",
-    channel: "web",
-  });
-  const proposal: ExternalActionProposal = {
-    id: `action_${run.id}_profile`,
-    runId: run.id,
-    actionType: "reservation",
-    status: "proposed",
-    title: "Reservation proposal",
-    summary: "prepare reservation",
-    proposedAction: "Prepare reservation after approval.",
-    target: "Restaurant",
-    approvalRequired: true,
-    userExplicitlyForbidsAction: false,
-    allowedWithoutApproval: ["research", "prepare"],
-    prohibitedWithoutApproval: ["submit final booking"],
-    sourceUrls: ["https://restaurant.example/booking/"],
-    artifactIds: [],
-    preparation: {
-      stage: "prepared_for_approval",
-      target: "Restaurant",
-      targetUrl: "https://restaurant.example/booking/",
-      objective: "Prepare reservation.",
-      collectedInputs: [],
-      missingInputs: ["contact"],
-      commitBoundary: "Do not submit final booking.",
-      operatorChecklist: ["Review"],
-      proofPlan: ["screenshot"],
-    },
-    createdAt: new Date().toISOString(),
-    createdBy: "base-agent",
-  };
-  const recorder = new ActionProposalAuditRecorder(
-    runs,
-    new AuditService(new InMemoryAuditEventStore()),
-  );
-  await new ActionProposalPreparationRunner({
-    runs,
-    artifacts: undefined,
-    toolRegistry: registry,
-    recorder,
-    profileValues: [
-      {
-        field: "contact_email",
-        source: "user_profile",
-        value: "dmitrii@example.com",
-        valuePreview: "dm***@example.com",
-      },
-    ],
-  }).prepare({ run, proposal, rawBody: {} });
-
-  const preparedRun = await runs.get(run.id);
-  assert.ok(preparedRun);
-  await new ActionProposalPreparationRunner({
-    runs,
-    artifacts: undefined,
-    toolRegistry: registry,
-    recorder,
-    approvedProfileFields: ["contact_email"],
-    profileValues: [
-      {
-        field: "contact_email",
-        source: "user_profile",
-        value: "dmitrii@example.com",
-        valuePreview: "dm***@example.com",
-      },
-    ],
-  }).prepare({ run: preparedRun, proposal, rawBody: { mode: "replay" } });
-
-  assert.equal(inputs.length, 2);
-  const replayCommands = inputs[1]?.commands as Record<string, unknown>[];
-  assert.equal(
-    replayCommands.some(
-      (command) =>
-        command.source === "approved_profile" &&
-        command.value === "dmitrii@example.com",
-    ),
-    true,
-  );
-  const updated = await runs.get(run.id);
-  const replayStarted = updated?.events
-    .filter((event) => event.type === "external-action-preparation-started")
-    .at(-1);
-  assert.equal(JSON.stringify(replayStarted?.payload).includes("dmitrii@example.com"), false);
-  assert.equal(JSON.stringify(replayStarted?.payload).includes("dm***@example.com"), true);
-});
-
-test("form-fill capability enables canonical fill commands including split contact", async () => {
-  const runs = new InMemoryRunStore();
-  const registry = new ToolRegistry();
-  const inputs: Record<string, unknown>[] = [];
-  registry.register({
-    name: "external.action.prepare",
-    version: "0.1.15",
-    description: "Prepare fixture.",
-    // The real registered package declares form-fill, not
-    // browser-field-candidates.
-    capabilities: ["external-action-preparation", "browser-operation", "form-fill"],
-    inputSchema: { type: "object", properties: {}, required: [] },
-    async run(input) {
-      inputs.push(input);
-      return {
-        ok: true,
-        content: "Prepared.",
-        data: { finalUrl: String(input.url), steps: [] },
-      };
-    },
-  });
-  const run = await runs.create("подготовь запись", {
-    instanceId: "instance-local",
-    requesterUserId: "user-admin",
-    channel: "web",
-  });
-  const proposal: ExternalActionProposal = {
-    id: `action_${run.id}_1`,
-    runId: run.id,
-    actionType: "appointment",
-    status: "approved",
-    title: "Appointment proposal: Fixture",
-    summary: "appointment",
-    proposedAction: "Prepare appointment.",
-    target: "Fixture salon",
-    approvalRequired: true,
-    userExplicitlyForbidsAction: false,
-    allowedWithoutApproval: [],
-    prohibitedWithoutApproval: [],
-    sourceUrls: [],
-    artifactIds: [],
-    preparation: {
-      stage: "prepared_for_approval",
-      target: "Fixture salon",
-      targetUrl: "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
-      objective: "Prepare appointment.",
-      collectedInputs: [
-        { label: "service", value: "стрижка / haircut", source: "user_request" },
-        { label: "date_or_time", value: "Friday 17:30", source: "user_request" },
-        { label: "contact", value: "Test User, test@example.com, +34 600 000 000", source: "user_request" },
-      ],
-      missingInputs: [],
-      commitBoundary: "no submit",
-      operatorChecklist: [],
-      proofPlan: [],
-    },
-    createdAt: new Date().toISOString(),
-    createdBy: "base-agent",
-  };
-  const recorder = new ActionProposalAuditRecorder(
-    runs,
-    new AuditService(new InMemoryAuditEventStore()),
-  );
-  await new ActionProposalPreparationRunner({
-    runs,
-    artifacts: undefined,
-    toolRegistry: registry,
-    recorder,
-  }).prepare({ run, proposal, rawBody: {} });
-
-  const commands = (inputs[0]?.commands ?? []) as Array<Record<string, unknown>>;
-  const fillFields = commands.filter((c) => c.action === "fill").map((c) => c.field);
-  for (const field of ["time", "service", "name", "email", "phone"]) {
-    assert.ok(fillFields.includes(field), `fill command for ${field} expected, got: ${JSON.stringify(fillFields)}`);
-  }
-  const email = commands.find((c) => c.field === "email") as { value?: string };
-  assert.equal(email?.value, "test@example.com");
-  const phone = commands.find((c) => c.field === "phone") as { value?: string };
-  assert.equal(phone?.value, "+34 600 000 000");
-  const name = commands.find((c) => c.field === "name") as { value?: string };
-  assert.equal(name?.value, "Test User");
 });

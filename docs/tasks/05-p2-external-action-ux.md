@@ -1,5 +1,7 @@
 # P2 External Action UX
 
+Status: implemented and manually verified on 2026-06-19.
+
 ## BA View
 
 ### Problem
@@ -46,7 +48,7 @@ proof are all satisfied.
 
 ### Proposed Solution
 
-Implement a single external-action state machine and one primary UI card.
+Implement a single external-action state interpretation and one primary UI card.
 
 Recommended states:
 
@@ -91,6 +93,34 @@ UI policy:
 - Normal approval mode should combine approve + continue safely when no extra user action
   is required, while still preserving the final submit boundary.
 
+### Implemented Solution
+
+- `web-react/src/features/approvals/externalActionUxState.ts` is the canonical React
+  projection from backend proposal/readiness state to user-facing status, summary,
+  primary action, and advanced actions.
+- `/approvals` and Run Workspace use the same projection. Pending proposals show one
+  primary `Approve plan and prepare proof` action; approved proposals show the next
+  single safe action such as `Prepare form and capture proof`, `Attach submit executor`,
+  or `Submit externally now`.
+- Advanced controls such as explicit replay/build are collapsed or secondary.
+- Approval mode now lets the backend auto-advance through safe preparation and executor
+  attachment when possible, while still stopping before final external submit.
+- `browser.operate` preparation compatibility was normalized:
+  - commands carry both `action` and `type`;
+  - core HTTP browser runtimes get an explicit first `navigate`;
+  - commands requiring form schema or semantic fill are filtered unless the selected tool
+    declares the matching capability;
+  - if semantic fill is unavailable, common form fields fall back to selector-based
+    browser fills.
+- Docker-host browser preparation rewrites local URLs through
+  `BROWSER_OPERATE_LOCALHOST_ALIAS`, defaulting to `host.docker.internal`, while the
+  original task URL remains in proposal/audit context.
+- The core `external.action.commit` tool declares
+  `external-action-commit-generic` and can be attached as the generic guarded commit
+  executor instead of trying to generate a duplicate tool with the same name.
+- Commit tool input now includes the typed fields required by the core executor:
+  `preparedActionId`, `approved`, `provider`, `commitPayload`, and proof artifact ids.
+
 ### Likely Files
 
 - `src/server/modules/runs/action-proposals.service.ts`
@@ -129,30 +159,48 @@ UI policy:
 
 ### Manual Verification
 
-1. Use local external-action fixture.
-2. Run booking task in approval mode.
-3. Inspect proposal card.
-4. Approve once.
-5. Confirm same run resumes and commits or blocks clearly.
-6. Run automode fixture.
-7. Inspect Run Workspace, Approvals, Trace Lab, Ledger, artifacts, final report.
+Verified locally against the safe reservation fixture:
+
+1. Created fixture proposal `proposal_1781883402158_iaci7qda` with run
+   `run_1781883402158_4on9f2qq`.
+2. Opened `/approvals` in the React UI.
+3. Confirmed one pending primary action: `Approve plan and prepare proof`.
+4. Approved once.
+5. Confirmed the platform prepared the form, filled Name/Party size/Date/Time/Notes,
+   captured a proof artifact, attached the generic `external.action.commit@1.0.0`
+   executor, and showed one final primary action: `Submit externally now`.
+6. Submitted the safe fixture action.
+7. Confirmed `/approvals` moved the item to recent decisions with
+   `Fixture external action committed. Confirmation:
+   fixture-proposal_1781883402158_iaci7qda`.
+8. Confirmed API run status is `completed` and event order is:
+   `external-action-proposal-created`, `external-action-proposal-approved`,
+   `external-action-approval-auto-advance-started`,
+   `external-action-preparation-started`, `artifact-created`,
+   `external-action-preparation-completed`,
+   `external-action-executor-attached`,
+   `external-action-approval-auto-advance-completed`,
+   `external-action-commit-started`, `external-action-committed`, `run-completed`.
 
 ## PM / Feature Owner View
 
 ### Delivery Plan
 
-1. Document current approval states and button actions.
-2. Define the canonical state machine and DTO.
-3. Update backend derived readiness logic.
-4. Simplify UI card around one primary next action.
-5. Wire approval resume behavior.
-6. Improve final report contract.
-7. Add fixture tests.
-8. Run manual approval and automode exams.
-9. Update docs and close this task.
+1. Done: documented current approval states and button actions.
+2. Done: defined canonical UI state projection.
+3. Done: updated backend readiness/executor compatibility.
+4. Done: simplified UI card around one primary next action.
+5. Done: wired approval resume through preparation and executor attach.
+6. Done: core fixture final report records confirmation and submitted data summary.
+7. Done: added backend and React unit coverage for the new flow.
+8. Done: ran manual approval fixture exam end to end.
+9. Done: updated docs.
 
 ### Done When
 
 - The user can test a booking fixture without asking "what do I press now?"
 - Approval and commit are distinct but understandable.
 - The same design can apply to booking, form submit, outbound message, and API write.
+
+Follow-up: run the same simplified UX through a real-world provider that blocks before
+login/CAPTCHA/payment and verify the blocker text remains explicit and non-submitting.

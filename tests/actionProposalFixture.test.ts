@@ -25,7 +25,11 @@ test("fixture external-action proposal prepares a safe draft in browser.operate"
       name: "browser.operate",
       version: "0.1.0",
       description: "Fixture browser operate.",
-      capabilities: ["browser-operate", "browser-automation"],
+      capabilities: [
+        "browser-operate",
+        "browser-automation",
+        "browser-field-candidates",
+      ],
       inputSchema: { type: "object", properties: {}, required: [] },
       async run(input) {
         browserInputs.push(input);
@@ -133,7 +137,11 @@ test("fixture external-action approval mode resumes the same run after approved 
       name: "browser.operate",
       version: "0.1.0",
       description: "Fixture browser operate.",
-      capabilities: ["browser-operate", "browser-automation"],
+      capabilities: [
+        "browser-operate",
+        "browser-automation",
+        "browser-field-candidates",
+      ],
       inputSchema: { type: "object", properties: {}, required: [] },
       async run(input) {
         prepareInputs.push(input);
@@ -288,7 +296,11 @@ test("profile field approval replays preparation before final submit", async () 
       name: "browser.operate",
       version: "0.1.0",
       description: "Fixture browser operate.",
-      capabilities: ["browser-operate", "browser-automation"],
+      capabilities: [
+        "browser-operate",
+        "browser-automation",
+        "browser-field-candidates",
+      ],
       inputSchema: { type: "object", properties: {}, required: [] },
       async run(input) {
         prepareInputs.push(input);

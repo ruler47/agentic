@@ -4,6 +4,7 @@ import {
   useActionProposalCommit,
   useActionProposalDecision,
   useActionProposalExecutorBuild,
+  useActionProposalPrepare,
   useActionProposalProfileHydrationApproval,
   useActionProposals,
   useCreateFixtureActionProposal,
@@ -14,16 +15,12 @@ import { useToolServiceAction, useToolServices } from "@/api/toolServices";
 import { GenericBadge } from "@/components/StatusBadge";
 import { ActionProposalReview } from "@/features/approvals/ActionProposalReview";
 import {
-  actionVerb,
-  collectedInputLabel,
-  finalSubmitUnavailableReason,
-  humanSubmitBlockReason,
   isFixtureActionProposal,
   profileHydrationApprovalCandidates,
-  proposalUrl,
 } from "@/features/approvals/actionProposalPresentation";
 import { CommitReadinessPanel } from "@/features/approvals/CommitReadinessPanel";
 import { buildCommitReadiness } from "@/features/approvals/commitReadiness";
+import { buildExternalActionUxState } from "@/features/approvals/externalActionUxState";
 import { formatRelative, truncate } from "@/lib/format";
 
 export function ApprovalsPage() {
@@ -79,7 +76,9 @@ export function ApprovalsPage() {
           </p>
         ) : (
           <ul className="mt-3 grid gap-3 lg:grid-cols-2">
-            {pendingActions.map((item) => (
+            {pendingActions.map((item) => {
+              const ux = buildExternalActionUxState(item);
+              return (
               <li
                 key={item.proposal.id}
                 className="rounded-md border border-app-border bg-app-surface-2 p-3 text-xs"
@@ -116,7 +115,7 @@ export function ApprovalsPage() {
                     disabled={proposalDecision.isPending}
                     className="rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
                   >
-                    {proposalDecision.isPending ? "Approving…" : "Approve: prepare proof, then wait before submit"}
+                    {proposalDecision.isPending ? "Approving…" : ux.primaryAction.label}
                   </button>
                   <button
                     type="button"
@@ -134,9 +133,15 @@ export function ApprovalsPage() {
                   >
                     Open run
                   </Link>
+                  {ux.primaryAction.effect ? (
+                    <span className="basis-full text-[11px] text-app-text-muted">
+                      {ux.primaryAction.effect}
+                    </span>
+                  ) : null}
                 </div>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </article>
@@ -274,61 +279,25 @@ export function ApprovalsPage() {
 }
 
 function ActionDecisionSummary({ item }: { item: ActionProposalQueueItem }) {
-  const readiness = buildCommitReadiness(item);
-  const session = item.preparationExecution?.preparedSession;
-  const url = proposalUrl(item) ?? session?.currentUrl ?? "No target page captured";
-  const data = [
-    ...(item.proposal.preparation?.collectedInputs ?? []).map(
-      (input) => `${collectedInputLabel(input.label)}: ${input.value}`,
-    ),
-    ...(session?.filledFields ?? []).map(
-      (field) => `${field.label ?? field.selector ?? "field"}: ${field.valuePreview}`,
-    ),
-  ];
+  const ux = buildExternalActionUxState(item);
+  const summary = ux.summary;
   return (
     <div className="mt-3 rounded-md border border-app-accent/30 bg-app-bg p-3 text-[11px]">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-semibold text-app-accent">What needs a decision</p>
-          <p className="mt-1 text-app-text-muted">{operatorFacingNextStep(item, readiness)}</p>
+          <p className="font-semibold text-app-accent">{ux.title}</p>
+          <p className="mt-1 text-app-text-muted">{ux.description}</p>
         </div>
-        <GenericBadge tone={readiness.tone}>{readiness.label}</GenericBadge>
+        <GenericBadge tone={ux.tone}>{ux.statusLabel}</GenericBadge>
       </div>
       <dl className="mt-3 grid gap-2 md:grid-cols-2">
-        <CompactField label="Target">{item.proposal.target ?? "Not selected"}</CompactField>
-        <CompactField label="Action">{actionVerb(item)}</CompactField>
-        <CompactField label="Page">{truncate(url, 180)}</CompactField>
-        <CompactField label="Data">
-          {data.length ? truncate(data.join("; "), 260) : "No filled fields recorded yet."}
-        </CompactField>
+        <CompactField label="Target">{summary.target}</CompactField>
+        <CompactField label="Action">{summary.action}</CompactField>
+        <CompactField label="Page">{summary.url}</CompactField>
+        <CompactField label="Data">{summary.data}</CompactField>
       </dl>
     </div>
   );
-}
-
-function operatorFacingNextStep(
-  item: ActionProposalQueueItem,
-  readiness: ReturnType<typeof buildCommitReadiness>,
-): string {
-  if (item.proposal.status === "proposed") {
-    return "Approve only if the target/action/data are correct. Approval prepares proof and still stops before the final external submit.";
-  }
-  if (readiness.status === "ready_to_commit") {
-    return "Preparation proof is ready. Submit only if you want the platform to perform the real external action now.";
-  }
-  if (readiness.status === "needs_preparation") {
-    return "The plan is approved, but the browser preparation/proof step has not completed yet.";
-  }
-  if (readiness.status === "needs_executor") {
-    return "The plan is approved, but no generated executor is attached for the final provider submit.";
-  }
-  if (/missing_requirements|provider\/API|form-specific|fixtureConfirmation/i.test(readiness.reason)) {
-    return finalSubmitUnavailableReason(item);
-  }
-  if (readiness.status === "committed") {
-    return "The external action was submitted. Check the provider confirmation and artifacts.";
-  }
-  return readiness.reason;
 }
 
 function CompactField({ label, children }: { label: string; children: string }) {
@@ -542,11 +511,13 @@ function ExecutorBuildSummary({ item }: { item: NonNullable<ActionProposalQueueI
 function CommitControls({ item }: { item: ActionProposalQueueItem }) {
   const proposalCommit = useActionProposalCommit();
   const proposalExecutorBuild = useActionProposalExecutorBuild();
+  const proposalPrepare = useActionProposalPrepare();
   const isFixture = isFixtureActionProposal(item);
   const [fixtureConfirmation, setFixtureConfirmation] = useState("");
   const [jsonInput, setJsonInput] = useState("");
   const [jsonError, setJsonError] = useState<string>();
   const readiness = buildCommitReadiness(item);
+  const ux = buildExternalActionUxState(item);
   const canBuild = readiness.canBuildExecutor && item.executorBuild?.status !== "registered";
   const hasOperatorCommitInput = Boolean(fixtureConfirmation.trim() || jsonInput.trim());
   const canCommitWithOperatorInput =
@@ -556,7 +527,10 @@ function CommitControls({ item }: { item: ActionProposalQueueItem }) {
     readiness.status === "blocked" &&
     readiness.missingFields.length > 0 &&
     hasOperatorCommitInput;
-  const canCommit = readiness.canCommit || canCommitWithOperatorInput;
+  const primaryKind = ux.primaryAction.kind;
+  const canPreparePrimary = primaryKind === "prepare" || primaryKind === "replay";
+  const canBuildPrimary = primaryKind === "build_executor" && canBuild;
+  const canCommitPrimary = primaryKind === "submit" || canCommitWithOperatorInput;
 
   const commit = () => {
     const parsed = parseOperatorCommitInput(jsonInput, fixtureConfirmation);
@@ -581,11 +555,16 @@ function CommitControls({ item }: { item: ActionProposalQueueItem }) {
         <GenericBadge tone={readiness.tone}>{readiness.label}</GenericBadge>
       </div>
       <p className="mt-1 text-app-text-muted">
-        {truncate(operatorFacingSubmitBlockReason(item, readiness.reason), 300)}
+        {truncate(ux.description, 300)}
       </p>
-      {!readiness.canCommit ? (
+      {ux.primaryAction.effect ? (
+        <p className="mt-2 rounded border border-app-border bg-app-bg px-2 py-1 text-app-text-muted">
+          Next action effect: {ux.primaryAction.effect}
+        </p>
+      ) : null}
+      {!readiness.canCommit && primaryKind === "none" ? (
         <p className="mt-2 rounded border border-app-warning/40 bg-app-warning-soft px-2 py-1 text-app-warning">
-          External submit is not available yet. {operatorFacingSubmitBlockReason(item, readiness.reason)}
+          External submit is not available yet. {ux.description}
         </p>
       ) : null}
       {isFixture ? (
@@ -627,8 +606,39 @@ function CommitControls({ item }: { item: ActionProposalQueueItem }) {
       {proposalExecutorBuild.error ? (
         <p className="mt-1 text-app-danger">{proposalExecutorBuild.error.message}</p>
       ) : null}
+      {proposalPrepare.error ? (
+        <p className="mt-1 text-app-danger">{proposalPrepare.error.message}</p>
+      ) : null}
       <div className="mt-2 flex flex-wrap gap-2">
-        {canBuild ? (
+        {canPreparePrimary ? (
+          <button
+            type="button"
+            onClick={() =>
+              proposalPrepare.mutate({
+                id: item.proposal.id,
+                mode: primaryKind === "replay" ? "replay" : undefined,
+              })
+            }
+            disabled={proposalPrepare.isPending}
+            className="rounded-md bg-app-accent px-2.5 py-1 font-semibold text-app-bg disabled:opacity-50"
+          >
+            {proposalPrepare.isPending ? "Preparing…" : ux.primaryAction.label}
+          </button>
+        ) : null}
+        {readiness.canReplay &&
+        !readiness.canCommit &&
+        primaryKind !== "replay" &&
+        item.preparationExecution?.preparedSession ? (
+          <button
+            type="button"
+            onClick={() => proposalPrepare.mutate({ id: item.proposal.id, mode: "replay" })}
+            disabled={proposalPrepare.isPending}
+            className="rounded-md border border-app-border bg-app-surface-2 px-2.5 py-1 disabled:opacity-50"
+          >
+            Replay exact browser steps (advanced)
+          </button>
+        ) : null}
+        {canBuildPrimary ? (
           <button
             type="button"
             onClick={() =>
@@ -642,32 +652,26 @@ function CommitControls({ item }: { item: ActionProposalQueueItem }) {
             disabled={proposalExecutorBuild.isPending}
             className="rounded-md border border-app-border bg-app-surface-2 px-2.5 py-1 disabled:opacity-50"
           >
-            {proposalExecutorBuild.isPending ? "Building…" : "Build submit executor"}
+            {proposalExecutorBuild.isPending ? "Building…" : ux.primaryAction.label}
           </button>
         ) : null}
-        {canCommit ? (
+        {canCommitPrimary ? (
           <button
             type="button"
             onClick={commit}
             disabled={proposalCommit.isPending}
             className="rounded-md bg-app-accent px-2.5 py-1 font-semibold text-app-bg disabled:opacity-50"
           >
-            {proposalCommit.isPending ? "Submitting…" : "Final submit to provider now"}
+            {proposalCommit.isPending
+              ? "Submitting…"
+              : canCommitWithOperatorInput
+                ? "Submit externally with supplied input"
+                : ux.primaryAction.label}
           </button>
         ) : null}
       </div>
     </div>
   );
-}
-
-function operatorFacingSubmitBlockReason(
-  item: ActionProposalQueueItem,
-  readinessReason: string,
-): string {
-  if (/missing_requirements|provider\/API|form-specific|fixtureConfirmation/i.test(readinessReason)) {
-    return finalSubmitUnavailableReason(item);
-  }
-  return humanSubmitBlockReason(readinessReason || finalSubmitUnavailableReason(item));
 }
 
 function parseOperatorCommitInput(

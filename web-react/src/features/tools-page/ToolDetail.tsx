@@ -9,7 +9,7 @@ import {
 import { useToolServiceAction } from "@/api/toolServices";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
-import type { ToolCatalogEntry, ToolServiceStatus } from "@/api/types";
+import type { ToolCatalogEntry, ToolModuleMetadata, ToolServiceStatus } from "@/api/types";
 import { useSecretHandleStatuses } from "@/api/secretHandles";
 
 import { ToolEditPanel } from "./ToolEditPanel";

@@ -81,6 +81,7 @@ export class BrowserOperateHttpTool implements Tool {
       baseUrl?: string;
       callTimeoutMs?: number;
       fetchImpl?: typeof fetch;
+      localhostAlias?: string | false;
     } = {},
   ) {}
 
@@ -111,7 +112,12 @@ export class BrowserOperateHttpTool implements Tool {
       const response = await fetchImpl(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ input }),
+        body: JSON.stringify({
+          input: rewriteLocalhostUrlsForRemoteBrowser(
+            input,
+            this.localhostAlias(),
+          ),
+        }),
         signal: controller.signal,
       });
       const text = await response.text();
@@ -155,6 +161,61 @@ export class BrowserOperateHttpTool implements Tool {
     const fromEnv = process.env.BROWSER_OPERATE_BASE_URL;
     return (fromOptions ?? fromEnv ?? "http://browser-operate:8080").replace(/\/+$/, "");
   }
+
+  private localhostAlias(): string | undefined {
+    if (this.options.localhostAlias !== undefined) {
+      return this.options.localhostAlias === false
+        ? undefined
+        : this.options.localhostAlias;
+    }
+    const fromEnv = process.env.BROWSER_OPERATE_LOCALHOST_ALIAS;
+    if (fromEnv === "disabled" || fromEnv === "none" || fromEnv === "false") {
+      return undefined;
+    }
+    return fromEnv?.trim() || "host.docker.internal";
+  }
+}
+
+function rewriteLocalhostUrlsForRemoteBrowser(
+  input: ToolInput,
+  alias: string | undefined,
+): ToolInput {
+  if (!alias || !isRecord(input)) return input;
+  const output: Record<string, unknown> = { ...input };
+  output.url = rewriteLocalhostUrl(output.url, alias);
+  if (Array.isArray(output.commands)) {
+    output.commands = output.commands.map((command) => {
+      if (!isRecord(command)) return command;
+      return {
+        ...command,
+        url: rewriteLocalhostUrl(command.url, alias),
+      };
+    });
+  }
+  return output;
+}
+
+function rewriteLocalhostUrl(value: unknown, alias: string): unknown {
+  if (typeof value !== "string" || !value.trim()) return value;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return value;
+  }
+  if (
+    parsed.hostname !== "127.0.0.1" &&
+    parsed.hostname !== "localhost" &&
+    parsed.hostname !== "::1"
+  ) {
+    return value;
+  }
+  parsed.hostname = alias;
+  return parsed.toString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function rehydrateInlineArtifacts(value: unknown): unknown {

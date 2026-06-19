@@ -45,7 +45,7 @@ export function findExistingExternalActionCommitExecutor(
     ready: true,
     risk: input.risk,
     reason:
-      "An enabled generated commit tool is already registered for this external action capability.",
+      "An enabled commit tool is already registered for this external action capability.",
     missing: [],
     expectedProof: input.expectedProof,
   };

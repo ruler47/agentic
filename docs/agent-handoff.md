@@ -161,8 +161,9 @@ P1:
 
 P2:
 
-- Simplify external-action approval/preparation so a user can ask for a booking/action and
-  get one clear proposal, proof, one approval boundary, submit/commit, and final report.
+- Keep the simplified external-action approval/preparation path stable. The first UI and
+  runtime pass is complete: one primary proposal action, safe preparation/proof after
+  approval, generic executor attach, one final submit action, and final confirmation.
 - Model routing: resolve from available local/remote providers by tier plus required
   capability flags such as vision, reasoning, coding, tool-calling, context window, and
   operator preferences.
@@ -176,8 +177,9 @@ P3:
 
 - Durable agent-level smoke through `/api/runs` now passes for direct answer, HTTP JSON,
   current web fact with screenshot proof, and data/file artifact tasks.
-- External actions remain too hard to understand from the UI and still stop too early in
-  ordinary approval mode. This is now the next executable task.
+- External-action UX no longer stops at confusing intermediate approval states in the
+  local fixture exam. Remaining work is real-provider blocker polish, automode fixture
+  exams, and making the final report richer for real provider confirmations.
 - Work/Evidence Ledger unit coverage and durable live UI/API verification are green for
   BaseAgent `http.request`, safe repeated `http.request` reuse, and `file.write` paths.
   Broader tool-family reuse coverage should be added as those flows are touched.

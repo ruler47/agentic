@@ -8,7 +8,11 @@ export function buildSafeAdvancePreparationCommands(
     useFieldCandidates?: boolean;
     buildDefaultCommands: (
       proposal: ExternalActionProposal,
-      options?: { useFieldCandidates?: boolean },
+      options?: {
+        includeCollectedInputs?: boolean;
+        includeFormSchemaExtraction?: boolean;
+        useFieldCandidates?: boolean;
+      },
     ) => Record<string, unknown>[];
   },
 ): Record<string, unknown>[] {

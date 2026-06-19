@@ -4,9 +4,11 @@ export function resultStillNeedsCandidateSelection(data: unknown): boolean {
   const record = isRecord(data) ? data : {};
   const steps = Array.isArray(record.steps) ? record.steps.filter(isRecord) : [];
   const hasFilledField = steps.some((step) => {
-    if (step.action !== "fill" && step.action !== "type") return false;
-    if (step.ok === false) return false;
-    const detail = parseOptionalText(step.detail)?.toLowerCase() ?? "";
+    const action = parseOptionalText(step.action) ?? parseOptionalText(step.type);
+    if (action !== "fill" && action !== "type") return false;
+    if (step.ok === false || step.status === "failed") return false;
+    const detail =
+      parseOptionalText(step.detail ?? step.summary)?.toLowerCase() ?? "";
     return !detail.includes("optional skipped") && !detail.includes("target failed");
   });
   if (hasFilledField) return false;

@@ -14,7 +14,6 @@ import { artifactDownloadUrl } from "@/components/ArtifactPreview";
 import { GenericBadge } from "@/components/StatusBadge";
 import { ActionProposalReview } from "@/features/approvals/ActionProposalReview";
 import {
-  finalSubmitUnavailableReason,
   humanActionDraftBlockers,
   humanSubmitBlockReason,
   isFixtureActionProposal,
@@ -22,6 +21,7 @@ import {
 } from "@/features/approvals/actionProposalPresentation";
 import { CommitReadinessPanel } from "@/features/approvals/CommitReadinessPanel";
 import { buildCommitReadiness } from "@/features/approvals/commitReadiness";
+import { buildExternalActionUxState } from "@/features/approvals/externalActionUxState";
 import { buildActionApprovalPhase } from "@/features/run-workspace/actionApprovalPhase";
 import { formatRelative, truncate } from "@/lib/format";
 
@@ -70,12 +70,12 @@ export function RunActionApprovalPanel({ run }: { run: AgentRunRecord }) {
 function RunActionApprovalCard({ item }: { item: ActionProposalQueueItem }) {
   const proposalDecision = useActionProposalDecision();
   const proposalPrepare = useActionProposalPrepare();
-  const readiness = buildCommitReadiness(item);
-  const missingInputs = item.proposal.preparation?.missingInputs ?? [];
-  const hasConcreteApprovalTarget = missingInputs.length === 0;
-  const canDecide = item.proposal.status === "proposed" && item.proposal.approvalRequired;
-  const nextStep = nextApprovalStep(item, readiness.label);
-  const summary = actionPrimarySummary(item);
+  const ux = buildExternalActionUxState(item);
+  const canDecide =
+    item.proposal.status === "proposed" &&
+    item.proposal.approvalRequired &&
+    ux.primaryAction.kind === "approve_proposal";
+  const summary = ux.summary;
 
   return (
     <section className="rounded-md border border-app-border bg-app-surface-2 p-3 text-xs">
@@ -86,16 +86,16 @@ function RunActionApprovalCard({ item }: { item: ActionProposalQueueItem }) {
             {item.proposal.actionType.replace(/_/g, " ")} · {formatRelative(item.proposal.createdAt)}
           </p>
         </div>
-        <GenericBadge tone={readiness.tone}>{item.proposal.status}</GenericBadge>
+        <GenericBadge tone={ux.tone}>{ux.statusLabel}</GenericBadge>
       </header>
 
       <div className="mt-3 rounded-md border border-app-accent/30 bg-app-bg p-3 text-[11px]">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="font-semibold text-app-accent">Что нужно решить сейчас</p>
-            <p className="mt-1 text-app-text-muted">{nextStep}</p>
+            <p className="font-semibold text-app-accent">{ux.title}</p>
+            <p className="mt-1 text-app-text-muted">{ux.description}</p>
           </div>
-          <GenericBadge tone={readiness.tone}>{readiness.label}</GenericBadge>
+          <GenericBadge tone={ux.tone}>{ux.statusLabel}</GenericBadge>
         </div>
         <dl className="mt-3 grid gap-2 md:grid-cols-2">
           <CompactField label="Куда">{summary.target}</CompactField>
@@ -115,10 +115,10 @@ function RunActionApprovalCard({ item }: { item: ActionProposalQueueItem }) {
             onClick={() =>
               proposalDecision.mutate({ id: item.proposal.id, decision: "approve" })
             }
-            disabled={proposalDecision.isPending || !hasConcreteApprovalTarget}
+            disabled={proposalDecision.isPending}
             className="rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
           >
-            {proposalDecision.isPending ? "Approving…" : "Approve: prepare proof, then wait before submit"}
+            {proposalDecision.isPending ? "Approving…" : ux.primaryAction.label}
           </button>
           <button
             type="button"
@@ -130,6 +130,9 @@ function RunActionApprovalCard({ item }: { item: ActionProposalQueueItem }) {
           >
             Reject and complete run
           </button>
+          <span className="basis-full text-[11px] text-app-text-muted">
+            {ux.primaryAction.effect}
+          </span>
         </div>
       ) : null}
 
@@ -170,6 +173,7 @@ function RunActionApprovalCard({ item }: { item: ActionProposalQueueItem }) {
 function ProfileHydrationReview({ item }: { item: ActionProposalQueueItem }) {
   const approval = useActionProposalProfileHydrationApproval();
   const readiness = buildCommitReadiness(item);
+  const ux = buildExternalActionUxState(item);
   const session = item.preparationExecution?.preparedSession;
   if (!session || item.proposal.status !== "approved") return null;
 
@@ -190,12 +194,14 @@ function ProfileHydrationReview({ item }: { item: ActionProposalQueueItem }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="font-semibold text-app-warning">
-            Разрешить подставить данные в форму
+            {ux.primaryAction.kind === "approve_profile_values"
+              ? ux.primaryAction.label
+              : "Разрешить подставить данные в форму"}
           </p>
           <p className="mt-1 text-app-text-muted">
-            После нажатия система заново откроет страницу, заполнит эти поля,
-            сделает proof-скриншот и снова остановится. Бронь/заявка еще не
-            отправляется.
+            {ux.primaryAction.kind === "approve_profile_values"
+              ? ux.primaryAction.effect
+              : "После нажатия система заново откроет страницу, заполнит эти поля, сделает proof-скриншот и снова остановится. Бронь/заявка еще не отправляется."}
           </p>
         </div>
         <GenericBadge tone="warn">fill approval</GenericBadge>
@@ -229,7 +235,9 @@ function ProfileHydrationReview({ item }: { item: ActionProposalQueueItem }) {
       >
         {approval.isPending
           ? "Заполняю и готовлю proof…"
-          : "Разрешить заполнение и подготовить proof"}
+          : ux.primaryAction.kind === "approve_profile_values"
+            ? ux.primaryAction.label
+            : "Разрешить заполнение и подготовить proof"}
       </button>
       {approval.error ? (
         <p className="mt-2 text-[11px] text-app-danger">{approval.error.message}</p>
@@ -316,72 +324,6 @@ function MainActionDraft({ item }: { item: ActionProposalQueueItem }) {
       ) : null}
     </div>
   );
-}
-
-function nextApprovalStep(item: ActionProposalQueueItem, readinessLabel: string): string {
-  if (item.proposal.status === "proposed") {
-    if (item.proposal.preparation?.missingInputs?.length) {
-      return "Do not approve yet. Add the missing details, or reject this proposal and continue with a clearer request.";
-    }
-    return "Step 1: approve the target/action only. The platform will prepare proof and stop before any real external submit.";
-  }
-  if (item.proposal.status === "approved") {
-    if (/missing_requirements|provider\/API|form-specific|fixtureConfirmation/i.test(item.execution?.reason ?? readinessLabel)) {
-      return finalSubmitUnavailableReason(item);
-    }
-    if (readinessLabel === "Ready to commit") {
-      return "Step 3: proof is ready. The next primary button performs the real external submit.";
-    }
-    return `${readinessLabel}. No external submit will happen until the final submit button is available and clicked.`;
-  }
-  if (item.proposal.status === "committed") {
-    return "The external action was committed; inspect provider confirmation and audit details.";
-  }
-  return "This proposal is no longer active for commit.";
-}
-
-function actionPrimarySummary(item: ActionProposalQueueItem): {
-  target: string;
-  action: string;
-  url: string;
-  data: string;
-} {
-  const draftUrl = item.preparationExecution?.preparedSession?.actionDraft?.pageUrl;
-  const url =
-    draftUrl ??
-    item.preparationExecution?.preparedSession?.currentUrl ??
-    item.proposal.preparation?.targetUrl ??
-    item.proposal.sourceUrls[0] ??
-    "No URL captured";
-  const collectedInputs = item.proposal.preparation?.collectedInputs ?? [];
-  const sessionFields = item.preparationExecution?.preparedSession?.filledFields ?? [];
-  const data = [
-    ...collectedInputs.map((input) => `${input.label.replace(/_/g, " ")}: ${input.value}`),
-    ...sessionFields.map((field) => `${field.label ?? field.selector ?? "field"}: ${field.valuePreview}`),
-  ];
-  return {
-    target: item.proposal.target ?? "Not selected",
-    action: actionVerbForProposal(item),
-    url: truncate(url, 180),
-    data: data.length ? truncate(data.join("; "), 260) : "No filled fields recorded yet.",
-  };
-}
-
-function actionVerbForProposal(item: ActionProposalQueueItem): string {
-  switch (item.proposal.actionType) {
-    case "appointment":
-      return "Schedule an appointment";
-    case "reservation":
-      return "Make a reservation";
-    case "purchase":
-      return "Place an order";
-    case "outbound_message":
-      return "Send a message";
-    case "api_write":
-      return "Perform a write API call";
-    case "generic_external_action":
-      return "Submit an external action";
-  }
 }
 
 function PreparationSnapshot({ item }: { item: ActionProposalQueueItem }) {
@@ -527,6 +469,7 @@ function RunCommitControls({ item }: { item: ActionProposalQueueItem }) {
   const [jsonInput, setJsonInput] = useState("");
   const [jsonError, setJsonError] = useState<string>();
   const readiness = buildCommitReadiness(item);
+  const ux = buildExternalActionUxState(item);
   const hasOperatorCommitInput = Boolean(fixtureConfirmation.trim() || jsonInput.trim());
   const canCommitWithOperatorInput =
     item.proposal.status === "approved" &&
@@ -535,12 +478,11 @@ function RunCommitControls({ item }: { item: ActionProposalQueueItem }) {
     readiness.status === "blocked" &&
     readiness.missingFields.length > 0 &&
     hasOperatorCommitInput;
-  const canCommit = readiness.canCommit || canCommitWithOperatorInput;
   const canBuild = readiness.canBuildExecutor && item.executorBuild?.status !== "registered";
-  const preparationButtonLabel =
-    readiness.status === "needs_replay"
-      ? "Replay approved data and prepare proof"
-      : "Continue preparing form, no external submit";
+  const primaryKind = ux.primaryAction.kind;
+  const canPreparePrimary = primaryKind === "prepare" || primaryKind === "replay";
+  const canBuildPrimary = primaryKind === "build_executor" && canBuild;
+  const canCommitPrimary = primaryKind === "submit" || canCommitWithOperatorInput;
 
   const commit = () => {
     const parsed = parseOperatorCommitInput(jsonInput, fixtureConfirmation);
@@ -559,14 +501,16 @@ function RunCommitControls({ item }: { item: ActionProposalQueueItem }) {
   return (
     <div className="mt-3 rounded-md border border-app-border bg-app-surface p-2 text-[11px]">
       <p className="mb-2 rounded border border-app-border bg-app-bg px-2 py-1 text-app-text-muted">
-        Current step: <span className="text-app-text">{readiness.label}</span>.{" "}
-        {readiness.status === "ready_to_commit"
-          ? "The next primary button is the real external submit."
-          : operatorFacingSubmitBlockReason(item, readiness.reason)}
+        Current step: <span className="text-app-text">{ux.title}</span>. {ux.description}
       </p>
-      {!readiness.canCommit ? (
+      {ux.primaryAction.effect ? (
+        <p className="mb-2 rounded border border-app-border bg-app-bg px-2 py-1 text-app-text-muted">
+          Next action effect: {ux.primaryAction.effect}
+        </p>
+      ) : null}
+      {!readiness.canCommit && primaryKind === "none" ? (
         <p className="mb-2 rounded border border-app-warning/40 bg-app-warning-soft px-2 py-1 text-app-warning">
-          External submit is not available yet. {operatorFacingSubmitBlockReason(item, readiness.reason)}
+          External submit is not available yet. {ux.description}
         </p>
       ) : null}
       {isFixture ? (
@@ -612,27 +556,35 @@ function RunCommitControls({ item }: { item: ActionProposalQueueItem }) {
         <p className="mt-1 text-app-danger">{proposalPrepare.error.message}</p>
       ) : null}
       <div className="mt-2 flex flex-wrap gap-2">
-        {readiness.canPrepare && !readiness.canCommit ? (
+        {canPreparePrimary ? (
           <button
             type="button"
-            onClick={() => proposalPrepare.mutate({ id: item.proposal.id })}
+            onClick={() =>
+              proposalPrepare.mutate({
+                id: item.proposal.id,
+                mode: primaryKind === "replay" ? "replay" : undefined,
+              })
+            }
             disabled={proposalPrepare.isPending}
             className="rounded-md bg-app-accent px-2.5 py-1 font-semibold text-app-bg disabled:opacity-50"
           >
-            {proposalPrepare.isPending ? "Preparing…" : preparationButtonLabel}
+            {proposalPrepare.isPending ? "Preparing…" : ux.primaryAction.label}
           </button>
         ) : null}
-        {readiness.canReplay && !readiness.canCommit && item.preparationExecution?.preparedSession ? (
+        {readiness.canReplay &&
+        !readiness.canCommit &&
+        primaryKind !== "replay" &&
+        item.preparationExecution?.preparedSession ? (
           <button
             type="button"
             onClick={() => proposalPrepare.mutate({ id: item.proposal.id, mode: "replay" })}
             disabled={proposalPrepare.isPending}
             className="rounded-md border border-app-border bg-app-surface-2 px-2.5 py-1 disabled:opacity-50"
           >
-            Advanced: replay exact previous steps
+            Replay exact browser steps (advanced)
           </button>
         ) : null}
-        {canBuild ? (
+        {canBuildPrimary ? (
           <button
             type="button"
             onClick={() =>
@@ -646,17 +598,21 @@ function RunCommitControls({ item }: { item: ActionProposalQueueItem }) {
             disabled={proposalExecutorBuild.isPending}
             className="rounded-md border border-app-border bg-app-surface-2 px-2.5 py-1 disabled:opacity-50"
           >
-            {proposalExecutorBuild.isPending ? "Building…" : "Build / attach executor"}
+            {proposalExecutorBuild.isPending ? "Building…" : ux.primaryAction.label}
           </button>
         ) : null}
-        {canCommit ? (
+        {canCommitPrimary ? (
           <button
             type="button"
             onClick={commit}
             disabled={proposalCommit.isPending}
             className="rounded-md bg-app-accent px-2.5 py-1 font-semibold text-app-bg disabled:opacity-50"
           >
-            {proposalCommit.isPending ? "Submitting…" : "Final submit to provider now"}
+            {proposalCommit.isPending
+              ? "Submitting…"
+              : canCommitWithOperatorInput
+                ? "Submit externally with supplied input"
+                : ux.primaryAction.label}
           </button>
         ) : null}
       </div>
@@ -673,16 +629,6 @@ function CompactField({ label, children }: { label: string; children: string }) 
       <dd className="mt-1 break-words text-app-text">{children}</dd>
     </div>
   );
-}
-
-function operatorFacingSubmitBlockReason(
-  item: ActionProposalQueueItem,
-  readinessReason: string,
-): string {
-  if (/missing_requirements|provider\/API|form-specific|fixtureConfirmation/i.test(readinessReason)) {
-    return finalSubmitUnavailableReason(item);
-  }
-  return humanSubmitBlockReason(readinessReason || finalSubmitUnavailableReason(item));
 }
 
 function parseOperatorCommitInput(

@@ -855,7 +855,11 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   provider/URL/business/user/prepared-session/proof details in the proposal payload, not
   in a target-specific tool name or package source. Generic commit tools are not exposed
   in normal agent tool catalogs; they are callable only through the guarded
-  approval/commit endpoint. Without a ready generated executor, commit records
+  approval/commit endpoint. The UI derives one operator-facing primary action from the
+  shared external-action readiness state: approve/prepare proof, prepare/replay, attach
+  executor, or submit externally. Approval-mode approval may safely auto-prepare proof
+  and attach an available executor, but the final external mutation remains behind the
+  explicit submit action. Without a ready executor, commit records
   `external-action-commit-blocked`; with a ready executor, the endpoint requires a
   registered generic commit tool plus typed `toolInput`, executes it through
   `ToolRegistry`, and records `external-action-committed` or
@@ -863,7 +867,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   `POST /api/action-proposals/:id/build-executor`; the endpoint records a linked build
   request, reuses a matching registered executor when available, or starts Tool Creation
   for a disabled candidate. The contract records executor kind, readiness, risk, missing
-  requirements, and expected proof. Automode uses the same contract without entering the
+  requirements, and expected proof. The preinstalled `external.action.commit` is a
+  guarded generic executor and declares `external-action-commit-generic`; do not attempt
+  to generate another tool with the same name when it can be attached. Automode uses the
+  same contract without entering the
    approval queue: it auto-attaches a matching registered generated executor, forwards
   request-provided commit input, records committed/failed/blocked trace events, and
   appends the automode outcome to the run final answer.
@@ -871,7 +878,13 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   `external-action-prepare`, `browser-action-candidates`,
   `browser-field-candidates`, `browser-form-schema`, and `browser-safe-advance`.
   The platform prefers it for approval preparation and only falls back to
-  `browser.operate`; the tool must surface action controls both inside normal forms and
+  `browser.operate`; compatibility preparation normalizes commands to carry both
+  `action` and `type`, injects an explicit first `navigate` for the core HTTP browser
+  runtime, strips schema/semantic-fill commands when the selected tool lacks the required
+  capability, and uses selector-based common-field fallback for core browser runtimes
+  without semantic fill. Local URLs sent to Docker-hosted browser runtimes are rewritten
+  through `BROWSER_OPERATE_LOCALHOST_ALIAS`, defaulting to `host.docker.internal`. The
+  tool must surface action controls both inside normal forms and
   outside forms on SPA/provider pages as generic action candidates. Prepare-only runs may
   click a generated `safe_advance` candidate such as a "book/select/continue" CTA to open
   the next draft step, with bounded browser/DOM click fallbacks only for those

@@ -81,7 +81,13 @@ export class ExternalActionCommitTool implements Tool {
   readonly version = "1.0.0";
   readonly description =
     "Commits a previously prepared external action after approval. Provider executors can attach real submit implementations; fixture mode is available for tests.";
-  readonly capabilities = ["external-action-commit", "approval-consumption", "external-submit", "finalize-action"];
+  readonly capabilities = [
+    "external-action-commit",
+    "external-action-commit-generic",
+    "approval-consumption",
+    "external-submit",
+    "finalize-action",
+  ];
   readonly startupMode = "always-on" as const;
   readonly inputSchema = {
     type: "object" as const,

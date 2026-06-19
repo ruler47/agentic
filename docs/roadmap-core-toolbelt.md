@@ -260,8 +260,10 @@ P0: keep simple runs fast, correct, and auditable.
   include only offered tools. Manual durable smoke `run_1781876088935_yg4izgpx` completed
   with exactly 10 offered tools in `agent-context-prepared`; inactive generated records,
   `channel.telegram`, and guarded `external.action.commit` were excluded.
-- Next: simplify external-action approval/preparation so the user sees one clear
-  proposal, proof, approval boundary, commit, and final report.
+- External-action approval/preparation UX is simplified around one primary action at a
+  time. Manual safe fixture `run_1781883402158_4on9f2qq` completed the full UI path:
+  approve once, prepare form/proof, attach generic executor, submit fixture, and finish
+  with confirmation.
 
 Current expected runtime shape:
 
@@ -321,8 +323,9 @@ P1: make the agent operationally coherent.
 
 P2: reduce friction and complexity.
 
-- Simplify external-action approval to one understandable path: proposed action, prepared
-  proof, one approval, commit, final report.
+- Keep the external-action approval path stable: proposed action, prepared proof, one
+  approval, final submit, final report. The first simplified UI/state implementation is
+  complete; next work is real-provider blocker polish and automode exams.
 - Keep the active codebase near the 800-line file target and split the remaining oversized
   files when touching those areas.
 - Freeze/delete inactive builder paths only after tests prove they are not used by the
@@ -534,14 +537,11 @@ Manual exams:
   screenshot and commit candidates, and the no-submit boundary blocks final
   commit controls in prepareOnly mode.
 - Approve once, submit, and return confirmation or explicit provider failure.
-  PASSED 2026-06-13 (live, local safe fixture): approve fills the provider
-  form from task-collected inputs (time/email; contact split into
-  name/email/phone), captures proof, and commit executes the generic
-  external.action.commit tool to `committed` with confirmation evidence
-  from the fixture page. Infra note: the commit tool launches its own
-  playwright-core browser — the host needs `chromium-headless-shell`
-  in the ms-playwright cache (install via the tool package's
-  node_modules/.bin/playwright-core).
+  PASSED 2026-06-19 (live, local safe fixture): `/approvals` showed one primary
+  pending action, approval automatically prepared the form/proof and attached
+  `external.action.commit@1.0.0`, the UI then showed one `Submit externally now`
+  action, and run `run_1781883402158_4on9f2qq` completed with fixture confirmation
+  `fixture-proposal_1781883402158_iaci7qda`.
 - Try the same flow in automode on a safe fixture or test provider.
 
 ## Phase 5: Reintroduce Tool Builder
