@@ -1,27 +1,16 @@
-import type { AgentArtifact, AgentRunResult, ArtifactCreateInput, ExternalActionProposal, Message } from "../types.js";
+import type { AgentArtifact, AgentRunResult, ExternalActionProposal, Message } from "../types.js";
 import type { LlmClient } from "../llm/client.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { ToolResult } from "../tools/tool.js";
 import {
   attachInitialScopedCandidates,
   buildToolCatalog,
   publicToolCatalogEntry,
   selectTools,
-  toolCallCacheKey,
-  upsertCatalogEntry,
-  upsertTool,
   type BaseAgentToolCatalogEntry,
 } from "./agentToolCatalog.js";
 import { DEFAULT_AGENT_LOOP_TIER, DEFAULT_LLM_MAX_TOKENS, DEFAULT_TOOL_TIMEOUT_MS } from "./baseAgentConstants.js";
-import { maybeSaveArtifact, saveStructuredDataProofArtifact, shouldSaveStructuredDataProofArtifact } from "./baseAgentArtifacts.js";
-import {
-  extractClaimProofSignals,
-  extractProofEvidenceForSourceUrls,
-  extractSourceUrls,
-  finalAnswerWithProofArtifact,
-  inferRequiredArtifacts,
-  isUsableProofArtifact,
-} from "./baseAgentEvidence.js";
+import { inferRequiredArtifacts } from "./baseAgentEvidence.js";
+import { tryRunCurrentFactFastPath } from "./baseAgentCurrentFact.js";
 import { finalizeBaseAgentRun } from "./baseAgentFinalization.js";
 import { tryRunLocalUtilityFastPath } from "./baseAgentLocalUtility.js";
 import { handleBaseAgentRegisteredToolCall } from "./baseAgentToolExecution.js";
@@ -29,8 +18,6 @@ import { buildBaseAgentSystemPrompt, buildBaseAgentToolSchemas, FINAL_STEP_WRAP_
 import { handleBaseAgentToolLifecycleCall } from "./baseAgentToolLifecycle.js";
 import {
   candidateUseRepairInstructionForModel,
-  isScreenshotProofTool,
-  proofInstructionForModel,
   proofRepairInstructionForModel,
   sourceGroundingRepairInstructionForModel,
 } from "./baseAgentProof.js";
@@ -40,8 +27,6 @@ import {
   limitText,
   publicToolCreationOutcomeForTrace,
   publicToolEditOutcomeForTrace,
-  renderToolResultForModel,
-  runtimeDiagnosticFromError,
   toolMessage,
 } from "./baseAgentToolMessages.js";
 import {
@@ -56,14 +41,12 @@ import {
   contextSummary,
   createAgentSpanId,
   createLlmSpanId,
-  createToolSpanId,
   failedResult,
   normalizeRunContext,
   publicArtifactForTrace,
   publicContextSummary,
   publicMessageForTrace,
   publicProofEvidenceForTrace,
-  summarizeToolResultForTrace,
 } from "./baseAgentTrace.js";
 import type {
   BaseAgentRunOptions,
@@ -75,7 +58,7 @@ import type {
   ToolCreationOutcome,
   ToolEditOutcome,
 } from "./baseAgentTypes.js";
-import { PROOF_SOURCE_URL_LIMIT, isProofWorthySourceUrl } from "./proofSourceUrls.js";
+import { PROOF_SOURCE_URL_LIMIT } from "./proofSourceUrls.js";
 import { defaultMaxStepsForTaskFrame, frameTask, researchContractRepairInstructionForModel, shouldRequireResearchContract } from "./taskFrame.js";
 
 export type { BaseAgentToolCatalogEntry } from "./agentToolCatalog.js";
@@ -203,6 +186,8 @@ export class BaseAgent {
 
     const localUtilityResult = await tryRunLocalUtilityFastPath({ task, options, runContext, taskFrame, tools, registry: this.tools, startedAt, rootSpanId, maxSteps, toolTimeoutMs });
     if (localUtilityResult) return localUtilityResult;
+    const currentFactResult = await tryRunCurrentFactFastPath({ task, options, runContext, taskFrame, tools, registry: this.tools, llm: this.llm, startedAt, rootSpanId, maxSteps, toolTimeoutMs });
+    if (currentFactResult) return currentFactResult;
 
     const messages: Message[] = [
       { role: "system", content: buildBaseAgentSystemPrompt(runContext, tools, toolCatalog, taskFrame) },

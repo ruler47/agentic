@@ -17,17 +17,24 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P0 Simple Current/Web Runs](01-p0-simple-current-web-runs.md)
-2. [P0 Ledger Recovery And Reuse](02-p0-ledger-recovery-and-reuse.md)
-3. [P1 Memory Continuity Model](03-p1-memory-continuity-model.md)
-4. [P1 Tool Catalog Cleanup](04-p1-tool-catalog-cleanup.md)
-5. [P2 External Action UX](05-p2-external-action-ux.md)
-6. [P2 Model Routing](06-p2-model-routing.md)
-7. [P3 Tool Builder Redesign](07-p3-tool-builder-redesign.md)
+1. [P0 Ledger Recovery And Reuse](02-p0-ledger-recovery-and-reuse.md)
+2. [P1 Memory Continuity Model](03-p1-memory-continuity-model.md)
+3. [P1 Tool Catalog Cleanup](04-p1-tool-catalog-cleanup.md)
+4. [P2 External Action UX](05-p2-external-action-ux.md)
+5. [P2 Model Routing](06-p2-model-routing.md)
+6. [P3 Tool Builder Redesign](07-p3-tool-builder-redesign.md)
 
 Cross-cutting gates apply to every task:
 
 - [Code Hygiene And Documentation Discipline](08-cross-cutting-code-hygiene.md)
+
+## Recently Completed
+
+- 2026-06-19: P0 Simple Current Web Runs was completed and its task file was removed.
+  Implementation: `src/agents/baseAgentCurrentFact.ts` plus BaseAgent wiring. Verification:
+  `npm run verify` passed with 528 tests. Manual smokes:
+  `run_1781863897402_6ntzkgym` for current fact without screenshot and
+  `run_1781864151384_z8b9fzb9` for explicit screenshot proof.
 
 ## Current Owner Rule
 

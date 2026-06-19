@@ -90,6 +90,15 @@ large legacy `UniversalAgent` runtime.
   save `file.write` outputs as run artifacts, and finish without entering the general
   LLM ReAct loop. Less obvious file/document/data tasks still use the `local_utility`
   frame and the regular agent loop with only the local tool family available.
+- Narrow explicit current fact tasks can use the current-fact fast path when `web.search`
+  and `web.read` are both available. The runtime deterministically searches, ranks
+  proof-worthy sources away from stale/social/listing noise, reads the selected source,
+  can use selected search evidence directly when the read is blocked but the snippet has
+  standalone current evidence, optionally captures a focused `browser.screenshot` only
+  when the task asks for visual proof, and then performs one no-tools synthesis call
+  grounded to the selected primary source. Broad recommendations/selections stay on the
+  normal research path. If screenshot QA fails, the run should degrade to source-evidence
+  proof instead of losing the answer.
 - BaseAgent loops are budgeted BY DEFAULT: `maxSteps` comes from the task frame
   (`defaultMaxStepsForTaskFrame` — 10 base, 12 for product selection, 18 for external
   action preparation) and `maxToolCalls` defaults to `maxSteps * 4`. Unbounded research
@@ -702,11 +711,13 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - `docs/modules/web-console.md` - current React console surface.
 - `src/agents/baseAgent.ts` - active minimal agent runtime facade and LLM loop.
 - `src/agents/baseAgentPrompt.ts`, `src/agents/baseAgentToolLifecycle.ts`,
-  `src/agents/baseAgentToolExecution.ts`, `src/agents/baseAgentFinalization.ts`,
+  `src/agents/baseAgentToolExecution.ts`, `src/agents/baseAgentLocalUtility.ts`,
+  `src/agents/baseAgentCurrentFact.ts`, `src/agents/baseAgentFinalization.ts`,
   `src/agents/baseAgentEvidence.ts`, `src/agents/baseAgentProof.ts`, and
   `src/agents/baseAgentArtifacts.ts` - split `BaseAgent` prompt/schema, generated-tool
-  lifecycle calls, registered tool execution, return-gate finalization, source/proof
-  reasoning, and artifact QA helpers. Keep future runtime changes in these smaller
+  lifecycle calls, registered tool execution, deterministic local/current fast paths,
+  return-gate finalization, source/proof reasoning, and artifact QA helpers. Keep future
+  runtime changes in these smaller
   responsibility modules instead of growing `baseAgent.ts`.
 - `src/agents/taskFrame.ts` - task framing, research contracts, and broad/current task
   return-gate repair instructions used by `BaseAgent`.

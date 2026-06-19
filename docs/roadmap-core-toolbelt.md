@@ -10,13 +10,12 @@ verification, documentation update, and merge.
 
 Current order:
 
-1. [`01-p0-simple-current-web-runs.md`](tasks/01-p0-simple-current-web-runs.md)
-2. [`02-p0-ledger-recovery-and-reuse.md`](tasks/02-p0-ledger-recovery-and-reuse.md)
-3. [`03-p1-memory-continuity-model.md`](tasks/03-p1-memory-continuity-model.md)
-4. [`04-p1-tool-catalog-cleanup.md`](tasks/04-p1-tool-catalog-cleanup.md)
-5. [`05-p2-external-action-ux.md`](tasks/05-p2-external-action-ux.md)
-6. [`06-p2-model-routing.md`](tasks/06-p2-model-routing.md)
-7. [`07-p3-tool-builder-redesign.md`](tasks/07-p3-tool-builder-redesign.md)
+1. [`02-p0-ledger-recovery-and-reuse.md`](tasks/02-p0-ledger-recovery-and-reuse.md)
+2. [`03-p1-memory-continuity-model.md`](tasks/03-p1-memory-continuity-model.md)
+3. [`04-p1-tool-catalog-cleanup.md`](tasks/04-p1-tool-catalog-cleanup.md)
+4. [`05-p2-external-action-ux.md`](tasks/05-p2-external-action-ux.md)
+5. [`06-p2-model-routing.md`](tasks/06-p2-model-routing.md)
+6. [`07-p3-tool-builder-redesign.md`](tasks/07-p3-tool-builder-redesign.md)
 
 Cross-cutting quality gate:
 
@@ -113,8 +112,8 @@ Follow-up checkpoint on branch `codex/split-mainline`:
   `https://jsonplaceholder.typicode.com/todos/1` and for `data.transform` JSON-to-CSV
   sorting. This smoke was run with the local dev server and no `DATABASE_URL`, so the
   remaining product smoke must use the durable Postgres stack.
-- `npm run verify` passed after the BaseAgent Ledger/proof/local-utility fix: lint,
-  typecheck, test typecheck, 518 unit tests, and build.
+- `npm run verify` passed after the BaseAgent Ledger/proof/local-utility/current-fact
+  fix: lint, typecheck, test typecheck, 528 unit tests, and build.
 
 Durable agent-level smoke then passed on `main` with Postgres-backed persistence:
 
@@ -191,6 +190,13 @@ Code fixes from that smoke:
   proof by default. They should finish after one successful direct `http.request` when it
   satisfies the task, without adding web search, web read, browser operation, or
   screenshot proof unless the user explicitly requests visual proof.
+- Narrow explicit current fact tasks now use `src/agents/baseAgentCurrentFact.ts` before
+  the general ReAct loop. The path requires `web.search` plus `web.read`, skips broad
+  recommendation/selection tasks, ranks sources away from stale/social/listing noise,
+  rejects blocker-like reads, can synthesize from a selected search result when it
+  already contains standalone current evidence, captures `browser.screenshot` only when
+  explicitly requested, degrades to source-evidence if screenshot QA fails, and performs
+  one no-tools LLM synthesis grounded to the selected primary source.
 
 Current blockers before declaring the base ready for broader product testing:
 
@@ -206,6 +212,13 @@ Current blockers before declaring the base ready for broader product testing:
   `src/server/modules/runs/runs.service.ts`, and `tests/nestApi.test.ts`.
 
 ## Active Priority Order After Durable Smoke
+
+Completed on 2026-06-19:
+
+- `docs/tasks/01-p0-simple-current-web-runs.md` was implemented, verified, documented,
+  merged into the active queue state, and removed. Manual durable smokes:
+  `run_1781863897402_6ntzkgym` for a current fact without screenshot and
+  `run_1781864151384_z8b9fzb9` for an explicitly requested screenshot proof.
 
 P0: keep simple runs fast, correct, and auditable.
 

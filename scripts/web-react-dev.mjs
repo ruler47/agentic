@@ -9,6 +9,12 @@ const backendPort = process.env.AGENTIC_BACKEND_PORT ?? process.env.NEST_PORT ??
 const uiPort = process.env.WEB_REACT_PORT ?? process.env.UI_PORT ?? "3001";
 const backendUrl = process.env.AGENTIC_BACKEND_URL ?? `http://127.0.0.1:${backendPort}`;
 
+process.env.SEARXNG_BASE_URL ??= "http://127.0.0.1:8080";
+process.env.BROWSER_OPERATE_BASE_URL ??= "http://127.0.0.1:18080";
+process.env.CHANNEL_TELEGRAM_BASE_URL ??= "http://127.0.0.1:18081";
+process.env.TELEGRAM_BOT_BASE_URL ??= "http://127.0.0.1:18081";
+process.env.ARTIFACT_ROOT ??= "workspace/artifacts";
+
 const children = [];
 let shuttingDown = false;
 

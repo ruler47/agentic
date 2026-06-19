@@ -34,12 +34,13 @@ that generated tools will use later.
 ## Current Verified State
 
 `npm run verify` passed on 2026-06-19 from `main` after merging the split runtime and
-after the default-core-toolbelt plus Ledger/P0 proof fixes: lint, typecheck, test
-typecheck, 518 unit tests, and build. Targeted BaseAgent P0 coverage now includes
+after the default-core-toolbelt plus Ledger/P0 proof/current-fact fixes: lint,
+typecheck, test typecheck, 528 unit tests, and build. Targeted BaseAgent P0 coverage now includes
 API-only structured proof without screenshots, safe stable HTTP reuse, deterministic
 `data.transform` reuse, direct local utility transformation/file-write chains without an
 LLM call, local utility framing, and current-data HTTP reuse bypass with trace-visible
-`work-ledger-reuse-skipped`.
+`work-ledger-reuse-skipped`, bounded current-fact source selection, blocker fallback,
+primary-source synthesis, and explicit screenshot proof behavior.
 
 Durable-stack agent smoke was then repeated with Postgres, SearXNG, browser-operate,
 local artifacts, and local LM Studio tiers enabled:
@@ -48,7 +49,8 @@ local artifacts, and local LM Studio tiers enabled:
 flowchart LR
   A["Direct answer"] --> A1["PASS\nrun_1781798532541_ru78eo3j\nno tools"]
   B["HTTP JSON task"] --> B1["PASS\nrun_1781798586255_qgomrub6\nhttp.request + structured JSON proof"]
-  C["Current web fact"] --> C1["PASS\nrun_1781798630478_7gakwrcv\nweb.search + QA-passed screenshot"]
+  C["Current web fact"] --> C1["PASS\nrun_1781863897402_6ntzkgym\nweb.search + source proof, no screenshot"]
+  C --> C2["PASS\nrun_1781864151384_z8b9fzb9\nexplicit screenshot + QA-passed PNG"]
   D["Data/file task"] --> D1["PASS\nrun_1781799687705_rtayd8nl\ndata.transform + file.write artifact"]
   E["Ledger writes"] --> E1["PASS\nrun_1781818681262_rpvsg59u\napi_call + api_response + artifact link\nvisible after restart"]
 ```
@@ -98,6 +100,14 @@ Recent P0 fixes:
   records normal trace and Work/Evidence Ledger events, saves written files as run
   artifacts, and returns without any LLM call. Ambiguous local utility requests still go
   through the bounded agent loop with the local tool family.
+- Narrow explicit current fact requests now take a bounded current-fact fast path when
+  `web.search` and `web.read` are available: deterministic search, source ranking that
+  avoids stale/social/listing noise, deterministic read of the best proof-worthy URL,
+  blocker detection with direct search-evidence fallback when the snippet already
+  contains a standalone current value, optional focused `browser.screenshot` only when
+  requested, and one no-tools synthesis call grounded to the selected primary source.
+  It emits `current-fact-fast-path-selected`, `current-fact-source-rejected`,
+  `proof-skipped` or `proof-degraded`, and normal tool/artifact/Ledger events.
 - Durable Ledger smoke passed after backend restart: `run_1781818681262_rpvsg59u` keeps
   one completed `api_call` work item, one `api_response` evidence record, and linked
   artifact `artifact_1781818687616_9q389ujl`; the React Ledger page shows the same data
@@ -109,13 +119,10 @@ Recent P0 fixes:
 
 P0:
 
-- Keep simple runs fast and correct in practice: API/local utility tasks should use the
-  direct core-tool path, avoid browser/search when unnecessary, reuse deterministic local
-  evidence when safe, and finish with structured/local artifact proof instead of
-  screenshots.
-- Keep proof policy proportional: screenshot proof for visual/current web tasks,
-  structured proof for API/local utility tasks, and no visual proof when the user
-  explicitly forbids it.
+- First P0 task completed on 2026-06-19: simple API/local/current-fact runs now use
+  bounded fast paths, avoid unnecessary browser/search, keep screenshot proof explicit,
+  and finish with structured/source/artifact proof. The completed task spec was removed
+  from `docs/tasks/`.
 - Extend the now-active Ledger product flow beyond safe `http.request` reuse: operator
   debugging, follow-up recovery, external-action recovery, and more tool families should
   read the same records shown in the Ledger page instead of treating Ledger as passive

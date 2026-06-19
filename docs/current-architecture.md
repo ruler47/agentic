@@ -48,6 +48,9 @@ flowchart TD
 - `src/agents/baseAgentLocalUtility.ts`: deterministic fast path for obvious local
   data/file/document chains that can be satisfied by `file.read`, `document.extract`,
   `data.transform`, and `file.write` without entering the LLM ReAct loop.
+- `src/agents/baseAgentCurrentFact.ts`: bounded fast path for narrow explicit current
+  fact tasks. It runs `web.search`, `web.read`, optional `browser.screenshot`, then one
+  no-tools synthesis call instead of entering the general ReAct loop.
 - `src/agents/taskFrame.ts`: task classification, research/proof contract, default step
   budgets, and external-action policy.
 - `src/agents/baseAgentPrompt.ts`: system prompt and tool schemas passed to the model.
@@ -126,6 +129,7 @@ sequenceDiagram
   participant LLM as LlmClient
   participant Tools as ToolRegistry
   participant Search as web.search
+  participant Read as web.read
   participant Shot as browser.screenshot
   participant Ledger as Work/Evidence Ledger
   participant Store as Run/Artifact stores
@@ -137,25 +141,37 @@ sequenceDiagram
   Runs->>Store: create run + started event
   Runs->>Agent: run(task, runtime context, tool catalog)
   Agent->>Agent: frameTask() => current_lookup
-  Agent->>LLM: system prompt + context + tool schemas
-  LLM-->>Agent: call web.search
+  Agent->>Agent: current-fact fast path selected
   Agent->>Ledger: claim search work item
   Agent->>Tools: run web.search
   Tools->>Search: query current BTC price
   Search-->>Tools: source URLs/snippets/data
   Tools-->>Agent: tool result + evidence
   Agent->>Ledger: complete work + record search evidence
-  Agent->>LLM: summarized evidence
-  LLM-->>Agent: call browser.screenshot for proof URL
-  Agent->>Ledger: claim screenshot work item
-  Agent->>Tools: run browser.screenshot
-  Tools->>Shot: viewport screenshot
-  Shot-->>Tools: PNG artifact candidate
-  Tools-->>Agent: screenshot result
-  Agent->>Store: save artifact + trace event
-  Agent->>Ledger: link screenshot evidence + artifact id
-  Agent->>LLM: proof evidence
-  LLM-->>Agent: finish(final answer)
+  Agent->>Agent: rank proof-worthy sources\nprefer concrete/current/value-bearing pages
+  Agent->>Ledger: claim read work item
+  Agent->>Tools: run web.read on selected URL
+  Tools->>Read: fetch/extract page text
+  Read-->>Tools: final URL/title/extracted text or blocker signal
+  alt readable source accepted
+    Tools-->>Agent: source result + proof signals
+    Agent->>Ledger: complete work + record source evidence
+  else blocker but selected search snippet has standalone value
+    Agent->>Agent: keep primary search evidence\nemit source rejection\nskip extra fallback reads
+  else source rejected
+    Agent->>Agent: try next ranked source
+  end
+  opt task explicitly asks visual proof
+    Agent->>Ledger: claim screenshot work item
+    Agent->>Tools: run browser.screenshot with focusText and fullPage=false
+    Tools->>Shot: viewport screenshot
+    Shot-->>Tools: PNG artifact candidate
+    Tools-->>Agent: screenshot result
+    Agent->>Store: save artifact + trace event
+    Agent->>Ledger: link screenshot evidence + artifact id
+  end
+  Agent->>LLM: no-tools synthesis from bounded primary-source evidence
+  LLM-->>Agent: concise final answer
   Agent->>Agent: finalization gates\nsource grounding, proof, no raw tool syntax
   Agent-->>Runs: AgentRunResult
   Runs->>Store: complete run, events, artifacts
@@ -260,7 +276,7 @@ Current memory is split but not finished:
 
 ## Verified State
 
-- `npm run verify` passed on 2026-06-19: lint, typecheck, test typecheck, 518 tests, build.
+- `npm run verify` passed on 2026-06-19: lint, typecheck, test typecheck, 528 tests, build.
 - Targeted suites passed:
   - BaseAgent runtime and local utility coverage.
   - External action preparation/approval: 29 tests.
@@ -275,7 +291,10 @@ Current memory is split but not finished:
   - Direct no-tool run: `run_1781798532541_ru78eo3j`.
   - HTTP JSON fast path with structured proof and no screenshot:
     `run_1781798586255_qgomrub6`.
-  - Current web fact with QA-passed screenshot proof: `run_1781798630478_7gakwrcv`.
+  - Current web fact without screenshot when not requested:
+    `run_1781863897402_6ntzkgym`.
+  - Current web fact with explicit QA-passed screenshot proof:
+    `run_1781864151384_z8b9fzb9`.
   - Data/file artifact path with preview/download in React:
     `run_1781799687705_rtayd8nl`.
 - Automated BaseAgent P0 coverage confirms `http.request` writes an `api_call` work
