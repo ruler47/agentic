@@ -10,10 +10,9 @@ verification, documentation update, and merge.
 
 Current order:
 
-1. [`04-p1-tool-catalog-cleanup.md`](tasks/04-p1-tool-catalog-cleanup.md)
-2. [`05-p2-external-action-ux.md`](tasks/05-p2-external-action-ux.md)
-3. [`06-p2-model-routing.md`](tasks/06-p2-model-routing.md)
-4. [`07-p3-tool-builder-redesign.md`](tasks/07-p3-tool-builder-redesign.md)
+1. [`05-p2-external-action-ux.md`](tasks/05-p2-external-action-ux.md)
+2. [`06-p2-model-routing.md`](tasks/06-p2-model-routing.md)
+3. [`07-p3-tool-builder-redesign.md`](tasks/07-p3-tool-builder-redesign.md)
 
 Cross-cutting quality gate:
 
@@ -255,8 +254,14 @@ P0: keep simple runs fast, correct, and auditable.
   accepted visible memories, policy-filter them, inject them into BaseAgent prompts, and
   emit `memory-context-prepared` for Trace Lab/operator inspection. Manual durable smoke
   `run_1781874414255_yy0s68ik` completed from accepted group memory with zero tool calls.
-- Next: clean the active tool catalog so operators see the stable preinstalled toolbelt
-  first and legacy/generated failed entries cannot confuse runtime capability selection.
+- The tool catalog now has a normalized admin/runtime view: `/api/tools` returns
+  `ToolCatalogEntry.catalogLayer` and `agentEligibility`, the React Tools page defaults
+  to `core + generated-active` with Core/Generated/Inactive/All filters, and run prompts
+  include only offered tools. Manual durable smoke `run_1781876088935_yg4izgpx` completed
+  with exactly 10 offered tools in `agent-context-prepared`; inactive generated records,
+  `channel.telegram`, and guarded `external.action.commit` were excluded.
+- Next: simplify external-action approval/preparation so the user sees one clear
+  proposal, proof, approval boundary, commit, and final report.
 
 Current expected runtime shape:
 
@@ -310,8 +315,9 @@ P1: make the agent operationally coherent.
 - Ensure follow-up runs reuse thread context and artifact metadata before reacquiring data.
 - Add a clear memory model for run memory, conversation/thread memory, user memory, group
   memory, and accepted retrospective memory.
-- Clean/segregate legacy generated failed tools from the active tool catalog/UI, without
-  deleting the registry/version machinery needed by future generated tools.
+- Keep the cleaned tool catalog contract stable: active/core tools must remain the default
+  operator view, generated failed/history records stay inspectable only in inactive/all
+  views, and agents see only `agentEligibility.offered` tools.
 
 P2: reduce friction and complexity.
 

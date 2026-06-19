@@ -9,7 +9,7 @@ import {
 import { useToolServiceAction } from "@/api/toolServices";
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
-import type { ToolModuleMetadata, ToolServiceStatus } from "@/api/types";
+import type { ToolCatalogEntry, ToolServiceStatus } from "@/api/types";
 import { useSecretHandleStatuses } from "@/api/secretHandles";
 
 import { ToolEditPanel } from "./ToolEditPanel";
@@ -26,7 +26,7 @@ export function ToolDetail({
   settings,
   service,
 }: {
-  tool: ToolModuleMetadata;
+  tool: ToolCatalogEntry;
   settings: Record<string, string>;
   service?: ToolServiceStatus;
 }) {
@@ -84,6 +84,9 @@ export function ToolDetail({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <GenericBadge tone={statusTone(tool.status)}>{tool.status}</GenericBadge>
+          <GenericBadge tone={tool.agentEligibility.offered ? "ok" : "warn"}>
+            {tool.agentEligibility.offered ? "offered to agents" : "not offered"}
+          </GenericBadge>
           {typeof tool.lastHealthOk === "boolean" ? (
             <GenericBadge tone={tool.lastHealthOk ? "ok" : "danger"}>
               {tool.lastHealthOk ? "healthy" : "unhealthy"}
@@ -155,6 +158,24 @@ export function ToolDetail({
         </p>
       ) : null}
 
+      {activeTab === "overview" ? (
+        <Section title="Catalog status">
+          <div className="rounded-md border border-app-border bg-app-surface-2 p-3 text-xs">
+            <div className="grid gap-2 sm:grid-cols-3">
+              <Metric label="catalog layer" value={tool.catalogLayer} />
+              <Metric
+                label="agent eligibility"
+                value={tool.agentEligibility.offered ? "offered" : "blocked"}
+              />
+              <Metric label="reason" value={tool.agentEligibility.reason} />
+            </div>
+            <p className="mt-2 text-[11px] text-app-text-muted">
+              {tool.agentEligibility.detail}
+            </p>
+          </div>
+        </Section>
+      ) : null}
+
       {activeTab === "overview" && runtimeReadiness && (requiredKeys.length > 0 || requiredSecretHandles.length > 0) ? (
         <Section title="Runtime readiness">
           <ToolRuntimeReadinessPanel readiness={runtimeReadiness} />
@@ -175,7 +196,9 @@ export function ToolDetail({
               <div className="flex flex-wrap gap-1.5">
                 <GenericBadge tone={statusTone(tool.status)}>{tool.status}</GenericBadge>
                 {tool.status === "available" ? (
-                  <GenericBadge tone="ok">offered to agents</GenericBadge>
+                  <GenericBadge tone={tool.agentEligibility.offered ? "ok" : "warn"}>
+                    {tool.agentEligibility.offered ? "offered to agents" : "not offered"}
+                  </GenericBadge>
                 ) : (
                   <GenericBadge tone="muted">not offered to agents</GenericBadge>
                 )}

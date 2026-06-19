@@ -160,6 +160,15 @@ large legacy `UniversalAgent` runtime.
   or generated-tool-only experiments. Core tools are synchronized into tool metadata as
   built-ins and should be directly offered to agents when metadata/readiness marks them
   available. Generated/package tools still use the manual QA/promotion flow.
+- `/api/tools` now returns normalized `ToolCatalogEntry` records from
+  `src/tools/toolCatalog.ts`. Each record has a `catalogLayer`
+  (`core`, `generated-active`, `generated-inactive`, or `legacy-reference`) plus
+  `agentEligibility`. The React Tools page defaults to `core + generated-active` and
+  exposes Core, Generated, Inactive, and All filters. The run-side tool catalog uses the
+  same eligibility helper, so agents receive only tools that are registered, available,
+  runtime-ready, healthy, and safe to expose. Guarded commit tools such as
+  `external.action.commit`, loaded/disabled/failed tools, and missing generated packages
+  stay visible for operators but are not offered to agents.
 - Durable agent-level smoke on 2026-06-18 passed the active core-toolbelt baseline:
   direct no-tool answer, `http.request` JSON fast path without screenshot proof,
   current web fact with QA-passed screenshot proof, and `data.transform` -> `file.write`
@@ -205,9 +214,10 @@ large legacy `UniversalAgent` runtime.
   `browser.screenshot` / `browser.operate` unless the user explicitly asks for visual
   proof of a web page. They may still save a sanitized structured/source proof artifact
   such as HTTP status, response fields, and source URL.
-- BaseAgent is offered only operator-enabled tools with active status `available`.
-  `loaded`, `disabled`, and `failed` tools remain visible in Tools for manual checks but
-  are omitted from agent prompts/tool schemas.
+- BaseAgent is offered only tools whose `ToolCatalogEntry.agentEligibility.offered` is
+  true. `loaded`, `disabled`, `failed`, unhealthy, runtime-missing, guarded-commit, and
+  metadata-only generated tools remain visible in Tools for manual checks but are omitted
+  from agent prompts/tool schemas.
 - One exception exists for operator testing: if the task explicitly asks to use a
   particular disabled generated tool, RunsService may attach the best matching healthy
   version to that run as a `run_scoped_candidate`. If the task names a concrete generated
@@ -739,6 +749,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   reservations, purchases, outbound messages, and write APIs.
 - `src/agents/agentToolCatalog.ts` - agent-visible tool catalog filtering, prompt
   formatting, schema descriptions, and per-run tool call cache keys.
+- `src/tools/toolCatalog.ts` - normalized operator/runtime tool catalog layers,
+  sort order, health summary, and agent eligibility rules shared by `/api/tools` and
+  run-side tool exposure.
 - `src/agents/proofSourceUrls.ts` - shared proof-worthy URL normalization and same-page
   comparison helpers.
 - `src/agents/modelTier.ts` - model tier selection policy.

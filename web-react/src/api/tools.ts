@@ -4,6 +4,7 @@ import { queryKeys } from "@/api/queryKeys";
 import type {
   ToolContextKind,
   ToolContextRecord,
+  ToolCatalogEntry,
   ToolModuleMetadata,
   ToolRuntimeSettingInput,
   ToolRuntimeSettingRecord,
@@ -182,7 +183,7 @@ export function useTools() {
   return useQuery({
     queryKey: queryKeys.tools,
     queryFn: () =>
-      apiFetch<{ tools: ToolModuleMetadata[] }>("/api/tools").then((data) => data.tools ?? []),
+      apiFetch<{ tools: ToolCatalogEntry[] }>("/api/tools").then((data) => data.tools ?? []),
     refetchInterval: 30_000,
     staleTime: 5_000,
   });

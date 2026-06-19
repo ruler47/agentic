@@ -60,6 +60,11 @@ export type {
 } from "@server/conversations/types";
 
 export type {
+  ToolCatalogEntry,
+  ToolCatalogLayer,
+} from "@server/tools/toolCatalog";
+
+export type {
   ToolModuleMetadata,
   ToolModuleSource,
   ToolModuleStatus,

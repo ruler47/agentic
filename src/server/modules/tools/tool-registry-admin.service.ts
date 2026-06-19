@@ -21,6 +21,7 @@ import type {
 import { toolToMetadata } from "../../../tools/toolMetadataStore.js";
 import type { ToolCreationRecord, ToolCreationStore } from "../../../tools/toolCreationStore.js";
 import type { ToolPackageRunner } from "../../../tools/toolPackageRunner.js";
+import { buildToolCatalogView, type ToolCatalogEntry } from "../../../tools/toolCatalog.js";
 import { resolveToolRuntimeReadiness } from "../../../tools/toolRuntimeReadiness.js";
 import {
   isRecord,
@@ -57,14 +58,15 @@ export class ToolRegistryAdminService {
     @Optional() @Inject(RUN_STORE) private readonly runs?: RunStore,
   ) {}
 
-  async listTools(): Promise<ToolModuleMetadata[]> {
+  async listTools(): Promise<ToolCatalogEntry[]> {
     const tools = this.registry?.list() ?? [];
+    const registeredToolNames = tools.map((tool) => tool.name);
     if (this.metadata) {
       const metadataTools = await this.metadata.list();
       const auditEvents = await this.audit.list(1_000);
       const creationRecords = await this.creationStore?.list({ limit: 1_000 }) ?? [];
       const runRecords = await this.runs?.list() ?? [];
-      return Promise.all(metadataTools.map(async (tool) => ({
+      const enriched = await Promise.all(metadataTools.map(async (tool) => ({
         ...(await this.withRuntimeReadiness(tool)),
         versions: await Promise.all((tool.versions ?? []).map(async (version) => {
           const lifecycleEvents = buildToolVersionLifecycleEvents({
@@ -92,8 +94,21 @@ export class ToolRegistryAdminService {
           };
         })),
       })));
+      return buildToolCatalogView({
+        metadataTools: enriched,
+        registeredToolNames,
+        runtimeSettings: this.runtimeSettings,
+        secretHandles: this.secretHandles,
+        environment: process.env,
+      });
     }
-    return Promise.all(tools.map((tool) => this.withRuntimeReadiness(toolToMetadata(tool))));
+    return buildToolCatalogView({
+      metadataTools: tools.map((tool) => toolToMetadata(tool)),
+      registeredToolNames,
+      runtimeSettings: this.runtimeSettings,
+      secretHandles: this.secretHandles,
+      environment: process.env,
+    });
   }
 
   async toolHealth(): Promise<Array<{ name: string; ok: boolean; detail?: string }>> {

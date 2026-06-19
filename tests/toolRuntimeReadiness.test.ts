@@ -20,6 +20,8 @@ function metadata(input: Partial<ToolModuleMetadata> & Pick<ToolModuleMetadata, 
     examples: input.examples ?? [],
     successCount: input.successCount ?? 0,
     failureCount: input.failureCount ?? 0,
+    lastHealthOk: input.lastHealthOk,
+    lastHealthDetail: input.lastHealthDetail,
     updatedAt: input.updatedAt ?? new Date(0).toISOString(),
   };
 }
@@ -126,5 +128,25 @@ test("agentCallableToolNames excludes guarded external action commit tools", asy
       metadataTools: [regular, commit],
     }),
     ["browser.operate"],
+  );
+});
+
+test("agentCallableToolNames excludes disabled, failed, missing, and unhealthy tools", async () => {
+  const available = metadata({ name: "available.tool" });
+  const disabled = metadata({ name: "disabled.tool", status: "disabled" });
+  const failed = metadata({ name: "failed.tool", status: "failed" });
+  const missing = metadata({ name: "missing.tool" });
+  const unhealthy = metadata({
+    name: "unhealthy.tool",
+    lastHealthOk: false,
+    lastHealthDetail: "runtime heartbeat failed",
+  });
+
+  assert.deepEqual(
+    await agentCallableToolNames({
+      registeredToolNames: ["available.tool", "disabled.tool", "failed.tool", "unhealthy.tool"],
+      metadataTools: [available, disabled, failed, missing, unhealthy],
+    }),
+    ["available.tool"],
   );
 });

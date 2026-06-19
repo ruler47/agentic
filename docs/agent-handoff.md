@@ -43,6 +43,16 @@ LLM call, local utility framing, and current-data HTTP reuse bypass with trace-v
 primary-source synthesis, explicit screenshot proof behavior, and prior-work recovery for
 source/artifact follow-ups.
 
+The tool catalog cleanup was completed on 2026-06-19. `/api/tools` now returns
+normalized `ToolCatalogEntry` records with `catalogLayer` and `agentEligibility`.
+Tools UI defaults to active tools (`core + generated-active`) and has Core, Generated,
+Inactive, and All filters. Manual smoke `run_1781876088935_yg4izgpx` confirmed that the
+agent received exactly 10 offered tools:
+`web.search`, `web.read`, `browser.operate`, `browser.screenshot`, `http.request`,
+`file.read`, `file.write`, `document.extract`, `data.transform`, and
+`external.action.prepare`; inactive generated records, `channel.telegram`, and guarded
+`external.action.commit` were not in the agent prompt.
+
 Durable-stack agent smoke was then repeated with Postgres, SearXNG, browser-operate,
 local artifacts, and local LM Studio tiers enabled:
 
@@ -139,15 +149,13 @@ P0:
 
 P1:
 
-- Conversation and memory continuity: follow-ups should reuse thread facts/artifacts;
-  run memory should know already completed steps; user/group profile memory should be
-  visible to the agent without polluting every prompt. Baseline `MemoryContextView`
-  wiring is complete: accepted visible memories are retrieved for real API runs,
-  policy-filtered, ranked, injected into the BaseAgent prompt, and emitted as
-  `memory-context-prepared`. Full `npm run verify` passed, and durable smoke
-  `run_1781874414255_yy0s68ik` completed from accepted group memory with zero tool calls.
-- Clean/segregate legacy generated failed tools from the active tool catalog/UI so
-  operators see the stable preinstalled toolbelt first.
+- Conversation and memory continuity baseline is complete: accepted visible memories are
+  retrieved for real API runs, policy-filtered, ranked, injected into the BaseAgent
+  prompt, and emitted as `memory-context-prepared`. Full `npm run verify` passed, and
+  durable smoke `run_1781874414255_yy0s68ik` completed from accepted group memory with
+  zero tool calls.
+- Tool catalog cleanup baseline is complete: active/operator views are separated, core
+  tools appear first, and agent prompts include only `agentEligibility.offered` tools.
 - Code hygiene: keep active files near the 800-line target, and prune/freeze builder code
   that is not needed for the core-toolbelt phase.
 
@@ -169,7 +177,7 @@ P3:
 - Durable agent-level smoke through `/api/runs` now passes for direct answer, HTTP JSON,
   current web fact with screenshot proof, and data/file artifact tasks.
 - External actions remain too hard to understand from the UI and still stop too early in
-  ordinary approval mode.
+  ordinary approval mode. This is now the next executable task.
 - Work/Evidence Ledger unit coverage and durable live UI/API verification are green for
   BaseAgent `http.request`, safe repeated `http.request` reuse, and `file.write` paths.
   Broader tool-family reuse coverage should be added as those flows are touched.

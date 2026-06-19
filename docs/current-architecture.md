@@ -92,6 +92,10 @@ flowchart TD
 
 - `src/tools/coreToolbelt.ts`: registers preinstalled first-party tools by default.
 - `src/tools/registry.ts`: in-process registry and execution boundary.
+- `src/tools/toolCatalog.ts`: normalized catalog view shared by `/api/tools` and
+  run-side agent exposure. It classifies tools into `core`, `generated-active`,
+  `generated-inactive`, and `legacy-reference`, computes a health summary, sorts
+  core/active tools first, and records why a tool is or is not offered to agents.
 - Core tools:
   - `web.search`, `web.read`
   - `browser.operate`, `browser.screenshot`
@@ -107,6 +111,29 @@ flowchart TD
   - `src/tools/toolPackageWorkspaceQa.ts`
   - `src/tools/toolServiceSupervisor.ts`
   - `src/tools/toolMetadataStore.ts` and Postgres adapters.
+
+#### Tool Catalog Eligibility
+
+Operators can inspect all registered metadata, but the agent prompt is intentionally
+smaller than the admin catalog. The same eligibility function is used by the Tools UI and
+by `src/server/modules/runs/run-tool-catalog.ts`.
+
+```mermaid
+flowchart TD
+  Meta["Tool metadata store"] --> Catalog["buildToolCatalogView()"]
+  Registry["Active ToolRegistry names"] --> Catalog
+  Catalog --> Layer["catalogLayer\ncore / generated-active /\ngenerated-inactive / legacy-reference"]
+  Catalog --> Eligibility["agentEligibility\nready or blocked reason"]
+  Eligibility -->|offered=true| Prompt["BaseAgent tool schemas"]
+  Eligibility -->|offered=false| Inactive["Tools inactive/history UI"]
+  Prompt --> Agent["BaseAgent run"]
+  Inactive --> Operator["Operator manual inspection"]
+```
+
+Eligibility requires an implementation registered in `ToolRegistry`, metadata status
+`available`, runtime readiness `ok`, acceptable health, and a non-guarded runtime
+boundary. `external.action.commit` remains a guarded capability: the approval/commit
+orchestrator can call it, but ordinary agents do not receive it as a free tool.
 
 ### Persistence And Settings
 

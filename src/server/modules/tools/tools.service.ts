@@ -10,6 +10,7 @@ import { rm } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { ToolRegistry } from "../../../tools/registry.js";
 import type { Tool } from "../../../tools/tool.js";
+import type { ToolCatalogEntry } from "../../../tools/toolCatalog.js";
 import {
   generatedToolInputFromPackageManifest,
   toolToMetadata,
@@ -116,7 +117,7 @@ export class ToolsService {
     @Optional() @Inject(ToolVersionLifecycleService) private readonly versionLifecycle?: ToolVersionLifecycleService,
   ) {}
 
-  async listTools(): Promise<ToolModuleMetadata[]> {
+  async listTools(): Promise<ToolCatalogEntry[]> {
     return this.registryAdminService().listTools();
   }
 

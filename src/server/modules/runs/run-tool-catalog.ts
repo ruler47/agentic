@@ -3,6 +3,7 @@ import type { SecretHandleStore } from "../../../secrets/secretHandleStore.js";
 import type { ToolRuntimeSettingsStore } from "../../../settings/toolRuntimeSettings.js";
 import type { ToolMetadataStore, ToolModuleMetadata, ToolModuleVersionSummary } from "../../../tools/toolMetadataStore.js";
 import { resolveToolRuntimeReadiness } from "../../../tools/toolRuntimeReadiness.js";
+import { deriveToolAgentEligibility, isGuardedExternalActionCommitTool } from "../../../tools/toolCatalog.js";
 
 export function catalogEntryFromMetadata(
   tool: ToolModuleMetadata,
@@ -64,20 +65,9 @@ export async function agentCallableToolNames(input: {
     })),
   );
   return readyRows
-    .filter(({ tool }) => registered.has(tool.name))
-    .filter(({ tool }) => tool.status === "available")
-    .filter(({ tool }) => !isGuardedExternalActionCommitTool(tool))
-    .filter(({ readiness }) => readiness.ok)
+    .filter(({ tool, readiness }) => deriveToolAgentEligibility(tool, registered, readiness).offered)
     .map(({ tool }) => tool.name)
     .sort((a, b) => a.localeCompare(b));
-}
-
-function isGuardedExternalActionCommitTool(tool: ToolModuleMetadata): boolean {
-  return tool.capabilities.some(
-    (capability) =>
-      capability === "external-action-commit" ||
-      capability.startsWith("external-action-commit-"),
-  );
 }
 
 export async function findExplicitRunScopedToolCandidate(input: {

@@ -17,10 +17,9 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P1 Tool Catalog Cleanup](04-p1-tool-catalog-cleanup.md)
-2. [P2 External Action UX](05-p2-external-action-ux.md)
-3. [P2 Model Routing](06-p2-model-routing.md)
-4. [P3 Tool Builder Redesign](07-p3-tool-builder-redesign.md)
+1. [P2 External Action UX](05-p2-external-action-ux.md)
+2. [P2 Model Routing](06-p2-model-routing.md)
+3. [P3 Tool Builder Redesign](07-p3-tool-builder-redesign.md)
 
 Cross-cutting gates apply to every task:
 
@@ -28,6 +27,15 @@ Cross-cutting gates apply to every task:
 
 ## Recently Completed
 
+- 2026-06-19: P1 Tool Catalog Cleanup was completed and its task file was removed.
+  Implementation: `src/tools/toolCatalog.ts`, `/api/tools` catalog normalization,
+  run-side eligibility filtering in `src/server/modules/runs/run-tool-catalog.ts`, and
+  React Tools filters for Active/Core/Generated/Inactive/All. Focused tests cover
+  core-first sorting, inactive generated segregation, legacy-reference metadata without
+  implementation, unhealthy/missing runtime exclusion, and run prompt filtering.
+  Manual durable smoke: Tools UI defaulted to active 12/25 with core-first entries and
+  inactive 13/25 separated; `run_1781876088935_yg4izgpx` completed with 10 offered tools
+  in `agent-context-prepared` and no inactive/guarded tools. DB records were checked.
 - 2026-06-19: P1 Memory Continuity Model was completed and its task file was removed.
   Implementation: `src/agents/memoryContext.ts`,
   `src/agents/baseAgentContextEvents.ts`, BaseAgent context normalization, and
