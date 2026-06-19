@@ -691,6 +691,9 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 ## Important Files
 
 - `README.md` - quick start and current execution summary.
+- `docs/tasks/README.md` - active executable task queue. Work task specs in numeric
+  order and remove completed task files after implementation, verification, docs update,
+  and merge.
 - `docs/current-architecture.md` - active architecture diagrams, code map, request
   lifecycle, external-action lifecycle, memory model, verified state, and current gaps.
 - `docs/roadmap.md` - active rebuild plan and phase order.

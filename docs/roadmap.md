@@ -3,6 +3,9 @@
 Status date: 2026-05-24.
 
 Current active roadmap: [Core Toolbelt Roadmap](roadmap-core-toolbelt.md).
+Current executable task queue: [docs/tasks/README.md](tasks/README.md). Work the files in
+numeric order, then remove completed task files after implementation, verification,
+documentation update, and merge.
 
 As of 2026-06-02, new Tool Creation V1 and external-action feature expansion is paused
 except for bug fixes needed to keep the current app usable. The active direction is to

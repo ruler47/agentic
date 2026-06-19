@@ -13,6 +13,7 @@ new primary branch.
 - Split base branch: `codex/rewrite-from-agentic-main-next`.
 - Active runtime: `BaseAgent`.
 - Active roadmap: `docs/roadmap-core-toolbelt.md`.
+- Active executable task queue: `docs/tasks/README.md`.
 - Active architecture map: `docs/current-architecture.md`.
 
 Do not use `claude/phase17-research-delegation` as the active base. It was audited on

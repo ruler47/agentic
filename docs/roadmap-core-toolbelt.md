@@ -2,6 +2,26 @@
 
 Status date: 2026-06-19.
 
+## Active Execution Queue
+
+Detailed executable task specs live in [`docs/tasks/README.md`](tasks/README.md). Work
+the task files in numeric order, then remove each completed file after implementation,
+verification, documentation update, and merge.
+
+Current order:
+
+1. [`01-p0-simple-current-web-runs.md`](tasks/01-p0-simple-current-web-runs.md)
+2. [`02-p0-ledger-recovery-and-reuse.md`](tasks/02-p0-ledger-recovery-and-reuse.md)
+3. [`03-p1-memory-continuity-model.md`](tasks/03-p1-memory-continuity-model.md)
+4. [`04-p1-tool-catalog-cleanup.md`](tasks/04-p1-tool-catalog-cleanup.md)
+5. [`05-p2-external-action-ux.md`](tasks/05-p2-external-action-ux.md)
+6. [`06-p2-model-routing.md`](tasks/06-p2-model-routing.md)
+7. [`07-p3-tool-builder-redesign.md`](tasks/07-p3-tool-builder-redesign.md)
+
+Cross-cutting quality gate:
+
+- [`08-cross-cutting-code-hygiene.md`](tasks/08-cross-cutting-code-hygiene.md)
+
 ## 2026-06-18 Validation Checkpoint
 
 Historical branch: `codex/rewrite-from-agentic-main-next`.
