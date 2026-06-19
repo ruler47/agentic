@@ -59,6 +59,10 @@ flowchart TD
 - `src/agents/baseAgentToolLedger.ts`: Work/Evidence Ledger classification,
   run-local claim/evidence writes, and safe reusable-index publication/lookup for
   deterministic `http.request` calls.
+- `src/agents/baseAgentPriorWork.ts`: thread-scoped prior-work recovery bridge. It asks
+  the runtime Ledger for passed/rejected prior evidence before normal tool execution,
+  short-circuits source/artifact follow-ups when prior evidence is enough, and records
+  applied reuse decisions as normal Work/Evidence records.
 - `src/agents/baseAgentFinalization.ts`: final-answer gates, action proposal creation,
   result assembly.
 - `src/agents/baseAgentEvidence.ts` and `src/agents/baseAgentProof.ts`: source/proof
@@ -273,10 +277,39 @@ Current memory is split but not finished:
   same reusable-index path without a freshness TTL. Current/live HTTP tasks bypass reuse
   and emit `work-ledger-reuse-skipped` so operators can see that the repeated tool call
   was intentional.
+- **Prior work recovery**: before normal tool execution, `BaseAgent` resolves a compact
+  `PriorWorkContext` from thread-scoped Work/Evidence Ledger records. Passed source or
+  artifact evidence can answer `thread_context_answer` follow-ups without any LLM/tool
+  call. Failed/blocked evidence is not reused; its URLs are surfaced as
+  `retryExclusions` for subsequent search/browser/external-action retries. Empty threads
+  do not create trace or Ledger noise.
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant Runs as RunsService
+  participant Agent as BaseAgent
+  participant Ledger as Work/Evidence Ledger
+  participant Tools as Core tools
+
+  User->>Runs: Follow-up in an existing thread
+  Runs->>Agent: task + rebuilt thread context
+  Agent->>Ledger: resolve PriorWorkContext(threadId, task)
+  alt passed source/artifact evidence satisfies follow-up
+    Ledger-->>Agent: reuse decision + evidence ids/source URLs
+    Agent->>Ledger: record applied prior-work decision
+    Agent-->>Runs: final answer without LLM/tool calls
+  else current/fresh task or insufficient evidence
+    Ledger-->>Agent: refresh / retry_excluding / ignore context
+    Agent->>Tools: execute fresh required work
+    Agent->>Ledger: claim/complete work and record new evidence
+    Agent-->>Runs: final answer from fresh evidence
+  end
+```
 
 ## Verified State
 
-- `npm run verify` passed on 2026-06-19: lint, typecheck, test typecheck, 528 tests, build.
+- `npm run verify` passed on 2026-06-19: lint, typecheck, test typecheck, 532 tests, build.
 - Targeted suites passed:
   - BaseAgent runtime and local utility coverage.
   - External action preparation/approval: 29 tests.
@@ -306,6 +339,15 @@ Current memory is split but not finished:
   `http.request` GET in the same thread/instance uses Ledger evidence instead of
   executing another HTTP call, deterministic `data.transform` calls reuse passed
   evidence, and current/fresh HTTP tasks bypass that reuse and trace the reason.
+- Prior-work recovery coverage confirms source follow-ups can answer from prior passed
+  Ledger evidence with zero new tool calls and zero LLM calls, fresh/current prompts do
+  not reuse prior evidence as truth, and failed evidence exposes retry exclusions instead
+  of becoming reusable proof.
+- Durable prior-work smoke passed on Postgres/S3 and survived backend restart:
+  `run_1781869705670_93qohg1o` created persisted `http.request` source evidence in
+  `thread_1781869705669_bj426305`; after restarting the API,
+  `run_1781870036522_1to9slex` answered the source follow-up from Ledger context with
+  zero tool events and `work-ledger-prior-context-resolved/applied` trace events.
 - API-only HTTP/JSON endpoint tasks use structured/source proof by default. They avoid
   browser/screenshot proof unless the user explicitly asks for visual proof of a web
   page.
@@ -319,10 +361,10 @@ Current memory is split but not finished:
 
 - `npm run web` without `DATABASE_URL` starts in-memory stores. That is acceptable for
   smoke tests, but real persistence testing must set Postgres env.
-- Work/Evidence Ledger writes and safe `http.request` reuse are covered in BaseAgent unit
-  tests and durable live smoke. The next product step is expanding this to
-  operator-visible recovery, follow-up reuse, external-action recovery, and more
-  deterministic tool families.
+- Work/Evidence Ledger writes, safe `http.request` reuse, deterministic local utility
+  reuse, and thread follow-up prior-work recovery are covered in BaseAgent unit tests.
+  External-action retry selection should consume `retryExclusions` more aggressively in
+  the next UX/action pass.
 - External-action UI is safer than before but still complex. The next UX target is one
   understandable proposal/proof/approval/commit path.
 - Tool Builder V1 still exists and works for source-bundle candidates, but strategic

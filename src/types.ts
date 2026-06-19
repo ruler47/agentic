@@ -488,6 +488,8 @@ export type AgentEventType =
   | "work-ledger-reuse-skipped"
   | "work-ledger-reuse-applied"
   | "work-ledger-reuse-index-updated"
+  | "work-ledger-prior-context-resolved"
+  | "work-ledger-prior-context-applied"
   | "evidence-ledger-recorded"
   | "run-retrospective-proposed";
 

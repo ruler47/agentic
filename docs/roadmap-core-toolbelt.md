@@ -10,12 +10,11 @@ verification, documentation update, and merge.
 
 Current order:
 
-1. [`02-p0-ledger-recovery-and-reuse.md`](tasks/02-p0-ledger-recovery-and-reuse.md)
-2. [`03-p1-memory-continuity-model.md`](tasks/03-p1-memory-continuity-model.md)
-3. [`04-p1-tool-catalog-cleanup.md`](tasks/04-p1-tool-catalog-cleanup.md)
-4. [`05-p2-external-action-ux.md`](tasks/05-p2-external-action-ux.md)
-5. [`06-p2-model-routing.md`](tasks/06-p2-model-routing.md)
-6. [`07-p3-tool-builder-redesign.md`](tasks/07-p3-tool-builder-redesign.md)
+1. [`03-p1-memory-continuity-model.md`](tasks/03-p1-memory-continuity-model.md)
+2. [`04-p1-tool-catalog-cleanup.md`](tasks/04-p1-tool-catalog-cleanup.md)
+3. [`05-p2-external-action-ux.md`](tasks/05-p2-external-action-ux.md)
+4. [`06-p2-model-routing.md`](tasks/06-p2-model-routing.md)
+5. [`07-p3-tool-builder-redesign.md`](tasks/07-p3-tool-builder-redesign.md)
 
 Cross-cutting quality gate:
 
@@ -113,7 +112,8 @@ Follow-up checkpoint on branch `codex/split-mainline`:
   sorting. This smoke was run with the local dev server and no `DATABASE_URL`, so the
   remaining product smoke must use the durable Postgres stack.
 - `npm run verify` passed after the BaseAgent Ledger/proof/local-utility/current-fact
-  fix: lint, typecheck, test typecheck, 528 unit tests, and build.
+  and prior-work recovery fixes: lint, typecheck, test typecheck, 532 unit tests, and
+  build.
 
 Durable agent-level smoke then passed on `main` with Postgres-backed persistence:
 
@@ -215,6 +215,12 @@ Current blockers before declaring the base ready for broader product testing:
 
 Completed on 2026-06-19:
 
+- `docs/tasks/02-p0-ledger-recovery-and-reuse.md` was implemented, verified, documented,
+  merged into the active queue state, and removed. Manual durable smoke:
+  `run_1781869705670_93qohg1o` created persisted source evidence in
+  `thread_1781869705669_bj426305`; after backend restart,
+  `run_1781870036522_1to9slex` answered a source follow-up from prior Ledger evidence
+  with zero new tool calls and visible prior-work trace events.
 - `docs/tasks/01-p0-simple-current-web-runs.md` was implemented, verified, documented,
   merged into the active queue state, and removed. Manual durable smokes:
   `run_1781863897402_6ntzkgym` for a current fact without screenshot and
@@ -236,13 +242,19 @@ P0: keep simple runs fast, correct, and auditable.
   bounded local-tool agent loop.
 - Current/fresh/live tasks now bypass stable HTTP reuse explicitly and expose the
   decision in Trace Lab instead of silently reusing or silently refetching.
+- Thread source/artifact follow-ups now resolve `PriorWorkContext` before normal tool
+  execution. If passed prior evidence satisfies the follow-up, the agent records an
+  applied prior-work decision and returns directly without an LLM call or a new tool call.
+- Failed/blocked prior evidence is exposed as `retryExclusions` so retrying browser,
+  search, or external-action work can avoid previously rejected URLs instead of looping
+  over the same bad branch.
 - `/api/work-ledger`, `/api/evidence-ledger`, and the React Ledger page show the same
   tool work visible in Trace Lab for `run_1781818681262_rpvsg59u`.
 - Run records, events, artifacts, and ledger records survived backend restart in the
   durable Postgres/S3 smoke.
-- Next: expand Ledger-backed product flow to follow-up recovery, external-action
-  recovery, and additional deterministic tool families instead of treating Ledger as a
-  passive audit page only.
+- Next: finish the explicit memory continuity model so prior-work recovery, thread
+  summaries, accepted facts, user/group profile, and retrospective memory have one clear
+  promotion/reuse policy.
 
 Current expected runtime shape:
 
@@ -266,6 +278,28 @@ sequenceDiagram
   Agent->>Ledger: markCompleted/markFailed(workItemId)
   Agent->>Ledger: recordEvidence(sourceUrl, toolName, artifactId, qaStatus)
   Agent->>Ledger: update reusable-index when tool call is safe to reuse
+  end
+```
+
+Thread follow-up prior-work recovery:
+
+```mermaid
+sequenceDiagram
+  participant User
+  participant Agent as BaseAgent
+  participant Ledger as Work/Evidence Ledger
+  participant Tool as ToolRegistry/Core Tool
+
+  User->>Agent: "какой источник был в предыдущем ответе?"
+  Agent->>Ledger: resolvePriorWorkContext(threadId, task)
+  alt passed prior evidence matches
+    Ledger-->>Agent: reuse decision + source/artifact ids
+    Agent->>Ledger: recordPriorWorkDecision(applied=true)
+    Agent-->>User: answer from prior evidence only
+  else current/fresh or insufficient prior evidence
+    Ledger-->>Agent: refresh / retry_excluding / ignore
+    Agent->>Tool: execute fresh required work
+    Agent-->>User: answer from fresh evidence
   end
 ```
 

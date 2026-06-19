@@ -1,10 +1,5 @@
 import { AgentEvent, AgentEventStatus } from "../types.js";
-import {
-  ClaimCoordinatorDecision,
-  ClaimCoordinatorKind,
-  createWorkLedgerClaimCoordinator,
-  WorkLedgerClaimCoordinator,
-} from "./workLedgerClaimCoordinator.js";
+import { ClaimCoordinatorDecision, ClaimCoordinatorKind, createWorkLedgerClaimCoordinator, WorkLedgerClaimCoordinator } from "./workLedgerClaimCoordinator.js";
 import {
   EvidenceCreateInput,
   EvidenceLedgerStore,
@@ -20,6 +15,8 @@ import {
   WorkLedgerStore,
   WorkReuseDecision,
 } from "./types.js";
+import { recordRuntimePriorWorkDecision, resolveRuntimePriorWorkContext, type RuntimePriorWorkOps } from "./runtimePriorWork.js";
+import type { PriorWorkContext } from "./priorWorkResolver.js";
 
 export type RuntimeLedgerEventDraft = Omit<AgentEvent, "id" | "timestamp" | "spanId"> & {
   spanId?: string;
@@ -447,6 +444,36 @@ export class RuntimeLedgerCoordinator {
     });
   }
 
+  async resolvePriorWorkContext(
+    input: { task: string; now?: Date },
+    parentSpanId: string,
+  ): Promise<PriorWorkContext | undefined> {
+    return resolveRuntimePriorWorkContext(this.deps, input, parentSpanId, this.emit.bind(this));
+  }
+
+  async recordPriorWorkDecision(input: {
+    context: PriorWorkContext;
+    applied: boolean;
+    task: string;
+    parentSpanId: string;
+  }): Promise<void> {
+    return recordRuntimePriorWorkDecision({
+      deps: this.deps,
+      ops: this.priorWorkOps(),
+      ...input,
+    });
+  }
+
+  private priorWorkOps(): RuntimePriorWorkOps {
+    return {
+      claim: this.claim.bind(this),
+      markCompleted: this.markCompleted.bind(this),
+      recordEvidence: this.recordEvidence.bind(this),
+      emit: this.emit.bind(this),
+      addDuplicatedWorkSignal: (signal) => this.duplicatedWorkSignals.add(signal),
+    };
+  }
+
   trackWhatWorked(text: string): void {
     const trimmed = text.trim();
     if (trimmed) this.whatWorked.add(trimmed);
@@ -665,6 +692,8 @@ export type RuntimeLedgerEventName =
   | "work-ledger-reuse-skipped"
   | "work-ledger-reuse-applied"
   | "work-ledger-reuse-index-updated"
+  | "work-ledger-prior-context-resolved"
+  | "work-ledger-prior-context-applied"
   | "evidence-ledger-recorded"
   | "run-retrospective-proposed";
 
@@ -678,6 +707,8 @@ export const RUNTIME_LEDGER_EVENT_TYPES: readonly RuntimeLedgerEventName[] = [
   "work-ledger-reuse-skipped",
   "work-ledger-reuse-applied",
   "work-ledger-reuse-index-updated",
+  "work-ledger-prior-context-resolved",
+  "work-ledger-prior-context-applied",
   "evidence-ledger-recorded",
   "run-retrospective-proposed",
 ];

@@ -35,12 +35,13 @@ that generated tools will use later.
 
 `npm run verify` passed on 2026-06-19 from `main` after merging the split runtime and
 after the default-core-toolbelt plus Ledger/P0 proof/current-fact fixes: lint,
-typecheck, test typecheck, 528 unit tests, and build. Targeted BaseAgent P0 coverage now includes
+typecheck, test typecheck, 532 unit tests, and build. Targeted BaseAgent P0 coverage now includes
 API-only structured proof without screenshots, safe stable HTTP reuse, deterministic
 `data.transform` reuse, direct local utility transformation/file-write chains without an
 LLM call, local utility framing, and current-data HTTP reuse bypass with trace-visible
 `work-ledger-reuse-skipped`, bounded current-fact source selection, blocker fallback,
-primary-source synthesis, and explicit screenshot proof behavior.
+primary-source synthesis, explicit screenshot proof behavior, and prior-work recovery for
+source/artifact follow-ups.
 
 Durable-stack agent smoke was then repeated with Postgres, SearXNG, browser-operate,
 local artifacts, and local LM Studio tiers enabled:
@@ -53,6 +54,7 @@ flowchart LR
   C --> C2["PASS\nrun_1781864151384_z8b9fzb9\nexplicit screenshot + QA-passed PNG"]
   D["Data/file task"] --> D1["PASS\nrun_1781799687705_rtayd8nl\ndata.transform + file.write artifact"]
   E["Ledger writes"] --> E1["PASS\nrun_1781818681262_rpvsg59u\napi_call + api_response + artifact link\nvisible after restart"]
+  F["Prior-work follow-up"] --> F1["PASS\nrun_1781870036522_1to9slex\nsource answer from Ledger\nzero new tool calls after restart"]
 ```
 
 React UI smoke confirmed the data/file run page shows the final answer, timeline,
@@ -65,6 +67,13 @@ Recent P0 fixes:
   proof of a web page.
 - Follow-up questions about prior answers can frame as `thread_context_answer` and answer
   from thread summary/facts/open questions instead of doing a fresh lookup.
+- Thread-scoped prior-work recovery now asks the Work/Evidence Ledger for passed and
+  rejected evidence before normal tool execution. Source/artifact follow-ups can answer
+  from prior passed evidence with no LLM call and no new search/browser/tool call. Applied
+  reuse is visible through `work-ledger-prior-context-resolved`,
+  `work-ledger-prior-context-applied`, and a run-local prior-work decision/evidence Ledger record.
+  Failed/blocked prior evidence is exposed as `retryExclusions`; it is not reused as
+  proof.
 - `src/agents/baseAgent.ts` is below the 800-line limit again; thread-context framing moved
   into `src/agents/baseAgentThreadContext.ts`.
 - Preinstalled tools now exist on the primary branch: `web.search`, `web.read`,
@@ -123,10 +132,10 @@ P0:
   bounded fast paths, avoid unnecessary browser/search, keep screenshot proof explicit,
   and finish with structured/source/artifact proof. The completed task spec was removed
   from `docs/tasks/`.
-- Extend the now-active Ledger product flow beyond safe `http.request` reuse: operator
-  debugging, follow-up recovery, external-action recovery, and more tool families should
-  read the same records shown in the Ledger page instead of treating Ledger as passive
-  audit.
+- Ledger recovery/reuse is now active for source/artifact follow-ups and failed-evidence
+  retry guidance. Remaining P0/P1 continuation work moves to the explicit memory model:
+  accepted run/thread/user/group memories, artifact reuse policy, and clearer operator
+  controls for what becomes durable memory.
 
 P1:
 

@@ -1,6 +1,7 @@
 import type { AgentArtifact, AgentEventSink, ArtifactCreateInput, ModelTier } from "../types.js";
 import type { Tool, ToolExecutionContext, ToolResult } from "../tools/tool.js";
 import type { RuntimeLedgerCoordinator } from "../work-ledger/runtimeLedgerCoordinator.js";
+import type { PriorWorkContext } from "../work-ledger/priorWorkResolver.js";
 import type { BaseAgentToolCatalogEntry } from "./agentToolCatalog.js";
 
 export type BaseAgentRunContext = {
@@ -54,6 +55,7 @@ export type BaseAgentRunContext = {
     sizeBytes: number;
     description?: string;
   }>;
+  priorWork?: PriorWorkContext;
 };
 
 export type BaseAgentRunOptions = {

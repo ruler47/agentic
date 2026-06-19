@@ -13,6 +13,7 @@ import { inferRequiredArtifacts } from "./baseAgentEvidence.js";
 import { tryRunCurrentFactFastPath } from "./baseAgentCurrentFact.js";
 import { finalizeBaseAgentRun } from "./baseAgentFinalization.js";
 import { tryRunLocalUtilityFastPath } from "./baseAgentLocalUtility.js";
+import { prepareBaseAgentPriorWork } from "./baseAgentPriorWork.js";
 import { handleBaseAgentRegisteredToolCall } from "./baseAgentToolExecution.js";
 import { buildBaseAgentSystemPrompt, buildBaseAgentToolSchemas, FINAL_STEP_WRAP_UP_NUDGE } from "./baseAgentPrompt.js";
 import { handleBaseAgentToolLifecycleCall } from "./baseAgentToolLifecycle.js";
@@ -86,7 +87,7 @@ export class BaseAgent {
     const externalDataEvidenceUrls = new Set<string>();
     const proofEvidenceByUrl = new Map<string, ProofEvidence>();
     const searchQueryHistory = new Map<string, string>();
-    const runContext = normalizeRunContext(options.runContext, options.runId, startedAt);
+    let runContext = normalizeRunContext(options.runContext, options.runId, startedAt);
     const taskFrame = frameTask(taskWithThreadContextForFraming(task, runContext));
     // Budgets default from the task frame; callers may override.
     const maxSteps = options.maxSteps ?? defaultMaxStepsForTaskFrame(taskFrame);
@@ -183,6 +184,18 @@ export class BaseAgent {
         taskFrame,
       },
     });
+
+    const priorWork = await prepareBaseAgentPriorWork({
+      task,
+      options,
+      runContext,
+      taskFrame,
+      startedAt,
+      rootSpanId,
+      maxSteps,
+    });
+    runContext = priorWork.runContext;
+    if (priorWork.result) return priorWork.result;
 
     const localUtilityResult = await tryRunLocalUtilityFastPath({ task, options, runContext, taskFrame, tools, registry: this.tools, startedAt, rootSpanId, maxSteps, toolTimeoutMs });
     if (localUtilityResult) return localUtilityResult;

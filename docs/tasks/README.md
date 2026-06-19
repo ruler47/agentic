@@ -17,12 +17,11 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P0 Ledger Recovery And Reuse](02-p0-ledger-recovery-and-reuse.md)
-2. [P1 Memory Continuity Model](03-p1-memory-continuity-model.md)
-3. [P1 Tool Catalog Cleanup](04-p1-tool-catalog-cleanup.md)
-4. [P2 External Action UX](05-p2-external-action-ux.md)
-5. [P2 Model Routing](06-p2-model-routing.md)
-6. [P3 Tool Builder Redesign](07-p3-tool-builder-redesign.md)
+1. [P1 Memory Continuity Model](03-p1-memory-continuity-model.md)
+2. [P1 Tool Catalog Cleanup](04-p1-tool-catalog-cleanup.md)
+3. [P2 External Action UX](05-p2-external-action-ux.md)
+4. [P2 Model Routing](06-p2-model-routing.md)
+5. [P3 Tool Builder Redesign](07-p3-tool-builder-redesign.md)
 
 Cross-cutting gates apply to every task:
 
@@ -30,6 +29,14 @@ Cross-cutting gates apply to every task:
 
 ## Recently Completed
 
+- 2026-06-19: P0 Ledger Recovery And Reuse was completed and its task file was removed.
+  Implementation: `src/work-ledger/priorWorkResolver.ts`,
+  `src/work-ledger/runtimePriorWork.ts`, `src/agents/baseAgentPriorWork.ts`, and
+  BaseAgent wiring. Focused tests cover reuse, refresh, retry exclusions, and zero-tool
+  source follow-ups. Manual durable smoke: `run_1781869705670_93qohg1o` created
+  persisted `http.request` evidence in `thread_1781869705669_bj426305`; after backend
+  restart, `run_1781870036522_1to9slex` answered the source follow-up from Ledger with
+  zero new tool calls and visible `work-ledger-prior-context-*` events.
 - 2026-06-19: P0 Simple Current Web Runs was completed and its task file was removed.
   Implementation: `src/agents/baseAgentCurrentFact.ts` plus BaseAgent wiring. Verification:
   `npm run verify` passed with 528 tests. Manual smokes:

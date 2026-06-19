@@ -8,6 +8,7 @@ import type {
   ToolCreationOutcome,
   ToolEditOutcome,
 } from "./baseAgentTypes.js";
+import { formatPriorWorkContextForPrompt } from "../work-ledger/priorWorkResolver.js";
 import { isToolLifecycleOnlyTask } from "./taskFrame.js";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -257,6 +258,17 @@ export function formatContextForPrompt(context: BaseAgentRunContext): string {
       }
     }
     lines.push("- Prefer answering follow-up questions from prior artifact summaries when they contain the requested value; do not repeat identical external/API tool calls unless the prior artifact is missing, stale, failed QA, or insufficient.");
+  }
+  if (context.priorWork) {
+    lines.push("- Prior Work/Evidence Ledger context:");
+    lines.push(formatPriorWorkContextForPrompt(context.priorWork));
+    if (context.priorWork.decision.decision === "reuse") {
+      lines.push("- If the current request is a follow-up satisfied by this prior evidence, answer from it before doing fresh tool work.");
+    } else if (context.priorWork.decision.decision === "refresh") {
+      lines.push("- The user asked for fresh/current data; do not reuse prior evidence as truth.");
+    } else if (context.priorWork.decision.decision === "retry_excluding") {
+      lines.push("- Avoid retrying the listed rejected URLs unless the user explicitly asks to inspect them.");
+    }
   }
   if (context.inputArtifacts?.length) {
     lines.push(

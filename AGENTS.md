@@ -134,6 +134,15 @@ large legacy `UniversalAgent` runtime.
   can frame as `thread_context_answer`. That mode answers from thread summary, accepted
   facts, and open questions, and it must not force a fresh web/current lookup just to cite
   what the previous answer already used.
+- Before tool execution, `BaseAgent` asks `RuntimeLedgerCoordinator` for a compact
+  `PriorWorkContext` when a thread-scoped Work/Evidence Ledger is available. Empty threads
+  stay silent. Source/artifact follow-ups can short-circuit from passed prior evidence with
+  no LLM call and no new tool call; the trace emits
+  `work-ledger-prior-context-resolved` and `work-ledger-prior-context-applied`, and the
+  Ledger records a run-local prior-work decision/evidence item for the applied reuse.
+  Fresh/current requests treat prior evidence as context only and continue to fresh
+  tools. Failed or blocked prior evidence is never reused as truth; it is exposed as
+  `retryExclusions` so browser/search/external-action retries can avoid rejected URLs.
 - The whole `/api` surface supports an opt-in shared operator token:
   `AGENTIC_API_TOKEN` set -> every request needs `Authorization: Bearer`,
   `x-agentic-token`, or `?token=` (timing-safe compare); unset keeps the open
