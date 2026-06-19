@@ -34,10 +34,10 @@ that generated tools will use later.
 
 `npm run verify` passed on 2026-06-19 from `main` after merging the split runtime and
 after the default-core-toolbelt plus Ledger/P0 proof fixes: lint, typecheck, test
-typecheck, 516 unit tests, and build. Targeted BaseAgent P0 coverage now includes
+typecheck, 518 unit tests, and build. Targeted BaseAgent P0 coverage now includes
 API-only structured proof without screenshots, safe stable HTTP reuse, deterministic
-`data.transform` reuse, direct inline JSON transformation without an LLM call, local
-utility framing, and current-data HTTP reuse bypass with trace-visible
+`data.transform` reuse, direct local utility transformation/file-write chains without an
+LLM call, local utility framing, and current-data HTTP reuse bypass with trace-visible
 `work-ledger-reuse-skipped`.
 
 Durable-stack agent smoke was then repeated with Postgres, SearXNG, browser-operate,
@@ -92,11 +92,11 @@ Recent P0 fixes:
   instructed to use `document.extract`, `data.transform`, `file.read`, and `file.write`
   directly, avoid web/browser discovery unless requested, and treat local tool output or
   generated files as proof.
-- Obvious inline JSON/CSV transformation requests now take a deterministic local utility
-  fast path: the runtime infers the `data.transform` input, records normal trace and
-  Work/Evidence Ledger events, and returns the transformed output without any LLM call.
-  Ambiguous local utility requests still go through the bounded agent loop with the local
-  tool family.
+- Obvious JSON/CSV/file transformation requests now take a deterministic local utility
+  fast path: the runtime can chain `file.read` / `data.transform` / `file.write`,
+  records normal trace and Work/Evidence Ledger events, saves written files as run
+  artifacts, and returns without any LLM call. Ambiguous local utility requests still go
+  through the bounded agent loop with the local tool family.
 - Durable Ledger smoke passed after backend restart: `run_1781818681262_rpvsg59u` keeps
   one completed `api_call` work item, one `api_response` evidence record, and linked
   artifact `artifact_1781818687616_9q389ujl`; the React Ledger page shows the same data

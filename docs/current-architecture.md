@@ -46,8 +46,8 @@ flowchart TD
 
 - `src/agents/baseAgent.ts`: runtime facade and ReAct loop.
 - `src/agents/baseAgentLocalUtility.ts`: deterministic fast path for obvious local
-  data transformations that can be satisfied by `data.transform` without entering the
-  LLM ReAct loop.
+  data/file/document chains that can be satisfied by `file.read`, `document.extract`,
+  `data.transform`, and `file.write` without entering the LLM ReAct loop.
 - `src/agents/taskFrame.ts`: task classification, research/proof contract, default step
   budgets, and external-action policy.
 - `src/agents/baseAgentPrompt.ts`: system prompt and tool schemas passed to the model.
@@ -183,26 +183,32 @@ sequenceDiagram
   User->>API: POST /api/runs { task }
   API->>Agent: run(task, core tool catalog)
   Agent->>Agent: frameTask() => local utility / file artifact
-  alt explicit inline JSON transform
-    Agent->>Agent: infer data.transform call deterministically
+  alt explicit local fast path
+    Agent->>Agent: infer local tool chain deterministically
+    opt source file/document named
+      Agent->>Tools: run file.read or document.extract
+      Tools-->>Agent: source content
+    end
+    Agent->>Tools: run data.transform
+    Tools->>Data: parse JSON/CSV/text, sort/filter/template, serialize
+    Data-->>Tools: transformed content
   else ambiguous local utility request
     Agent->>LLM: bounded prompt + data/file tool schemas
     LLM-->>Agent: call data.transform
+    Agent->>Tools: run data.transform
+    Tools-->>Agent: transformed content
   end
   Agent->>Ledger: claim analysis work item
-  Agent->>Tools: run data.transform
-  Tools->>Data: parse JSON-looking input, sort by age desc, serialize CSV
-  Data-->>Tools: CSV content + transformed data
-  Tools-->>Agent: tool result
   Agent->>Ledger: complete analysis + record evidence
-  LLM-->>Agent: call file.write
-  Agent->>Ledger: claim artifact-generation work item
-  Agent->>Tools: run file.write
-  Tools->>File: write path + content
-  File-->>Tools: ok result
-  Agent->>Artifacts: save file.write content as smoke-people.csv
-  Artifacts-->>Agent: artifact id + download URL
-  Agent->>Ledger: complete work + record file evidence + artifact link
+  opt output file requested
+    Agent->>Ledger: claim artifact-generation work item
+    Agent->>Tools: run file.write
+    Tools->>File: write path + content
+    File-->>Tools: ok result
+    Agent->>Artifacts: save file.write content as smoke-people.csv
+    Artifacts-->>Agent: artifact id + download URL
+    Agent->>Ledger: complete work + record file evidence + artifact link
+  end
   Agent-->>API: completed answer + artifact metadata
   UI-->>User: Final answer, timeline, preview, download
 ```
@@ -254,9 +260,9 @@ Current memory is split but not finished:
 
 ## Verified State
 
-- `npm run verify` passed on 2026-06-19: lint, typecheck, test typecheck, 516 tests, build.
+- `npm run verify` passed on 2026-06-19: lint, typecheck, test typecheck, 518 tests, build.
 - Targeted suites passed:
-  - BaseAgent runtime: 50 tests.
+  - BaseAgent runtime and local utility coverage.
   - External action preparation/approval: 29 tests.
   - Focused env/core-toolbelt/auth regression: 12 tests.
 - Live API smoke passed after enabling core toolbelt by default:
@@ -275,8 +281,9 @@ Current memory is split but not finished:
 - Automated BaseAgent P0 coverage confirms `http.request` writes an `api_call` work
   item plus `api_response` evidence, and `file.write` links the saved artifact id to
   both Work Ledger and Evidence Ledger records. It also confirms explicit local utility
-  tasks frame as `local_utility`, obvious inline JSON transforms complete through the
-  deterministic local utility fast path without an LLM call, a second identical stable
+  tasks frame as `local_utility`, obvious JSON/CSV/file transform chains complete
+  through the deterministic local utility fast path without an LLM call, `file.write`
+  fast-path outputs become downloadable artifacts, a second identical stable
   `http.request` GET in the same thread/instance uses Ledger evidence instead of
   executing another HTTP call, deterministic `data.transform` calls reuse passed
   evidence, and current/fresh HTTP tasks bypass that reuse and trace the reason.

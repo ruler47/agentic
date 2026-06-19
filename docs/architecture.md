@@ -667,10 +667,12 @@ BaseAgent runtime integration is now wired through
   `document.extract` calls can reuse without a TTL. Mutable local references
   (`file.read`, `file.write`, path extraction, URL extraction) are intentionally not
   reusable-indexed.
-- Obvious inline JSON/CSV/text transformation tasks can enter the
-  `baseAgentLocalUtility` fast path before the LLM loop. That path still runs through
-  `ToolRegistry` and `RuntimeLedgerCoordinator`, so operators see the same tool,
-  evidence, reusable-index, and trace records as with normal tool execution.
+- Obvious JSON/CSV/text/file transformation tasks can enter the
+  `baseAgentLocalUtility` fast path before the LLM loop. That path can chain
+  `file.read`, `document.extract`, `data.transform`, and `file.write`, still runs
+  through `ToolRegistry` and `RuntimeLedgerCoordinator`, and saves `file.write` outputs
+  through the normal artifact hook, so operators see the same tool, evidence,
+  reusable-index, artifact, and trace records as with normal tool execution.
 - Successful runs record `search_result`/`api_response`/`browser_snapshot`/`screenshot`/
   `artifact` evidence; non-OK tool results, semantic-QA failures, and CAPTCHA/loader blockers record
   `limitation` evidence and mark the work item failed.

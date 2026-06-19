@@ -84,11 +84,12 @@ large legacy `UniversalAgent` runtime.
   `document.extract`, `data.transform`, `file.read`, and `file.write` directly, suppress
   web/browser discovery unless the user asks for external discovery or visual proof, and
   treat local tool output / generated files as the proof.
-- Obvious inline JSON/CSV/text transformation tasks can use the local utility fast path:
-  infer the `data.transform` call deterministically, execute it through the normal
-  registry/Ledger/trace path, and finish without entering the general LLM ReAct loop.
-  Less obvious file/document/data tasks still use the `local_utility` frame and the
-  regular agent loop with only the local tool family available.
+- Obvious local JSON/CSV/text transformation tasks can use the local utility fast path:
+  infer direct `data.transform` / `file.read` / `file.write` / `document.extract`
+  chains deterministically, execute them through the normal registry/Ledger/trace path,
+  save `file.write` outputs as run artifacts, and finish without entering the general
+  LLM ReAct loop. Less obvious file/document/data tasks still use the `local_utility`
+  frame and the regular agent loop with only the local tool family available.
 - BaseAgent loops are budgeted BY DEFAULT: `maxSteps` comes from the task frame
   (`defaultMaxStepsForTaskFrame` — 10 base, 12 for product selection, 18 for external
   action preparation) and `maxToolCalls` defaults to `maxSteps * 4`. Unbounded research

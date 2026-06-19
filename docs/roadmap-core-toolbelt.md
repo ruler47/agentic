@@ -94,7 +94,7 @@ Follow-up checkpoint on branch `codex/split-mainline`:
   sorting. This smoke was run with the local dev server and no `DATABASE_URL`, so the
   remaining product smoke must use the durable Postgres stack.
 - `npm run verify` passed after the BaseAgent Ledger/proof/local-utility fix: lint,
-  typecheck, test typecheck, 516 unit tests, and build.
+  typecheck, test typecheck, 518 unit tests, and build.
 
 Durable agent-level smoke then passed on `main` with Postgres-backed persistence:
 
@@ -196,9 +196,10 @@ P0: keep simple runs fast, correct, and auditable.
   reused across runs in the same thread/instance when fresh passed evidence exists.
 - Deterministic local `data.transform` and inline-content `document.extract` calls now
   use the same reusable-index path, while mutable file/path/url work stays run-local.
-- Obvious inline JSON/CSV transformation requests now use a deterministic local utility
-  fast path: infer `data.transform`, run it through the normal registry/Ledger/trace
-  path, and finish without an LLM call. Ambiguous local utility work still uses the
+- Obvious JSON/CSV/file transformation requests now use a deterministic local utility
+  fast path: infer `file.read` / `document.extract` / `data.transform` / `file.write`
+  chains, run them through the normal registry/Ledger/trace path, save written files as
+  artifacts, and finish without an LLM call. Ambiguous local utility work still uses the
   bounded local-tool agent loop.
 - Current/fresh/live tasks now bypass stable HTTP reuse explicitly and expose the
   decision in Trace Lab instead of silently reusing or silently refetching.
