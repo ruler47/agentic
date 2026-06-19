@@ -85,7 +85,7 @@ export async function findReusableBaseAgentToolWork(input: {
   }
   const kind = workKindForTool(input.tool);
   const canonicalWorkKey = workKeyForToolCall(input.tool.name, kind, input.toolInput);
-  const currentSignal = currentDataSignalForTask(input.task);
+  const currentSignal = shouldBypassReusableForFreshness(input.tool) ? currentDataSignalForTask(input.task) : undefined;
   if (currentSignal) {
     await input.ledger.recordReuseSkipped(
       {
@@ -337,7 +337,7 @@ function evidenceKindForTool(tool: Tool, artifact: AgentArtifact | undefined): E
   if (name === "web.read") return "source_url";
   if (name === "browser.operate") return "browser_snapshot";
   if (name === "http.request") return "api_response";
-  if (name === "file.read" || name === "file.write") return "file";
+  if (name === "file.read" || name === "file.write" || name === "document.extract") return "file";
   if (artifact) return "artifact";
   return "other";
 }
@@ -371,7 +371,7 @@ function sourceUrlsForTool(tool: Tool, toolInput: Record<string, unknown>, resul
   const discovered = extractSourceUrls(toolInput, result).filter(isEvidenceSourceUrl);
   const explicit = explicitInputUrl(toolInput);
   const name = tool.name.toLowerCase();
-  if (explicit && ["http.request", "web.read", "browser.screenshot", "browser.operate"].includes(name)) {
+  if (explicit && ["http.request", "web.read", "document.extract", "browser.screenshot", "browser.operate"].includes(name)) {
     return uniqueUrls([explicit, ...discovered.filter((url) => url !== explicit)]);
   }
   return uniqueUrls(discovered);
@@ -449,13 +449,27 @@ async function publishReusableToolWorkIndex(input: {
 }
 
 function canPublishReusableToolWork(tool: Tool, toolInput: Record<string, unknown>): boolean {
-  if (tool.name.toLowerCase() !== "http.request") return false;
+  const name = tool.name.toLowerCase();
+  if (name === "data.transform") return true;
+  if (name === "document.extract") return documentExtractInputIsImmutable(toolInput);
+  if (name !== "http.request") return false;
   const method = String(toolInput.method ?? "GET").trim().toUpperCase();
   return method === "GET" || method === "HEAD";
 }
 
 function maxReuseAgeMs(tool: Tool): number | undefined {
   return tool.name.toLowerCase() === "http.request" ? HTTP_REUSE_MAX_AGE_MS : undefined;
+}
+
+function shouldBypassReusableForFreshness(tool: Tool): boolean {
+  return tool.name.toLowerCase() === "http.request";
+}
+
+function documentExtractInputIsImmutable(input: Record<string, unknown>): boolean {
+  const hasInlineText = typeof input.content === "string";
+  const hasInlineBase64 = typeof input.contentBase64 === "string";
+  const hasMutableReference = typeof input.url === "string" || typeof input.path === "string";
+  return (hasInlineText || hasInlineBase64) && !hasMutableReference;
 }
 
 function reusableFreshnessExpiresAt(tool: Tool): string | undefined {

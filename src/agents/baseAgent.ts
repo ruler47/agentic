@@ -23,6 +23,7 @@ import {
   isUsableProofArtifact,
 } from "./baseAgentEvidence.js";
 import { finalizeBaseAgentRun } from "./baseAgentFinalization.js";
+import { tryRunLocalUtilityFastPath } from "./baseAgentLocalUtility.js";
 import { handleBaseAgentRegisteredToolCall } from "./baseAgentToolExecution.js";
 import { buildBaseAgentSystemPrompt, buildBaseAgentToolSchemas, FINAL_STEP_WRAP_UP_NUDGE } from "./baseAgentPrompt.js";
 import { handleBaseAgentToolLifecycleCall } from "./baseAgentToolLifecycle.js";
@@ -199,6 +200,9 @@ export class BaseAgent {
         taskFrame,
       },
     });
+
+    const localUtilityResult = await tryRunLocalUtilityFastPath({ task, options, runContext, taskFrame, tools, registry: this.tools, startedAt, rootSpanId, maxSteps, toolTimeoutMs });
+    if (localUtilityResult) return localUtilityResult;
 
     const messages: Message[] = [
       { role: "system", content: buildBaseAgentSystemPrompt(runContext, tools, toolCatalog, taskFrame) },

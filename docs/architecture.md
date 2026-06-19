@@ -656,14 +656,21 @@ BaseAgent runtime integration is now wired through
   Ledger rows with tool/source/artifact/QA metadata. The canonical reusable work key is
   stored in metadata so operators can correlate repeated work even when execution items
   are intentionally run-local.
-- Safe deterministic `http.request` GET/HEAD calls additionally publish a
-  thread/instance-scoped reusable-index item without `runId`, linked to the original
-  passed evidence ids. A later identical stable call checks that index before execution;
-  when fresh passed evidence exists, the run skips the external HTTP call, creates a
-  run-local completed work item plus reused evidence, and emits
-  `work-ledger-reuse-available` / `work-ledger-reuse-applied` trace events. Current/live
-  requests such as price or "сейчас/latest/today" bypass this reuse path and emit
-  `work-ledger-reuse-skipped` with the matched freshness signal.
+- Safe deterministic tool calls additionally publish a thread/instance-scoped
+  reusable-index item without `runId`, linked to the original passed evidence ids.
+  A later identical stable call checks that index before execution; when passed evidence
+  exists, the run skips the actual tool execution, creates a run-local completed work
+  item plus reused evidence, and emits `work-ledger-reuse-available` /
+  `work-ledger-reuse-applied` trace events. HTTP GET/HEAD reuse has a 10-minute TTL and
+  current/live requests such as price or "сейчас/latest/today" bypass this path with
+  `work-ledger-reuse-skipped`. Deterministic `data.transform` and inline-content
+  `document.extract` calls can reuse without a TTL. Mutable local references
+  (`file.read`, `file.write`, path extraction, URL extraction) are intentionally not
+  reusable-indexed.
+- Obvious inline JSON/CSV/text transformation tasks can enter the
+  `baseAgentLocalUtility` fast path before the LLM loop. That path still runs through
+  `ToolRegistry` and `RuntimeLedgerCoordinator`, so operators see the same tool,
+  evidence, reusable-index, and trace records as with normal tool execution.
 - Successful runs record `search_result`/`api_response`/`browser_snapshot`/`screenshot`/
   `artifact` evidence; non-OK tool results, semantic-QA failures, and CAPTCHA/loader blockers record
   `limitation` evidence and mark the work item failed.

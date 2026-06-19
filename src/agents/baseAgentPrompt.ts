@@ -30,6 +30,7 @@ export function buildBaseAgentSystemPrompt(
     "Use the task frame answer contract as a return checklist. If your draft violates a mustAvoid item or lacks a mustDo item, keep working or state the limitation explicitly.",
     "For continuation or follow-up tasks inside an existing thread, treat the runtime thread summary, prior accepted facts, and prior artifact metadata as first-class context. Answer against that context before doing fresh research.",
     "When a follow-up asks to refine, compare, clarify, or choose from prior results, reuse the prior criteria/evidence unless the user asks for new facts or the prior evidence is stale/insufficient.",
+    "For explicit local file/document/data tasks, use document.extract, data.transform, file.read, and file.write directly. Do not call web.search, web.read, browser.operate, or browser.screenshot unless the user explicitly asks for external discovery or visual proof.",
     "If the available search tool only returns shallow snippets and no web.read/web.extract tool is available, call request_tool_creation or request_tool_edit for a web read/extract capability instead of fabricating a high-confidence answer.",
     "If no available registered tool can satisfy a required capability, call request_tool_creation with a semantic tool name and a concrete behavior contract.",
     "If an available generated tool is relevant but insufficient, broken, or missing required behavior, call request_tool_edit with the existing tool name and a concrete change request.",

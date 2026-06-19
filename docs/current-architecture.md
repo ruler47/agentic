@@ -45,6 +45,9 @@ flowchart TD
 ### Agent Runtime
 
 - `src/agents/baseAgent.ts`: runtime facade and ReAct loop.
+- `src/agents/baseAgentLocalUtility.ts`: deterministic fast path for obvious local
+  data transformations that can be satisfied by `data.transform` without entering the
+  LLM ReAct loop.
 - `src/agents/taskFrame.ts`: task classification, research/proof contract, default step
   budgets, and external-action policy.
 - `src/agents/baseAgentPrompt.ts`: system prompt and tool schemas passed to the model.
@@ -180,8 +183,12 @@ sequenceDiagram
   User->>API: POST /api/runs { task }
   API->>Agent: run(task, core tool catalog)
   Agent->>Agent: frameTask() => local utility / file artifact
-  Agent->>LLM: bounded prompt + data/file tool schemas
-  LLM-->>Agent: call data.transform
+  alt explicit inline JSON transform
+    Agent->>Agent: infer data.transform call deterministically
+  else ambiguous local utility request
+    Agent->>LLM: bounded prompt + data/file tool schemas
+    LLM-->>Agent: call data.transform
+  end
   Agent->>Ledger: claim analysis work item
   Agent->>Tools: run data.transform
   Tools->>Data: parse JSON-looking input, sort by age desc, serialize CSV
@@ -240,12 +247,14 @@ Current memory is split but not finished:
   Stable `http.request` GET/HEAD calls also publish a thread/instance-scoped
   reusable-index item without `runId`; later identical stable calls can reuse fresh
   passed evidence for up to 10 minutes while still creating run-local work/evidence.
-  Current/live tasks bypass this path and emit `work-ledger-reuse-skipped` so operators
-  can see that the repeated tool call was intentional.
+  Deterministic `data.transform` and inline-content `document.extract` calls use the
+  same reusable-index path without a freshness TTL. Current/live HTTP tasks bypass reuse
+  and emit `work-ledger-reuse-skipped` so operators can see that the repeated tool call
+  was intentional.
 
 ## Verified State
 
-- `npm run verify` passed on 2026-06-19: lint, typecheck, test typecheck, 513 tests, build.
+- `npm run verify` passed on 2026-06-19: lint, typecheck, test typecheck, 516 tests, build.
 - Targeted suites passed:
   - BaseAgent runtime: 50 tests.
   - External action preparation/approval: 29 tests.
@@ -265,10 +274,12 @@ Current memory is split but not finished:
     `run_1781799687705_rtayd8nl`.
 - Automated BaseAgent P0 coverage confirms `http.request` writes an `api_call` work
   item plus `api_response` evidence, and `file.write` links the saved artifact id to
-  both Work Ledger and Evidence Ledger records. It also confirms a second identical
-  stable `http.request` GET in the same thread/instance uses Ledger evidence instead of
-  executing another HTTP call, while current/fresh HTTP tasks bypass that reuse and trace
-  the reason.
+  both Work Ledger and Evidence Ledger records. It also confirms explicit local utility
+  tasks frame as `local_utility`, obvious inline JSON transforms complete through the
+  deterministic local utility fast path without an LLM call, a second identical stable
+  `http.request` GET in the same thread/instance uses Ledger evidence instead of
+  executing another HTTP call, deterministic `data.transform` calls reuse passed
+  evidence, and current/fresh HTTP tasks bypass that reuse and trace the reason.
 - API-only HTTP/JSON endpoint tasks use structured/source proof by default. They avoid
   browser/screenshot proof unless the user explicitly asks for visual proof of a web
   page.

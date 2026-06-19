@@ -93,8 +93,8 @@ Follow-up checkpoint on branch `codex/split-mainline`:
   `https://jsonplaceholder.typicode.com/todos/1` and for `data.transform` JSON-to-CSV
   sorting. This smoke was run with the local dev server and no `DATABASE_URL`, so the
   remaining product smoke must use the durable Postgres stack.
-- `npm run verify` passed after the BaseAgent Ledger/proof fix: lint, typecheck, test
-  typecheck, 513 unit tests, and build.
+- `npm run verify` passed after the BaseAgent Ledger/proof/local-utility fix: lint,
+  typecheck, test typecheck, 516 unit tests, and build.
 
 Durable agent-level smoke then passed on `main` with Postgres-backed persistence:
 
@@ -157,11 +157,16 @@ Code fixes from that smoke:
   tool calls, stores canonical reusable work keys in metadata, completes or fails the
   items after execution, records Evidence Ledger records with source/tool/artifact
   metadata, and links saved artifact ids back to work items.
-- Safe deterministic `http.request` GET/HEAD calls now publish a reusable-index work item
-  scoped to the current thread/instance and not tied to a specific run. A later identical
-  stable call can reuse fresh passed evidence for up to 10 minutes, while current/fresh
-  tasks bypass reuse, still execute the tool, and emit a trace-visible
-  `work-ledger-reuse-skipped` reason.
+- Safe deterministic tool calls now publish reusable-index work items scoped to the
+  current thread/instance and not tied to a specific run. A later identical stable
+  `http.request` GET/HEAD call can reuse fresh passed evidence for up to 10 minutes,
+  while current/fresh HTTP tasks bypass reuse, still execute the tool, and emit a
+  trace-visible `work-ledger-reuse-skipped` reason. Deterministic `data.transform` and
+  inline-content `document.extract` calls also reuse passed evidence; mutable
+  `file.read`, `file.write`, URL extraction, and path extraction stay run-local.
+- Explicit local file/document/data tasks now frame as `local_utility`, which keeps them
+  on `document.extract` / `data.transform` / `file.read` / `file.write` and suppresses
+  web/browser discovery unless the user explicitly asks for it.
 - API-only HTTP/JSON endpoint tasks treat structured protocol/source evidence as the
   proof by default. They should finish after one successful direct `http.request` when it
   satisfies the task, without adding web search, web read, browser operation, or
@@ -189,6 +194,12 @@ P0: keep simple runs fast, correct, and auditable.
   and failure reasons.
 - Stable `http.request` GET/HEAD calls now create reusable-index records and can be
   reused across runs in the same thread/instance when fresh passed evidence exists.
+- Deterministic local `data.transform` and inline-content `document.extract` calls now
+  use the same reusable-index path, while mutable file/path/url work stays run-local.
+- Obvious inline JSON/CSV transformation requests now use a deterministic local utility
+  fast path: infer `data.transform`, run it through the normal registry/Ledger/trace
+  path, and finish without an LLM call. Ambiguous local utility work still uses the
+  bounded local-tool agent loop.
 - Current/fresh/live tasks now bypass stable HTTP reuse explicitly and expose the
   decision in Trace Lab instead of silently reusing or silently refetching.
 - `/api/work-ledger`, `/api/evidence-ledger`, and the React Ledger page show the same

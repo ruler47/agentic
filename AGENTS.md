@@ -69,14 +69,26 @@ large legacy `UniversalAgent` runtime.
   execution, record evidence with tool/source/artifact/QA metadata, and link generated
   artifact ids back to the work item. Ledger writes are observability-only and must not
   fail the user run when a ledger store is unavailable.
-- Safe deterministic `http.request` calls now use the Ledger as execution memory, not
-  only audit. Successful `GET`/`HEAD` calls publish a thread/instance-scoped
-  reusable-index work item without a `runId`; later identical `http.request` calls in the
-  same scope can reuse fresh passed evidence for up to 10 minutes while still creating a
-  run-local work/evidence record and trace events (`work-ledger-reuse-available`,
-  `work-ledger-reuse-applied`). Reuse is disabled for tasks with current/fresh/live
+- Safe deterministic tool calls now use the Ledger as execution memory, not only audit.
+  Successful `http.request` `GET`/`HEAD` calls publish a thread/instance-scoped
+  reusable-index work item without a `runId`; later identical calls in the same scope can
+  reuse fresh passed evidence for up to 10 minutes while still creating a run-local
+  work/evidence record and trace events (`work-ledger-reuse-available`,
+  `work-ledger-reuse-applied`). Reuse is disabled for HTTP tasks with current/fresh/live
   signals such as "сейчас", "latest", "today", "цена", or "курс"; those skips emit
   `work-ledger-reuse-skipped` so Trace Lab explains why a fresh tool call happened.
+  Deterministic `data.transform` and inline-content `document.extract` calls also publish
+  reusable-index records; mutable `file.read`, `file.write`, URL extraction, and path
+  extraction do not reuse because their contents or artifacts can change.
+- Explicit local file/document/data tasks frame as `local_utility`: use
+  `document.extract`, `data.transform`, `file.read`, and `file.write` directly, suppress
+  web/browser discovery unless the user asks for external discovery or visual proof, and
+  treat local tool output / generated files as the proof.
+- Obvious inline JSON/CSV/text transformation tasks can use the local utility fast path:
+  infer the `data.transform` call deterministically, execute it through the normal
+  registry/Ledger/trace path, and finish without entering the general LLM ReAct loop.
+  Less obvious file/document/data tasks still use the `local_utility` frame and the
+  regular agent loop with only the local tool family available.
 - BaseAgent loops are budgeted BY DEFAULT: `maxSteps` comes from the task frame
   (`defaultMaxStepsForTaskFrame` — 10 base, 12 for product selection, 18 for external
   action preparation) and `maxToolCalls` defaults to `maxSteps * 4`. Unbounded research
@@ -137,11 +149,13 @@ large legacy `UniversalAgent` runtime.
 - Every migration statement that recreates `runs_status_check` must include
   `waiting_approval`; durable databases can already contain paused approval runs.
 - Automated P0 coverage verifies `http.request` creates `api_call` work plus
-  `api_response` evidence, and `file.write` links generated file artifacts through both
-  Work Ledger and Evidence Ledger. It also verifies cross-run safe reuse for identical
-  stable `http.request` GET calls through the reusable-index path, and verifies that
-  current/fresh tasks bypass reusable HTTP evidence with a trace-visible
-  `work-ledger-reuse-skipped` event. Durable live smoke also passed across a backend
+  `api_response` evidence, `file.write` links generated file artifacts through both
+  Work Ledger and Evidence Ledger, and explicit local data/file tasks frame as
+  `local_utility`. It also verifies cross-run safe reuse for identical stable
+  `http.request` GET calls and deterministic `data.transform` calls through the
+  reusable-index path, and verifies that current/fresh tasks bypass reusable HTTP
+  evidence with a trace-visible `work-ledger-reuse-skipped` event. Durable live smoke
+  also passed across a backend
   restart: `run_1781818681262_rpvsg59u` keeps one completed `api_call`, one
   `api_response`, linked artifact `artifact_1781818687616_9q389ujl`, and the same data is
   visible in the React Ledger page in `Backend ready · postgres` mode.

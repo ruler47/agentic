@@ -403,6 +403,7 @@ export type AgentEventType =
   | "agent-strategy-selected"
   | "agent-task-framed"
   | "agent-context-prepared"
+  | "local-utility-fast-path-selected"
   | "agent-invocation-created"
   | "agent-decision-loop-completed"
   | "agent-council-planned"

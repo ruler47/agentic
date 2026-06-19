@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { BaseAgent } from "../src/agents/baseAgent.js";
 import type { LlmClient, LlmToolReply, LlmToolSchema } from "../src/llm/client.js";
 import { ToolRegistry } from "../src/tools/registry.js";
+import { DataTransformTool } from "../src/tools/dataTransformTool.js";
 import type { AgentArtifact, AgentEvent, ArtifactCreateInput, Message } from "../src/types.js";
 import {
   RuntimeLedgerCoordinator,
@@ -463,6 +464,184 @@ test("BaseAgent skips reusable http.request evidence for current-data tasks", as
   assert.equal(secondEvidence.length, 1);
   assert.equal(secondEvidence[0]?.metadata?.reusedFromWorkItemId, undefined);
   assert.match(secondEvidence[0]?.summary ?? "", /70111/);
+});
+
+test("BaseAgent reuses deterministic data.transform evidence across runs", async () => {
+  const registry = new ToolRegistry();
+  const workLedger = new InMemoryWorkLedgerStore();
+  const evidenceLedger = new InMemoryEvidenceLedgerStore();
+  const ledgerEvents: RuntimeLedgerEventDraft[] = [];
+  let transformCalls = 0;
+  const transformInput = {
+    input: "[{\"name\":\"Ann\",\"age\":31},{\"name\":\"Bob\",\"age\":42}]",
+    operations: [{ type: "sort", path: "age", direction: "desc" }],
+    outputFormat: "csv",
+  };
+
+  registry.register({
+    name: "data.transform",
+    version: "1.0.0",
+    description: "Transforms JSON and CSV deterministically.",
+    capabilities: ["data-transform", "json-transform", "csv-transform"],
+    inputSchema: { type: "object", properties: { input: {}, operations: { type: "array" }, outputFormat: { type: "string" } } },
+    async run() {
+      transformCalls += 1;
+      return {
+        ok: true,
+        content: "name,age\nBob,42\nAnn,31",
+        data: {
+          value: [
+            { name: "Bob", age: 42 },
+            { name: "Ann", age: 31 },
+          ],
+          operationsApplied: ["sort"],
+          outputFormat: "csv",
+        },
+      };
+    },
+  });
+
+  const makeLedger = (runId: string) => new RuntimeLedgerCoordinator({
+    runId,
+    threadId: "thread_transform_reuse",
+    instanceId: "instance-local",
+    workLedgerStore: workLedger,
+    evidenceLedgerStore: evidenceLedger,
+    emit: async (event) => {
+      ledgerEvents.push(event);
+    },
+  });
+  const makeLlm = () => new SequenceLlm([
+    {
+      content: "",
+      finishReason: "tool_calls",
+      toolCalls: [{ id: "call_transform", name: "data_transform", arguments: transformInput }],
+    },
+    {
+      content: "",
+      finishReason: "tool_calls",
+      toolCalls: [{ id: "call_finish", name: "finish", arguments: { answer: "Готово: Bob,42; Ann,31." } }],
+    },
+  ]);
+
+  const firstEvents: AgentEvent[] = [];
+  const firstAgent = new BaseAgent(makeLlm() as unknown as LlmClient, registry);
+  const first = await firstAgent.run("Преобразуй JSON в CSV и отсортируй по age по убыванию.", {
+    runId: "run_reuse_transform_1",
+    ledger: makeLedger("run_reuse_transform_1"),
+    onEvent: (event) => {
+      firstEvents.push(event);
+    },
+    runContext: {
+      runId: "run_reuse_transform_1",
+      threadId: "thread_transform_reuse",
+      instanceId: "instance-local",
+    },
+  });
+  assert.equal(first.runStatus, "completed");
+  assert.equal(transformCalls, 1);
+  const frameEvent = firstEvents.find((event) => event.type === "agent-task-framed");
+  assert.equal((frameEvent?.payload as { taskFrame?: { mode?: string } } | undefined)?.taskFrame?.mode, "local_utility");
+
+  const canonicalWorkKey = workKeyForToolCall("data.transform", "analysis", transformInput);
+  const reusableIndexItems = await workLedger.listByWorkKey(canonicalWorkKey);
+  assert.equal(reusableIndexItems.length, 1);
+  assert.equal(reusableIndexItems[0]?.runId, undefined);
+  assert.equal(reusableIndexItems[0]?.kind, "analysis");
+
+  const secondLlm = makeLlm();
+  const secondAgent = new BaseAgent(secondLlm as unknown as LlmClient, registry);
+  const second = await secondAgent.run("Преобразуй тот же JSON в CSV и отсортируй по age по убыванию.", {
+    runId: "run_reuse_transform_2",
+    ledger: makeLedger("run_reuse_transform_2"),
+    runContext: {
+      runId: "run_reuse_transform_2",
+      threadId: "thread_transform_reuse",
+      instanceId: "instance-local",
+    },
+  });
+
+  assert.equal(second.runStatus, "completed");
+  assert.equal(transformCalls, 1);
+  assert.ok(secondLlm.messagesByCall[1]?.some((message) =>
+    message.role === "tool" && /Reused passed Work Ledger evidence/i.test(String(message.content))
+  ));
+  assert.ok(ledgerEvents.some((event) => event.type === "work-ledger-reuse-available"));
+  assert.ok(ledgerEvents.some((event) => event.type === "work-ledger-reuse-applied"));
+  const secondEvidence = await evidenceLedger.listByRun("run_reuse_transform_2");
+  assert.equal(secondEvidence.length, 1);
+  assert.equal(secondEvidence[0]?.metadata?.reusedFromWorkItemId, reusableIndexItems[0]?.id);
+});
+
+test("BaseAgent handles explicit inline JSON transforms through local utility fast path", async () => {
+  const registry = new ToolRegistry();
+  registry.register(new DataTransformTool());
+  const workLedger = new InMemoryWorkLedgerStore();
+  const evidenceLedger = new InMemoryEvidenceLedgerStore();
+  const ledgerEvents: RuntimeLedgerEventDraft[] = [];
+  const makeLedger = (runId: string) => new RuntimeLedgerCoordinator({
+    runId,
+    threadId: "thread_inline_transform",
+    instanceId: "instance-local",
+    workLedgerStore: workLedger,
+    evidenceLedgerStore: evidenceLedger,
+    emit: async (event) => {
+      ledgerEvents.push(event);
+    },
+  });
+  const task = 'Преобразуй JSON [{"name":"Ann","age":31},{"name":"Bob","age":42}] в CSV, отсортируй по age по убыванию и дай результат текстом.';
+  const expectedToolInput = {
+    input: '[{"name":"Ann","age":31},{"name":"Bob","age":42}]',
+    format: "json",
+    operations: [{ type: "sort", path: "age", direction: "desc" }],
+    outputFormat: "csv",
+  };
+
+  const firstLlm = new SequenceLlm([{ content: "should not be used", toolCalls: [], finishReason: "stop" }]);
+  const firstEvents: AgentEvent[] = [];
+  const firstAgent = new BaseAgent(firstLlm as unknown as LlmClient, registry);
+  const first = await firstAgent.run(task, {
+    runId: "run_inline_transform_1",
+    ledger: makeLedger("run_inline_transform_1"),
+    runContext: {
+      runId: "run_inline_transform_1",
+      threadId: "thread_inline_transform",
+      instanceId: "instance-local",
+    },
+    onEvent: (event) => {
+      firstEvents.push(event);
+    },
+  });
+
+  assert.equal(first.runStatus, "completed");
+  assert.equal(firstLlm.calls, 0);
+  assert.match(first.finalAnswer, /Bob,42/);
+  assert.match(first.finalAnswer, /Ann,31/);
+  assert.ok(firstEvents.some((event) => event.type === "local-utility-fast-path-selected"));
+  assert.ok(firstEvents.some((event) => event.type === "tool-completed" && event.actor === "data.transform"));
+  assert.equal(firstEvents.some((event) => event.activity === "llm"), false);
+
+  const canonicalWorkKey = workKeyForToolCall("data.transform", "analysis", expectedToolInput);
+  const reusableIndexItems = await workLedger.listByWorkKey(canonicalWorkKey);
+  assert.equal(reusableIndexItems.length, 1);
+
+  const secondLlm = new SequenceLlm([{ content: "should not be used", toolCalls: [], finishReason: "stop" }]);
+  const secondAgent = new BaseAgent(secondLlm as unknown as LlmClient, registry);
+  const second = await secondAgent.run(task, {
+    runId: "run_inline_transform_2",
+    ledger: makeLedger("run_inline_transform_2"),
+    runContext: {
+      runId: "run_inline_transform_2",
+      threadId: "thread_inline_transform",
+      instanceId: "instance-local",
+    },
+  });
+
+  assert.equal(second.runStatus, "completed");
+  assert.equal(secondLlm.calls, 0);
+  assert.match(second.finalAnswer, /Work Ledger/);
+  assert.match(second.finalAnswer, /Bob,42/);
+  assert.ok(ledgerEvents.some((event) => event.type === "work-ledger-reuse-applied"));
 });
 
 test("BaseAgent frames prior-answer source questions as thread-context answers", async () => {

@@ -14,6 +14,7 @@ export type TaskFrameMode =
   | "current_lookup"
   | "exploratory_research"
   | "product_selection"
+  | "local_utility"
   | "tool_build_or_rework"
   | "thread_context_answer";
 
@@ -65,6 +66,7 @@ export function defaultMaxStepsForTaskFrame(taskFrame: TaskFrame): number {
   // External-action preparation needs discovery + provider page + form
   // preparation + proof — observed live to exceed the selection budget.
   if (taskFrame.externalActionPolicy) return 18;
+  if (taskFrame.mode === "local_utility") return 6;
   return taskFrame.mode === "product_selection" || taskFrame.researchDepth === "structured_selection"
     ? 12
     : DEFAULT_MAX_STEPS;
@@ -185,6 +187,40 @@ export function frameTask(task: string): TaskFrame {
   const externalActionPolicy = inferExternalActionPolicy(task);
   const externalActionPreparation = Boolean(externalActionPolicy);
   const productSelection = selectionIntent && (budgetOrTradeoff || multiCriteria || localServiceSelection || externalActionPreparation);
+
+  if (looksLikeLocalUtilityTask(task) && !externalActionPreparation) {
+    return {
+      mode: "local_utility",
+      reason: "The task explicitly asks for local file, document, or data transformation work.",
+      researchDepth: "none",
+      idealOutcome: "Use the smallest local toolchain that reads/extracts/transforms/writes the provided data and returns any requested artifact.",
+      userSuccessCriteria: criteria.length ? criteria : ["correct local transformation", "no unnecessary web discovery", "requested file/artifact is attached"],
+      likelyFailureModes: ["web-searching for a local transformation", "answering without creating the requested file", "losing the transformed data"],
+      exceedExpectations: ["include the exact output filename when a file is written", "summarize the performed operation briefly"],
+      requiredEvidence: ["local tool result", "written artifact when requested"],
+      researchPlan: [
+        {
+          step: "Local toolchain",
+          purpose: "Run only the local core tools needed by the task.",
+          expectedEvidence: "document/file extraction, deterministic transform, or file-write result",
+          preferredTools: ["document.extract", "data.transform", "file.read", "file.write"],
+        },
+      ],
+      answerContract: {
+        mustDo: ["use local tools directly when an artifact or transformation is requested", "name the produced file/artifact when present"],
+        mustAvoid: ["web search or browser discovery unless explicitly requested", "screenshot proof for local-only data work"],
+        finalAnswerShape: ["short completion summary", "artifact/file reference if created"],
+        proofStrategy: "The local tool result and generated artifact are the proof; no browser proof is required.",
+      },
+      researchContract: {
+        minResearchToolCalls: 0,
+        minIndependentSourceUrls: 0,
+        minSourceReadToolCalls: 0,
+        mustCheckFreshness: false,
+        requiresClaimBasedProof: false,
+      },
+    };
+  }
 
   if (productSelection) {
     return {
@@ -585,6 +621,22 @@ function countCriteriaConnectors(normalizedTask: string): number {
 
 function normalizeForTaskFrame(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function looksLikeLocalUtilityTask(task: string): boolean {
+  const normalized = normalizeForTaskFrame(task);
+  if (/\b(?:file\.read|file\.write|document\.extract|data\.transform)\b/i.test(task)) return true;
+  if (/(?:сохрани|запиши|создай|write|save|create).{0,120}\.(?:csv|json|txt|md|html|xml)\b/i.test(task)) return true;
+  if (/\.(?:csv|json|txt|md|pdf|docx|html)\b/i.test(task) && /(?:прочитай|извлеки|extract|read|parse|преобраз|конверт|convert|transform|сохрани|save|write)/i.test(task)) {
+    return true;
+  }
+  if (/(?:json|csv|таблиц|массив|список|строк).{0,140}(?:csv|json|отсорт|sort|фильтр|filter|преобраз|конверт|transform|convert|template)/i.test(normalized)) {
+    return true;
+  }
+  if (/(?:отсорт|sort|фильтр|filter|преобраз|конверт|transform|convert).{0,140}(?:json|csv|таблиц|массив|список|строк)/i.test(normalized)) {
+    return true;
+  }
+  return false;
 }
 
 function limitText(value: string, maxChars: number): string {
