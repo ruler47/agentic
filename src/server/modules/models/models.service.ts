@@ -18,6 +18,11 @@ import type {
   UpdateModelProviderDto,
 } from "./dto/model-provider.dto.js";
 import type { UpdateTiersDto } from "./dto/update-tiers.dto.js";
+import {
+  decorateCatalogModel,
+  parseModelCapabilityOverrides,
+  type CatalogModelRecord,
+} from "../../../settings/modelCatalog.js";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1";
 const DEFAULT_MODEL = "google/gemma-4-26b-a4b";
@@ -142,10 +147,17 @@ export class ModelsService {
     const baseUrl = process.env.LLM_BASE_URL ?? DEFAULT_BASE_URL;
     const embeddingBaseUrl = process.env.EMBEDDING_BASE_URL ?? baseUrl;
     const providers = this.providers ? await this.providers.list() : [];
-    const [chatModels, embeddingModels] = await Promise.all([
+    const capabilityOverrides = parseModelCapabilityOverrides(process.env.LLM_MODEL_CAPABILITIES);
+    const [rawChatModels, rawEmbeddingModels] = await Promise.all([
       this.listOpenAiCompatibleModels(baseUrl),
       this.listOpenAiCompatibleModels(embeddingBaseUrl),
     ]);
+    const chatModels = rawChatModels
+      .map((model) => decorateCatalogModel(model, capabilityOverrides))
+      .filter((model) => model.capabilities.includes("chat"));
+    const embeddingModels = rawEmbeddingModels
+      .map((model) => decorateCatalogModel(model, capabilityOverrides))
+      .filter((model) => model.capabilities.includes("embedding"));
     return {
       chat: {
         baseUrl,
@@ -168,7 +180,7 @@ export class ModelsService {
 
   private async listOpenAiCompatibleModels(
     baseUrl: string,
-  ): Promise<Array<{ id: string; ownedBy?: string }>> {
+  ): Promise<Array<Pick<CatalogModelRecord, "id" | "ownedBy">>> {
     try {
       const response = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
         headers: { accept: "application/json" },

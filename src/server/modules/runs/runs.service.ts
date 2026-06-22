@@ -28,6 +28,7 @@ import type { ToolServiceEventStore } from "../../../tools/toolServiceEventStore
 import { ToolCallbackTokenIssuer } from "../../../tools/toolCallbackToken.js";
 import type { ToolMetadataStore } from "../../../tools/toolMetadataStore.js";
 import type { EvidenceLedgerStore, RunRetrospectiveStore, WorkLedgerStore } from "../../../work-ledger/types.js";
+import { withRunMetrics } from "../../../runs/metrics.js";
 import { AuditService } from "../../common/services/audit.service.js";
 import { ToolsService } from "../tools/tools.service.js";
 import { APP_ENV } from "../../config/config.module.js";
@@ -67,6 +68,7 @@ import { ActionProposalAutoModeService } from "./action-proposal-auto-mode.servi
 import {
   externalActionApprovalPauseReason,
   externalActionApprovalProposalIds,
+  hasAutoExternalActionProposals,
   shouldPauseForExternalActionApproval,
 } from "./run-external-action-pause.js";
 import {
@@ -172,14 +174,14 @@ export class RunsService implements OnApplicationBootstrap {
     );
   }
 
-  list(): Promise<AgentRunRecord[]> {
-    return this.runs.list();
+  async list(): Promise<AgentRunRecord[]> {
+    return (await this.runs.list()).map((run) => this.withMetrics(run));
   }
 
   async get(id: string): Promise<AgentRunRecord> {
     const run = await this.runs.get(id);
     if (!run) throw new NotFoundException("Run not found");
-    return run;
+    return this.withMetrics(run);
   }
 
   async createAndStart(rawBody: unknown): Promise<{
@@ -225,7 +227,7 @@ export class RunsService implements OnApplicationBootstrap {
         existing.status !== "cancelled"
       ) {
         return {
-          run: existing,
+          run: this.withMetrics(existing),
           thread,
           threadResolution: threadResolution
             ? {
@@ -324,7 +326,7 @@ export class RunsService implements OnApplicationBootstrap {
     });
 
     return {
-      run: await this.runs.get(run.id),
+      run: this.withMetrics(await this.runs.get(run.id)),
       thread,
       threadResolution: threadResolution
         ? {
@@ -367,7 +369,7 @@ export class RunsService implements OnApplicationBootstrap {
       metadata: { reason },
     });
     const cancelled = await this.runs.get(id);
-    return cancelled ?? run;
+    return this.withMetrics(cancelled ?? run);
   }
 
   async getArtifact(runId: string, artifactId: string) {
@@ -436,6 +438,12 @@ export class RunsService implements OnApplicationBootstrap {
     };
   }
 
+  private withMetrics(run: AgentRunRecord): AgentRunRecord;
+  private withMetrics(run: AgentRunRecord | undefined): AgentRunRecord | undefined;
+  private withMetrics(run: AgentRunRecord | undefined): AgentRunRecord | undefined {
+    return run ? withRunMetrics(run) : undefined;
+  }
+
   async executeRun(
     id: string,
     task: string,
@@ -490,6 +498,7 @@ export class RunsService implements OnApplicationBootstrap {
         runtimeHelpers: this.runtimeHelpers(),
         runId: id,
         run,
+        workingDecisionTask: task,
       });
       const ledger = createRunLedgerCoordinator({
         workLedger: this.workLedger,
@@ -786,13 +795,4 @@ export class RunsService implements OnApplicationBootstrap {
     }
   }
 
-}
-
-function hasAutoExternalActionProposals(result: AgentRunResult): boolean {
-  return Boolean(
-    result.actionProposals?.some(
-      (proposal) =>
-        proposal.executionMode === "auto" && !proposal.approvalRequired,
-    ),
-  );
 }

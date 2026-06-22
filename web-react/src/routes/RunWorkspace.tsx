@@ -12,7 +12,9 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { RunActionApprovalPanel } from "@/features/run-workspace/RunActionApprovalPanel";
 import { RunCandidateReviewPanel } from "@/features/run-workspace/RunCandidateReviewPanel";
-import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
+import { WorkingDecisionBoard } from "@/features/run-workspace/WorkingDecisionBoard";
+import { hydrateMarkdownArtifactLinks } from "@/features/conversations/conversationArtifacts";
+import { formatDuration, formatRelative, formatTokenUsage, runDurationMs, truncate } from "@/lib/format";
 import type { AgentEvent, AgentRunRecord } from "@/api/types";
 
 export function RunWorkspacePage() {
@@ -60,6 +62,8 @@ export function RunWorkspacePage() {
   // Restart is offered for any non-active terminal status, plus stuck runs.
   const canRestart = !isLive || isStuck;
   const finalAnswer = runStatusMessage(data);
+  const artifacts = data.result?.artifacts ?? [];
+  const hydratedFinalAnswer = hydrateMarkdownArtifactLinks(finalAnswer, artifacts);
 
   return (
     <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -84,7 +88,7 @@ export function RunWorkspacePage() {
             <div className="flex items-center gap-2">
               <RunStatusBadge status={data.status} />
               <span className="font-mono text-[11px] text-app-text-muted">
-                {formatDuration(runDurationMs(data))}
+                {formatDuration(data.metrics?.elapsedMs ?? runDurationMs(data))}
               </span>
             </div>
           </div>
@@ -179,6 +183,10 @@ export function RunWorkspacePage() {
           </div>
         </header>
 
+        <RunMetricsPanel run={data} />
+
+        <WorkingDecisionBoard events={data.events ?? []} />
+
         <ChannelSourcePanel run={data} />
 
         <RunLedgerPanel
@@ -199,15 +207,15 @@ export function RunWorkspacePage() {
         <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-5">
           <h3 className="text-sm font-semibold">Final answer</h3>
           <div className="mt-2">
-            <MarkdownContent value={finalAnswer} />
+            <MarkdownContent value={hydratedFinalAnswer} />
           </div>
         </article>
 
-        {data.result?.artifacts?.length ? (
+        {artifacts.length ? (
           <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-5">
             <h3 className="text-sm font-semibold">Artifacts</h3>
             <div className="mt-3">
-              <ArtifactGallery artifacts={data.result.artifacts} />
+              <ArtifactGallery artifacts={artifacts} />
             </div>
           </article>
         ) : null}
@@ -230,6 +238,70 @@ export function RunWorkspacePage() {
         </article>
       </aside>
     </section>
+  );
+}
+
+function RunMetricsPanel({ run }: { run: AgentRunRecord }) {
+  const metrics = run.metrics;
+  if (!metrics) return null;
+  const topModels = metrics.models.slice(0, 3);
+  return (
+    <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">
+            Run metrics
+          </p>
+          <h3 className="text-sm font-semibold">
+            {formatDuration(metrics.elapsedMs)} · {metrics.llmCalls} LLM · {formatTokenUsage(metrics.tokenUsage)}
+          </h3>
+          <p className="mt-1 text-xs text-app-text-muted">
+            {metrics.toolCalls} tool calls
+            {metrics.failedToolCalls ? ` · ${metrics.failedToolCalls} failed` : ""} · {metrics.artifacts} artifacts
+          </p>
+        </div>
+        <dl className="grid min-w-0 gap-2 text-xs sm:grid-cols-2">
+          <MetricItem label="started" value={new Date(metrics.startedAt).toLocaleString()} />
+          <MetricItem label="finished" value={metrics.completedAt ? new Date(metrics.completedAt).toLocaleString() : "running"} />
+          <MetricItem
+            label="models"
+            value={topModels.length
+              ? topModels.map((model) => `${model.model} (${model.calls})`).join(", ")
+              : "none"}
+          />
+          <MetricItem
+            label="slowest"
+            value={metrics.slowestEvents[0]
+              ? `${metrics.slowestEvents[0].title} · ${formatDuration(metrics.slowestEvents[0].durationMs)}`
+              : "none"}
+          />
+        </dl>
+      </div>
+      {metrics.slowestEvents.length > 1 ? (
+        <details className="mt-3 rounded-md border border-app-border bg-app-surface-2 px-3 py-2 text-xs">
+          <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-app-text-muted">
+            Slowest steps
+          </summary>
+          <ul className="mt-2 space-y-1">
+            {metrics.slowestEvents.map((event) => (
+              <li key={`${event.eventId}-${event.spanId}`} className="flex items-baseline justify-between gap-3">
+                <span className="min-w-0 truncate">{event.title}</span>
+                <span className="shrink-0 font-mono text-app-text-muted">{formatDuration(event.durationMs)}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </article>
+  );
+}
+
+function MetricItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded border border-app-border bg-app-surface-2 px-2 py-1">
+      <dt className="text-[10px] uppercase tracking-wider text-app-text-muted">{label}</dt>
+      <dd className="truncate font-mono text-[11px]" title={value}>{value}</dd>
+    </div>
   );
 }
 
@@ -379,11 +451,41 @@ function TimelineRow({ event }: { event: AgentEvent }) {
           {event.actor}@{toolVersionFromPayload(event.payload)}
         </p>
       ) : null}
+      {event.activity === "llm" ? (
+        <p className="mt-0.5 font-mono text-[10px] text-app-text-muted">
+          {llmModelFromPayload(event.payload) ?? "model unknown"} · {formatTokenUsage(llmUsageFromPayload(event.payload))}
+          {typeof event.durationMs === "number" ? ` · ${formatDuration(event.durationMs)}` : ""}
+        </p>
+      ) : null}
       {event.detail ? (
         <p className="mt-0.5 text-[11px] text-app-text-muted">{truncate(event.detail, 160)}</p>
       ) : null}
     </li>
   );
+}
+
+function llmModelFromPayload(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const direct = (payload as { model?: unknown }).model;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const output = (payload as { output?: unknown }).output;
+  if (output && typeof output === "object") {
+    const model = (output as { model?: unknown }).model;
+    if (typeof model === "string" && model.trim()) return model.trim();
+  }
+  return undefined;
+}
+
+function llmUsageFromPayload(payload: unknown) {
+  if (!payload || typeof payload !== "object") return undefined;
+  const direct = (payload as { usage?: unknown }).usage;
+  if (direct && typeof direct === "object") return direct as Parameters<typeof formatTokenUsage>[0];
+  const output = (payload as { output?: unknown }).output;
+  if (output && typeof output === "object") {
+    const usage = (output as { usage?: unknown }).usage;
+    if (usage && typeof usage === "object") return usage as Parameters<typeof formatTokenUsage>[0];
+  }
+  return undefined;
 }
 
 function toolVersionFromPayload(payload: unknown): string | undefined {

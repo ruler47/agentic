@@ -194,7 +194,7 @@ test("BaseAgent can request a generated tool edit when a tool is insufficient", 
   assert.equal(requests.length, 1);
   assert.deepEqual(
     llm.tools.map((tool) => tool.function.name),
-    ["browser_screenshot", "request_tool_creation", "request_tool_edit", "finish"],
+    ["browser_screenshot", "update_working_board", "request_tool_creation", "request_tool_edit", "finish"],
   );
   assert.ok(events.some((event) => event.title === "Agent requested a tool edit"));
   assert.ok(events.some((event) => event.title === "Linked tool edit completed"));

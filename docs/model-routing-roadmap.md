@@ -11,7 +11,14 @@ The platform can now:
 - infer model capabilities from names;
 - accept operator capability overrides through `LLM_MODEL_CAPABILITIES`;
 - show capability badges in the Models UI;
+- resolve LLM calls through a tier plus capability-aware route resolver;
+- emit `model-route-selected` trace events from the BaseAgent loop and current-fact
+  fast path;
 - bound each LLM attempt with `LLM_REQUEST_TIMEOUT_MS`.
+
+Implemented routing is still environment/catalog driven. Durable per-model profiles,
+operator-editable persisted capability verification, active probes, multimodal message
+parts, and evaluation dashboards remain roadmap work.
 
 Current verified local vision models:
 
@@ -65,6 +72,12 @@ Add probes:
 Probe results should be stored and visible in Models UI.
 
 ### Phase 3: Tier-Constrained Capability Selection
+
+Status: partially implemented. `src/settings/modelRouting.ts` resolves a request from
+tier policy, required capabilities, preferred capabilities, and environment/catalog
+capability metadata. `src/llm/client.ts` uses that resolver for chat/tool calls and
+records rejected candidates for trace. Remaining work: persist verified profiles,
+operator role preferences, measured latency/throughput, and provider constraints.
 
 Goal: keep S/M/L/XL tiers as the primary routing mechanism, but filter or prefer models
 inside the selected tier by required capability.
@@ -154,11 +167,23 @@ curl -sS http://127.0.0.1:1234/v1/models | jq .
 curl -sS http://127.0.0.1:3000/api/models/catalog | jq .
 ```
 
+2026-06-19 manual smoke:
+
+- `run_1781888955776_r5xgx351`: simple direct answer completed with no tool events; trace
+  included `model-route-selected` for tier M.
+- `run_1781888955810_o4iy48ap`: current BTC fact completed with `web.search`,
+  `web.read`, QA-passed `browser.screenshot`, and PNG proof artifact
+  `artifact_1781888964363_ap1p51dc`.
+
 Current local server launch:
 
 ```bash
 DATABASE_URL=postgres://agentic:agentic@127.0.0.1:5432/agentic \
-LLM_REQUEST_TIMEOUT_MS=45000 \
+MINIO_ENDPOINT=http://127.0.0.1:9000 \
+MINIO_ACCESS_KEY=agentic \
+MINIO_SECRET_KEY=agentic-password \
+MINIO_BUCKET=agentic-artifacts \
+LLM_REQUEST_TIMEOUT_MS=60000 \
 LLM_MODEL_CAPABILITIES='qwen/qwen3.6-35b-a3b=vision,reasoning,tool-calling;google/gemma-4-26b-a4b=vision' \
 npm run web
 ```

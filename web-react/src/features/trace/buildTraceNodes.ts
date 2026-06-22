@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentEventStatus, AgentActivity, AgentEventType, ModelTier } from "@/api/types";
+import type { AgentEvent, AgentEventStatus, AgentActivity, AgentEventType, ModelTier, TokenUsage } from "@/api/types";
 
 /**
  * Trace span model derived from per-event records. Mirrors the legacy
@@ -15,6 +15,8 @@ export type TraceNode = {
   title: string;
   actor: string;
   toolVersion?: string;
+  model?: string;
+  tokenUsage?: TokenUsage;
   activity: AgentActivity;
   status: AgentEventStatus;
   detail?: string;
@@ -36,9 +38,11 @@ export function buildTraceNodes(events: AgentEvent[]): TraceNode[] {
       spanId: event.spanId,
       parentSpanId: previous?.parentSpanId ?? event.parentSpanId,
       type: event.type ?? previous?.type,
-      title: event.title || previous?.title || event.spanId,
+      title: (semanticTitleFromPayload(event.payload) ?? event.title) || previous?.title || event.spanId,
       actor: event.actor || previous?.actor || "unknown",
       toolVersion: toolVersionFromPayload(event.payload) ?? previous?.toolVersion,
+      model: modelFromPayload(event.payload) ?? previous?.model,
+      tokenUsage: tokenUsageFromPayload(event.payload) ?? previous?.tokenUsage,
       activity: event.activity ?? previous?.activity ?? "coordination",
       status: event.status ?? previous?.status ?? "started",
       detail: event.detail ?? previous?.detail,
@@ -68,6 +72,38 @@ function toolVersionFromPayload(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") return undefined;
   const value = (payload as { toolVersion?: unknown }).toolVersion;
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function modelFromPayload(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const record = payload as { model?: unknown; output?: unknown };
+  if (typeof record.model === "string" && record.model.trim()) return record.model.trim();
+  if (record.output && typeof record.output === "object") {
+    const model = (record.output as { model?: unknown }).model;
+    if (typeof model === "string" && model.trim()) return model.trim();
+  }
+  return undefined;
+}
+
+function tokenUsageFromPayload(payload: unknown): TokenUsage | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const record = payload as { usage?: unknown; output?: unknown };
+  if (isTokenUsage(record.usage)) return record.usage;
+  if (record.output && typeof record.output === "object") {
+    const usage = (record.output as { usage?: unknown }).usage;
+    if (isTokenUsage(usage)) return usage;
+  }
+  return undefined;
+}
+
+function semanticTitleFromPayload(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const value = (payload as { semanticTitle?: unknown }).semanticTitle;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function isTokenUsage(value: unknown): value is TokenUsage {
+  return Boolean(value && typeof value === "object" && typeof (value as { source?: unknown }).source === "string");
 }
 
 export function dependencySpanIdsFor(node: { payload?: unknown }): string[] {

@@ -258,7 +258,7 @@ export class RunsController {
         }
         const signature = [meta.status, meta.updatedAt, meta.eventCount].join(":");
         if (signature === lastSignature) return;
-        const run = await this.runs.get(decoded);
+        const run = await this.service.get(decoded).catch(() => undefined);
         if (!run) {
           subscriber.next({ type: "error", data: { error: "Run not found" } } as MessageEvent);
           subscriber.complete();

@@ -34,6 +34,15 @@ export function externalActionApprovalProposalIds(
   return approvalProposalIdsAndTitles(result).map((proposal) => proposal.id);
 }
 
+export function hasAutoExternalActionProposals(result: AgentRunResult): boolean {
+  return Boolean(
+    result.actionProposals?.some(
+      (proposal) =>
+        actionProposalMode(proposal) === "auto" && !proposal.approvalRequired,
+    ),
+  );
+}
+
 function approvalProposalIdsAndTitles(result: AgentRunResult): Proposal[] {
   return (
     result.actionProposals?.filter(

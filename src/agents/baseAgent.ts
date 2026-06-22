@@ -1,5 +1,6 @@
 import type { AgentArtifact, AgentRunResult, ExternalActionProposal, Message } from "../types.js";
 import type { LlmClient } from "../llm/client.js";
+import type { ModelCapability } from "../settings/modelCatalog.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import {
   attachInitialScopedCandidates,
@@ -37,6 +38,8 @@ import {
   requestTruncatedAnswerRepair,
 } from "./baseAgentTruncation.js";
 import { taskWithThreadContextForFraming } from "./baseAgentThreadContext.js";
+import { shouldAnswerWithoutTools } from "./baseAgentToolChoice.js";
+import { handleWorkingBoardToolCall, llmSemanticTitle } from "./baseAgentWorkingBoard.js";
 import {
   containsRawToolCallSyntax,
   createAgentSpanId,
@@ -87,7 +90,6 @@ export class BaseAgent {
     const searchQueryHistory = new Map<string, string>();
     let runContext = normalizeRunContext(options.runContext, options.runId, startedAt);
     const taskFrame = frameTask(taskWithThreadContextForFraming(task, runContext));
-    // Budgets default from the task frame; callers may override.
     const maxSteps = options.maxSteps ?? defaultMaxStepsForTaskFrame(taskFrame);
     const maxToolCalls = options.maxToolCalls ?? maxSteps * 4;
     const llmTimeoutMs = options.llmTimeoutMs;
@@ -197,16 +199,27 @@ export class BaseAgent {
       const toolSchemas = buildBaseAgentToolSchemas(tools, toolCatalog);
       const isFinalBudgetedStep = maxSteps !== undefined && step >= maxSteps && step > 1;
       if (isFinalBudgetedStep) pushFinalStepNudge(messages, FINAL_STEP_WRAP_UP_NUDGE);
-      const stepToolChoice = isFinalBudgetedStep ? ("none" as const) : ("auto" as const);
+      const stepToolChoice = isFinalBudgetedStep || shouldAnswerWithoutTools({
+        step,
+        taskFrame,
+        hasRunScopedCandidates: (options.initialScopedToolCandidates ?? []).length > 0,
+      })
+        ? ("none" as const)
+        : ("auto" as const);
+      const preferredModelCapabilities: ModelCapability[] = stepToolChoice === "auto" && toolSchemas.length > 0
+        ? ["tool-calling"]
+        : [];
       compactToolMessagesForContextBudget(messages);
       const llmInput = {
         step,
         modelTier: options.modelTier ?? DEFAULT_AGENT_LOOP_TIER,
         toolChoice: stepToolChoice,
+        preferredModelCapabilities,
         maxTokens: DEFAULT_LLM_MAX_TOKENS,
         messages: messages.map(publicMessageForTrace),
         tools: toolSchemas.map((schema) => schema.function.name),
       };
+      const llmStartedAt = new Date();
       let reply;
       try {
         reply = await runWithTimeout(
@@ -218,6 +231,22 @@ export class BaseAgent {
             signal,
             toolChoice: stepToolChoice,
             maxTokens: DEFAULT_LLM_MAX_TOKENS,
+            preferredCapabilities: preferredModelCapabilities,
+            onRouteDecision: async (decision) => {
+              await emit(options.onEvent, {
+                spanId: `${llmSpanId}:model-route`,
+                parentSpanId: rootSpanId,
+                type: "model-route-selected",
+                actor: "base-agent",
+                activity: "llm",
+                status: "completed",
+                title: "Model route selected",
+                detail: decision.reason,
+                startedAt: llmStartedAt,
+                completedAt: new Date(),
+                payload: decision,
+              });
+            },
           }),
         );
       } catch (error) {
@@ -231,6 +260,7 @@ export class BaseAgent {
         break;
       }
 
+      const llmCompletedAt = new Date();
       await emit(options.onEvent, {
         spanId: llmSpanId,
         parentSpanId: rootSpanId,
@@ -242,13 +272,19 @@ export class BaseAgent {
         detail: reply.finishReason === "tool_calls"
           ? `Model requested ${reply.toolCalls.length} tool call(s).`
           : "Model returned a final answer.",
-        startedAt,
-        completedAt: new Date(),
+        startedAt: llmStartedAt,
+        completedAt: llmCompletedAt,
+        durationMs: Math.max(0, llmCompletedAt.getTime() - llmStartedAt.getTime()),
         payload: {
           step,
+          semanticTitle: llmSemanticTitle(reply.finishReason, reply.toolCalls.map((call) => call.name)),
+          model: reply.model,
+          usage: reply.usage,
           input: llmInput,
           output: {
             finishReason: reply.finishReason,
+            model: reply.model,
+            usage: reply.usage,
             content: limitText(reply.content, 4_000),
             toolCalls: reply.toolCalls.map((call) => ({
               id: call.id,
@@ -490,6 +526,8 @@ export class BaseAgent {
       });
 
       for (const call of reply.toolCalls) {
+        if (await handleWorkingBoardToolCall({ call, messages, onEvent: options.onEvent, parentSpanId: llmSpanId, startedAt })) continue;
+
         if (call.name === "finish") {
           finalAnswer = typeof call.arguments.answer === "string"
             ? call.arguments.answer
@@ -768,5 +806,4 @@ export class BaseAgent {
       primaryToolResults,
     });
   }
-
 }

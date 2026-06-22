@@ -1,4 +1,4 @@
-import { AgentEvent, AgentRunResult } from "../types.js";
+import { AgentEvent, AgentRunResult, ModelTier, TokenUsage } from "../types.js";
 
 export type RunStatus =
   | "queued"
@@ -26,10 +26,35 @@ export type AgentRunRecord = {
   events: AgentEvent[];
   result?: AgentRunResult;
   error?: string;
+  metrics?: RunMetrics;
 };
 
 export type PublicRunRecord = Omit<AgentRunRecord, "result"> & {
   result?: AgentRunResult;
+};
+
+export type RunMetrics = {
+  startedAt: string;
+  completedAt?: string;
+  elapsedMs: number;
+  llmCalls: number;
+  toolCalls: number;
+  failedToolCalls: number;
+  artifacts: number;
+  tokenUsage: TokenUsage;
+  models: Array<{
+    model: string;
+    calls: number;
+    requestedTiers: ModelTier[];
+    totalTokens?: number;
+  }>;
+  slowestEvents: Array<{
+    eventId: string;
+    spanId: string;
+    title: string;
+    activity: AgentEvent["activity"];
+    durationMs: number;
+  }>;
 };
 
 export type RunCreateContext = {

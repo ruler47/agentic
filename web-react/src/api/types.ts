@@ -33,11 +33,20 @@ export type {
   SkillMemoryMatch,
   Subtask,
   TaskComplexity,
+  TokenUsage,
+  WorkingDecisionCandidate,
+  WorkingDecisionDraftStatus,
+  WorkingDecisionFact,
+  WorkingDecisionNextAction,
+  WorkingDecisionPhase,
+  WorkingDecisionRejectedEvidence,
+  WorkingDecisionSnapshot,
   WorkerResult,
 } from "@server/types";
 
 export type {
   AgentRunRecord,
+  RunMetrics,
   RunCreateContext,
   RunStatus,
 } from "@server/runs/types";

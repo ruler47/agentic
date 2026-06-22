@@ -18,7 +18,7 @@ import {
 } from "@/features/runs/externalActionMode";
 import { ExternalActionModeSelector } from "@/features/runs/ExternalActionModeSelector";
 import { RunActionApprovalPanel } from "@/features/run-workspace/RunActionApprovalPanel";
-import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
+import { formatDuration, formatRelative, formatTokenUsage, runDurationMs, truncate } from "@/lib/format";
 import type {
   AgentArtifact,
   AgentRunRecord,
@@ -54,6 +54,7 @@ export function ConversationDetailPage() {
 
   const thread = conversation.data;
   const threadRuns = (runs.data ?? []).filter((run) => run.threadId === thread.id);
+  const threadMetrics = aggregateThreadMetrics(threadRuns);
   const threadRunIds = new Set(threadRuns.map((run) => run.id));
   const latestThreadRun =
     threadRuns.find((run) => run.id === thread.latestRunId) ?? threadRuns.at(-1);
@@ -75,7 +76,10 @@ export function ConversationDetailPage() {
       <aside className="flex flex-col gap-2">
         <header>
           <h3 className="text-sm font-semibold">Thread runs</h3>
-          <p className="mt-1 text-[11px] text-app-text-muted">{threadRuns.length} runs</p>
+          <p className="mt-1 text-[11px] text-app-text-muted">
+            {threadRuns.length} runs · {formatDuration(threadMetrics.elapsedMs)} · {threadMetrics.llmCalls} LLM ·{" "}
+            {formatTokenUsage(threadMetrics.tokenUsage)}
+          </p>
         </header>
         <ul className="flex flex-col gap-1.5">
           {threadRuns.map((run) => (
@@ -90,9 +94,12 @@ export function ConversationDetailPage() {
                     <GenericBadge tone="ok">automode</GenericBadge>
                   ) : null}
                   <span className="font-mono text-[10px] text-app-text-muted">
-                    {formatDuration(runDurationMs(run))}
+                    {formatDuration(run.metrics?.elapsedMs ?? runDurationMs(run))}
                   </span>
                 </div>
+                <p className="mt-1 font-mono text-[10px] text-app-text-muted">
+                  {run.metrics?.llmCalls ?? 0} LLM · {formatTokenUsage(run.metrics?.tokenUsage)}
+                </p>
                 <p className="mt-1 line-clamp-2 text-[11px]">{truncate(run.task, 100)}</p>
                 <span className="text-[10px] text-app-text-muted">
                   {formatRelative(run.createdAt)}
@@ -200,6 +207,40 @@ export function ConversationDetailPage() {
       </aside>
     </section>
   );
+}
+
+function aggregateThreadMetrics(runs: AgentRunRecord[]) {
+  return runs.reduce(
+    (sum, run) => {
+      const metrics = run.metrics;
+      sum.elapsedMs += metrics?.elapsedMs ?? runDurationMs(run);
+      sum.llmCalls += metrics?.llmCalls ?? 0;
+      sum.toolCalls += metrics?.toolCalls ?? 0;
+      sum.artifacts += metrics?.artifacts ?? run.result?.artifacts?.length ?? 0;
+      const usage = metrics?.tokenUsage;
+      if (usage?.source && usage.source !== "unavailable") {
+        sum.tokenUsage.source = usage.source === "provider" || sum.tokenUsage.source === "provider"
+          ? "provider"
+          : "estimated";
+        sum.tokenUsage.promptTokens = addOptional(sum.tokenUsage.promptTokens, usage.promptTokens);
+        sum.tokenUsage.completionTokens = addOptional(sum.tokenUsage.completionTokens, usage.completionTokens);
+        sum.tokenUsage.totalTokens = addOptional(sum.tokenUsage.totalTokens, usage.totalTokens);
+      }
+      return sum;
+    },
+    {
+      elapsedMs: 0,
+      llmCalls: 0,
+      toolCalls: 0,
+      artifacts: 0,
+      tokenUsage: { source: "unavailable" as const },
+    },
+  );
+}
+
+function addOptional(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined && b === undefined) return undefined;
+  return (a ?? 0) + (b ?? 0);
 }
 
 function MessageBubble({

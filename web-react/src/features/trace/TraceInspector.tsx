@@ -4,7 +4,7 @@ import type { TraceNode } from "@/features/trace/buildTraceNodes";
 import { modelTierForNode } from "@/features/trace/buildTraceNodes";
 import { ArtifactGallery } from "@/components/ArtifactPreview";
 import { GenericBadge } from "@/components/StatusBadge";
-import { formatDuration, formatRelative, truncate } from "@/lib/format";
+import { formatDuration, formatRelative, formatTokenUsage, truncate } from "@/lib/format";
 import { useCancelRun, useResumeRun } from "@/api/runs";
 import { toolRequestSummary } from "@/features/trace/traceToolRequestSummary";
 
@@ -50,6 +50,10 @@ export function TraceInspector({ node, runId }: TraceInspectorProps) {
           <span className="font-mono text-app-text-muted">
             {node.actor}{node.toolVersion ? `@${node.toolVersion}` : ""}
           </span>
+          {node.model ? <span className="font-mono text-app-text-muted">{node.model}</span> : null}
+          {node.tokenUsage ? (
+            <span className="font-mono text-app-text-muted">{formatTokenUsage(node.tokenUsage)}</span>
+          ) : null}
           {tier ? <GenericBadge tone="muted">tier {tier}</GenericBadge> : null}
           <LiveDuration node={node} />
           {typeof node.durationMs === "number" && node.status !== "started" ? (

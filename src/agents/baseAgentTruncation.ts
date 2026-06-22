@@ -1,5 +1,6 @@
 import type { AgentEventSink, Message } from "../types.js";
 import { emit } from "./baseAgentRuntime.js";
+import { containsRawToolCallSyntax } from "./baseAgentTrace.js";
 import { limitText } from "./baseAgentToolMessages.js";
 
 export type TruncatedAnswerRepairInput = {
@@ -28,7 +29,7 @@ export async function requestTruncatedAnswerRepair(
   }
   const repairAttempts = input.repairAttempts + 1;
   const instruction = truncatedAnswerRepairInstructionForModel(input.finalAnswer);
-  input.messages.push({ role: "assistant", content: input.finalAnswer });
+  input.messages.push({ role: "assistant", content: assistantPartialForRepair(input.finalAnswer) });
   input.messages.push({ role: "user", content: instruction });
   await emit(input.onEvent, {
     parentSpanId: input.parentSpanId,
@@ -44,7 +45,7 @@ export async function requestTruncatedAnswerRepair(
       attempt: repairAttempts,
       input: {
         finishReason: "length",
-        partialAnswer: limitText(input.finalAnswer, 4_000),
+        partialAnswer: limitText(partialAnswerForRepair(input.finalAnswer), 4_000),
       },
       output: { instruction },
     },
@@ -53,15 +54,31 @@ export async function requestTruncatedAnswerRepair(
 }
 
 function truncatedAnswerRepairInstructionForModel(partialAnswer: string): string {
-  const usablePartial = partialAnswer.trim() && partialAnswer.trim() !== "(empty)"
-    ? limitText(partialAnswer, 1_200)
+  const sanitizedPartial = partialAnswerForRepair(partialAnswer);
+  const usablePartial = sanitizedPartial.trim() && sanitizedPartial.trim() !== "(empty)"
+    ? limitText(sanitizedPartial, 1_200)
     : "No usable partial answer was produced; answer from the existing evidence in the conversation.";
   return [
     "Your previous final answer was cut off by the model token limit.",
     "Do not call tools just to continue prose unless the existing evidence contradicts the answer.",
+    containsRawToolCallSyntax(partialAnswer)
+      ? "The previous partial output contained raw tool-call syntax; discard it entirely and write prose only."
+      : "Continue the prose answer without repeating any broken tail.",
     "Return one complete, concise final answer now. Include the actual recommendation and ranked alternatives, not just headings.",
     `Preserve useful facts from this partial draft when still supported: ${usablePartial}`,
   ].join("\n");
+}
+
+function assistantPartialForRepair(partialAnswer: string): string {
+  return containsRawToolCallSyntax(partialAnswer)
+    ? "[invalid raw tool-call syntax omitted from repair context]"
+    : partialAnswer;
+}
+
+function partialAnswerForRepair(partialAnswer: string): string {
+  return containsRawToolCallSyntax(partialAnswer)
+    ? "No usable partial answer was produced; the previous output was invalid raw tool-call syntax."
+    : partialAnswer;
 }
 
 /**

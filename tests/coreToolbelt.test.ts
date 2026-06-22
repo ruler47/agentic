@@ -164,6 +164,8 @@ test("browser.screenshot delegates to browser.operate with proof-oriented comman
   assert.equal(result.ok, true);
   const call = calls[0] as { commands: Array<{ type: string; url?: string; filename?: string }> };
   assert.equal(call.commands[0].type, "navigate");
+  assert.ok(call.commands.some((command) => command.type === "extractText"));
+  assert.ok(call.commands.findIndex((command) => command.type === "extractText") < call.commands.findIndex((command) => command.type === "screenshot"));
   assert.equal(call.commands.at(-1)?.type, "screenshot");
   assert.equal(call.commands.at(-1)?.filename, "proof.png");
 });

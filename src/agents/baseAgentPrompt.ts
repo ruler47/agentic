@@ -27,6 +27,7 @@ export function buildBaseAgentSystemPrompt(
     "For broad, ambiguous, current, recommendation, comparison, or purchase-selection tasks, do not answer from one search result or one roundup. Build a small evidence set across independent sources and compare candidates against the user's criteria.",
     "When web.search returns candidate source URLs for broad research, call web.read/web.extract on the strongest source pages before finalizing claims; snippets are leads, not sufficient evidence for recommendations.",
     "For broad tasks, follow the task frame research plan: first clarify the ideal outcome and failure criteria, then gather freshness/candidate evidence, then verify finalists, then capture proof.",
+    "For broad research, comparison, recommendation, or external-action preparation tasks, call update_working_board when you have meaningful structured progress: facts learned, candidates added/rejected/selected, open questions, next action, or draft status. This is an operator-facing summary, not hidden reasoning.",
     "Use the task frame answer contract as a return checklist. If your draft violates a mustAvoid item or lacks a mustDo item, keep working or state the limitation explicitly.",
     "For continuation or follow-up tasks inside an existing thread, treat the runtime thread summary, prior accepted facts, and prior artifact metadata as first-class context. Answer against that context before doing fresh research.",
     "When a follow-up asks to refine, compare, clarify, or choose from prior results, reuse the prior criteria/evidence unless the user asks for new facts or the prior evidence is stale/insufficient.",
@@ -99,6 +100,109 @@ export function buildBaseAgentToolSchemas(
         parameters,
       },
     };
+  });
+  schemas.push({
+    type: "function",
+    function: {
+      name: "update_working_board",
+      description: "Update the operator-facing Working / Decision Board with safe structured progress. Use for broad research, recommendations, comparisons, and external-action preparation. Do not include hidden chain-of-thought, secrets, raw credentials, cookies, or private contact details.",
+      parameters: {
+        type: "object",
+        properties: {
+          objective: {
+            type: "string",
+            description: "Optional refined objective in user-facing terms.",
+          },
+          phase: {
+            type: "string",
+            enum: [
+              "frame_task",
+              "use_prior_context",
+              "plan_next_step",
+              "call_tool",
+              "read_source",
+              "evaluate_evidence",
+              "draft_answer",
+              "repair_answer",
+              "prepare_external_action",
+              "final_gate",
+              "complete",
+              "failed",
+            ],
+          },
+          knownFacts: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                summary: { type: "string" },
+                confidence: { type: "string", enum: ["low", "medium", "high"] },
+                sourceUrl: { type: "string" },
+                sourceUrls: { type: "array", items: { type: "string" } },
+                evidenceIds: { type: "array", items: { type: "string" } },
+                artifactIds: { type: "array", items: { type: "string" } },
+              },
+              required: ["summary"],
+            },
+          },
+          candidates: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                label: { type: "string" },
+                status: { type: "string", enum: ["active", "selected", "rejected", "blocked"] },
+                reason: { type: "string" },
+                sourceUrl: { type: "string" },
+                sourceUrls: { type: "array", items: { type: "string" } },
+                evidenceIds: { type: "array", items: { type: "string" } },
+                artifactIds: { type: "array", items: { type: "string" } },
+                scores: {
+                  type: "object",
+                  additionalProperties: { type: "number" },
+                  description: "Optional normalized 0..1 scores for criteria such as fit, confidence, price, sourceQuality.",
+                },
+                uncertainties: { type: "array", items: { type: "string" } },
+              },
+              required: ["label"],
+            },
+          },
+          openQuestions: { type: "array", items: { type: "string" } },
+          rejectedEvidence: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                summary: { type: "string" },
+                reason: { type: "string" },
+                sourceUrl: { type: "string" },
+                toolName: { type: "string" },
+                evidenceId: { type: "string" },
+                artifactId: { type: "string" },
+              },
+              required: ["reason"],
+            },
+          },
+          nextAction: {
+            type: "object",
+            properties: {
+              description: { type: "string" },
+              expectedEvidence: { type: "string" },
+            },
+            required: ["description"],
+          },
+          draftStatus: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["not_started", "drafting", "blocked", "passed", "failed"] },
+              summary: { type: "string" },
+            },
+            required: ["status", "summary"],
+          },
+        },
+        additionalProperties: false,
+      },
+    },
   });
   schemas.push({
     type: "function",

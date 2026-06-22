@@ -237,7 +237,7 @@ test("BaseAgent includes run context in the prompt and emits a context trace eve
   });
 
   assert.equal(result.runStatus, "completed");
-  assert.equal(llm.tools.length, 4);
+  assert.equal(llm.tools.length, 5);
   const systemPrompt = llm.messages[0]?.content ?? "";
   assert.match(systemPrompt, /Current date\/time: 2026-05-15T15:00:00.000Z/);
   assert.match(systemPrompt, /Requester: Dimitrii/);
@@ -718,7 +718,7 @@ test("BaseAgent only exposes tools allowed by runtime tool policy", async () => 
   assert.equal(result.runStatus, "completed");
   assert.deepEqual(
     llm.tools.map((tool) => tool.function.name),
-    ["file_read", "request_tool_creation", "request_tool_edit", "finish"],
+    ["file_read", "update_working_board", "request_tool_creation", "request_tool_edit", "finish"],
   );
   assert.doesNotMatch(llm.messages[0]?.content ?? "", /disabled\.tool/);
   const contextEvent = events.find((event) => event.type === "agent-context-prepared");
@@ -791,7 +791,7 @@ test("BaseAgent can request tool creation when a capability is missing", async (
   assert.equal(requests.length, 1);
   assert.deepEqual(
     llm.tools.map((tool) => tool.function.name),
-    ["request_tool_creation", "request_tool_edit", "finish"],
+    ["update_working_board", "request_tool_creation", "request_tool_edit", "finish"],
   );
   assert.ok(events.some((event) => event.type === "tool-missing"));
   assert.ok(events.some((event) => event.type === "tool-creation-completed"));

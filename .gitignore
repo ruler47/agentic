@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .env
+.env.local
+.env.*.local
+.claude/worktrees/
 .DS_Store
 # Runtime/generated tool packages are not Agentic platform source.
 # The core stores tool manifests/versions/settings/status in metadata stores

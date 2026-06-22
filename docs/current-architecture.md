@@ -1,6 +1,6 @@
 # Current Architecture
 
-Status date: 2026-06-19.
+Status date: 2026-06-22.
 
 This document describes the active code path in `main`. Historical recursive/council
 runtime files and legacy tool-build queues are not active.
@@ -23,9 +23,10 @@ flowchart TD
   RC --> RS["RunsService"]
   RS --> CR["RunContextResolver\nuser, channel, thread, attachments"]
   CR --> Stores["Run / Thread / User / Group stores"]
+  RS --> WDB["Working Decision Board projection\nworking-decision-* events"]
   RS --> BA["BaseAgent"]
   BA --> TF["TaskFrame\nmode, budgets, proof, external-action policy"]
-  BA --> LLM["LlmClient\nmodel tier policy"]
+  BA --> LLM["LlmClient\nmodel tier + capability routing"]
   LLM --> BA
   BA --> TR["ToolRegistry"]
   BA --> WL["Work/Evidence Ledger\nrun-local execution + reusable-index"]
@@ -37,6 +38,7 @@ flowchart TD
   BA --> FG["Finalization gates\nproof, source grounding, raw tool syntax, truncation"]
   FG --> RS
   RS --> API["Run result, trace events, artifacts, proposals"]
+  WDB --> API
   API --> UI
 ```
 
@@ -71,6 +73,16 @@ flowchart TD
   can answer from conversation context instead of repeating work.
 - `src/agents/baseAgentTruncation.ts`: rolling context compaction and truncated-answer
   repair.
+- `src/agents/workingDecisionLedger.ts`: event-derived Working / Decision Board
+  projector. `RunsService` wraps the run event sink with this projector so persisted
+  `working-decision-*` events can be reconstructed after restart and rendered in Run
+  Workspace / Trace Lab without making the board a second raw-evidence store.
+- `src/settings/modelRouting.ts`: tier plus capability-aware LLM route resolver. It
+  parses discovered/operator capability metadata, chooses compatible tier candidates, and
+  returns rejected-candidate diagnostics for trace.
+- `src/llm/client.ts`: OpenAI-compatible LLM client. It applies model routing options
+  such as `requiredCapabilities` / `preferredCapabilities`, emits route decisions through
+  callbacks, and keeps timeout/fallback behavior bounded.
 
 ### Run Orchestration
 
@@ -316,6 +328,13 @@ Current memory is split and now enters each run through an explicit runtime memo
   call. Failed/blocked evidence is not reused; its URLs are surfaced as
   `retryExclusions` for subsequent search/browser/external-action retries. Empty threads
   do not create trace or Ledger noise.
+- **Working / Decision Board**: a run-scoped operator view projected from persisted run
+  events. It summarizes objective, phase, known facts, candidates, rejected evidence,
+  open questions, next action, draft status, compact run metrics, candidate/source
+  scores, source URLs, evidence refs, artifact refs, and safe model-written progress
+  updates. It is intentionally different from Work/Evidence Ledger: Work/Evidence Ledger
+  owns raw work/evidence and reusable-index behavior, while the board owns the current
+  user-facing decision state of one run.
 
 ```mermaid
 flowchart TD
@@ -328,6 +347,31 @@ flowchart TD
   Context --> View["MemoryContextView"]
   View --> Prompt["BaseAgent prompt Runtime context"]
   View --> Trace["memory-context-prepared trace event"]
+```
+
+```mermaid
+sequenceDiagram
+  participant Runs as RunsService
+  participant Sink as Run event sink
+  participant Board as workingDecisionLedger
+  participant Store as Run event store
+  participant UI as Run Workspace / Trace Lab
+
+  Runs->>Board: wrap sink for runId + task
+  Runs->>Sink: emit normal run event
+  Sink->>Store: persist original event
+  Board->>Board: derive latest board snapshot
+  opt model calls update_working_board
+    Agent->>Sink: working-decision-update-requested
+    Sink->>Store: persist model update request
+    Board->>Board: validate, redact, and merge safe fields
+  end
+  alt selected event changes board state
+    Board->>Sink: emit working-decision-* event
+    Sink->>Store: persist board event
+  end
+  UI->>Store: read run events
+  UI->>UI: render latest board snapshot
 ```
 
 ```mermaid
@@ -376,6 +420,12 @@ sequenceDiagram
     `run_1781864151384_z8b9fzb9`.
   - Data/file artifact path with preview/download in React:
     `run_1781799687705_rtayd8nl`.
+- 2026-06-19 P0 manual smoke passed on the active stack:
+  - Direct no-tool run: `run_1781888955776_r5xgx351` completed with zero tool events and
+    no raw function-style tool syntax.
+  - Current BTC price with explicit visual proof: `run_1781888955810_o4iy48ap` completed
+    in 18.2s with `web.search`, `web.read`, QA-passed `browser.screenshot`, and
+    downloadable PNG artifact `artifact_1781888964363_ap1p51dc`.
 - Automated BaseAgent P0 coverage confirms `http.request` writes an `api_call` work
   item plus `api_response` evidence, and `file.write` links the saved artifact id to
   both Work Ledger and Evidence Ledger records. It also confirms explicit local utility
@@ -397,6 +447,14 @@ sequenceDiagram
 - API-only HTTP/JSON endpoint tasks use structured/source proof by default. They avoid
   browser/screenshot proof unless the user explicitly asks for visual proof of a web
   page.
+- Working / Decision Board passed focused tests and UI/API smokes on 2026-06-22. The
+  deterministic local run `run_1782161622838_s46658d4` produced 8 board events, 2 tool
+  calls, and a downloadable CSV artifact; Run Workspace and Trace Lab rendered the
+  board, metrics, and artifact. The LLM run `run_1782161672962_2lrltrod` verified that
+  `update_working_board` is visible to the model, produces a persisted update request,
+  and Trace Lab shows semantic LLM labels. That run also exposed a source-framing issue
+  now assigned to task 06: a "compare, but no internet" prompt was still over-framed as
+  broad research.
 - Durable Ledger product smoke passed on Postgres/S3 and survived server restart:
   `run_1781818681262_rpvsg59u` completed an `http.request` JSON task, `/api/work-ledger`
   shows one completed `api_call`, `/api/evidence-ledger` shows one `api_response`, both

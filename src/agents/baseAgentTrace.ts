@@ -57,6 +57,7 @@ export function containsRawToolCallSyntax(answer: string): boolean {
   if (/"function"\s*:\s*\{[^}]*"arguments"\s*:/.test(trimmed)) return true;
   if (/^\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:/.test(trimmed)) return true;
   if (/^[a-zA-Z_][\w.]*\s*\(\s*\{[\s\S]*\}\s*\)\s*;?\s*$/.test(trimmed)) return true;
+  if (/^[a-zA-Z_][\w.]*\s*\(\s*[a-zA-Z_][\w.-]*\s*=/.test(trimmed)) return true;
   return false;
 }
 

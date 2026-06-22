@@ -29,19 +29,34 @@ Build queue, investigation flow, and tool-rework wait flow were removed from the
 tree on 2026-05-15. Reintroduce those ideas only through the roadmap, not by reviving the
 deleted pipeline.
 
-As of 2026-06-19, the active roadmap is `docs/roadmap-core-toolbelt.md`: stabilize a
-preinstalled portable core toolbelt before expanding Tool Creation V1 or external-action
-automation. Tool builder and external actions remain useful infrastructure, but new
-feature work in those areas should be frozen unless it fixes baseline operation. Core
-tools should be first-party portable packages registered through the same manifest,
-versioning, settings, secret-handle, runner, artifact, health, and trace contracts as
-generated tools.
+As of 2026-06-22, the active roadmap is `docs/roadmap-core-toolbelt.md` and the
+executable queue is `docs/tasks/README.md`. The immediate priority is run-quality
+improvement: token/time metrics, a Working Decision Ledger blackboard, source/search
+discipline, proof-policy cleanup, and continuation-memory visibility. Tool builder and
+external actions remain useful infrastructure, but new feature expansion in those areas
+should wait until the run loop is observable, measurable, and reliable. Core tools should
+be first-party portable packages registered through the same manifest, versioning,
+settings, secret-handle, runner, artifact, health, and trace contracts as generated
+tools.
 The primary branch is now `main` at merge commit `cac5b9d`, which merges the verified
 split `BaseAgent` runtime and core toolbelt from `codex/split-mainline`. Continue from
 `main`; keep `codex/split-mainline` only as a preserved checkpoint branch.
 The companion handoff is `docs/agent-handoff.md`. Do not continue from
 `claude/phase17-research-delegation` as the active base; it was audited and still uses a
 large legacy `UniversalAgent` runtime.
+
+## Development Convention
+
+Before implementing any non-trivial roadmap/runtime task, follow
+`docs/development-convention.md`. The short rule: do not code directly from a rough
+idea. First upgrade the relevant `docs/tasks/*.md` file into a self-contained
+spec-first/test-first execution contract: idea, measurable increment, use cases, weak
+spots, edge cases, behavior spec, architecture, low-level technical plan, test plan, and
+decomposition. Implementation starts only after the task is "ready" by that convention.
+
+For tiny mechanical fixes, use a compact version of the same process. For critical
+outage/security fixes, patch first only if delay is risky, then backfill the task/handoff
+documentation.
 
 ## Current Runtime
 
@@ -54,6 +69,13 @@ large legacy `UniversalAgent` runtime.
 - `/api/health` exposes persistence diagnostics for database mode and stateful stores.
   The sidebar and Diagnostics page show whether runs, secrets, tool metadata, audit,
   conversations, ledgers, and artifacts are durable or volatile.
+- Run metrics are projected from persisted events, not stored as authoritative columns.
+  `RunsService` enriches list/detail DTOs with `metrics`: elapsed time, LLM/tool counts,
+  failed tool count, artifact count, provider token usage when available, model summary,
+  and slowest events. LLM events must include per-step `startedAt`, `completedAt`,
+  `durationMs`, selected `model`, and numeric `usage` when the provider returns it.
+  Providers without usage must remain explicit `usage unavailable`; do not display or
+  persist fake zero-token totals.
 - `BaseAgent` frames the task before the first LLM step, emits `agent-task-framed`, then
   sends the task, bounded context, task frame, available tool schemas, and a `finish`
   action to one LLM. The frame is generic and quality-oriented: broad/current
@@ -109,7 +131,12 @@ large legacy `UniversalAgent` runtime.
   not a step-limit failure stub. Truncated final answers and raw tool-syntax leakage
   (`<tool_call>` / `<function=` XML from local models) each get a bounded no-tool
   repair extension step past the budget; after that the finalization gate fails the
-  run honestly. Within one run, repeated or near-duplicate `web.search` queries are
+  run honestly. Direct no-tool frames such as `direct_fact` and
+  `thread_context_answer` with no research contract must keep `toolChoice: "none"` for
+  every LLM step, including repair extensions. If a truncated draft contains raw
+  function-style tool prose such as `file.read(path="...")`, the repair prompt scrubs
+  that partial draft instead of reinforcing the invalid syntax. Within one run,
+  repeated or near-duplicate `web.search` queries are
   skipped and traced with `duplicateSkipped` so the model must reuse prior evidence
   or change strategy materially.
 - Small-context local models get rolling context compaction: once the dialog exceeds
@@ -173,6 +200,11 @@ large legacy `UniversalAgent` runtime.
   direct no-tool answer, `http.request` JSON fast path without screenshot proof,
   current web fact with QA-passed screenshot proof, and `data.transform` -> `file.write`
   with a previewable/downloadable CSV artifact in the React Run Workspace.
+- Durable manual smoke on 2026-06-19 rechecked the P0 fast/correct path on the active
+  stack: `run_1781888955776_r5xgx351` completed a simple direct answer with no tool
+  events and no raw tool syntax, while `run_1781888955810_o4iy48ap` completed a current
+  Bitcoin price request with `web.search`, `web.read`, QA-passed `browser.screenshot`,
+  and downloadable PNG artifact `artifact_1781888964363_ap1p51dc`.
 - `data.transform` should accept common LLM-shaped operation inputs where reasonable:
   JSON-looking string inputs are parsed before operations, operation path aliases include
   `path`, `key`, `field`, and `column`, and sort direction may be `direction` or `order`.
@@ -195,7 +227,21 @@ large legacy `UniversalAgent` runtime.
 - BaseAgent trace spans now use stable parent/child ids for the root agent, context,
   every LLM step, every tool call, artifact saves, and the return gate. LLM spans record
   safe normalized `input`/`output`; tool spans record summarized tool `input`/`output`.
-  Trace Lab renders these as arrows plus inspector call details.
+  Trace Lab renders these as arrows plus inspector call details. LLM route decisions are
+  also trace-visible through `model-route-selected`, including the requested tier,
+  selected model, matched capabilities, and rejected candidates.
+- Runs also emit a Working / Decision Board projection through
+  `src/agents/workingDecisionLedger.ts`. `RunsService` wraps the run event sink and
+  derives `working-decision-*` events from task framing, prior-work reuse, LLM/tool
+  activity, artifacts, repair gates, finalization, and completion/failure. The board is
+  event-derived, not a separate source of truth, and the React Run Workspace plus Trace
+  Lab render the latest snapshot with objective, phase, known facts, candidates,
+  rejected evidence, open questions, next action, draft status, compact metrics, scores,
+  source/proof refs, and uncertainties. `BaseAgent` exposes a safe
+  `update_working_board` meta-action so the model can write structured progress without
+  exposing hidden chain-of-thought; invalid updates are redacted, rejected, and preserved
+  as board evidence instead of failing the run. Trace Lab prefers semantic LLM labels
+  derived from model output, such as `Choose tools: web.read`, when available.
 - Source-backed/current answers require proof by default when artifact saving and proof
   tools make it possible. If the model tries to finish early, BaseAgent emits
   `agent-proof-repair-requested`, blocks that `finish`, and gives the model a bounded
@@ -441,7 +487,10 @@ large legacy `UniversalAgent` runtime.
   proof is unavailable or repeatedly rejected, BaseAgent can save a JSON
   `source-evidence-proof` artifact from `web.read`/search evidence. Broad
   product-selection source proofs must match concrete final-answer candidate signals
-  such as model names, not generic words like "gaming" or "price".
+  such as model names, not generic words like "gaming" or "price". The preinstalled
+  `browser.screenshot` wrapper must run visible-page text extraction before capturing
+  the image, so current-fact synthesis and proof QA can inspect what was visible on the
+  page instead of treating the PNG as opaque.
 - BaseAgent extracts proof signals such as source-backed values from non-screenshot
   evidence and includes the best one in the proof instruction as `focusText`. Screenshot
   semantic QA receives those expected signals so a focused proof image is checked against
@@ -483,7 +532,10 @@ large legacy `UniversalAgent` runtime.
   is not enough proof for final recommendations.
 - Artifact endpoints render inline by default and support `?download=1` for attachment
   download. React artifact cards show image previews/lightbox, text previews when
-  available, QA status, and separate Preview/Open versus Download actions.
+  available, QA status, and separate Preview/Open versus Download actions. Run Workspace
+  and Conversation views hydrate final-answer markdown links such as
+  `![Proof](coinmarketcap.png)` to the matching run artifact URL; bare filename links
+  must not render as broken `/run/.../file.png` paths.
 - For current external facts such as prices, quotes, weather, or news, screenshots are
   proof only. The run must first use a search/fetch/data tool that returns text or
   structured evidence; a screenshot-only answer fails the base return gate. Successful
@@ -712,11 +764,28 @@ Manual CLI smoke test:
 node dist/cli.js "Скажи одним предложением, что такое универсальный агент"
 ```
 
-Run the full container stack:
+Run recommended local web/API development:
 
 ```bash
-docker compose up --build
+cp .env.example .env
+npm run docker
+npm run web
 ```
+
+`npm run docker` starts only Postgres, Redis, MinIO, and SearXNG through Docker Compose.
+The app runs on the host through `npm run web`, which loads `.env` and `.env.local`.
+Stop the support services with `npm run docker:stop`; follow their logs with
+`npm run infra:logs`.
+
+Run the full container stack only when validating the app image:
+
+```bash
+npm run docker:full
+```
+
+Use `npm run docker:full:detached` for detached full-stack validation. The full-stack
+mode runs the app inside Docker and uses compose service DNS such as `postgres`,
+`minio`, and `searxng`; host-dev `.env` uses `127.0.0.1` service URLs.
 
 The `npm run dev` command uses `tsx`; in some sandboxes it can fail on IPC pipe
 permissions. If that happens, use `npm run build` and then `node dist/cli.js ...`.
@@ -755,6 +824,7 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
 - `src/agents/proofSourceUrls.ts` - shared proof-worthy URL normalization and same-page
   comparison helpers.
 - `src/agents/modelTier.ts` - model tier selection policy.
+- `src/settings/modelRouting.ts` - tier plus capability-aware LLM route resolver.
 - `src/llm/client.ts` - OpenAI-compatible LLM client.
 - `src/server/modules/runs/runs.service.ts` - run creation/execution/cancel/restart API
   orchestration.

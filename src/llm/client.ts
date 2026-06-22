@@ -1,10 +1,21 @@
-import { LlmConfig, Message, ModelTier } from "../types.js";
+import { LlmConfig, Message, ModelTier, TokenUsage } from "../types.js";
 import {
   ModelTierSettingsInput,
   ModelTierSettingsStore,
 } from "../settings/modelTierSettings.js";
+import type { ModelCapability } from "../settings/modelCatalog.js";
+import { resolveModelRoute, type ModelRouteDecision } from "../settings/modelRouting.js";
 
 type ChatCompletionResponse = {
+  model?: string;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+  };
   choices?: Array<{
     message?: {
       content?: string;
@@ -39,6 +50,15 @@ export type LlmToolReply = {
     arguments: Record<string, unknown>;
   }>;
   finishReason: "tool_calls" | "stop" | "length" | "other";
+  model?: string;
+  usage?: TokenUsage;
+};
+
+export type LlmTextReply = {
+  content: string;
+  finishReason: "tool_calls" | "stop" | "length" | "other";
+  model: string;
+  usage: TokenUsage;
 };
 
 export type LlmToolSchema = {
@@ -50,7 +70,11 @@ export type LlmToolSchema = {
   };
 };
 
-const tierOrder: ModelTier[] = ["S", "M", "L", "XL"];
+export type LlmRouteOptions = {
+  requiredCapabilities?: ModelCapability[];
+  preferredCapabilities?: ModelCapability[];
+  onRouteDecision?: (decision: ModelRouteDecision) => void | Promise<void>;
+};
 
 export class LlmClient {
   constructor(
@@ -66,14 +90,25 @@ export class LlmClient {
       model?: string;
       /** Aborts the underlying fetch when the operator cancels the run. */
       signal?: AbortSignal;
-    },
+    } & LlmRouteOptions,
   ): Promise<string> {
+    return (await this.completeDetailed(messages, options)).content;
+  }
+
+  async completeDetailed(
+    messages: Message[],
+    options?: {
+      temperature?: number;
+      modelTier?: ModelTier;
+      model?: string;
+      /** Aborts the underlying fetch when the operator cancels the run. */
+      signal?: AbortSignal;
+    } & LlmRouteOptions,
+  ): Promise<LlmTextReply> {
     // Explicit `model` override bypasses tier resolution. We retry an explicit
     // model once on empty content because local OpenAI-compatible runtimes can
     // occasionally return an empty stream while warming up.
-    const attempts = options?.model
-      ? [options.model, options.model]
-      : await this.modelAttemptsForTier(options?.modelTier);
+    const attempts = await this.modelAttemptsForTier(options?.modelTier, options);
     const errors: string[] = [];
 
     for (const model of attempts) {
@@ -108,7 +143,12 @@ export class LlmClient {
           continue;
         }
 
-        return content.trim();
+        return {
+          content: content.trim(),
+          finishReason: mapFinishReason(data.choices?.[0]?.finish_reason),
+          model: typeof data.model === "string" && data.model.trim() ? data.model.trim() : model,
+          usage: tokenUsageFromResponse(data),
+        };
       } catch (error) {
         errors.push(`${model}: ${error instanceof Error ? error.message : "request failed"}`);
       }
@@ -142,11 +182,9 @@ export class LlmClient {
       signal?: AbortSignal;
       toolChoice?: "auto" | "required" | "none";
       maxTokens?: number;
-    },
+    } & LlmRouteOptions,
   ): Promise<LlmToolReply> {
-    const attempts = options?.model
-      ? [options.model, options.model]
-      : await this.modelAttemptsForTier(options?.modelTier);
+    const attempts = await this.modelAttemptsForTier(options?.modelTier, options);
     const errors: string[] = [];
 
     for (const model of attempts) {
@@ -195,6 +233,8 @@ export class LlmClient {
           content: (choice.message?.content ?? "").trim(),
           toolCalls,
           finishReason: finish,
+          model: typeof data.model === "string" && data.model.trim() ? data.model.trim() : model,
+          usage: tokenUsageFromResponse(data),
         };
       } catch (error) {
         errors.push(`${model}: ${error instanceof Error ? error.message : "request failed"}`);
@@ -213,25 +253,17 @@ export class LlmClient {
     return (await this.policyForTier(tier)).models;
   }
 
-  async modelAttemptsForTier(tier?: ModelTier): Promise<string[]> {
-    if (!tier) return [this.config.model];
-
-    const attempts: string[] = [];
-    let currentTier: ModelTier | undefined = tier;
-
-    while (currentTier) {
-      const policy = await this.policyForTier(currentTier);
-      for (const model of policy.models) {
-        for (let attempt = 0; attempt < policy.maxAttempts; attempt += 1) {
-          attempts.push(model);
-        }
-      }
-
-      if (!policy.escalateOnFailure) break;
-      currentTier = nextTier(currentTier);
-    }
-
-    return attempts;
+  async modelAttemptsForTier(tier?: ModelTier, options?: LlmRouteOptions & { model?: string }): Promise<string[]> {
+    const decision = await resolveModelRoute({
+      requestedTier: tier,
+      defaultModel: this.config.model,
+      explicitModel: options?.model,
+      requiredCapabilities: options?.requiredCapabilities,
+      preferredCapabilities: options?.preferredCapabilities,
+      policyForTier: (policyTier) => this.policyForTier(policyTier),
+    });
+    await options?.onRouteDecision?.(decision);
+    return decision.attempts;
   }
 
   private async policyForTier(tier: ModelTier): Promise<Required<ModelTierSettingsInput>> {
@@ -319,11 +351,6 @@ function uniqueModels(models: string[]): string[] {
   return [...new Set(models.map((model) => model.trim()).filter(Boolean))];
 }
 
-function nextTier(tier: ModelTier): ModelTier | undefined {
-  const nextIndex = tierOrder.indexOf(tier) + 1;
-  return tierOrder[nextIndex];
-}
-
 function parseToolCall(
   raw: ToolCallFromLlm,
   index: number,
@@ -347,6 +374,30 @@ function parseToolCall(
     name,
     arguments: parsed,
   };
+}
+
+function tokenUsageFromResponse(data: ChatCompletionResponse): TokenUsage {
+  const usage = data.usage;
+  if (!usage) return { source: "unavailable" };
+  const promptTokens = numericUsage(usage.prompt_tokens) ?? numericUsage(usage.promptTokens);
+  const completionTokens = numericUsage(usage.completion_tokens) ?? numericUsage(usage.completionTokens);
+  const totalTokens =
+    numericUsage(usage.total_tokens) ??
+    numericUsage(usage.totalTokens) ??
+    (promptTokens !== undefined || completionTokens !== undefined ? (promptTokens ?? 0) + (completionTokens ?? 0) : undefined);
+  if (promptTokens === undefined && completionTokens === undefined && totalTokens === undefined) {
+    return { source: "unavailable" };
+  }
+  return {
+    ...(promptTokens !== undefined ? { promptTokens } : {}),
+    ...(completionTokens !== undefined ? { completionTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    source: "provider",
+  };
+}
+
+function numericUsage(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 function mapFinishReason(reason: string | undefined): "tool_calls" | "stop" | "length" | "other" {

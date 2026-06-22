@@ -39,15 +39,46 @@ Default local model endpoint:
 
 ## Run
 
+Recommended local web/API development:
+
+```bash
+npm install
+cp .env.example .env
+npm run docker
+npm run web
+```
+
+Then open `http://127.0.0.1:3001`. The Nest API runs on
+`http://127.0.0.1:3000`.
+
+`npm run docker` starts only the durable/supporting services used by host development:
+Postgres, Redis, MinIO, and SearXNG. The app itself still runs on your machine through
+`npm run web`, so TypeScript/React changes are fast to iterate and `.env` uses localhost
+service URLs.
+
+Stop the support services when you are done:
+
+```bash
+npm run docker:stop
+```
+
+Follow support-service logs:
+
+```bash
+npm run infra:logs
+```
+
+Run a one-off CLI task:
+
 ```bash
 npm install
 npm run dev -- "top 5 cities in Spain by population, sorted by distance to the sea"
 ```
 
-Run the browser console in Docker:
+Run the full app container stack instead of host dev:
 
 ```bash
-docker compose up --build
+npm run docker:full
 ```
 
 Then open `http://127.0.0.1:3000`.
@@ -59,12 +90,20 @@ waiting for Tool Builder. Generated/imported source-bundle, OCI, or external pac
 coexist through the same registry lifecycle. Docker-stack artifacts use Postgres metadata
 plus MinIO object payloads.
 
+`docker compose up -d postgres redis minio searxng` (wrapped by `npm run docker`) starts
+only those named services in the background. `docker compose up --build` (wrapped by
+`npm run docker:full`) builds images when needed and starts the whole compose stack,
+including the `app` container, attached to logs unless you use
+`npm run docker:full:detached`. In short: use `npm run docker` + `npm run web` for normal
+development; use `npm run docker:full` when you specifically want to validate the
+containerized app.
+
 If a run needs to be stopped while the app is still online, use the Run Workspace
 `Cancel Run` action or `POST /api/runs/:id/cancel`. Rebuilding the app container while a
 run is active interrupts in-process work; on the next boot the app recovers unfinished
 runs as failed instead of resuming them.
 
-Run the browser console directly on the host:
+Run the browser console directly on the host without starting support services:
 
 ```bash
 npm run web:dev
@@ -72,11 +111,11 @@ npm run web:dev
 
 This starts the Nest API on `http://127.0.0.1:3000` and the React console on
 `http://127.0.0.1:3001`. Backend bootstrap, migrations, and host dev load `.env` and
-`.env.local`. Set `DATABASE_URL=postgres://agentic:agentic@127.0.0.1:5432/agentic` and run
-`docker compose up -d postgres` when you want runs, run events, tool metadata, and
-artifacts metadata to survive API restarts. Without `DATABASE_URL`, runs use the
-in-memory store and are intentionally lost on restart. The sidebar and Diagnostics page
-read `/api/health` and show the active persistence mode for each stateful store.
+`.env.local`. Copy `.env.example` to `.env` so `DATABASE_URL`, MinIO, SearXNG, browser
+tool, Telegram tool, and local LLM defaults live in one editable file. Without
+`DATABASE_URL`, runs use the in-memory store and are intentionally lost on restart. The
+sidebar and Diagnostics page read `/api/health` and show the active persistence mode for
+each stateful store.
 
 Override model settings:
 

@@ -1,11 +1,16 @@
 # Roadmap
 
-Status date: 2026-05-24.
+Status date: 2026-06-22.
 
 Current active roadmap: [Core Toolbelt Roadmap](roadmap-core-toolbelt.md).
 Current executable task queue: [docs/tasks/README.md](tasks/README.md). Work the files in
 numeric order, then remove completed task files after implementation, verification,
 documentation update, and merge.
+
+As of 2026-06-22, the immediate run-quality queue starts with metrics/token
+observability, then working decision ledger, source/search discipline, proof policy,
+conversation continuation, external actions, model routing, and finally builder redesign.
+The canonical priority list is maintained in [docs/tasks/README.md](tasks/README.md).
 
 As of 2026-06-02, new Tool Creation V1 and external-action feature expansion is paused
 except for bug fixes needed to keep the current app usable. The active direction is to
@@ -1348,7 +1353,9 @@ npm run test:types
 npm test
 npm run build
 npm run build --prefix web-react
-docker compose up --build
+npm run docker
+npm run web
+npm run docker:full
 ```
 
 When ports are already occupied, use a compose override for host ports; do not treat a

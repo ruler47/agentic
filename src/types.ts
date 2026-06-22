@@ -39,6 +39,13 @@ export type LlmConfig = {
 
 export type ModelTier = "S" | "M" | "L" | "XL";
 
+export type TokenUsage = {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  source: "provider" | "estimated" | "unavailable";
+};
+
 export type ModelTierSettings = {
   tier: ModelTier;
   models: string[];
@@ -403,6 +410,11 @@ export type AgentEventType =
   | "agent-strategy-selected"
   | "agent-task-framed"
   | "agent-context-prepared"
+  | "working-decision-snapshot-created"
+  | "working-decision-snapshot-updated"
+  | "working-decision-phase-changed"
+  | "working-decision-update-requested"
+  | "working-decision-update-rejected"
   | "memory-context-prepared"
   | "local-utility-fast-path-selected"
   | "current-fact-fast-path-selected"
@@ -419,6 +431,7 @@ export type AgentEventType =
   | "agent-invocation-completed"
   | "agent-invocation-failed"
   | "agent-invocation-return-checked"
+  | "model-route-selected"
   | "agent-truncated-answer-repair-requested"
   | "agent-proof-repair-requested"
   | "agent-research-contract-repair-requested"
@@ -526,3 +539,87 @@ export type AgentEvent = {
 };
 
 export type AgentEventSink = (event: AgentEvent) => void | Promise<void>;
+
+export type WorkingDecisionPhase =
+  | "frame_task"
+  | "use_prior_context"
+  | "plan_next_step"
+  | "call_tool"
+  | "read_source"
+  | "evaluate_evidence"
+  | "draft_answer"
+  | "repair_answer"
+  | "prepare_external_action"
+  | "final_gate"
+  | "complete"
+  | "failed";
+
+export type WorkingDecisionFact = {
+  id: string;
+  summary: string;
+  sourceEventId?: string;
+  sourceUrl?: string;
+  sourceUrls?: string[];
+  evidenceIds?: string[];
+  artifactIds?: string[];
+  confidence?: "low" | "medium" | "high";
+};
+
+export type WorkingDecisionCandidate = {
+  id: string;
+  label: string;
+  status: "active" | "selected" | "rejected" | "blocked";
+  sourceEventId?: string;
+  sourceUrl?: string;
+  sourceUrls?: string[];
+  evidenceIds?: string[];
+  artifactIds?: string[];
+  scores?: Record<string, number>;
+  reason?: string;
+  uncertainties?: string[];
+};
+
+export type WorkingDecisionRejectedEvidence = {
+  id: string;
+  summary: string;
+  sourceEventId?: string;
+  sourceUrl?: string;
+  toolName?: string;
+  evidenceId?: string;
+  artifactId?: string;
+  reason: string;
+};
+
+export type WorkingDecisionNextAction = {
+  description: string;
+  expectedEvidence?: string;
+  sourceEventId?: string;
+};
+
+export type WorkingDecisionDraftStatus = {
+  status: "not_started" | "drafting" | "blocked" | "passed" | "failed";
+  summary: string;
+  sourceEventId?: string;
+};
+
+export type WorkingDecisionSnapshot = {
+  runId?: string;
+  revision: number;
+  task: string;
+  phase: WorkingDecisionPhase;
+  objective: string;
+  taskMode?: string;
+  knownFacts: WorkingDecisionFact[];
+  candidates: WorkingDecisionCandidate[];
+  openQuestions: string[];
+  rejectedEvidence: WorkingDecisionRejectedEvidence[];
+  nextAction?: WorkingDecisionNextAction;
+  draftStatus: WorkingDecisionDraftStatus;
+  metricsSummary?: {
+    llmCalls: number;
+    toolCalls: number;
+    failedToolCalls: number;
+    artifacts: number;
+  };
+  updatedAt: string;
+};

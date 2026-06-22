@@ -5,6 +5,7 @@ import { useRun } from "@/api/runs";
 import { useRunStream } from "@/api/sse";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { RunCandidateReviewPanel } from "@/features/run-workspace/RunCandidateReviewPanel";
+import { WorkingDecisionBoard } from "@/features/run-workspace/WorkingDecisionBoard";
 import { TraceGraph } from "@/features/trace/TraceGraph";
 import { TraceInspector } from "@/features/trace/TraceInspector";
 import {
@@ -19,7 +20,7 @@ import {
   type TraceNode,
 } from "@/features/trace/buildTraceNodes";
 import type { TraceGraphLayoutMode } from "@/features/trace/graphLayout";
-import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
+import { formatDuration, formatRelative, formatTokenUsage, runDurationMs, truncate } from "@/lib/format";
 
 type TraceMode = "timeline" | "graph" | "logs";
 
@@ -95,8 +96,11 @@ export function TraceLabRunPage() {
           <h2 className="break-words text-lg font-semibold">{run.data.task}</h2>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-app-text-muted">
             <RunStatusBadge status={run.data.status} />
-            <span>{formatDuration(runDurationMs(run.data))}</span>
+            <span>{formatDuration(run.data.metrics?.elapsedMs ?? runDurationMs(run.data))}</span>
             <span>{run.data.events?.length ?? 0} events · {allNodes.length} spans</span>
+            <span>
+              {run.data.metrics?.llmCalls ?? 0} LLM · {formatTokenUsage(run.data.metrics?.tokenUsage)}
+            </span>
             <span>{formatRelative(run.data.updatedAt)}</span>
           </div>
           {/* Phase 2 visibility: if this run was spawned by another
@@ -140,6 +144,8 @@ export function TraceLabRunPage() {
       </header>
 
       <RunCandidateReviewPanel run={run.data} />
+
+      <WorkingDecisionBoard events={run.data.events ?? []} />
 
       <FiltersBar
         nodes={allNodes}
@@ -338,6 +344,8 @@ function TimelineView({
               <p className="truncate text-[12px] font-semibold">{node.title}</p>
               <p className="truncate font-mono text-[10px] text-app-text-muted">
                 {node.activity} · {node.actor}{node.toolVersion ? `@${node.toolVersion}` : ""}
+                {node.model ? ` · ${node.model}` : ""}
+                {node.tokenUsage ? ` · ${formatTokenUsage(node.tokenUsage)}` : ""}
                 {typeof node.durationMs === "number" ? ` · ${formatDuration(node.durationMs)}` : ""}
                 {node.parentTitle ? ` · ⤴ ${truncate(node.parentTitle, 60)}` : ""}
               </p>

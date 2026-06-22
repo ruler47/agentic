@@ -1,5 +1,6 @@
 import type { RuntimeLedgerEventDraft } from "../../../work-ledger/runtimeLedgerCoordinator.js";
 import { RuntimeLedgerCoordinator } from "../../../work-ledger/runtimeLedgerCoordinator.js";
+import { createWorkingDecisionEventSink } from "../../../agents/workingDecisionLedger.js";
 import type {
   EvidenceLedgerStore,
   RunRetrospectiveStore,
@@ -14,14 +15,24 @@ export type RunEventSinkDeps = {
   runtimeHelpers: RunAgentRuntimeHelpers;
   runId: string;
   run: Parameters<RunAgentRuntimeHelpers["auditTraceEvent"]>[2];
+  workingDecisionTask?: string;
 };
 
 export function createRunEventSink(deps: RunEventSinkDeps): (event: AgentEvent) => Promise<void> {
-  return async (event) => {
+  const baseSink = async (event: AgentEvent) => {
     const current = await deps.runs.get(deps.runId);
     if (!current || current.status === "cancelled") return;
     await deps.runs.appendEvent(deps.runId, event);
     await deps.runtimeHelpers.auditTraceEvent(deps.runId, event, deps.run);
+  };
+  if (!deps.workingDecisionTask) return baseSink;
+  const boardSink = createWorkingDecisionEventSink({
+    runId: deps.runId,
+    task: deps.workingDecisionTask,
+    sink: baseSink,
+  });
+  return async (event: AgentEvent) => {
+    await boardSink(event);
   };
 }
 

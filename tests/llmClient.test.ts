@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { LlmClient } from "../src/llm/client.js";
 import { InMemoryModelTierSettingsStore } from "../src/settings/modelTierSettings.js";
+import type { ModelRouteDecision } from "../src/settings/modelRouting.js";
 
 test("LlmClient uses persisted model tier settings for requests", async () => {
   const originalFetch = globalThis.fetch;
@@ -38,6 +39,100 @@ test("LlmClient uses persisted model tier settings for requests", async () => {
     assert.equal(result, "ok");
     assert.equal(requestedModel, "medium-a");
     assert.deepEqual(await client.modelsForTier("M"), ["medium-a", "medium-b"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("LlmClient exposes provider token usage for text completions", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        model: "usage-model",
+        usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 },
+        choices: [{ message: { content: "ok" }, finish_reason: "stop" }],
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+
+  try {
+    const client = new LlmClient({
+      baseUrl: "http://llm.local/v1",
+      model: "fallback",
+      temperature: 0.2,
+      tierModels: {},
+      tierModelCandidates: {},
+    });
+
+    const result = await client.completeDetailed([{ role: "user", content: "hello" }]);
+
+    assert.equal(result.content, "ok");
+    assert.equal(result.model, "usage-model");
+    assert.deepEqual(result.usage, {
+      promptTokens: 12,
+      completionTokens: 5,
+      totalTokens: 17,
+      source: "provider",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("LlmClient exposes provider token usage for tool completions", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        model: "tool-model",
+        usage: { prompt_tokens: 20, completion_tokens: 8, total_tokens: 28 },
+        choices: [
+          {
+            message: {
+              content: "",
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "finish", arguments: "{\"answer\":\"ok\"}" },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+
+  try {
+    const client = new LlmClient({
+      baseUrl: "http://llm.local/v1",
+      model: "fallback",
+      temperature: 0.2,
+      tierModels: {},
+      tierModelCandidates: {},
+    });
+
+    const result = await client.completeWithTools([{ role: "user", content: "hello" }], []);
+
+    assert.equal(result.model, "tool-model");
+    assert.equal(result.finishReason, "tool_calls");
+    assert.deepEqual(result.usage, {
+      promptTokens: 20,
+      completionTokens: 8,
+      totalTokens: 28,
+      source: "provider",
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -105,6 +200,97 @@ test("LlmClient retries same-tier models then escalates when configured", async 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("LlmClient filters tier candidates by required capability before requesting a model", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedModels: string[] = [];
+  let routeDecision: ModelRouteDecision | undefined;
+
+  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    requestedModels.push(body.model);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "vision ok" } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    const settings = new InMemoryModelTierSettingsStore([
+      {
+        tier: "M",
+        models: ["plain-text-model"],
+        maxAttempts: 1,
+        escalateOnFailure: true,
+      },
+      {
+        tier: "L",
+        models: ["qwen/qwen2.5-vl-32b"],
+        maxAttempts: 1,
+        escalateOnFailure: false,
+      },
+    ]);
+    const client = new LlmClient(
+      {
+        baseUrl: "http://llm.local/v1",
+        model: "fallback",
+        temperature: 0.2,
+        tierModels: {},
+        tierModelCandidates: {},
+      },
+      settings,
+    );
+
+    const result = await client.complete([{ role: "user", content: "describe image" }], {
+      modelTier: "M",
+      requiredCapabilities: ["vision"],
+      onRouteDecision: (decision) => {
+        routeDecision = decision;
+      },
+    });
+
+    assert.equal(result, "vision ok");
+    assert.deepEqual(requestedModels, ["qwen/qwen2.5-vl-32b"]);
+    assert.equal(routeDecision?.selectedTier, "L");
+    assert.equal(routeDecision?.fallbackUsed, true);
+    assert.deepEqual(
+      routeDecision?.rejectedCandidates.map((candidate) => candidate.reason),
+      ["missing vision"],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("LlmClient reports a clear blocker when no tier candidate has a required capability", async () => {
+  const settings = new InMemoryModelTierSettingsStore([
+    {
+      tier: "M",
+      models: ["plain-text-model"],
+      maxAttempts: 1,
+      escalateOnFailure: false,
+    },
+  ]);
+  const client = new LlmClient(
+    {
+      baseUrl: "http://llm.local/v1",
+      model: "fallback",
+      temperature: 0.2,
+      tierModels: {},
+      tierModelCandidates: {},
+    },
+    settings,
+  );
+
+  await assert.rejects(
+    () =>
+      client.complete([{ role: "user", content: "repair code" }], {
+        modelTier: "M",
+        requiredCapabilities: ["coding"],
+      }),
+    /No compatible LLM model found for tier M requiring coding.*plain-text-model \(missing coding\)/,
+  );
 });
 
 test("LlmClient preserves string error bodies from OpenAI-compatible servers", async () => {

@@ -1,14 +1,21 @@
 # Active Task Specs
 
-Status date: 2026-06-19.
+Status date: 2026-06-22.
 
-This directory is the execution queue for the active Agentic roadmap. Each file is a
-feature/task contract with four views:
+This directory is the execution queue for the active Agentic roadmap. Each active task
+file is a self-contained spec-first/test-first contract:
 
-- BA: what product behavior should exist and why it matters.
-- Architect / tech lead: the proposed system design.
-- QA: acceptance criteria and verification strategy.
-- PM / feature owner: decomposed delivery plan.
+- idea and measurable increment;
+- use cases, weak spots, and edge cases;
+- behavior spec and acceptance criteria;
+- architecture and ownership boundaries;
+- low-level implementation plan;
+- test plan and manual verification plan;
+- decomposed delivery steps.
+
+Before implementation, each task must follow the project development convention in
+[`../development-convention.md`](../development-convention.md). If a task file does not
+cover the readiness gates above, upgrade the task file first and only then code.
 
 When a task is completed, verified, documented, and merged, remove its file from this
 directory and update this index plus `docs/roadmap-core-toolbelt.md`.
@@ -17,16 +24,44 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P2 External Action UX](05-p2-external-action-ux.md)
-2. [P2 Model Routing](06-p2-model-routing.md)
-3. [P3 Tool Builder Redesign](07-p3-tool-builder-redesign.md)
+1. [P1 Source Acquisition, Search Discipline, And Source Cache](06-p1-source-acquisition-and-search-quality.md)
+2. [P1 Proof Policy And Evidence Artifact Linking](07-p1-proof-policy-and-evidence-artifacts.md)
+3. [P2 Conversation Memory, Prior Work, And Continuation Reliability](08-p2-conversation-memory-and-continuation.md)
+4. [P2 External Action UX And Real-Provider Flow](09-p2-external-action-ux.md)
+5. [P2 Model Routing](10-p2-model-routing.md)
+6. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
 
 Cross-cutting gates apply to every task:
 
-- [Code Hygiene And Documentation Discipline](08-cross-cutting-code-hygiene.md)
+- [Code Hygiene And Documentation Discipline](12-cross-cutting-code-hygiene.md)
+
+## Current Run-Quality Backlog
+
+These tasks were created from the 2026-06-22 run analysis of
+`run_1782129801101_54i3rfdu` and its follow-up discussion.
+
+```mermaid
+flowchart TD
+  A["04 metrics: time, tokens, cost visibility"] --> B["05 working decision ledger"]
+  B --> C["06 source/search discipline"]
+  B --> D["07 proof policy and artifact links"]
+  B --> E["08 conversation memory / continuation"]
+  C --> F["09 external actions UX"]
+  D --> F
+  E --> F
+  A --> G["10 model routing"]
+  B --> H["11 tool builder redesign"]
+```
 
 ## Recently Completed
 
+- 2026-06-22: P1 Run Metrics, Token Accounting, And Cost Observability was completed and
+  its task file was removed from the active queue. Implementation: provider token usage
+  is captured at the LLM boundary, LLM events carry per-step duration/model/usage, run
+  DTOs include a metrics projection from events, SSE snapshots preserve enriched DTOs,
+  and Runs / Run Workspace / Trace Lab / Conversation UI render elapsed time, tool/LLM
+  counts, model summary, token usage when available, and slowest events. Focused coverage:
+  `tests/runMetrics.test.ts`, `tests/llmClient.test.ts`, and BaseAgent/UI DTO tests.
 - 2026-06-19: P1 Tool Catalog Cleanup was completed and its task file was removed.
   Implementation: `src/tools/toolCatalog.ts`, `/api/tools` catalog normalization,
   run-side eligibility filtering in `src/server/modules/runs/run-tool-catalog.ts`, and
@@ -36,6 +71,21 @@ Cross-cutting gates apply to every task:
   Manual durable smoke: Tools UI defaulted to active 12/25 with core-first entries and
   inactive 13/25 separated; `run_1781876088935_yg4izgpx` completed with 10 offered tools
   in `agent-context-prepared` and no inactive/guarded tools. DB records were checked.
+- 2026-06-22: P1 Working / Decision Ledger Blackboard was completed and its task file was
+  removed from the active queue. Implementation:
+  `src/agents/workingDecisionLedger.ts`,
+  `src/agents/workingDecisionBoardUpdate.ts`,
+  `src/agents/baseAgentWorkingBoard.ts`, BaseAgent meta-action wiring, semantic LLM
+  trace titles, and `web-react/src/features/run-workspace/WorkingDecisionBoard.tsx`.
+  Focused tests cover event projection, model-writable board updates, invalid update
+  rejection, and BaseAgent meta-action handling. Manual smokes:
+  `run_1782161622838_s46658d4` completed a deterministic JSON-to-CSV file task with 8
+  board events, 2 tool calls, and 1 CSV artifact; Run Workspace and Trace Lab rendered
+  the board and metrics. `run_1782161672962_2lrltrod` verified that the model sees and
+  can call `update_working_board`, and Trace Lab renders semantic labels such as
+  `Choose tools: update_working_board`. That second run exposed a separate source/task
+  framing issue now owned by task 06: "сравни ... без интернета" was over-framed as
+  `product_selection` and forced web research.
 - 2026-06-19: P1 Memory Continuity Model was completed and its task file was removed.
   Implementation: `src/agents/memoryContext.ts`,
   `src/agents/baseAgentContextEvents.ts`, BaseAgent context normalization, and
@@ -64,7 +114,9 @@ Cross-cutting gates apply to every task:
 
 The current agent working on the repo owns the next unfinished file in the queue. Before
 starting implementation, read the relevant task file, `docs/agent-handoff.md`,
-`docs/current-architecture.md`, and `AGENTS.md`.
+`docs/current-architecture.md`, `docs/development-convention.md`, and `AGENTS.md`.
+If the task file is not yet ready by the convention, update the task file first and only
+then implement.
 
 ## Completion Rule
 

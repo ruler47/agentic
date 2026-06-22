@@ -11,7 +11,7 @@ import {
 import { GenericBadge } from "@/components/StatusBadge";
 import { formatRelative, truncate } from "@/lib/format";
 import type { ModelProviderInput, ModelProviderRecord, ModelTier, ModelTierSettings } from "@/api/types";
-import type { ModelCatalogResponse } from "@/api/models";
+import type { CatalogModelRecord, ModelCapability, ModelCatalogResponse } from "@/api/models";
 
 const TIERS: ModelTier[] = ["S", "M", "L", "XL"];
 
@@ -65,17 +65,13 @@ function CatalogPanel({ catalog }: { catalog: ReturnType<typeof useModelCatalog>
             </span>
           </div>
           <h3 className="mt-1 text-sm font-semibold">Local chat models</h3>
-          <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+          <div className="mt-2 grid gap-2 text-[11px]">
             {chatModels.length === 0 ? (
               <span className="text-app-text-muted">
                 No /models response. Configure providers below.
               </span>
             ) : (
-              chatModels.map((model) => (
-                <span key={model.id} className="rounded-full bg-app-surface px-2 py-0.5 font-mono">
-                  {model.id}
-                </span>
-              ))
+              chatModels.map((model) => <CatalogModelChip key={model.id} model={model} />)
             )}
           </div>
         </article>
@@ -92,23 +88,57 @@ function CatalogPanel({ catalog }: { catalog: ReturnType<typeof useModelCatalog>
           <p className="mt-1 text-[11px] text-app-text-muted">
             {catalog?.embedding?.dimensions ?? 128} dimensions
           </p>
-          <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+          <div className="mt-2 grid gap-2 text-[11px]">
             {embeddingModels.length === 0 ? (
               <span className="text-app-text-muted">
                 No embedding model catalog from the configured endpoint.
               </span>
             ) : (
-              embeddingModels.map((model) => (
-                <span key={model.id} className="rounded-full bg-app-surface px-2 py-0.5 font-mono">
-                  {model.id}
-                </span>
-              ))
+              embeddingModels.map((model) => <CatalogModelChip key={model.id} model={model} />)
             )}
           </div>
         </article>
       </div>
     </article>
   );
+}
+
+function CatalogModelChip({ model }: { model: CatalogModelRecord }) {
+  return (
+    <div className="min-w-0 rounded-md border border-app-border bg-app-surface px-2 py-1.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        <span className="min-w-0 truncate font-mono text-[11px]">{model.id}</span>
+        {model.capabilitySource ? (
+          <GenericBadge tone={model.capabilitySource === "operator" ? "ok" : "muted"}>
+            {model.capabilitySource}
+          </GenericBadge>
+        ) : null}
+      </div>
+      <CapabilityBadges capabilities={model.capabilities ?? []} />
+    </div>
+  );
+}
+
+function CapabilityBadges({ capabilities }: { capabilities: ModelCapability[] }) {
+  if (capabilities.length === 0) {
+    return <p className="mt-1 text-[11px] text-app-text-muted">No capabilities reported.</p>;
+  }
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {capabilities.map((capability) => (
+        <GenericBadge key={capability} tone={capabilityTone(capability)}>
+          {capability}
+        </GenericBadge>
+      ))}
+    </div>
+  );
+}
+
+function capabilityTone(capability: ModelCapability): React.ComponentProps<typeof GenericBadge>["tone"] {
+  if (capability === "vision" || capability === "reasoning") return "warn";
+  if (capability === "coding" || capability === "tool-calling") return "running";
+  if (capability === "embedding") return "muted";
+  return "ok";
 }
 
 function TiersPanel({
@@ -243,6 +273,7 @@ type ModelOption = {
   id: string;
   label: string;
   source: string;
+  capabilities?: ModelCapability[];
 };
 
 function TierModelSelector({
@@ -319,8 +350,9 @@ function collectChatModelOptions(
     if (!model.id) continue;
     options.set(model.id, {
       id: model.id,
-      label: `${model.id} · local catalog`,
+      label: `${model.id} · ${capabilityLabel(model.capabilities)} · local catalog`,
       source: "local catalog",
+      capabilities: model.capabilities,
     });
   }
   for (const provider of providers ?? []) {
@@ -336,6 +368,11 @@ function collectChatModelOptions(
     }
   }
   return [...options.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function capabilityLabel(capabilities: ModelCapability[] | undefined): string {
+  const visible = (capabilities ?? []).filter((capability) => capability !== "chat");
+  return visible.length > 0 ? visible.join(",") : "chat";
 }
 
 function mergeCurrentModelOptions(options: ModelOption[], current: string[]): ModelOption[] {

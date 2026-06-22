@@ -391,6 +391,7 @@ async function synthesizeCurrentFactAnswer(input: CurrentFactFastPathInput, pare
       ].join("\n\n"),
     },
   ];
+  const llmStartedAt = new Date();
   try {
     const reply = await runWithTimeout("Current fact synthesis", input.options.llmTimeoutMs, input.options.signal, (signal) =>
       input.llm.completeWithTools(messages, [], {
@@ -398,8 +399,24 @@ async function synthesizeCurrentFactAnswer(input: CurrentFactFastPathInput, pare
         signal,
         toolChoice: "none",
         maxTokens: DEFAULT_LLM_MAX_TOKENS,
+        onRouteDecision: async (decision) => {
+          await emit(input.options.onEvent, {
+            spanId: `${llmSpanId}:model-route`,
+            parentSpanId,
+            type: "model-route-selected",
+            actor: "base-agent",
+            activity: "llm",
+            status: "completed",
+            title: "Model route selected",
+            detail: decision.reason,
+            startedAt: llmStartedAt,
+            completedAt: new Date(),
+            payload: decision,
+          });
+        },
       }),
     );
+    const llmCompletedAt = new Date();
     await emit(input.options.onEvent, {
       spanId: llmSpanId,
       parentSpanId,
@@ -409,9 +426,12 @@ async function synthesizeCurrentFactAnswer(input: CurrentFactFastPathInput, pare
       status: "completed",
       title: "Current fact synthesis",
       detail: "Synthesized a narrow current answer without additional tool calls.",
-      startedAt: input.startedAt,
-      completedAt: new Date(),
+      startedAt: llmStartedAt,
+      completedAt: llmCompletedAt,
+      durationMs: Math.max(0, llmCompletedAt.getTime() - llmStartedAt.getTime()),
       payload: {
+        model: reply.model,
+        usage: reply.usage,
         input: {
           modelTier: input.options.modelTier ?? DEFAULT_AGENT_LOOP_TIER,
           toolChoice: "none",
@@ -419,6 +439,8 @@ async function synthesizeCurrentFactAnswer(input: CurrentFactFastPathInput, pare
         },
         output: {
           finishReason: reply.finishReason,
+          model: reply.model,
+          usage: reply.usage,
           content: limitText(reply.content, 4_000),
           toolCalls: reply.toolCalls.map((call) => ({ id: call.id, name: call.name })),
         },
@@ -427,6 +449,7 @@ async function synthesizeCurrentFactAnswer(input: CurrentFactFastPathInput, pare
     return reply.content.trim() || fallbackCurrentFactAnswer(input, state);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const llmCompletedAt = new Date();
     await emit(input.options.onEvent, {
       spanId: llmSpanId,
       parentSpanId,
@@ -436,8 +459,9 @@ async function synthesizeCurrentFactAnswer(input: CurrentFactFastPathInput, pare
       status: "failed",
       title: "Current fact synthesis failed",
       detail: message,
-      startedAt: input.startedAt,
-      completedAt: new Date(),
+      startedAt: llmStartedAt,
+      completedAt: llmCompletedAt,
+      durationMs: Math.max(0, llmCompletedAt.getTime() - llmStartedAt.getTime()),
       payload: { error: message },
     });
     return fallbackCurrentFactAnswer(input, state);

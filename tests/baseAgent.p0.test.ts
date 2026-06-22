@@ -20,8 +20,9 @@ class SequenceLlm {
 
   constructor(private readonly replies: LlmToolReply[]) {}
 
-  async completeWithTools(messages: Message[], _tools: LlmToolSchema[]): Promise<LlmToolReply> {
+  async completeWithTools(messages: Message[], _tools: LlmToolSchema[], options?: unknown): Promise<LlmToolReply> {
     this.messagesByCall.push(messages);
+    void options;
     const reply = this.replies[Math.min(this.calls, this.replies.length - 1)];
     this.calls += 1;
     return reply;

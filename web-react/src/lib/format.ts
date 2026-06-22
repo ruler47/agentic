@@ -27,6 +27,28 @@ export function formatDuration(durationMs: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
+export function formatTokenCount(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return "usage unavailable";
+  if (value < 1_000) return `${Math.round(value)} tok`;
+  if (value < 1_000_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k tok`;
+  return `${(value / 1_000_000).toFixed(1)}M tok`;
+}
+
+export function formatTokenUsage(usage: {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  source?: string;
+} | undefined): string {
+  if (!usage || usage.source === "unavailable") return "usage unavailable";
+  const total = usage.totalTokens ?? (
+    usage.promptTokens !== undefined || usage.completionTokens !== undefined
+      ? (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0)
+      : undefined
+  );
+  return formatTokenCount(total);
+}
+
 export function runDurationMs(run: { createdAt: string; updatedAt: string; status: string }): number {
   const start = new Date(run.createdAt).getTime();
   const isLive = run.status === "queued" || run.status === "running";

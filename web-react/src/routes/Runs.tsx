@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 
 import { useRuns } from "@/api/runs";
 import { RunStatusBadge } from "@/components/StatusBadge";
-import { formatDuration, formatRelative, runDurationMs, truncate } from "@/lib/format";
+import { formatDuration, formatRelative, formatTokenUsage, runDurationMs, truncate } from "@/lib/format";
 import type { AgentRunRecord, RunStatus } from "@/api/types";
 
 const STATUS_FILTERS: Array<RunStatus | "all"> = [
@@ -100,17 +100,18 @@ export function RunsPage() {
 }
 
 function RunRow({ run }: { run: AgentRunRecord }) {
-  const toolCalls = (run.events ?? []).filter((event) => event.activity === "tool").length;
+  const metrics = run.metrics;
+  const toolCalls = metrics?.toolCalls ?? (run.events ?? []).filter((event) => event.type === "tool-completed").length;
   const toolLifecycleSteps = (run.events ?? []).filter((event) =>
     typeof event.type === "string" && event.type.startsWith("tool-creation")
   ).length;
-  const artifactCount = run.result?.artifacts?.length ?? 0;
+  const artifactCount = metrics?.artifacts ?? run.result?.artifacts?.length ?? 0;
   const isToolLifecycle = isToolLifecycleRun(run);
   return (
     <li>
       <Link
         to={`/run/${run.id}`}
-        className="grid grid-cols-[1.5fr_repeat(5,auto)_auto] items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-app-surface-2"
+        className="grid grid-cols-[1.5fr_repeat(6,auto)_auto] items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-app-surface-2"
       >
         <span className="flex min-w-0 items-center gap-2">
           {isToolLifecycle ? <ToolLifecycleBadge /> : null}
@@ -124,7 +125,10 @@ function RunRow({ run }: { run: AgentRunRecord }) {
           {run.channel ?? "web"}
         </span>
         <span className="font-mono text-[11px] text-app-text-muted">
-          {formatDuration(runDurationMs(run))}
+          {formatDuration(metrics?.elapsedMs ?? runDurationMs(run))}
+        </span>
+        <span className="hidden font-mono text-[11px] text-app-text-muted lg:block">
+          {metrics?.llmCalls ?? 0} llm · {formatTokenUsage(metrics?.tokenUsage)}
         </span>
         <span className="hidden text-[11px] text-app-text-muted md:block">
           {isToolLifecycle ? `${toolLifecycleSteps} steps` : `${toolCalls} tools`} · {artifactCount} files

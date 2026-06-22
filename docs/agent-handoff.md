@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Status date: 2026-06-19.
+Status date: 2026-06-22.
 
 ## Active Base
 
@@ -15,6 +15,7 @@ new primary branch.
 - Active roadmap: `docs/roadmap-core-toolbelt.md`.
 - Active executable task queue: `docs/tasks/README.md`.
 - Active architecture map: `docs/current-architecture.md`.
+- Current active implementation task: `docs/tasks/06-p1-source-acquisition-and-search-quality.md`.
 
 Do not use `claude/phase17-research-delegation` as the active base. It was audited on
 2026-06-18 and still contains a legacy `src/agents/universalAgent.ts` above 9k lines plus
@@ -70,11 +71,30 @@ flowchart LR
 React UI smoke confirmed the data/file run page shows the final answer, timeline,
 `smoke-people.csv` artifact card, preview, and download link.
 
+Additional P0 smoke on 2026-06-19 after model-routing and proof-link fixes:
+
+```mermaid
+flowchart LR
+  G["Direct no-tool answer"] --> G1["PASS\nrun_1781888955776_r5xgx351\n0 tool events\nno raw tool syntax"]
+  H["Current BTC + visual proof"] --> H1["PASS\nrun_1781888955810_o4iy48ap\nweb.search + web.read + QA-passed browser.screenshot\nartifact_1781888964363_ap1p51dc"]
+```
+
 Recent P0 fixes:
 
 - API/HTTP/JSON endpoint tasks use structured/source proof by default and no longer
   trigger screenshot/browser proof repair unless the user explicitly asks for visual
   proof of a web page.
+- Direct no-tool frames keep tool use disabled across repair extensions. If a local
+  model emits raw function-style tool prose during a truncated-answer repair, the partial
+  draft is scrubbed from the repair prompt so the model cannot reinforce invalid
+  `file.read(path="...")` text.
+- `browser.screenshot` now extracts visible page text before capturing the PNG, so proof
+  QA and final synthesis can compare the screenshot against visible claim signals.
+- Run Workspace hydrates final-answer markdown artifact filenames to real run artifact
+  URLs, matching the Conversation view and avoiding broken relative image links.
+- LLM routing now goes through a tier plus capability-aware resolver and emits
+  `model-route-selected` trace events. The durable profile/probe/multimodal work remains
+  open in `docs/tasks/10-p2-model-routing.md`.
 - Follow-up questions about prior answers can frame as `thread_context_answer` and answer
   from thread summary/facts/open questions instead of doing a fresh lookup.
 - Thread-scoped prior-work recovery now asks the Work/Evidence Ledger for passed and
@@ -86,6 +106,15 @@ Recent P0 fixes:
   proof.
 - `src/agents/baseAgent.ts` is below the 800-line limit again; thread-context framing moved
   into `src/agents/baseAgentThreadContext.ts`.
+- Working / Decision Board is complete for the current P1 slice:
+  `src/agents/workingDecisionLedger.ts` projects `working-decision-*` snapshots from
+  persisted run events; `src/agents/workingDecisionBoardUpdate.ts` validates/redacts
+  model-written updates; `src/agents/baseAgentWorkingBoard.ts` handles the
+  `update_working_board` meta-action; Run Workspace and Trace Lab render objective,
+  phase, facts, candidates, rejected evidence, next action, draft status, compact
+  metrics, scores, refs, and semantic LLM labels. Manual smokes:
+  `run_1782161622838_s46658d4` and `run_1782161672962_2lrltrod`. The next systemic gap
+  is task 06: source/search discipline and no-internet/broad-task framing.
 - Preinstalled tools now exist on the primary branch: `web.search`, `web.read`,
   `browser.operate`, `browser.screenshot`, `http.request`, `file.read`, `file.write`,
   `document.extract`, `data.transform`, `external.action.prepare`,

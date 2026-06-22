@@ -12,11 +12,28 @@ The project is intended to run through Docker Compose:
 - local OpenAI-compatible LLM endpoint exposed to the app as `host.docker.internal`, or a
   remote OpenAI-compatible provider such as the OpenAI API.
 
-Run:
+Recommended local development runs the stateful/search services in Docker and the app
+on the host:
 
 ```bash
-docker compose up --build
+cp .env.example .env
+npm run docker
+npm run web
 ```
+
+`npm run docker` wraps `docker compose up -d postgres redis minio searxng`. It starts
+only Postgres, Redis, MinIO, and SearXNG in the background. The host app then reads
+localhost URLs from `.env`.
+
+Use the full container stack only when validating the app image/runtime:
+
+```bash
+npm run docker:full
+```
+
+That wraps `docker compose up --build`, which builds images when needed and runs the app
+inside Docker. In that mode the app uses compose service DNS such as `postgres`,
+`minio`, and `searxng`, and `host.docker.internal` for a host LM Studio endpoint.
 
 ### Rebuilds During Active Runs
 

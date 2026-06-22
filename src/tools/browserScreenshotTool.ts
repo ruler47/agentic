@@ -73,6 +73,7 @@ export class BrowserScreenshotTool implements Tool {
     }
     const waitMs = typeof input.waitMs === "number" ? Math.max(0, Math.min(30_000, input.waitMs)) : 1000;
     if (waitMs > 0) commands.push({ type: "wait", ms: waitMs });
+    commands.push({ type: "extractText", label: "visible-page", maxLength: 8_000 });
     commands.push({
       type: "screenshot",
       label: "proof",
