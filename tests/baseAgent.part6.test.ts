@@ -158,7 +158,7 @@ test("BaseAgent repairs unsupported source-backed claims before final answer", a
       content: "",
       finishReason: "tool_calls",
       toolCalls: [
-        { id: "search_1", name: "web_search", arguments: { query: "freshness baseline" } },
+        { id: "search_1", name: "web_search", arguments: { query: "актуальный рабочий ноутбук свежие источники" } },
         { id: "search_2", name: "web_search", arguments: { query: "candidate discovery" } },
         { id: "search_3", name: "web_search", arguments: { query: "candidate verification" } },
       ],

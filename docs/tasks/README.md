@@ -24,12 +24,11 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P1 Source Acquisition, Search Discipline, And Source Cache](06-p1-source-acquisition-and-search-quality.md)
-2. [P1 Proof Policy And Evidence Artifact Linking](07-p1-proof-policy-and-evidence-artifacts.md)
-3. [P2 Conversation Memory, Prior Work, And Continuation Reliability](08-p2-conversation-memory-and-continuation.md)
-4. [P2 External Action UX And Real-Provider Flow](09-p2-external-action-ux.md)
-5. [P2 Model Routing](10-p2-model-routing.md)
-6. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
+1. [P1 Proof Policy And Evidence Artifact Linking](07-p1-proof-policy-and-evidence-artifacts.md)
+2. [P2 Conversation Memory, Prior Work, And Continuation Reliability](08-p2-conversation-memory-and-continuation.md)
+3. [P2 External Action UX And Real-Provider Flow](09-p2-external-action-ux.md)
+4. [P2 Model Routing](10-p2-model-routing.md)
+5. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
 
 Cross-cutting gates apply to every task:
 
@@ -43,8 +42,8 @@ These tasks were created from the 2026-06-22 run analysis of
 ```mermaid
 flowchart TD
   A["04 metrics: time, tokens, cost visibility"] --> B["05 working decision ledger"]
-  B --> C["06 source/search discipline"]
-  B --> D["07 proof policy and artifact links"]
+  B --> C["06 source/search discipline completed"]
+  C --> D["07 proof policy and artifact links"]
   B --> E["08 conversation memory / continuation"]
   C --> F["09 external actions UX"]
   D --> F
@@ -55,6 +54,25 @@ flowchart TD
 
 ## Recently Completed
 
+- 2026-06-22: P1 Source Acquisition, Search Discipline, And Source Cache was completed
+  and its task file was removed from the active queue. Implementation:
+  `TaskFrame.sourcePolicy`, `src/agents/sourceSearchPlan.ts`,
+  `src/agents/sourceQuality.ts`, `src/agents/sourceRegistry.ts`,
+  `src/agents/baseAgentSourceEvents.ts`, `src/agents/baseAgentSearchHistory.ts`,
+  `src/agents/baseAgentSourcePlanRepair.ts`, and Working / Decision Ledger source-event
+  projection. The runtime now respects explicit no-internet/no-web tasks, emits a
+  source search plan for broad research, repairs broad mixed-language runs that skip a
+  planned English/user-language query angle, normalizes and redacts source URLs, skips
+  duplicate normalized `web.read` attempts inside a run, records blocked/failed source
+  reads as rejected evidence, filters technical assets/search-result pages/social search
+  pages out of source discovery, skips those low-value reads before spending `web.read`
+  budget unless the user explicitly targets that host, and projects source decisions into
+  the board. Product-selection gates now require enough source coverage rather than a
+  fixed third search call: two successful research calls plus three independent
+  proof-worthy URLs and one successful source read can complete. Focused
+  coverage: `tests/sourceRegistry.test.ts`, `tests/sourceSearchPlan.test.ts`,
+  `tests/baseAgentSourceAcquisition.test.ts`, plus regression coverage for duplicate
+  search and board projection.
 - 2026-06-22: P1 Run Metrics, Token Accounting, And Cost Observability was completed and
   its task file was removed from the active queue. Implementation: provider token usage
   is captured at the LLM boundary, LLM events carry per-step duration/model/usage, run
@@ -84,7 +102,7 @@ flowchart TD
   the board and metrics. `run_1782161672962_2lrltrod` verified that the model sees and
   can call `update_working_board`, and Trace Lab renders semantic labels such as
   `Choose tools: update_working_board`. That second run exposed a separate source/task
-  framing issue now owned by task 06: "сравни ... без интернета" was over-framed as
+  framing issue later closed by task 06: "сравни ... без интернета" was over-framed as
   `product_selection` and forced web research.
 - 2026-06-19: P1 Memory Continuity Model was completed and its task file was removed.
   Implementation: `src/agents/memoryContext.ts`,

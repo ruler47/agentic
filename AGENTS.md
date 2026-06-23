@@ -82,6 +82,16 @@ documentation.
   recommendation, comparison, or purchase-selection tasks require structured research,
   freshness checks, multiple source-backed claims, at least one source read/extract step,
   and claim-focused proof instead of a one-search/snippet answer.
+- Task framing also carries a `sourcePolicy`. Explicit no-internet/no-web requests forbid
+  external source tools (`web.search`, `web.read`, `web.extract`, `http.request`,
+  `browser.operate`, `browser.screenshot`) and the runtime blocks those calls without
+  making the whole run unrecoverable if the model can still answer locally. Broad global
+  research gets a mixed user-language/English search plan; docs/API tasks bias toward
+  official reference queries; local-provider tasks bias toward location-aware provider
+  queries. If a broad mixed-language run tries to finish before covering a planned query
+  language, BaseAgent emits a bounded source-plan repair instruction
+  (`agent-source-search-plan-repair-requested`) instead of silently accepting shallow
+  research.
 - Tool calls execute only through `ToolRegistry` with run-scoped runtime context:
   run/thread/user/instance provenance, per-call span id, artifact writer, callback
   envelope, secret/configuration resolvers, audit, and logger.
@@ -139,6 +149,24 @@ documentation.
   repeated or near-duplicate `web.search` queries are
   skipped and traced with `duplicateSkipped` so the model must reuse prior evidence
   or change strategy materially.
+- LLM tool context is scoped by task frame. No-tool frames, including explicit
+  no-internet/no-web comparison frames with a zero research contract, send no tool
+  schemas and no tool catalog to the model. Research/product-selection frames get only
+  source/proof tools; local-utility frames get file/document/data tools; external-action
+  frames get source/browser/prepare tools. Run-scoped candidate tools remain visible
+  regardless of the frame. This keeps local-model context under control and prevents
+  unrelated tools from steering the task.
+- `RunSourceRegistry` is the run-scoped source memory for the normal research loop. It
+  normalizes and redacts URLs before display/persistence, strips tracking and secret-like
+  query parameters, skips duplicate normalized `web.read` attempts, records blocked or
+  failed source reads as rejected evidence, and allows a retry only when the read strategy
+  changes materially. Source lifecycle events are `source-search-plan-created`,
+  `source-discovered`, `source-read-recorded`, `source-read-skipped`, and
+  `source-rejected`. Broad research must not treat technical assets or search result
+  pages as durable sources: CSS/fonts/images/scripts, provider search pages such as
+  `youtube.com/results`, and social/search result pages are filtered from source
+  discovery, skipped before `web.read` unless the user explicitly targets that host, and
+  kept out of the Working / Decision Board candidate list.
 - Small-context local models get rolling context compaction: once the dialog exceeds
   `DEFAULT_CONTEXT_CHAR_BUDGET` (60k chars), tool messages older than the most recent
   three are compacted to a short head before each LLM step. A context-window error from
@@ -240,7 +268,9 @@ documentation.
   source/proof refs, and uncertainties. `BaseAgent` exposes a safe
   `update_working_board` meta-action so the model can write structured progress without
   exposing hidden chain-of-thought; invalid updates are redacted, rejected, and preserved
-  as board evidence instead of failing the run. Trace Lab prefers semantic LLM labels
+  as board evidence instead of failing the run. Source events from `RunSourceRegistry`
+  are projected into source facts/candidates/rejected evidence so operators can see which
+  pages were discovered, read, skipped, or blocked. Trace Lab prefers semantic LLM labels
   derived from model output, such as `Choose tools: web.read`, when available.
 - Source-backed/current answers require proof by default when artifact saving and proof
   tools make it possible. If the model tries to finish early, BaseAgent emits
@@ -490,7 +520,10 @@ documentation.
   such as model names, not generic words like "gaming" or "price". The preinstalled
   `browser.screenshot` wrapper must run visible-page text extraction before capturing
   the image, so current-fact synthesis and proof QA can inspect what was visible on the
-  page instead of treating the PNG as opaque.
+  page instead of treating the PNG as opaque. Browser artifact semantic QA must receive
+  the extracted visible text/links from the tool result and hard-reject provider
+  interstitial, security-check, login, consent, loader, or challenge pages before
+  source-URL or claim-signal matches can mark the artifact usable.
 - BaseAgent extracts proof signals such as source-backed values from non-screenshot
   evidence and includes the best one in the proof instruction as `focusText`. Screenshot
   semantic QA receives those expected signals so a focused proof image is checked against
@@ -529,7 +562,10 @@ documentation.
   (`web_read`, `web_extract`, or equivalent) and tell the model that the next tool call is
   a source read/extract call, not another broad search. For these frames, proof QA also
   receives final-answer claim signals, so a screenshot of an intermediate roundup heading
-  is not enough proof for final recommendations.
+  is not enough proof for final recommendations. Product-selection quality is measured
+  by source coverage more than raw search count: two successful research calls plus at
+  least three independent proof-worthy URLs and at least one successful source read are
+  sufficient for the gate.
 - Artifact endpoints render inline by default and support `?download=1` for attachment
   download. React artifact cards show image previews/lightbox, text previews when
   available, QA status, and separate Preview/Open versus Download actions. Run Workspace

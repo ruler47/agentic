@@ -15,7 +15,7 @@ new primary branch.
 - Active roadmap: `docs/roadmap-core-toolbelt.md`.
 - Active executable task queue: `docs/tasks/README.md`.
 - Active architecture map: `docs/current-architecture.md`.
-- Current active implementation task: `docs/tasks/06-p1-source-acquisition-and-search-quality.md`.
+- Current active implementation task: `docs/tasks/07-p1-proof-policy-and-evidence-artifacts.md`.
 
 Do not use `claude/phase17-research-delegation` as the active base. It was audited on
 2026-06-18 and still contains a legacy `src/agents/universalAgent.ts` above 9k lines plus
@@ -113,8 +113,18 @@ Recent P0 fixes:
   `update_working_board` meta-action; Run Workspace and Trace Lab render objective,
   phase, facts, candidates, rejected evidence, next action, draft status, compact
   metrics, scores, refs, and semantic LLM labels. Manual smokes:
-  `run_1782161622838_s46658d4` and `run_1782161672962_2lrltrod`. The next systemic gap
-  is task 06: source/search discipline and no-internet/broad-task framing.
+  `run_1782161622838_s46658d4` and `run_1782161672962_2lrltrod`.
+- Source/search discipline is complete for the current P1 slice. `TaskFrame` now carries
+  `sourcePolicy`; explicit no-internet/no-web requests forbid external source tools;
+  broad global research gets a mixed user-language/English source plan; API/docs tasks
+  bias toward official documentation; and local-provider tasks bias toward location-aware
+  provider search. `RunSourceRegistry` normalizes/redacts URLs, skips duplicate
+  normalized reads, avoids repeating blocked sources unless strategy changes, emits
+  `source-*` trace events plus `agent-source-search-plan-repair-requested`, and projects
+  discoveries/rejections into the Working / Decision Board. Technical assets, search
+  result pages, and social/provider search pages are filtered from source discovery,
+  skipped before broad-research `web.read`, and not promoted as board candidates unless
+  the user explicitly asks about that host/source type.
 - Preinstalled tools now exist on the primary branch: `web.search`, `web.read`,
   `browser.operate`, `browser.screenshot`, `http.request`, `file.read`, `file.write`,
   `document.extract`, `data.transform`, `external.action.prepare`,

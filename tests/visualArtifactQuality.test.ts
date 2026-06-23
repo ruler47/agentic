@@ -218,6 +218,36 @@ test("semantic artifact QA treats browser challenge pages as hard blockers even 
   assert.equal(report.decision, "blocked_or_loader");
 });
 
+test("semantic artifact QA rejects provider interstitial pages before URL or claim matching", () => {
+  const png = contentHeavyPng();
+
+  const report = inspectBrowserScreenshotEvidence({
+    artifact: {
+      filename: "asus_rog_strix_g16_proof_v2.png",
+      mimeType: "image/png",
+      content: PNG.sync.write(png),
+      description: "Browser screenshot captured from https://www.amazon.com/ASUS-2025-ROG-Strix-G16/dp/B0F8JZB2ZS.",
+    },
+    task: "Подбери ноутбук для локальных LLM и игр до 2500 долларов.",
+    browser: {
+      finalUrl: "https://www.amazon.com/ASUS-2025-ROG-Strix-G16/dp/B0F8JZB2ZS",
+      title: "Amazon.com",
+      extractedText: [
+        {
+          label: "visible-page",
+          text: "Click the button below to continue shopping\nContinue shopping\nConditions of Use Privacy Policy",
+        },
+      ],
+    },
+    expectedSignals: ["ASUS ROG Strix G16"],
+    toolContent: "Screenshot captured.",
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.decision, "blocked_or_loader");
+  assert.ok(report.blockerSignals.includes("continue interstitial"));
+});
+
 test("semantic artifact QA accepts visually valid relevant browser proof", () => {
   const png = contentHeavyPng();
 

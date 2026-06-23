@@ -14,11 +14,13 @@ class SequenceLlm {
   calls = 0;
   messagesByCall: Message[][] = [];
   optionsByCall: unknown[] = [];
+  toolsByCall: LlmToolSchema[][] = [];
 
   constructor(private readonly replies: LlmToolReply[]) {}
 
-  async completeWithTools(messages: Message[], _tools: LlmToolSchema[], options?: unknown): Promise<LlmToolReply> {
+  async completeWithTools(messages: Message[], tools: LlmToolSchema[], options?: unknown): Promise<LlmToolReply> {
     this.messagesByCall.push(messages);
+    this.toolsByCall.push(tools);
     this.optionsByCall.push(options);
     const reply = this.replies[Math.min(this.calls, this.replies.length - 1)];
     this.calls += 1;
@@ -70,6 +72,7 @@ test("BaseAgent answers simple direct facts without offering tool calls on the f
   assert.match(result.finalAnswer, /координатор|агент/i);
   assert.equal(fileReadCalls(), 0);
   assert.equal((llm.optionsByCall[0] as { toolChoice?: string } | undefined)?.toolChoice, "none");
+  assert.equal(llm.toolsByCall[0]?.length, 0);
 });
 
 test("BaseAgent repairs raw function-style tool syntax returned as a direct answer", async () => {
@@ -95,7 +98,39 @@ test("BaseAgent repairs raw function-style tool syntax returned as a direct answ
   assert.doesNotMatch(result.finalAnswer, /file\.read/);
   assert.equal(fileReadCalls(), 0);
   assert.equal(llm.calls, 2);
+  assert.equal(llm.toolsByCall[0]?.length, 0);
+  assert.equal(llm.toolsByCall[1]?.length, 0);
   assert.match(llm.messagesByCall[1]?.at(-1)?.content ?? "", /raw tool-call syntax/i);
+});
+
+test("BaseAgent keeps no-internet comparison frames out of tool-schema context", async () => {
+  const registry = new ToolRegistry();
+  registerCountingFileRead(registry);
+  registry.register({
+    name: "web.search",
+    version: "1.0.0",
+    description: "Searches the web.",
+    capabilities: ["web-search"],
+    inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    async run() {
+      return { ok: false, content: "should not be called" };
+    },
+  });
+
+  const llm = new SequenceLlm([
+    {
+      content: "Чай мягче по стимуляции, кофе сильнее и быстрее; без интернета это общая оценка, не свежая медицинская проверка.",
+      finishReason: "stop",
+      toolCalls: [],
+    },
+  ]);
+  const agent = new BaseAgent(llm as unknown as LlmClient, registry);
+  const result = await agent.run("Без интернета. Сравни чай и кофе как утренний напиток для концентрации.");
+
+  assert.equal(result.runStatus, "completed");
+  assert.match(result.finalAnswer, /Чай|кофе/i);
+  assert.equal((llm.optionsByCall[0] as { toolChoice?: string } | undefined)?.toolChoice, "none");
+  assert.equal(llm.toolsByCall[0]?.length, 0);
 });
 
 test("BaseAgent keeps direct-answer truncation repair in no-tool mode", async () => {

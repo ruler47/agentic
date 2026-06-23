@@ -15,12 +15,11 @@ and decomposition.
 
 Current order:
 
-1. [`06-p1-source-acquisition-and-search-quality.md`](tasks/06-p1-source-acquisition-and-search-quality.md)
-2. [`07-p1-proof-policy-and-evidence-artifacts.md`](tasks/07-p1-proof-policy-and-evidence-artifacts.md)
-3. [`08-p2-conversation-memory-and-continuation.md`](tasks/08-p2-conversation-memory-and-continuation.md)
-4. [`09-p2-external-action-ux.md`](tasks/09-p2-external-action-ux.md)
-5. [`10-p2-model-routing.md`](tasks/10-p2-model-routing.md)
-6. [`11-p3-tool-builder-redesign.md`](tasks/11-p3-tool-builder-redesign.md)
+1. [`07-p1-proof-policy-and-evidence-artifacts.md`](tasks/07-p1-proof-policy-and-evidence-artifacts.md)
+2. [`08-p2-conversation-memory-and-continuation.md`](tasks/08-p2-conversation-memory-and-continuation.md)
+3. [`09-p2-external-action-ux.md`](tasks/09-p2-external-action-ux.md)
+4. [`10-p2-model-routing.md`](tasks/10-p2-model-routing.md)
+5. [`11-p3-tool-builder-redesign.md`](tasks/11-p3-tool-builder-redesign.md)
 
 Cross-cutting quality gate:
 
@@ -48,22 +47,25 @@ Priority order and intent:
 
 | Priority | Task | Outcome |
 | --- | --- | --- |
-| P1 | [Source Acquisition, Search Discipline, And Source Cache](tasks/06-p1-source-acquisition-and-search-quality.md) | Broad research searches better, reads less duplicate content, and prefers higher-quality sources. |
 | P1 | [Proof Policy And Evidence Artifact Linking](tasks/07-p1-proof-policy-and-evidence-artifacts.md) | Proof is task-appropriate and linked to claims/candidates instead of being a loose screenshot gallery. |
 | P2 | [Conversation Memory, Prior Work, And Continuation Reliability](tasks/08-p2-conversation-memory-and-continuation.md) | Follow-ups visibly reuse conversation/prior evidence when appropriate and refresh only when needed. |
 | P2 | [External Action UX And Real-Provider Flow](tasks/09-p2-external-action-ux.md) | Booking/form/API-write actions use one understandable proposal/approval/report flow. |
 | P2 | [Model Routing](tasks/10-p2-model-routing.md) | Tiers route by required capabilities such as vision, reasoning, coding, and tool-calling. |
 | P3 | [Tool Builder Redesign](tasks/11-p3-tool-builder-redesign.md) | Builder returns as a portable tool-package layer after the core run loop is reliable. |
 
-Tasks 04 and 05 are implemented, verified, and removed from the active task queue:
+Tasks 04, 05, and 06 are implemented, verified, and removed from the active task queue:
 provider token/time metrics are visible in runs/conversations/traces, and the
 event-derived Working / Decision Board exposes objective, phase, facts, candidates,
 rejected evidence, open questions, next action, draft status, compact metrics, semantic
 LLM labels, source/proof refs, candidate scores, and safe model-writable updates through
-`update_working_board`. The next implementation task is
-[`06-p1-source-acquisition-and-search-quality.md`](tasks/06-p1-source-acquisition-and-search-quality.md).
-Its first target is to stop broad runs from over-searching or rereading weak sources and
-to respect tasks that explicitly request no external research.
+`update_working_board`. Source/search discipline now adds `TaskFrame.sourcePolicy`,
+mixed-language source planning, duplicate normalized URL read skips, source rejection
+events, low-value source filtering for technical assets/search-result pages, and board
+projection. Product-selection return gates now accept sufficient source coverage instead
+of requiring a third search call after two successful research calls already produced
+three independent proof-worthy URLs and a successful source read. The next implementation
+task is
+[`07-p1-proof-policy-and-evidence-artifacts.md`](tasks/07-p1-proof-policy-and-evidence-artifacts.md).
 
 Updated target process:
 
@@ -73,7 +75,8 @@ flowchart TD
   F --> M["Metrics baseline"]
   F --> B["Working Decision Ledger"]
   B --> S["Search/source plan"]
-  S --> T["Tool calls through registry"]
+  S --> SR["RunSourceRegistry\nnormalize, dedupe, reject"]
+  SR --> T["Tool calls through registry"]
   T --> E["Evidence + artifacts"]
   E --> P["Proof policy"]
   P --> G["Grounded final answer"]

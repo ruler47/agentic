@@ -165,7 +165,9 @@ export function buildArtifactQuality(input: {
     extractedText: [
       { label: "focusText", text: stringValue(input.input.focusText) ?? stringValue(data.focusText) },
       { label: "selector", text: stringValue(input.input.selector) ?? stringValue(data.selector) },
+      ...browserExtractedText(data.extractedText),
     ].filter((item) => item.text),
+    extractedLinks: browserExtractedLinks(data.extractedLinks),
   };
   const expectedSignals = [
     ...matchingProofEvidence(browser.finalUrl, input.proofEvidence).flatMap((evidence) => evidence.signals),
@@ -321,6 +323,45 @@ function semanticTokens(value: string): string[] {
 
 export function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function browserExtractedText(value: unknown): Array<{ label?: string; text?: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item, index) => {
+    if (typeof item === "string" && item.trim()) {
+      return [{ label: `text-${index + 1}`, text: item.trim() }];
+    }
+    if (!isRecord(item)) return [];
+    const text = stringValue(item.text)
+      ?? stringValue(item.content)
+      ?? stringValue(item.value)
+      ?? stringValue(item.markdown);
+    if (!text) return [];
+    return [{
+      label: stringValue(item.label) ?? stringValue(item.name) ?? `text-${index + 1}`,
+      text,
+    }];
+  });
+}
+
+function browserExtractedLinks(value: unknown): Array<{ label?: string; links?: Array<{ text?: string; href?: string }> }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((group, index) => {
+    if (!isRecord(group)) return [];
+    const links = Array.isArray(group.links)
+      ? group.links.flatMap((link) => {
+          if (!isRecord(link)) return [];
+          const href = stringValue(link.href) ?? stringValue(link.url);
+          const text = stringValue(link.text) ?? stringValue(link.label) ?? stringValue(link.title);
+          return href || text ? [{ href, text }] : [];
+        })
+      : [];
+    if (links.length === 0) return [];
+    return [{
+      label: stringValue(group.label) ?? stringValue(group.name) ?? `links-${index + 1}`,
+      links,
+    }];
+  });
 }
 
 export function extractArtifact(

@@ -237,7 +237,7 @@ test("BaseAgent includes run context in the prompt and emits a context trace eve
   });
 
   assert.equal(result.runStatus, "completed");
-  assert.equal(llm.tools.length, 5);
+  assert.equal(llm.tools.length, 0);
   const systemPrompt = llm.messages[0]?.content ?? "";
   assert.match(systemPrompt, /Current date\/time: 2026-05-15T15:00:00.000Z/);
   assert.match(systemPrompt, /Requester: Dimitrii/);
@@ -248,10 +248,7 @@ test("BaseAgent includes run context in the prompt and emits a context trace eve
   assert.match(systemPrompt, /totalFunds/);
   assert.match(systemPrompt, /do not repeat identical external\/API tool calls/);
   assert.match(systemPrompt, /Input artifacts: brief.txt/);
-  assert.match(systemPrompt, /file\.write@1\.2\.3/);
-  assert.match(systemPrompt, /source=generated status=available/);
-  assert.match(systemPrompt, /versions: 1\.2\.3 active available manual 2 ok\/0 failed/);
-  assert.match(llm.tools[0]?.function.description ?? "", /activeVersion=1\.2\.3/);
+  assert.doesNotMatch(systemPrompt, /file\.write@1\.2\.3/);
 
   const contextEvent = events.find((event) => event.type === "agent-context-prepared");
   assert.ok(contextEvent);
@@ -584,10 +581,11 @@ test("BaseAgent frames broad recommendation tasks and blocks one-search answers"
   assert.equal(taskFrame?.mode, "product_selection");
   assert.ok((taskFrame?.researchPlan?.length ?? 0) >= 4);
   assert.ok(taskFrame?.answerContract?.mustAvoid?.some((item) => /one roundup/i.test(item)));
-  const repairEvent = events.find((event) => event.type === "agent-research-contract-repair-requested");
+  const repairEvent = events.find((event) => event.type === "agent-source-search-plan-repair-requested");
   assert.ok(repairEvent);
-  assert.match(repairEvent.detail ?? "", /research contract/i);
-  assert.match(JSON.stringify(repairEvent.payload ?? {}), /source read\/extract/i);
+  assert.match(repairEvent.detail ?? "", /search language angles/i);
+  assert.match(JSON.stringify(repairEvent.payload ?? {}), /planned search/i);
+  assert.match(JSON.stringify(repairEvent.payload ?? {}), /\[ru\]/i);
 });
 
 test("BaseAgent frames reservation tasks with an external action policy", async () => {
@@ -705,7 +703,7 @@ test("BaseAgent only exposes tools allowed by runtime tool policy", async () => 
   const llm = new ContextLlm();
   const events: Array<{ type: string; payload?: unknown }> = [];
   const agent = new BaseAgent(llm as unknown as LlmClient, registry);
-  const result = await agent.run("Ответь ok", {
+  const result = await agent.run("Используй file.read, если нужен локальный контекст, и ответь ok", {
     toolPolicy: {
       allowedToolNames: ["file.read"],
       reason: "disabled.tool is disabled by metadata",

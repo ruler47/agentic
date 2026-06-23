@@ -6,6 +6,11 @@ import {
 } from "./externalActionPlanning.js";
 import { THREAD_CONTEXT_ANSWER_FRAME_MARKER } from "./baseAgentThreadContext.js";
 import { uniqueProofWorthyUrls } from "./proofSourceUrls.js";
+import {
+  buildSourceResearchPolicy,
+  detectNoExternalResearchInstruction,
+  type SourceResearchPolicy,
+} from "./sourceSearchPlan.js";
 
 const DEFAULT_MAX_STEPS = 10;
 
@@ -38,6 +43,7 @@ export type TaskFrame = {
   mode: TaskFrameMode;
   reason: string;
   researchDepth: ResearchDepth;
+  sourcePolicy: SourceResearchPolicy;
   idealOutcome: string;
   userSuccessCriteria: string[];
   likelyFailureModes: string[];
@@ -54,6 +60,7 @@ export type TaskFrame = {
     requiresClaimBasedProof: boolean;
   };
 };
+type TaskFrameCore = Omit<TaskFrame, "sourcePolicy">;
 
 export type ResearchContractGap = {
   reason: string;
@@ -83,6 +90,19 @@ export function taskNeedsCurrentExternalData(task: string): boolean {
 }
 
 export function frameTask(task: string): TaskFrame {
+  const frame = frameTaskCore(task);
+  return {
+    ...frame,
+    sourcePolicy: buildSourceResearchPolicy({
+      task,
+      mode: frame.mode,
+      researchDepth: frame.researchDepth,
+      externalAction: Boolean(frame.externalActionPolicy),
+    }),
+  };
+}
+
+function frameTaskCore(task: string): TaskFrameCore {
   if (task.includes(THREAD_CONTEXT_ANSWER_FRAME_MARKER)) {
     return {
       mode: "thread_context_answer",
@@ -212,6 +232,56 @@ export function frameTask(task: string): TaskFrame {
         finalAnswerShape: ["short completion summary", "artifact/file reference if created"],
         proofStrategy: "The local tool result and generated artifact are the proof; no browser proof is required.",
       },
+      researchContract: {
+        minResearchToolCalls: 0,
+        minIndependentSourceUrls: 0,
+        minSourceReadToolCalls: 0,
+        mustCheckFreshness: false,
+        requiresClaimBasedProof: false,
+      },
+    };
+  }
+
+  if (detectNoExternalResearchInstruction(task) && !externalActionPreparation) {
+    const reasoningComparison = selectionIntent || broadResearchIntent || multiCriteria;
+    return {
+      mode: reasoningComparison ? "exploratory_research" : "direct_fact",
+      reason: "The user explicitly asked not to use internet/web/search, so the task must be answered from local context and reasoning only.",
+      researchDepth: "none",
+      idealOutcome: reasoningComparison
+        ? "Compare or reason from available context without external lookup, and clearly mark any uncertainty that would require fresh sources."
+        : "Answer directly from available context, or state that the requested current fact cannot be checked without external access.",
+      userSuccessCriteria: criteria.length ? criteria : ["respect no-internet constraint", "be explicit about uncertainty"],
+      likelyFailureModes: ["calling web/search/read tools despite the user's constraint", "pretending current external facts were checked", "hiding uncertainty"],
+      exceedExpectations: ["separate general reasoning from facts that would require a fresh check", "ask for permission before refreshing externally"],
+      requiredEvidence: reasoningComparison ? ["local/thread context or general reasoning only"] : [],
+      researchPlan: reasoningComparison
+        ? [
+          {
+            step: "Reasoning-only comparison",
+            purpose: "Use local context and general criteria without external lookup.",
+            expectedEvidence: "User-provided facts, thread context, and explicitly stated assumptions.",
+            preferredTools: ["update_working_board"],
+          },
+        ]
+        : [],
+      answerContract: {
+        mustDo: [
+          "respect the no-internet/no-web constraint",
+          "state when a claim would require a fresh external check",
+          reasoningComparison ? "compare criteria and assumptions explicitly" : "answer concisely",
+        ],
+        mustAvoid: [
+          "web.search, web.read, browser, or HTTP calls",
+          "claiming current external verification",
+          "inventing citations or proof artifacts",
+        ],
+        finalAnswerShape: reasoningComparison
+          ? ["short answer", "criteria comparison", "assumptions/uncertainty"]
+          : ["direct answer", "limitation if current data is needed"],
+        proofStrategy: "No external proof is allowed under the user's no-internet constraint; use local/context evidence only.",
+      },
+      externalActionPolicy,
       researchContract: {
         minResearchToolCalls: 0,
         minIndependentSourceUrls: 0,
@@ -365,7 +435,7 @@ export function frameTask(task: string): TaskFrame {
       },
       externalActionPolicy,
       researchContract: {
-        minResearchToolCalls: externalActionPreparation ? 1 : 3,
+        minResearchToolCalls: externalActionPreparation ? 1 : 2,
         minIndependentSourceUrls: externalActionPreparation ? 1 : 3,
         minSourceReadToolCalls: externalActionPreparation ? 0 : 1,
         mustCheckFreshness: true,
@@ -506,6 +576,15 @@ export function formatTaskFrameForPrompt(frame: TaskFrame): string {
     `- Answer contract must avoid: ${frame.answerContract.mustAvoid.join("; ")}`,
     `- Final answer shape: ${frame.answerContract.finalAnswerShape.join("; ")}`,
     `- Proof strategy: ${frame.answerContract.proofStrategy}`,
+    `- Source policy: externalResearch=${frame.sourcePolicy.externalResearch}; ${frame.sourcePolicy.reason}`,
+    frame.sourcePolicy.searchPlan?.queries.length
+      ? [
+          `- Source search plan: ${frame.sourcePolicy.searchPlan.strategy}; mixedLanguage=${frame.sourcePolicy.searchPlan.requiresMixedLanguageSearch ? "required" : "not required"}`,
+          ...frame.sourcePolicy.searchPlan.queries.map((query, index) =>
+            `  ${index + 1}. [${query.language}] ${query.query} — ${query.purpose} Expected source types: ${query.expectedSourceTypes.join(", ")}`,
+          ),
+        ].join("\n")
+      : undefined,
     frame.externalActionPolicy
       ? [
           `- External action policy: ${frame.externalActionPolicy.actionType}`,
@@ -627,6 +706,8 @@ function looksLikeLocalUtilityTask(task: string): boolean {
   const normalized = normalizeForTaskFrame(task);
   if (/\b(?:file\.read|file\.write|document\.extract|data\.transform)\b/i.test(task)) return true;
   if (/(?:сохрани|запиши|создай|write|save|create).{0,120}\.(?:csv|json|txt|md|html|xml)\b/i.test(task)) return true;
+  if (/(?:прочитай|извлеки|extract|read|parse|распарс).{0,80}\b(?:pdf|docx|document|документ|файл)\b/i.test(task)) return true;
+  if (/\b(?:pdf|docx|document|документ|файл)\b.{0,80}(?:прочитай|извлеки|extract|read|parse|распарс)/i.test(task)) return true;
   if (/\.(?:csv|json|txt|md|pdf|docx|html)\b/i.test(task) && /(?:прочитай|извлеки|extract|read|parse|преобраз|конверт|convert|transform|сохрани|save|write)/i.test(task)) {
     return true;
   }

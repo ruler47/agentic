@@ -6,6 +6,7 @@ import { maybeSaveArtifact, saveStructuredDataProofArtifact, shouldSaveStructure
 import { extractClaimProofSignals, extractProofEvidenceForSourceUrls, extractSourceUrls, finalAnswerWithProofArtifact, isUsableProofArtifact } from "./baseAgentEvidence.js";
 import { isScreenshotProofTool, proofInstructionForModel } from "./baseAgentProof.js";
 import { emit, runWithTimeout } from "./baseAgentRuntime.js";
+import { findRepeatedSearchQuery, rememberSearchQuery } from "./baseAgentSearchHistory.js";
 import {
   claimBaseAgentToolWork,
   completeBaseAgentToolWork,
@@ -16,7 +17,18 @@ import {
 import { extractPrimaryResultFields, renderToolResultForModel, runtimeDiagnosticFromError, safeToolName, toolMessage } from "./baseAgentToolMessages.js";
 import { createToolSpanId, summarizeToolResultForTrace } from "./baseAgentTrace.js";
 import type { BaseAgentRunContext, BaseAgentRunOptions, BaseAgentToolCandidateAccepted, CachedToolCall, FailedToolCall, ProofEvidence, ToolPrimaryResult } from "./baseAgentTypes.js";
+import {
+  emitRejectedSourceForThrownRead,
+  emitSourceEventsForToolResult,
+  emitSourceReadExcludedEvent,
+  emitSourceReadSkippedEvent,
+  externalSourceToolGuardMessage,
+  looksLikeSourceReadCall,
+} from "./baseAgentSourceEvents.js";
+import { lowValueSourceReadSkipReason } from "./baseAgentSourceReadPolicy.js";
 import { PROOF_SOURCE_URL_LIMIT, isProofWorthySourceUrl } from "./proofSourceUrls.js";
+import { detectSearchQueryLanguage } from "./sourceSearchPlan.js";
+import type { RunSourceRegistry } from "./sourceRegistry.js";
 import { shouldRequireResearchContract, type TaskFrame } from "./taskFrame.js";
 
 type EmitToolEvent = (
@@ -45,6 +57,8 @@ type BaseAgentRegisteredToolCallInput = {
   structuredProofArtifacts: AgentArtifact[];
   toolResultCache: Map<string, CachedToolCall>;
   searchQueryHistory: Map<string, string>;
+  sourceRegistry: RunSourceRegistry;
+  sourceSearchLanguages: Set<string>;
   externalEvidenceUrls: Set<string>;
   externalDataEvidenceUrls: Set<string>;
   proofEvidenceByUrl: Map<string, ProofEvidence>;
@@ -98,6 +112,8 @@ export async function handleBaseAgentRegisteredToolCall(
     structuredProofArtifacts,
     toolResultCache,
     searchQueryHistory,
+    sourceRegistry,
+    sourceSearchLanguages,
     externalEvidenceUrls,
     externalDataEvidenceUrls,
     proofEvidenceByUrl,
@@ -126,6 +142,22 @@ export async function handleBaseAgentRegisteredToolCall(
     finalAnswer,
   });
 
+  const forbiddenExternalSource = externalSourceToolGuardMessage(taskFrame, call.name);
+  if (forbiddenExternalSource) {
+    const skippedSpanId = createToolSpanId(runContext.runId, attemptedToolCalls + 1, call.name);
+    messages.push(toolMessage(call.id, false, forbiddenExternalSource));
+    await input.emitToolEvent(options.onEvent, call.name, call.arguments, false, forbiddenExternalSource, 0, {
+      spanId: skippedSpanId,
+      parentSpanId: llmSpanId,
+      step,
+      toolCallNumber: attemptedToolCalls + 1,
+      sourcePolicyBlocked: true,
+      input: call.arguments,
+      output: { ok: false, content: forbiddenExternalSource },
+    });
+    return output("continue");
+  }
+
   const repeatedSearch = findRepeatedSearchQuery(call, searchQueryHistory);
   if (repeatedSearch) {
     const skippedSpanId = createToolSpanId(runContext.runId, attemptedToolCalls + 1, call.name);
@@ -148,6 +180,41 @@ export async function handleBaseAgentRegisteredToolCall(
     return output("continue");
   }
   rememberSearchQuery(call, searchQueryHistory);
+
+  const lowValueSourceReadReason = lowValueSourceReadSkipReason(task, taskFrame, call);
+  if (lowValueSourceReadReason) {
+    const skippedSpanId = createToolSpanId(runContext.runId, attemptedToolCalls + 1, call.name);
+    messages.push(toolMessage(call.id, true, lowValueSourceReadReason.message));
+    await emitSourceReadExcludedEvent({
+      call,
+      reason: lowValueSourceReadReason.message,
+      originalUrl: lowValueSourceReadReason.originalUrl,
+      normalizedUrl: lowValueSourceReadReason.normalizedUrl,
+      options,
+      skippedSpanId,
+      llmSpanId,
+      step,
+      toolCallNumber: attemptedToolCalls + 1,
+    });
+    return output("continue");
+  }
+
+  const skippedRead = sourceRegistry.shouldSkipRead(call.arguments);
+  if (skippedRead && looksLikeSourceReadCall(call.name)) {
+    const skippedSpanId = createToolSpanId(runContext.runId, attemptedToolCalls + 1, call.name);
+    const message = `${skippedRead.reason} Normalized URL: ${skippedRead.record.normalizedUrl}`;
+    messages.push(toolMessage(call.id, true, message));
+    await emitSourceReadSkippedEvent({
+      call,
+      skippedRead,
+      options,
+      skippedSpanId,
+      llmSpanId,
+      step,
+      toolCallNumber: attemptedToolCalls + 1,
+    });
+    return output("continue");
+  }
 
   attemptedToolCalls += 1;
   const toolSpanId = createToolSpanId(runContext.runId, attemptedToolCalls, call.name);
@@ -444,6 +511,17 @@ export async function handleBaseAgentRegisteredToolCall(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    await emitRejectedSourceForThrownRead({
+      call,
+      toolName: tool.name,
+      llmSpanId,
+      toolSpanId,
+      options,
+      sourceRegistry,
+      step,
+      attemptedToolCalls,
+      message,
+    });
     await failBaseAgentToolWork({
       ledger: options.ledger,
       claim: ledgerClaim,
@@ -509,6 +587,18 @@ export async function handleBaseAgentRegisteredToolCall(
         proofEvidenceByUrl.set(evidence.sourceUrl, evidence);
       }
     }
+    await emitSourceEventsForToolResult({
+      call,
+      tool,
+      result,
+      sourceUrls,
+      sourceRegistry,
+      options,
+      toolSpanId,
+      step,
+      attemptedToolCalls,
+    });
+    recordSourceSearchLanguage(call, tool, sourceSearchLanguages);
     toolResultCache.set(cacheKey, {
       result,
       preview,
@@ -581,6 +671,18 @@ export async function handleBaseAgentRegisteredToolCall(
     }
   } else {
     failedToolCalls.push({ toolName: tool.name, message: result.content });
+    const sourceUrls = extractSourceUrls(call.arguments, result);
+    await emitSourceEventsForToolResult({
+      call,
+      tool,
+      result,
+      sourceUrls,
+      sourceRegistry,
+      options,
+      toolSpanId,
+      step,
+      attemptedToolCalls,
+    });
   }
   await completeBaseAgentToolWork({
     ledger: options.ledger,
@@ -645,6 +747,20 @@ function isSourceReadTool(tool: Tool): boolean {
     .test(haystack);
 }
 
+function recordSourceSearchLanguage(
+  call: LlmToolReply["toolCalls"][number],
+  tool: Tool,
+  sourceSearchLanguages: Set<string>,
+): void {
+  const toolName = tool.name.replace(/_/g, ".");
+  const callName = call.name.replace(/_/g, ".");
+  if (!/(?:^|[.])search$/i.test(toolName) && !/(?:^|[.])search$/i.test(callName)) return;
+  const query = call.arguments.query;
+  if (typeof query === "string" && query.trim()) {
+    sourceSearchLanguages.add(detectSearchQueryLanguage(query));
+  }
+}
+
 function externalActionApprovalToolGuardMessage(
   taskFrame: TaskFrame,
   tool: Tool,
@@ -667,97 +783,3 @@ function isBrowserOperationTool(tool: Tool): boolean {
     haystack,
   );
 }
-
-function findRepeatedSearchQuery(
-  call: LlmToolReply["toolCalls"][number],
-  history: Map<string, string>,
-): { query: string; priorQuery: string } | undefined {
-  const query = extractSearchQuery(call);
-  if (!query) return undefined;
-  const normalized = normalizeSearchQuery(query);
-  if (!normalized) return undefined;
-  for (const [priorNormalized, priorQuery] of history) {
-    if (normalized === priorNormalized || searchQuerySimilarity(normalized, priorNormalized) >= 0.82) {
-      return { query, priorQuery };
-    }
-  }
-  return undefined;
-}
-
-function rememberSearchQuery(
-  call: LlmToolReply["toolCalls"][number],
-  history: Map<string, string>,
-): void {
-  const query = extractSearchQuery(call);
-  if (!query) return;
-  const normalized = normalizeSearchQuery(query);
-  if (normalized && !history.has(normalized)) history.set(normalized, query);
-}
-
-function extractSearchQuery(call: LlmToolReply["toolCalls"][number]): string | undefined {
-  if (!/(?:^|[._-])search$/i.test(call.name) && !/^web[_-]search$/i.test(call.name)) return undefined;
-  const query = call.arguments.query;
-  return typeof query === "string" && query.trim() ? query.trim() : undefined;
-}
-
-function normalizeSearchQuery(query: string): string {
-  return query
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/["'`«»“”‘’()[\]{}]/g, " ")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim()
-    .split(/\s+/)
-    .filter((token) => token.length > 1 && !SEARCH_STOP_WORDS.has(token))
-    .join(" ");
-}
-
-function searchQuerySimilarity(left: string, right: string): number {
-  if (!left || !right) return 0;
-  const leftTokens = new Set(left.split(/\s+/).filter(Boolean));
-  const rightTokens = new Set(right.split(/\s+/).filter(Boolean));
-  const tokenUnion = new Set([...leftTokens, ...rightTokens]);
-  const tokenIntersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
-  const tokenScore = tokenUnion.size ? tokenIntersection / tokenUnion.size : 0;
-  return Math.max(tokenScore, ngramSimilarity(left, right));
-}
-
-function ngramSimilarity(left: string, right: string): number {
-  const leftGrams = ngrams(left, 3);
-  const rightGrams = ngrams(right, 3);
-  if (!leftGrams.size || !rightGrams.size) return 0;
-  const intersection = [...leftGrams].filter((gram) => rightGrams.has(gram)).length;
-  const union = new Set([...leftGrams, ...rightGrams]).size;
-  return intersection / union;
-}
-
-function ngrams(value: string, size: number): Set<string> {
-  const compact = `  ${value.replace(/\s+/g, " ")}  `;
-  const result = new Set<string>();
-  for (let index = 0; index <= compact.length - size; index += 1) {
-    result.add(compact.slice(index, index + size));
-  }
-  return result;
-}
-
-const SEARCH_STOP_WORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "best",
-  "for",
-  "in",
-  "near",
-  "of",
-  "or",
-  "query",
-  "research",
-  "search",
-  "the",
-  "to",
-  "with",
-  "найди",
-  "поиск",
-  "ресторан",
-]);

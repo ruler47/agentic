@@ -2,12 +2,7 @@ import type { AgentArtifact, AgentRunResult, ExternalActionProposal, Message } f
 import type { LlmClient } from "../llm/client.js";
 import type { ModelCapability } from "../settings/modelCatalog.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import {
-  attachInitialScopedCandidates,
-  buildToolCatalog,
-  selectTools,
-  type BaseAgentToolCatalogEntry,
-} from "./agentToolCatalog.js";
+import { attachInitialScopedCandidates, buildToolCatalog, selectTools, type BaseAgentToolCatalogEntry } from "./agentToolCatalog.js";
 import { DEFAULT_AGENT_LOOP_TIER, DEFAULT_LLM_MAX_TOKENS, DEFAULT_TOOL_TIMEOUT_MS } from "./baseAgentConstants.js";
 import { emitBaseAgentContextEvents } from "./baseAgentContextEvents.js";
 import { inferRequiredArtifacts } from "./baseAgentEvidence.js";
@@ -18,48 +13,20 @@ import { prepareBaseAgentPriorWork } from "./baseAgentPriorWork.js";
 import { handleBaseAgentRegisteredToolCall } from "./baseAgentToolExecution.js";
 import { buildBaseAgentSystemPrompt, buildBaseAgentToolSchemas, FINAL_STEP_WRAP_UP_NUDGE } from "./baseAgentPrompt.js";
 import { handleBaseAgentToolLifecycleCall } from "./baseAgentToolLifecycle.js";
-import {
-  candidateUseRepairInstructionForModel,
-  proofRepairInstructionForModel,
-  sourceGroundingRepairInstructionForModel,
-} from "./baseAgentProof.js";
+import { emitBaseAgentStartedEvent, emitLlmDecisionEvent, emitModelRouteDecisionEvent, emitSourceSearchPlanCreatedEvent, emitTaskFramedEvent } from "./baseAgentLoopEvents.js";
+import { candidateUseRepairInstructionForModel, proofRepairInstructionForModel, sourceGroundingRepairInstructionForModel } from "./baseAgentProof.js";
 import { emit, hasRemainingSteps, hasRemainingToolCalls, runWithTimeout } from "./baseAgentRuntime.js";
+import { requestSourceSearchPlanRepair } from "./baseAgentSourcePlanRepair.js";
 import { emitBaseAgentToolEvent, resolveBaseAgentTool } from "./baseAgentToolRuntimeHelpers.js";
-import {
-  limitText,
-  publicToolCreationOutcomeForTrace,
-  publicToolEditOutcomeForTrace,
-  toolMessage,
-} from "./baseAgentToolMessages.js";
-import {
-  compactToolMessagesForContextBudget,
-  pushFinalStepNudge,
-  recoverFromContextOverflow,
-  requestTruncatedAnswerRepair,
-} from "./baseAgentTruncation.js";
+import { scopedToolsForTaskFrame } from "./baseAgentToolScope.js";
+import { limitText, publicToolCreationOutcomeForTrace, publicToolEditOutcomeForTrace, toolMessage } from "./baseAgentToolMessages.js";
+import { compactToolMessagesForContextBudget, pushFinalStepNudge, recoverFromContextOverflow, requestTruncatedAnswerRepair } from "./baseAgentTruncation.js";
 import { taskWithThreadContextForFraming } from "./baseAgentThreadContext.js";
-import { shouldAnswerWithoutTools } from "./baseAgentToolChoice.js";
-import { handleWorkingBoardToolCall, llmSemanticTitle } from "./baseAgentWorkingBoard.js";
-import {
-  containsRawToolCallSyntax,
-  createAgentSpanId,
-  createLlmSpanId,
-  failedResult,
-  normalizeRunContext,
-  publicArtifactForTrace,
-  publicMessageForTrace,
-  publicProofEvidenceForTrace,
-} from "./baseAgentTrace.js";
-import type {
-  BaseAgentRunOptions,
-  BaseAgentToolCandidateAccepted,
-  CachedToolCall,
-  FailedToolCall,
-  ProofEvidence,
-  ToolPrimaryResult,
-  ToolCreationOutcome,
-  ToolEditOutcome,
-} from "./baseAgentTypes.js";
+import { inferExplicitToolNeed, shouldAnswerWithoutTools } from "./baseAgentToolChoice.js";
+import { handleWorkingBoardToolCall } from "./baseAgentWorkingBoard.js";
+import { containsRawToolCallSyntax, createAgentSpanId, createLlmSpanId, failedResult, normalizeRunContext, publicArtifactForTrace, publicMessageForTrace, publicProofEvidenceForTrace } from "./baseAgentTrace.js";
+import { RunSourceRegistry } from "./sourceRegistry.js";
+import type { BaseAgentRunOptions, BaseAgentToolCandidateAccepted, CachedToolCall, FailedToolCall, ProofEvidence, ToolPrimaryResult, ToolCreationOutcome, ToolEditOutcome } from "./baseAgentTypes.js";
 import { PROOF_SOURCE_URL_LIMIT } from "./proofSourceUrls.js";
 import { defaultMaxStepsForTaskFrame, frameTask, researchContractRepairInstructionForModel, shouldRequireResearchContract } from "./taskFrame.js";
 
@@ -67,10 +34,7 @@ export type { BaseAgentToolCatalogEntry } from "./agentToolCatalog.js";
 export type { BaseAgentRunContext, BaseAgentRunOptions, BaseAgentToolCandidateAccepted, BaseAgentToolCreationRequest, BaseAgentToolCreationResult, BaseAgentToolEditRequest, BaseAgentToolEditResult } from "./baseAgentTypes.js";
 
 export class BaseAgent {
-  constructor(
-    private readonly llm: LlmClient,
-    private readonly tools: ToolRegistry,
-  ) {}
+  constructor(private readonly llm: LlmClient, private readonly tools: ToolRegistry) {}
 
   async run(task: string, options: BaseAgentRunOptions = {}): Promise<AgentRunResult> {
     const startedAt = new Date();
@@ -88,6 +52,8 @@ export class BaseAgent {
     const externalDataEvidenceUrls = new Set<string>();
     const proofEvidenceByUrl = new Map<string, ProofEvidence>();
     const searchQueryHistory = new Map<string, string>();
+    const sourceRegistry = new RunSourceRegistry();
+    const sourceSearchLanguages = new Set<string>();
     let runContext = normalizeRunContext(options.runContext, options.runId, startedAt);
     const taskFrame = frameTask(taskWithThreadContextForFraming(task, runContext));
     const maxSteps = options.maxSteps ?? defaultMaxStepsForTaskFrame(taskFrame);
@@ -104,8 +70,10 @@ export class BaseAgent {
     let successfulSourceReadToolCalls = 0;
     let researchRepairAttempts = 0;
     let sourceGroundingRepairAttempts = 0;
+    let sourceSearchPlanRepairAttempts = 0;
     let latestDraftAnswerForProof = "";
     const requiredArtifacts = inferRequiredArtifacts(task);
+    const explicitToolNeed = inferExplicitToolNeed(task);
     const rootSpanId = createAgentSpanId(runContext.runId, "root");
     const contextSpanId = createAgentSpanId(runContext.runId, "context");
     const taskFrameSpanId = createAgentSpanId(runContext.runId, "task-frame");
@@ -118,17 +86,11 @@ export class BaseAgent {
       toolCreationRequests: toolCreationRequests as unknown as Array<Record<string, unknown>>,
     }));
 
-    await emit(options.onEvent, {
-      spanId: rootSpanId,
-      type: "agent-invocation-started",
-      actor: "base-agent",
-      activity: "agent",
-      status: "started",
-      title: "Base agent started",
-      detail: requiredArtifacts.screenshot
-        ? "Task requires a screenshot artifact."
-        : "Minimal agent loop started.",
+    await emitBaseAgentStartedEvent({
+      onEvent: options.onEvent,
+      rootSpanId,
       startedAt,
+      requiresScreenshot: requiredArtifacts.screenshot,
     });
 
     await emitBaseAgentContextEvents({
@@ -146,22 +108,22 @@ export class BaseAgent {
       toolPolicy: options.toolPolicy,
     });
 
-    await emit(options.onEvent, {
-      spanId: taskFrameSpanId,
-      parentSpanId: rootSpanId,
-      type: "agent-task-framed",
-      actor: "base-agent",
-      activity: "agent",
-      status: "completed",
-      title: "Task framed",
-      detail: `${taskFrame.mode}: ${taskFrame.reason}`,
+    await emitTaskFramedEvent({
+      onEvent: options.onEvent,
+      taskFrameSpanId,
+      rootSpanId,
       startedAt,
-      completedAt: new Date(),
-      payload: {
-        input: { task },
-        output: taskFrame,
-        taskFrame,
-      },
+      task,
+      taskFrame,
+    });
+
+    await emitSourceSearchPlanCreatedEvent({
+      onEvent: options.onEvent,
+      runId: runContext.runId,
+      taskFrameSpanId,
+      task,
+      taskFrame,
+      startedAt,
     });
 
     const priorWork = await prepareBaseAgentPriorWork({
@@ -181,8 +143,15 @@ export class BaseAgent {
     const currentFactResult = await tryRunCurrentFactFastPath({ task, options, runContext, taskFrame, tools, registry: this.tools, llm: this.llm, startedAt, rootSpanId, maxSteps, toolTimeoutMs });
     if (currentFactResult) return currentFactResult;
 
+    const initialToolScope = scopedToolsForTaskFrame({
+      tools,
+      toolCatalog,
+      taskFrame,
+      hasRunScopedCandidates: (options.initialScopedToolCandidates ?? []).length > 0,
+      explicitToolNeed,
+    });
     const messages: Message[] = [
-      { role: "system", content: buildBaseAgentSystemPrompt(runContext, tools, toolCatalog, taskFrame) },
+      { role: "system", content: buildBaseAgentSystemPrompt(runContext, initialToolScope.tools, initialToolScope.toolCatalog, taskFrame) },
       { role: "user", content: task },
     ];
     let finalAnswer = "";
@@ -196,16 +165,27 @@ export class BaseAgent {
       }
 
       const llmSpanId = createLlmSpanId(runContext.runId, step);
-      const toolSchemas = buildBaseAgentToolSchemas(tools, toolCatalog);
       const isFinalBudgetedStep = maxSteps !== undefined && step >= maxSteps && step > 1;
       if (isFinalBudgetedStep) pushFinalStepNudge(messages, FINAL_STEP_WRAP_UP_NUDGE);
+      const hasRunScopedCandidates = toolCatalog.some((entry) => entry.visibility === "run_scoped_candidate");
       const stepToolChoice = isFinalBudgetedStep || shouldAnswerWithoutTools({
         step,
         taskFrame,
-        hasRunScopedCandidates: (options.initialScopedToolCandidates ?? []).length > 0,
+        hasRunScopedCandidates,
+        requiresToolCapability: Boolean(explicitToolNeed),
       })
         ? ("none" as const)
         : ("auto" as const);
+      const stepToolScope = scopedToolsForTaskFrame({
+        tools,
+        toolCatalog,
+        taskFrame,
+        hasRunScopedCandidates,
+        explicitToolNeed,
+      });
+      const toolSchemas = stepToolChoice === "none"
+        ? []
+        : buildBaseAgentToolSchemas(stepToolScope.tools, stepToolScope.toolCatalog);
       const preferredModelCapabilities: ModelCapability[] = stepToolChoice === "auto" && toolSchemas.length > 0
         ? ["tool-calling"]
         : [];
@@ -233,18 +213,12 @@ export class BaseAgent {
             maxTokens: DEFAULT_LLM_MAX_TOKENS,
             preferredCapabilities: preferredModelCapabilities,
             onRouteDecision: async (decision) => {
-              await emit(options.onEvent, {
-                spanId: `${llmSpanId}:model-route`,
-                parentSpanId: rootSpanId,
-                type: "model-route-selected",
-                actor: "base-agent",
-                activity: "llm",
-                status: "completed",
-                title: "Model route selected",
-                detail: decision.reason,
-                startedAt: llmStartedAt,
-                completedAt: new Date(),
-                payload: decision,
+              await emitModelRouteDecisionEvent({
+                onEvent: options.onEvent,
+                llmSpanId,
+                rootSpanId,
+                llmStartedAt,
+                decision,
               });
             },
           }),
@@ -261,41 +235,15 @@ export class BaseAgent {
       }
 
       const llmCompletedAt = new Date();
-      await emit(options.onEvent, {
-        spanId: llmSpanId,
-        parentSpanId: rootSpanId,
-        type: "agent-invocation-decision-selected",
-        actor: "base-agent",
-        activity: "llm",
-        status: "completed",
-        title: `LLM step ${step}`,
-        detail: reply.finishReason === "tool_calls"
-          ? `Model requested ${reply.toolCalls.length} tool call(s).`
-          : "Model returned a final answer.",
-        startedAt: llmStartedAt,
-        completedAt: llmCompletedAt,
-        durationMs: Math.max(0, llmCompletedAt.getTime() - llmStartedAt.getTime()),
-        payload: {
-          step,
-          semanticTitle: llmSemanticTitle(reply.finishReason, reply.toolCalls.map((call) => call.name)),
-          model: reply.model,
-          usage: reply.usage,
-          input: llmInput,
-          output: {
-            finishReason: reply.finishReason,
-            model: reply.model,
-            usage: reply.usage,
-            content: limitText(reply.content, 4_000),
-            toolCalls: reply.toolCalls.map((call) => ({
-              id: call.id,
-              name: call.name,
-              arguments: call.arguments,
-            })),
-          },
-          finishReason: reply.finishReason,
-          toolCalls: reply.toolCalls.map((call) => ({ id: call.id, name: call.name })),
-          contentPreview: limitText(reply.content, 500),
-        },
+      await emitLlmDecisionEvent({
+        onEvent: options.onEvent,
+        llmSpanId,
+        rootSpanId,
+        step,
+        reply,
+        llmInput,
+        llmStartedAt,
+        llmCompletedAt,
       });
 
       if (reply.finishReason !== "tool_calls" || reply.toolCalls.length === 0) {
@@ -335,9 +283,9 @@ export class BaseAgent {
               "Write the final user-facing answer in plain prose now from the evidence already collected. Do not emit tool-call syntax.",
           });
           if (maxSteps !== undefined && step >= maxSteps + answerRepairExtensions) answerRepairExtensions += 1;
-          finalAnswer = "";
-          continue;
-        }
+            finalAnswer = "";
+            continue;
+          }
         const candidateUseRepairInstruction = candidateUseRepairInstructionForModel({
           task,
           finalAnswer,
@@ -376,6 +324,26 @@ export class BaseAgent {
               },
             },
           });
+          finalAnswer = "";
+          continue;
+        }
+        const sourcePlanRepair = await requestSourceSearchPlanRepair({
+          policy: taskFrame.sourcePolicy,
+          executedLanguages: [...sourceSearchLanguages],
+          tools,
+          repairAttempts: sourceSearchPlanRepairAttempts,
+          step,
+          maxSteps,
+          attemptedToolCalls,
+          maxToolCalls,
+          messages,
+          finalAnswer,
+          onEvent: options.onEvent,
+          parentSpanId: llmSpanId,
+          startedAt,
+        });
+        if (sourcePlanRepair.repaired) {
+          sourceSearchPlanRepairAttempts = sourcePlanRepair.repairAttempts;
           finalAnswer = "";
           continue;
         }
@@ -573,6 +541,27 @@ export class BaseAgent {
             finalAnswer = "";
             continue;
           }
+          const sourcePlanRepair = await requestSourceSearchPlanRepair({
+            policy: taskFrame.sourcePolicy,
+            executedLanguages: [...sourceSearchLanguages],
+            tools,
+            repairAttempts: sourceSearchPlanRepairAttempts,
+            step,
+            maxSteps,
+            attemptedToolCalls,
+            maxToolCalls,
+            messages,
+            finalAnswer,
+            onEvent: options.onEvent,
+            parentSpanId: llmSpanId,
+            startedAt,
+            toolCallId: call.id,
+          });
+          if (sourcePlanRepair.repaired) {
+            sourceSearchPlanRepairAttempts = sourcePlanRepair.repairAttempts;
+            finalAnswer = "";
+            continue;
+          }
           const researchRepairInstruction = researchContractRepairInstructionForModel({
             taskFrame,
             finalAnswer,
@@ -742,6 +731,8 @@ export class BaseAgent {
           structuredProofArtifacts,
           toolResultCache,
           searchQueryHistory,
+          sourceRegistry,
+          sourceSearchLanguages,
           externalEvidenceUrls,
           externalDataEvidenceUrls,
           proofEvidenceByUrl,

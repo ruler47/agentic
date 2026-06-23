@@ -203,7 +203,7 @@ test("BaseAgent proof repair focuses final-answer claims instead of generic year
   ]);
   const events: AgentEvent[] = [];
   const agent = new BaseAgent(llm as unknown as LlmClient, registry);
-  await agent.run("Найди по внешним источникам актуальный продукт для разработчиков в 2026 году.", {
+  await agent.run("Find from external sources a current developer product for 2026.", {
     maxSteps: 4,
     onEvent: (event) => {
       events.push(event);

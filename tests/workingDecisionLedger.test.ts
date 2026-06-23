@@ -109,6 +109,46 @@ test("working decision sink records repair events as rejected evidence", async (
   assert.match(latest.rejectedEvidence[0]?.reason ?? "", /concrete claims/);
 });
 
+test("working decision sink keeps low-value source reads out of candidate board", async () => {
+  const events: AgentEvent[] = [];
+  const sink = createWorkingDecisionEventSink({
+    runId: "run_low_value_sources",
+    task: "Research laptop recommendations.",
+    sink: (entry) => {
+      events.push(entry);
+    },
+  });
+
+  await sink(event({
+    id: "frame",
+    spanId: "run_low_value_sources-agent-task-frame",
+    type: "agent-task-framed",
+    title: "Task framed",
+    payload: { output: { mode: "product_selection", idealOutcome: "Find source-backed candidates." } },
+  }));
+  await sink(event({
+    id: "read-low-value",
+    spanId: "run_low_value_sources-tool-1-web_read-source-read",
+    type: "source-read-recorded",
+    actor: "web.read",
+    activity: "tool",
+    title: "Source read recorded",
+    payload: {
+      source: {
+        sourceId: "src_youtube_results",
+        normalizedUrl: "https://youtube.com/results?search_query=best+laptop",
+        sourceType: "search_results",
+        qualityScore: 0.18,
+      },
+    },
+  }));
+
+  const latest = latestWorkingDecisionSnapshot(events);
+  assert.ok(latest);
+  assert.equal(latest.candidates.some((candidate) => candidate.sourceUrl?.includes("youtube.com/results")), false);
+  assert.ok(latest.rejectedEvidence.some((rejected) => /not durable enough/i.test(rejected.reason)));
+});
+
 test("working decision sink applies validated model board updates", async () => {
   const events: AgentEvent[] = [];
   const sink = createWorkingDecisionEventSink({

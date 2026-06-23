@@ -27,30 +27,38 @@ export type SemanticArtifactQualityReport = {
   evidenceTextLength: number;
 };
 
-const blockerPatterns = [
-  /\bloading\b/i,
-  /\bcookie(?:s)?\b/i,
-  /\bconsent\b/i,
-  /\bprivacy\s+(?:preferences|settings|policy)\b/i,
-  /\bmanage\s+options\b/i,
-  /\bdo\s+not\s+consent\b/i,
-  /\bfrom\s+meta\b/i,
-  /\bsign\s*in\b/i,
-  /\blog\s*in\b/i,
-  /\baccess\s+denied\b/i,
-  /\bforbidden\b/i,
-  /\bnot\s+available\b/i,
-  /\bpage\s+unavailable\b/i,
-  /\benable\s+javascript\b/i,
-  /\bchecking\s+your\s+browser\b/i,
-  /\bverify\s+(?:you|yourself|real|human)\b/i,
-  /\bjust\s+a\s+moment\b/i,
-  /\btry\s+again\s+later\b/i,
-  /\bне\s+удалось\b/i,
-  /\bзагрузка\b/i,
-  /\bвойдите\b/i,
-  /\bдоступ\s+запрещ/i,
-  /\bстраница\s+недоступ/i,
+const blockerPatterns: Array<{ pattern: RegExp; label: string; hard?: boolean }> = [
+  { pattern: /\bloading\b/i, label: "loading", hard: false },
+  { pattern: /\bcookie(?:s)?\b/i, label: "cookies" },
+  { pattern: /\bconsent\b/i, label: "consent" },
+  { pattern: /\bprivacy\s+(?:preferences|settings|policy)\b/i, label: "privacy policy" },
+  { pattern: /\bmanage\s+options\b/i, label: "manage options" },
+  { pattern: /\bdo\s+not\s+consent\b/i, label: "do not consent" },
+  { pattern: /\bfrom\s+meta\b/i, label: "from meta" },
+  { pattern: /\bsign\s*in\b/i, label: "sign in" },
+  { pattern: /\blog\s*in\b/i, label: "login" },
+  { pattern: /\baccess\s+denied\b/i, label: "access denied" },
+  { pattern: /\bforbidden\b/i, label: "forbidden" },
+  { pattern: /\bnot\s+available\b/i, label: "not available", hard: false },
+  { pattern: /\bpage\s+unavailable\b/i, label: "page unavailable", hard: false },
+  { pattern: /\benable\s+javascript\b/i, label: "enable javascript" },
+  { pattern: /\bchecking\s+your\s+browser\b/i, label: "checking browser" },
+  { pattern: /\bverify\s+(?:you|yourself|real|human)\b/i, label: "verify human" },
+  { pattern: /\bverify\s+(?:that\s+)?you\s+are\s+(?:not\s+)?(?:a\s+)?(?:robot|human)\b/i, label: "verify human" },
+  { pattern: /\bjust\s+a\s+moment\b/i, label: "just a moment" },
+  { pattern: /\btry\s+again\s+later\b/i, label: "try again later", hard: false },
+  { pattern: /\bsecurity\s+verification\b/i, label: "security verification" },
+  { pattern: /\bcomplete\s+(?:the\s+)?(?:security\s+)?check\b/i, label: "security check" },
+  { pattern: /\bpress\s+and\s+hold\b/i, label: "press and hold" },
+  { pattern: /\bclick\s+the\s+button\s+below\s+to\s+continue\b/i, label: "continue interstitial" },
+  { pattern: /\bcontinue\s+(?:shopping|to\s+(?:site|shop|store|website))\b/i, label: "continue interstitial" },
+  { pattern: /\bwe\s+need\s+to\s+verify\b/i, label: "verification interstitial" },
+  { pattern: /\bcaptcha\b/i, label: "captcha" },
+  { pattern: /\bне\s+удалось\b/i, label: "не удалось", hard: false },
+  { pattern: /\bзагрузка\b/i, label: "загрузка", hard: false },
+  { pattern: /\bвойдите\b/i, label: "войдите" },
+  { pattern: /\bдоступ\s+запрещ/i, label: "доступ запрещен" },
+  { pattern: /\bстраница\s+недоступ/i, label: "страница недоступна", hard: false },
 ];
 
 const stopWords = new Set([
@@ -108,9 +116,8 @@ const stopWords = new Set([
 export function inspectBrowserScreenshotEvidence(input: SemanticArtifactQualityInput): SemanticArtifactQualityReport {
   const visual = inspectScreenshotArtifact(input.artifact);
   const evidenceText = buildEvidenceText(input);
-  const blockerSignals = blockerPatterns
-    .filter((pattern) => pattern.test(evidenceText))
-    .map((pattern) => pattern.source.replace(/\\b|\\s\+|\(\?:|\)|\?|\[|\]/g, "").slice(0, 42));
+  const blockerMatches = blockerPatterns.filter(({ pattern }) => pattern.test(evidenceText));
+  const blockerSignals = [...new Set(blockerMatches.map(({ label }) => label))];
   const expectedSignals = extractExpectedSignals(input.task, input.expectedSignals);
   const evidenceTokens = new Set(tokenize(evidenceText));
   const matchedSignals = expectedSignals.filter((signal) =>
@@ -146,9 +153,7 @@ export function inspectBrowserScreenshotEvidence(input: SemanticArtifactQualityI
     }
   }
 
-  const hasHardBlocker = blockerSignals.some((signal) =>
-    /cookie|consent|privacy|manage|do\+not|access|denied|forbidden|checking|verify|human|just|moment/.test(signal),
-  );
+  const hasHardBlocker = blockerMatches.some((match) => match.hard !== false);
 
   if (blockerSignals.length > 0 && (hasHardBlocker || matchedSignals.length < 2 || evidenceText.length < 280)) {
     return {

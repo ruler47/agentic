@@ -12,6 +12,13 @@ import {
   parseModelBoardUpdate,
   redactSensitiveText,
 } from "./workingDecisionBoardUpdate.js";
+import {
+  extractCandidateUrls,
+  shouldPromoteSource,
+  sourceRecordFromEvent,
+  workingDecisionSourceQualityScore,
+  workingDecisionUrlLabel,
+} from "./workingDecisionSourcePolicy.js";
 
 type WorkingDecisionEventSinkInput = {
   runId?: string;
@@ -195,11 +202,107 @@ function applyEventToSnapshot(
     return undefined;
   }
 
+  if (event.type === "source-search-plan-created") {
+    snapshot.phase = "plan_next_step";
+    const queryCount = arrayAt(event.payload, ["searchPlan", "queries"])?.length ??
+      arrayAt(event.payload, ["output", "queries"])?.length ??
+      0;
+    snapshot.nextAction = {
+      description: queryCount
+        ? `Follow the source search plan (${queryCount} query angle(s)).`
+        : "Follow the source search plan.",
+      expectedEvidence: "Search results from the planned language/source angles.",
+      sourceEventId: event.id,
+    };
+    addFact(snapshot, state, {
+      id: `source-plan:${event.id}`,
+      summary: limit(event.detail ?? "Source search plan created.", 220),
+      sourceEventId: event.id,
+      confidence: "medium",
+    });
+    return undefined;
+  }
+
+  if (event.type === "source-discovered" || event.type === "source-read-recorded" || event.type === "source-read-skipped") {
+    const source = sourceRecordFromEvent(event);
+    snapshot.phase = event.type === "source-discovered" ? "call_tool" : "read_source";
+    if (source && shouldPromoteSource(source)) {
+      addCandidate(snapshot, state, {
+        id: source.sourceId,
+        label: source.title ? limit(source.title, 120) : workingDecisionUrlLabel(source.normalizedUrl),
+        status: "active",
+        sourceEventId: event.id,
+        sourceUrl: source.normalizedUrl,
+        sourceUrls: [source.normalizedUrl],
+        scores: source.qualityScore !== undefined ? { sourceQuality: source.qualityScore } : undefined,
+        reason: source.qualityReasons?.join("; ") ?? event.detail,
+      });
+      if (event.type === "source-read-recorded" || event.type === "source-read-skipped") {
+        addFact(snapshot, state, {
+          id: `source-read:${event.id}`,
+          summary: limit(event.detail ?? `${event.actor}: ${source.normalizedUrl}`, 240),
+          sourceEventId: event.id,
+          sourceUrl: source.normalizedUrl,
+          sourceUrls: [source.normalizedUrl],
+          confidence: event.type === "source-read-recorded" ? "high" : "medium",
+        });
+      }
+    } else if (source && event.type === "source-read-recorded") {
+      addRejected(snapshot, state, {
+        id: `source-low-value:${source.sourceId}:${event.id}`,
+        summary: limit(source.normalizedUrl, 160),
+        sourceEventId: event.id,
+        sourceUrl: source.normalizedUrl,
+        toolName: event.actor,
+        reason: "Source read succeeded but is not durable enough for the candidate board.",
+      });
+    }
+    snapshot.nextAction = {
+      description: event.type === "source-discovered"
+        ? "Choose the strongest discovered source to read or verify."
+        : "Use or evaluate the source evidence before drafting.",
+      expectedEvidence: "Verified source-backed facts or explicit rejection.",
+      sourceEventId: event.id,
+    };
+    return undefined;
+  }
+
+  if (event.type === "source-rejected") {
+    const source = sourceRecordFromEvent(event);
+    snapshot.phase = "evaluate_evidence";
+    addRejected(snapshot, state, {
+      id: source ? `source-rejected:${source.sourceId}:${event.id}` : `source-rejected:${event.id}`,
+      summary: source ? limit(source.normalizedUrl, 160) : limit(event.title, 160),
+      sourceEventId: event.id,
+      sourceUrl: source?.normalizedUrl,
+      toolName: event.actor,
+      reason: limit(stringAt(event.payload, ["reason"]) ?? event.detail ?? "Source was rejected.", 260),
+    });
+    if (source) {
+      addCandidate(snapshot, state, {
+        id: source.sourceId,
+        label: source.title ? limit(source.title, 120) : workingDecisionUrlLabel(source.normalizedUrl),
+        status: "blocked",
+        sourceEventId: event.id,
+        sourceUrl: source.normalizedUrl,
+        sourceUrls: [source.normalizedUrl],
+        scores: source.qualityScore !== undefined ? { sourceQuality: source.qualityScore } : undefined,
+        reason: source.qualityReasons?.join("; ") ?? event.detail,
+      });
+    }
+    snapshot.nextAction = {
+      description: "Avoid this rejected source unless the read strategy changes materially.",
+      expectedEvidence: "Alternative source or explicit limitation.",
+      sourceEventId: event.id,
+    };
+    return undefined;
+  }
+
   if (event.type === "artifact-created") {
     state.artifacts += 1;
     const artifactId = stringAt(event.payload, ["artifactId"]);
     const qualityStatus = stringAt(event.payload, ["qualityStatus"]) ?? stringAt(event.payload, ["quality", "status"]);
-    const sourceUrls = extractUrls(event.payload).slice(0, 3);
+    const sourceUrls = extractCandidateUrls(event.payload).slice(0, 3);
     if (qualityStatus === "failed") {
       addRejected(snapshot, state, {
         id: `artifact-failed:${event.id}`,
@@ -290,7 +393,7 @@ function applyEventToSnapshot(
 }
 
 function recordToolOutcome(snapshot: WorkingDecisionSnapshot, state: SnapshotState, event: AgentEvent) {
-  const urls = extractUrls(event.payload).slice(0, 3);
+  const urls = extractCandidateUrls(event.payload).slice(0, 3);
   if (event.status === "failed") {
     addRejected(snapshot, state, {
       id: `tool-failed:${event.id}`,
@@ -303,12 +406,12 @@ function recordToolOutcome(snapshot: WorkingDecisionSnapshot, state: SnapshotSta
     for (const url of urls) {
       addCandidate(snapshot, state, {
         id: `url:${url}`,
-        label: urlLabel(url),
+        label: workingDecisionUrlLabel(url),
         status: "blocked",
         sourceEventId: event.id,
         sourceUrl: url,
         sourceUrls: [url],
-        scores: { sourceQuality: sourceQualityScore(url, event.actor, false) },
+        scores: { sourceQuality: workingDecisionSourceQualityScore(url, event.actor, false) },
         reason: `Blocked or failed through ${event.actor}.`,
       });
     }
@@ -332,12 +435,12 @@ function recordToolOutcome(snapshot: WorkingDecisionSnapshot, state: SnapshotSta
   for (const url of urls) {
     addCandidate(snapshot, state, {
       id: `url:${url}`,
-      label: urlLabel(url),
+      label: workingDecisionUrlLabel(url),
       status: "active",
       sourceEventId: event.id,
       sourceUrl: url,
       sourceUrls: [url],
-      scores: { sourceQuality: sourceQualityScore(url, event.actor, true) },
+      scores: { sourceQuality: workingDecisionSourceQualityScore(url, event.actor, true) },
       reason: `Discovered or read by ${event.actor}.`,
     });
   }
@@ -459,12 +562,18 @@ function shouldUpdateForEvent(event: AgentEvent): boolean {
     "work-ledger-prior-context-applied",
     "agent-invocation-decision-selected",
     "working-decision-update-requested",
+    "source-search-plan-created",
+    "source-discovered",
+    "source-read-skipped",
+    "source-read-recorded",
+    "source-rejected",
     "tool-started",
     "tool-completed",
     "artifact-created",
     "external-action-proposal-created",
     "agent-candidate-use-repair-requested",
     "agent-research-contract-repair-requested",
+    "agent-source-search-plan-repair-requested",
     "agent-source-grounding-repair-requested",
     "agent-proof-repair-requested",
     "agent-invocation-return-checked",
@@ -477,6 +586,7 @@ function shouldUpdateForEvent(event: AgentEvent): boolean {
 function isRepairEvent(event: AgentEvent): boolean {
   return event.type === "agent-candidate-use-repair-requested" ||
     event.type === "agent-research-contract-repair-requested" ||
+    event.type === "agent-source-search-plan-repair-requested" ||
     event.type === "agent-source-grounding-repair-requested" ||
     event.type === "agent-proof-repair-requested";
 }
@@ -587,23 +697,6 @@ function attachArtifactToMatchingCandidates(snapshot: WorkingDecisionSnapshot, s
   });
 }
 
-function sourceQualityScore(url: string, actor: string, ok: boolean): number {
-  let score = ok ? 0.55 : 0.2;
-  if (/read|extract|http\.request|browser\.screenshot/i.test(actor)) score += ok ? 0.2 : 0;
-  if (/^https:\/\//i.test(url)) score += 0.05;
-  if (/(^|\.)((youtube|tiktok|instagram|facebook|x|twitter|reddit)\.com)$/i.test(hostname(url))) score -= 0.2;
-  if (/\/(?:blog|news|article|top|best|review|guide|list)/i.test(url)) score -= 0.08;
-  return Math.max(0, Math.min(1, Number(score.toFixed(2))));
-}
-
-function hostname(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "";
-  }
-}
-
 function mergeStringArrays(left: string[] | undefined, right: string[] | undefined): string[] | undefined {
   const merged = unique([...(left ?? []), ...(right ?? [])]).slice(0, 8);
   return merged.length ? merged : undefined;
@@ -644,29 +737,8 @@ function toolCallName(value: unknown): string | undefined {
   return stringValue((value as { name?: unknown }).name);
 }
 
-function extractUrls(value: unknown, depth = 0): string[] {
-  if (depth > 4 || value === undefined || value === null) return [];
-  if (typeof value === "string") return urlsFromText(value);
-  if (Array.isArray(value)) return unique(value.flatMap((entry) => extractUrls(entry, depth + 1))).slice(0, 12);
-  if (typeof value !== "object") return [];
-  return unique(Object.values(value).flatMap((entry) => extractUrls(entry, depth + 1))).slice(0, 12);
-}
-
-function urlsFromText(value: string): string[] {
-  return unique([...value.matchAll(/https?:\/\/[^\s"'<>),\]]+/gi)].map((match) => match[0].replace(/[.,;:]+$/, "")));
-}
-
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
-}
-
-function urlLabel(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return parsed.hostname.replace(/^www\./, "");
-  } catch {
-    return limit(url, 80);
-  }
 }
 
 function stringAt(value: unknown, path: string[]): string | undefined {

@@ -25,10 +25,11 @@ flowchart TD
   CR --> Stores["Run / Thread / User / Group stores"]
   RS --> WDB["Working Decision Board projection\nworking-decision-* events"]
   RS --> BA["BaseAgent"]
-  BA --> TF["TaskFrame\nmode, budgets, proof, external-action policy"]
+  BA --> TF["TaskFrame\nmode, budgets, proof, source policy,\nexternal-action policy"]
+  BA --> SR["RunSourceRegistry\nURL normalization, dedupe, rejection memory"]
   BA --> LLM["LlmClient\nmodel tier + capability routing"]
   LLM --> BA
-  BA --> TR["ToolRegistry"]
+  SR --> TR["ToolRegistry"]
   BA --> WL["Work/Evidence Ledger\nrun-local execution + reusable-index"]
   TR --> CT["Core toolbelt\nweb, browser, http, file, document, data, external.action, telegram"]
   TR --> GT["Generated/imported tools\nsource-bundle / HTTP process / OCI"]
@@ -54,10 +55,33 @@ flowchart TD
   fact tasks. It runs `web.search`, `web.read`, optional `browser.screenshot`, then one
   no-tools synthesis call instead of entering the general ReAct loop.
 - `src/agents/taskFrame.ts`: task classification, research/proof contract, default step
-  budgets, and external-action policy.
+  budgets, source policy, and external-action policy.
+- `src/agents/sourceSearchPlan.ts`: source-acquisition policy builder and query plan
+  generation. It respects explicit no-internet/no-web instructions, plans mixed
+  user-language/English search for broad global research, and creates official-docs or
+  local-provider plans when the task shape requires them.
+- `src/agents/sourceRegistry.ts`: run-scoped source memory. It normalizes/redacts URLs,
+  records discovered/read/rejected sources, skips duplicate normalized `web.read`
+  attempts, and avoids retrying blocked sources unless the input strategy materially
+  changes. Discovery filters technical assets and search-result pages so CSS/fonts,
+  provider search pages, and social search URLs do not become source candidates.
+- `src/agents/sourceQuality.ts`: generic source classification and source-quality scoring
+  for primary/product/pricing/review/directory/roundup/social/docs-style pages, plus
+  low-value source exclusion reasons.
 - `src/agents/baseAgentPrompt.ts`: system prompt and tool schemas passed to the model.
+- `src/agents/baseAgentToolScope.ts`: task-frame scoped tool context. It removes tool
+  schemas/catalog entries from no-tool frames, limits broad research to source/proof
+  tools, limits local utility to file/document/data tools, and preserves run-scoped
+  candidates.
 - `src/agents/baseAgentToolExecution.ts`: registered tool execution, tool-call cache,
-  evidence capture, artifact save hooks.
+  source-policy enforcement, source read dedupe/rejection events, evidence capture, and
+  artifact save hooks.
+- `src/agents/baseAgentSourceEvents.ts`,
+  `src/agents/baseAgentSourceReadPolicy.ts`,
+  `src/agents/baseAgentSearchHistory.ts`, and
+  `src/agents/baseAgentSourcePlanRepair.ts`: source/read trace events, duplicate search
+  detection, low-value source-read skips, and `agent-source-search-plan-repair-requested`
+  bounded repair when broad mixed-language research skipped a planned query angle.
 - `src/agents/baseAgentToolLedger.ts`: Work/Evidence Ledger classification,
   run-local claim/evidence writes, and safe reusable-index publication/lookup for
   deterministic `http.request` calls.
@@ -76,7 +100,9 @@ flowchart TD
 - `src/agents/workingDecisionLedger.ts`: event-derived Working / Decision Board
   projector. `RunsService` wraps the run event sink with this projector so persisted
   `working-decision-*` events can be reconstructed after restart and rendered in Run
-  Workspace / Trace Lab without making the board a second raw-evidence store.
+  Workspace / Trace Lab without making the board a second raw-evidence store. Source
+  discovery, read, skip, and rejection events are projected into facts, candidates, and
+  rejected evidence.
 - `src/settings/modelRouting.ts`: tier plus capability-aware LLM route resolver. It
   parses discovered/operator capability metadata, chooses compatible tier candidates, and
   returns rejected-candidate diagnostics for trace.
@@ -453,7 +479,7 @@ sequenceDiagram
   board, metrics, and artifact. The LLM run `run_1782161672962_2lrltrod` verified that
   `update_working_board` is visible to the model, produces a persisted update request,
   and Trace Lab shows semantic LLM labels. That run also exposed a source-framing issue
-  now assigned to task 06: a "compare, but no internet" prompt was still over-framed as
+  later closed by task 06: a "compare, but no internet" prompt was still over-framed as
   broad research.
 - Durable Ledger product smoke passed on Postgres/S3 and survived server restart:
   `run_1781818681262_rpvsg59u` completed an `http.request` JSON task, `/api/work-ledger`
