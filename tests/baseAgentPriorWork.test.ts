@@ -104,6 +104,15 @@ test("BaseAgent answers source follow-up from prior Ledger evidence without new 
 
   assert.ok(ledgerEvents.some((event) => event.type === "work-ledger-prior-context-resolved"));
   assert.ok(ledgerEvents.some((event) => event.type === "work-ledger-prior-context-applied"));
+  const memoryUse = events.find((event) => event.type === "memory-use-resolved");
+  assert.ok(memoryUse);
+  const memoryUsePayload = memoryUse.payload as { memoryUse?: Array<{ source: string; status: string }> };
+  assert.ok(memoryUsePayload.memoryUse?.some((record) =>
+    record.source === "thread" && record.status === "used"
+  ));
+  assert.ok(memoryUsePayload.memoryUse?.some((record) =>
+    record.source === "evidence_ledger" && record.status === "used"
+  ));
   const decisionEvidence = await evidenceLedger.listByRun("run-source-follow-up");
   assert.equal(decisionEvidence.length, 1);
   assert.equal(decisionEvidence[0]?.kind, "model_observation");

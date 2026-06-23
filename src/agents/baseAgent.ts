@@ -4,7 +4,7 @@ import type { ModelCapability } from "../settings/modelCatalog.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { attachInitialScopedCandidates, buildToolCatalog, selectTools, type BaseAgentToolCatalogEntry } from "./agentToolCatalog.js";
 import { DEFAULT_AGENT_LOOP_TIER, DEFAULT_LLM_MAX_TOKENS, DEFAULT_TOOL_TIMEOUT_MS } from "./baseAgentConstants.js";
-import { emitBaseAgentContextEvents } from "./baseAgentContextEvents.js";
+import { emitBaseAgentContextEvents, emitMemoryUseResolvedEvent } from "./baseAgentContextEvents.js";
 import { inferRequiredArtifacts } from "./baseAgentEvidence.js";
 import { tryRunCurrentFactFastPath } from "./baseAgentCurrentFact.js";
 import { finalizeBaseAgentRun } from "./baseAgentFinalization.js";
@@ -136,6 +136,14 @@ export class BaseAgent {
       maxSteps,
     });
     runContext = priorWork.runContext;
+    await emitMemoryUseResolvedEvent({
+      onEvent: options.onEvent,
+      rootSpanId,
+      contextSpanId,
+      runContext,
+      taskFrame,
+      startedAt,
+    });
     if (priorWork.result) return priorWork.result;
 
     const localUtilityResult = await tryRunLocalUtilityFastPath({ task, options, runContext, taskFrame, tools, registry: this.tools, startedAt, rootSpanId, maxSteps, toolTimeoutMs });

@@ -24,10 +24,9 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P2 Conversation Memory, Prior Work, And Continuation Reliability](08-p2-conversation-memory-and-continuation.md)
-2. [P2 External Action UX And Real-Provider Flow](09-p2-external-action-ux.md)
-3. [P2 Model Routing](10-p2-model-routing.md)
-4. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
+1. [P2 External Action UX And Real-Provider Flow](09-p2-external-action-ux.md)
+2. [P2 Model Routing](10-p2-model-routing.md)
+3. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
 
 Cross-cutting gates apply to every task:
 
@@ -43,7 +42,7 @@ flowchart TD
   A["04 metrics: time, tokens, cost visibility"] --> B["05 working decision ledger"]
   B --> C["06 source/search discipline completed"]
   C --> D["07 proof policy and artifact links completed"]
-  D --> E["08 conversation memory / continuation"]
+  D --> E["08 conversation memory / continuation completed"]
   C --> F["09 external actions UX"]
   E --> F
   A --> G["10 model routing"]
@@ -52,6 +51,22 @@ flowchart TD
 
 ## Recently Completed
 
+- 2026-06-23: P2 Conversation Memory, Prior Work, And Continuation Reliability was
+  completed and its task file was removed from the active queue. Implementation:
+  `src/agents/memoryUse.ts`, `memory-use-resolved` trace/span events in
+  `src/agents/baseAgentContextEvents.ts`, prior-work memory-view rebuilding in
+  `src/agents/baseAgentPriorWork.ts`, Working / Decision Board projection in
+  `src/agents/workingDecisionLedger.ts`, and memory-source rendering in Run Workspace
+  plus Conversation detail through
+  `web-react/src/features/run-workspace/MemoryUsePanel.tsx`. Continuation runs now show
+  which memory sources were available, used, stale, ignored, or insufficient across run,
+  thread, user profile, group profile, accepted memory, Work Ledger, and Evidence Ledger.
+  Focused coverage: `tests/memoryUse.test.ts`, `tests/baseAgentPriorWork.test.ts`, and
+  `tests/workingDecisionLedger.test.ts`. Manual smoke:
+  `run_1782223820553_bhej2jmg` stored a code word in
+  `thread_1782223820551_ptiv0rnp`; `run_1782223824632_wm6xfej8` answered the follow-up
+  from thread memory, and both Run Workspace and Conversation detail rendered the memory
+  source records.
 - 2026-06-23: P1 Proof Policy And Evidence Artifact Linking was completed and its task
   file was removed from the active queue. Implementation: `src/agents/proofPolicy.ts`,
   proof-plan/proof-link contracts in `src/types.ts`, BaseAgent finalization wiring,

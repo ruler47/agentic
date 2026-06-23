@@ -90,7 +90,12 @@ flowchart TD
 - `src/agents/baseAgentPriorWork.ts`: thread-scoped prior-work recovery bridge. It asks
   the runtime Ledger for passed/rejected prior evidence before normal tool execution,
   short-circuits source/artifact follow-ups when prior evidence is enough, and records
-  applied reuse decisions as normal Work/Evidence records.
+  applied reuse decisions as normal Work/Evidence records. After prior-work resolution it
+  rebuilds `MemoryContextView` so Ledger decisions are visible to the prompt and to
+  memory-source observability.
+- `src/agents/memoryUse.ts`: safe memory-source projection. It records whether run,
+  thread, user profile, group profile, accepted memory, Work Ledger, and Evidence Ledger
+  context was available, used, stale, ignored, or insufficient for this run.
 - `src/agents/baseAgentFinalization.ts`: final-answer gates, proof-plan/proof-link event
   emission, action proposal creation, result assembly.
 - `src/agents/baseAgentEvidence.ts` and `src/agents/baseAgentProof.ts`: source/proof
@@ -380,6 +385,12 @@ Current memory is split and now enters each run through an explicit runtime memo
   this compact view into the prompt and emits `memory-context-prepared` so Trace Lab can
   show which memory influenced the run. Proposed/rejected memories and other-user private
   memories are not injected; sensitive memories require an explicit policy grant.
+- **Memory-use observability**: after prior-work and memory resolution, `BaseAgent` emits
+  `memory-use-resolved` with safe `MemoryUseRecord` entries. The records are projected
+  into the Working / Decision Board and rendered in Run Workspace plus Conversation
+  detail. They do not expose raw memory content; they expose source, status, reason, and
+  safe ids so operators can see whether a continuation used thread context, profile
+  facts, accepted memory, or prior Ledger evidence.
 - **Work/Evidence Ledger**: BaseAgent tool calls claim a run-local execution work item
   before execution, store the canonical reusable work key in metadata, complete or fail
   the item after execution, record evidence with source/tool/artifact metadata, and link
@@ -414,8 +425,12 @@ flowchart TD
   Helper --> Memory["SkillMemoryStore accepted memories"]
   Helper --> Context["BaseAgentRunContext"]
   Context --> View["MemoryContextView"]
+  Context --> Use["MemoryUseRecord[]"]
   View --> Prompt["BaseAgent prompt Runtime context"]
   View --> Trace["memory-context-prepared trace event"]
+  Use --> Board["Working Decision Board memoryUse"]
+  Use --> UI["Run Workspace / Conversation memory panel"]
+  Use --> Trace2["memory-use-resolved trace event"]
 ```
 
 ```mermaid
@@ -454,6 +469,8 @@ sequenceDiagram
   User->>Runs: Follow-up in an existing thread
   Runs->>Agent: task + rebuilt thread context
   Agent->>Ledger: resolve PriorWorkContext(threadId, task)
+  Agent->>Agent: rebuild MemoryContextView with prior-work decision
+  Agent-->>Runs: memory-use-resolved
   alt passed source/artifact evidence satisfies follow-up
     Ledger-->>Agent: reuse decision + evidence ids/source URLs
     Agent->>Ledger: record applied prior-work decision
@@ -529,6 +546,11 @@ sequenceDiagram
   shows one completed `api_call`, `/api/evidence-ledger` shows one `api_response`, both
   records link `artifact_1781818687616_9q389ujl`, and the React Ledger page shows
   `Backend ready · postgres` with the same work/evidence/artifact records.
+- Conversation memory observability passed focused tests and API/UI smoke on 2026-06-23.
+  `run_1782223820553_bhej2jmg` created thread context in
+  `thread_1782223820551_ptiv0rnp`; `run_1782223824632_wm6xfej8` answered the follow-up
+  from thread memory with `memory-use-resolved` and Working / Decision Board records, and
+  Run Workspace plus Conversation detail rendered memory-source panels.
 
 ## Current Gaps
 

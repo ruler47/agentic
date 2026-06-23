@@ -18,6 +18,7 @@ import {
 } from "@/features/runs/externalActionMode";
 import { ExternalActionModeSelector } from "@/features/runs/ExternalActionModeSelector";
 import { RunActionApprovalPanel } from "@/features/run-workspace/RunActionApprovalPanel";
+import { ConversationMemoryUseSummary } from "@/features/run-workspace/MemoryUsePanel";
 import { formatDuration, formatRelative, formatTokenUsage, runDurationMs, truncate } from "@/lib/format";
 import type {
   AgentArtifact,
@@ -203,6 +204,7 @@ export function ConversationDetailPage() {
           title="Open questions"
           body={(thread.openQuestions ?? []).join("\n") || "None."}
         />
+        <ConversationMemoryUseSummary runs={threadRuns} />
         <ChannelActivityBlock events={linkedChannelEvents} />
       </aside>
     </section>

@@ -452,6 +452,7 @@ export type AgentEventType =
   | "working-decision-update-requested"
   | "working-decision-update-rejected"
   | "memory-context-prepared"
+  | "memory-use-resolved"
   | "local-utility-fast-path-selected"
   | "current-fact-fast-path-selected"
   | "current-fact-source-rejected"
@@ -584,6 +585,24 @@ export type AgentEvent = {
 
 export type AgentEventSink = (event: AgentEvent) => void | Promise<void>;
 
+export type MemoryUseSource =
+  | "run"
+  | "thread"
+  | "work_ledger"
+  | "evidence_ledger"
+  | "accepted_memory"
+  | "user_profile"
+  | "group_profile";
+
+export type MemoryUseStatus = "used" | "available" | "ignored" | "stale" | "insufficient";
+
+export type MemoryUseRecord = {
+  source: MemoryUseSource;
+  status: MemoryUseStatus;
+  reason: string;
+  recordIds?: string[];
+};
+
 export type WorkingDecisionPhase =
   | "frame_task"
   | "use_prior_context"
@@ -665,5 +684,6 @@ export type WorkingDecisionSnapshot = {
     failedToolCalls: number;
     artifacts: number;
   };
+  memoryUse?: MemoryUseRecord[];
   updatedAt: string;
 };

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type {
   AgentEvent,
+  MemoryUseRecord,
   WorkingDecisionCandidate,
   WorkingDecisionFact,
   WorkingDecisionRejectedEvidence,
@@ -83,6 +84,26 @@ export function WorkingDecisionBoard({ events }: { events: AgentEvent[] }) {
           <ul className="mt-2 list-disc space-y-1 pl-4 text-app-text-muted">
             {snapshot.openQuestions.map((question, index) => (
               <li key={`${question}-${index}`}>{question}</li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+
+      {snapshot.memoryUse?.length ? (
+        <details className="mt-3 rounded-md border border-app-border bg-app-surface-2 px-3 py-2 text-xs">
+          <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-app-text-muted">
+            Memory source use
+          </summary>
+          <ul className="mt-2 grid gap-2 md:grid-cols-2">
+            {snapshot.memoryUse.map((record, index) => (
+              <li key={`${record.source}-${record.status}-${index}`} className="rounded border border-app-border bg-app-surface px-2 py-1.5">
+                <p>
+                  <span className="font-semibold">{record.source}</span>
+                  <span className="text-app-text-muted"> · {record.status}</span>
+                </p>
+                <p className="mt-0.5 text-[11px] text-app-text-muted">{record.reason}</p>
+                <Refs recordIds={record.recordIds} />
+              </li>
             ))}
           </ul>
         </details>
@@ -212,10 +233,11 @@ function ScoreChips({ scores }: { scores?: Record<string, number> }) {
   );
 }
 
-function Refs({ artifactIds, evidenceIds }: { artifactIds?: string[]; evidenceIds?: string[] }) {
+function Refs({ artifactIds, evidenceIds, recordIds }: { artifactIds?: string[]; evidenceIds?: string[]; recordIds?: string[] }) {
   const refs = [
     ...(artifactIds ?? []).slice(0, 3).map((id) => `artifact:${id}`),
     ...(evidenceIds ?? []).slice(0, 3).map((id) => `evidence:${id}`),
+    ...(recordIds ?? []).slice(0, 4),
   ];
   if (!refs.length) return null;
   return (

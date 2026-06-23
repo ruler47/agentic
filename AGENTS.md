@@ -203,6 +203,15 @@ documentation.
   accepted visible memories from `SkillMemoryStore`, `BaseAgent` filters them through
   memory policy, injects the compact view into the prompt, and emits
   `memory-context-prepared`. Do not add ad hoc memory prompt sections elsewhere.
+- Memory-source use is observable through `memory-use-resolved` events built by
+  `src/agents/memoryUse.ts`. Records cover run, thread, user profile, group profile,
+  accepted memory, Work Ledger, and Evidence Ledger with statuses `used`, `available`,
+  `ignored`, `stale`, or `insufficient`. These records are safe summaries only: expose
+  source, status, reason, and safe ids, not raw memory content or secrets. The Working /
+  Decision Board projects them into `snapshot.memoryUse`, and Run Workspace plus
+  Conversation detail render them for operators. After prior-work resolution,
+  `baseAgentPriorWork` must rebuild `MemoryContextView`; otherwise Ledger decisions are
+  not visible in the prompt or memory-use projection.
 - The whole `/api` surface supports an opt-in shared operator token:
   `AGENTIC_API_TOKEN` set -> every request needs `Authorization: Bearer`,
   `x-agentic-token`, or `?token=` (timing-safe compare); unset keeps the open

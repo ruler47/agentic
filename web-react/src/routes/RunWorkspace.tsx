@@ -12,6 +12,7 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 import { RunStatusBadge } from "@/components/StatusBadge";
 import { RunActionApprovalPanel } from "@/features/run-workspace/RunActionApprovalPanel";
 import { RunCandidateReviewPanel } from "@/features/run-workspace/RunCandidateReviewPanel";
+import { RunMemoryUsePanel } from "@/features/run-workspace/MemoryUsePanel";
 import { WorkingDecisionBoard } from "@/features/run-workspace/WorkingDecisionBoard";
 import { hydrateMarkdownArtifactLinks } from "@/features/conversations/conversationArtifacts";
 import { formatDuration, formatRelative, formatTokenUsage, runDurationMs, truncate } from "@/lib/format";
@@ -186,6 +187,8 @@ export function RunWorkspacePage() {
         <RunMetricsPanel run={data} />
 
         <WorkingDecisionBoard events={data.events ?? []} />
+
+        <RunMemoryUsePanel events={data.events ?? []} />
 
         <ChannelSourcePanel run={data} />
 

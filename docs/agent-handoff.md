@@ -15,7 +15,7 @@ new primary branch.
 - Active roadmap: `docs/roadmap-core-toolbelt.md`.
 - Active executable task queue: `docs/tasks/README.md`.
 - Active architecture map: `docs/current-architecture.md`.
-- Current active implementation task: `docs/tasks/08-p2-conversation-memory-and-continuation.md`.
+- Current active implementation task: `docs/tasks/09-p2-external-action-ux.md`.
 
 Do not use `claude/phase17-research-delegation` as the active base. It was audited on
 2026-06-18 and still contains a legacy `src/agents/universalAgent.ts` above 9k lines plus
@@ -78,6 +78,13 @@ flowchart LR
   G["Direct no-tool answer"] --> G1["PASS\nrun_1781888955776_r5xgx351\n0 tool events\nno raw tool syntax"]
   H["Current BTC + visual proof"] --> H1["PASS\nrun_1781888955810_o4iy48ap\nweb.search + web.read + QA-passed browser.screenshot\nartifact_1781888964363_ap1p51dc"]
 ```
+
+Conversation memory observability was completed on 2026-06-23. Runs now emit
+`memory-use-resolved`, the Working / Decision Board projects `memoryUse`, and Run
+Workspace plus Conversation detail render which memory sources were used, stale,
+ignored, available, or insufficient. Manual smoke: `run_1782223820553_bhej2jmg` stored
+a code word in `thread_1782223820551_ptiv0rnp`; `run_1782223824632_wm6xfej8` answered
+the follow-up from thread memory and rendered `used thread` in both UI surfaces.
 
 Recent P0 fixes:
 

@@ -199,6 +199,54 @@ test("working decision sink applies validated model board updates", async () => 
   assert.equal(latest.draftStatus.status, "drafting");
 });
 
+test("working decision sink projects memory-use records into board snapshots", async () => {
+  const events: AgentEvent[] = [];
+  const sink = createWorkingDecisionEventSink({
+    runId: "run_memory_board",
+    task: "какой источник ты использовал?",
+    sink: (entry) => {
+      events.push(entry);
+    },
+  });
+
+  await sink(event({
+    id: "frame",
+    spanId: "run_memory_board-agent-task-frame",
+    type: "agent-task-framed",
+    title: "Task framed",
+    payload: { output: { mode: "thread_context_answer", idealOutcome: "Answer from prior context." } },
+  }));
+  await sink(event({
+    id: "memory-use",
+    spanId: "run_memory_board-agent-context-memory-use",
+    type: "memory-use-resolved",
+    activity: "memory",
+    title: "Memory sources resolved",
+    payload: {
+      memoryUse: [
+        {
+          source: "thread",
+          status: "used",
+          reason: "Thread context is answering this follow-up.",
+          recordIds: ["thread-1"],
+        },
+        {
+          source: "evidence_ledger",
+          status: "used",
+          reason: "Prior evidence satisfies this follow-up.",
+          recordIds: ["evidence-1"],
+        },
+      ],
+    },
+  }));
+
+  const latest = latestWorkingDecisionSnapshot(events);
+  assert.ok(latest);
+  assert.equal(latest.phase, "use_prior_context");
+  assert.equal(latest.memoryUse?.length, 2);
+  assert.ok(latest.nextAction?.description.includes("memory"));
+});
+
 test("working decision sink rejects invalid model board updates without throwing", async () => {
   const events: AgentEvent[] = [];
   const sink = createWorkingDecisionEventSink({

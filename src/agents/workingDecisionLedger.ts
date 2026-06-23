@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   AgentEventType,
   AgentEventSink,
+  MemoryUseRecord,
   WorkingDecisionCandidate,
   WorkingDecisionFact,
   WorkingDecisionPhase,
@@ -12,6 +13,10 @@ import {
   parseModelBoardUpdate,
   redactSensitiveText,
 } from "./workingDecisionBoardUpdate.js";
+import {
+  applyMemoryUseToSnapshot,
+  memoryUseFromEvent,
+} from "./workingDecisionMemoryUse.js";
 import {
   extractCandidateUrls,
   shouldPromoteSource,
@@ -35,6 +40,7 @@ type SnapshotState = {
   factKeys: Set<string>;
   candidateKeys: Set<string>;
   rejectedKeys: Set<string>;
+  memoryUse: MemoryUseRecord[];
 };
 
 type TaskFrameLike = {
@@ -65,6 +71,7 @@ export function createWorkingDecisionEventSink(input: WorkingDecisionEventSinkIn
     factKeys: new Set(),
     candidateKeys: new Set(),
     rejectedKeys: new Set(),
+    memoryUse: [],
   };
 
   return async (event) => {
@@ -106,6 +113,7 @@ function updateSnapshotFromEvent(
     failedToolCalls: state.failedToolCalls,
     artifacts: state.artifacts,
   };
+  snapshot.memoryUse = state.memoryUse;
 
   const created = snapshot.revision === 1;
   const phaseChanged = previousPhase && previousPhase !== snapshot.phase;
@@ -132,6 +140,7 @@ function ensureSnapshot(input: WorkingDecisionEventSinkInput, state: SnapshotSta
       summary: "No draft answer yet.",
       sourceEventId: event.id,
     },
+    memoryUse: state.memoryUse,
     updatedAt: event.timestamp,
   };
 }
@@ -143,6 +152,12 @@ function applyEventToSnapshot(
 ): SnapshotUpdateOutcome | undefined {
   if (event.type === "working-decision-update-requested") {
     return applyModelBoardUpdate(snapshot, state, event);
+  }
+
+  if (event.type === "memory-use-resolved") {
+    state.memoryUse = memoryUseFromEvent(event);
+    applyMemoryUseToSnapshot(snapshot, state.memoryUse, event.id);
+    return undefined;
   }
 
   if (event.activity === "llm" && event.type === "agent-invocation-decision-selected") {
@@ -559,6 +574,7 @@ function createSnapshotEvent(
 function shouldUpdateForEvent(event: AgentEvent): boolean {
   return [
     "agent-task-framed",
+    "memory-use-resolved",
     "work-ledger-prior-context-applied",
     "agent-invocation-decision-selected",
     "working-decision-update-requested",

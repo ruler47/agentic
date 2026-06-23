@@ -2,6 +2,7 @@ import type { AgentRunResult } from "../types.js";
 import type { PriorEvidenceRef, PriorWorkContext } from "../work-ledger/priorWorkResolver.js";
 import { finalizeBaseAgentRun } from "./baseAgentFinalization.js";
 import { limitText } from "./baseAgentToolMessages.js";
+import { buildMemoryContextView } from "./memoryContext.js";
 import type { BaseAgentRunContext, BaseAgentRunOptions, ProofEvidence } from "./baseAgentTypes.js";
 import type { TaskFrame } from "./taskFrame.js";
 
@@ -33,7 +34,11 @@ export async function prepareBaseAgentPriorWork(
     input.rootSpanId,
   );
   if (!priorWork) return { runContext: input.runContext };
-  const runContext = { ...input.runContext, priorWork };
+  const runContextWithPrior = { ...input.runContext, priorWork };
+  const runContext = {
+    ...runContextWithPrior,
+    memory: buildMemoryContextView(runContextWithPrior, input.startedAt),
+  };
   const answer = directPriorWorkAnswer(input.task, input.taskFrame, priorWork);
   if (shouldRecordPriorWorkDecision(priorWork, Boolean(answer))) {
     await input.options.ledger?.recordPriorWorkDecision({

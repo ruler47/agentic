@@ -15,10 +15,9 @@ and decomposition.
 
 Current order:
 
-1. [`08-p2-conversation-memory-and-continuation.md`](tasks/08-p2-conversation-memory-and-continuation.md)
-2. [`09-p2-external-action-ux.md`](tasks/09-p2-external-action-ux.md)
-3. [`10-p2-model-routing.md`](tasks/10-p2-model-routing.md)
-4. [`11-p3-tool-builder-redesign.md`](tasks/11-p3-tool-builder-redesign.md)
+1. [`09-p2-external-action-ux.md`](tasks/09-p2-external-action-ux.md)
+2. [`10-p2-model-routing.md`](tasks/10-p2-model-routing.md)
+3. [`11-p3-tool-builder-redesign.md`](tasks/11-p3-tool-builder-redesign.md)
 
 Cross-cutting quality gate:
 
@@ -36,9 +35,8 @@ exposed several systemic gaps:
 - `LLM step N` labels do not explain the user-visible stage of work;
 - broad research lacks an explicit candidate/decision board;
 - search/read behavior can repeat sources and over-trust weak listicle sources;
-- proof policy now has explicit plan/link contracts, while follow-up memory visibility
-  and external-action UX still need the next passes;
-- follow-up runs need clearer memory-source visibility;
+- proof policy now has explicit plan/link contracts, and follow-up memory visibility is
+  explicit through `memory-use-resolved`; external-action UX still needs the next pass;
 - external actions remain too complex for real users even after the safe fixture path
   improved.
 
@@ -46,12 +44,11 @@ Priority order and intent:
 
 | Priority | Task | Outcome |
 | --- | --- | --- |
-| P2 | [Conversation Memory, Prior Work, And Continuation Reliability](tasks/08-p2-conversation-memory-and-continuation.md) | Follow-ups visibly reuse conversation/prior evidence when appropriate and refresh only when needed. |
 | P2 | [External Action UX And Real-Provider Flow](tasks/09-p2-external-action-ux.md) | Booking/form/API-write actions use one understandable proposal/approval/report flow. |
 | P2 | [Model Routing](tasks/10-p2-model-routing.md) | Tiers route by required capabilities such as vision, reasoning, coding, and tool-calling. |
 | P3 | [Tool Builder Redesign](tasks/11-p3-tool-builder-redesign.md) | Builder returns as a portable tool-package layer after the core run loop is reliable. |
 
-Tasks 04, 05, 06, and 07 are implemented, verified, and removed from the active task queue:
+Tasks 04, 05, 06, 07, and 08 are implemented, verified, and removed from the active task queue:
 provider token/time metrics are visible in runs/conversations/traces, and the
 event-derived Working / Decision Board exposes objective, phase, facts, candidates,
 rejected evidence, open questions, next action, draft status, compact metrics, semantic
@@ -65,9 +62,12 @@ three independent proof-worthy URLs and a successful source read. Proof policy n
 `proof-plan-created` / `proof-links-created`, exposes `proofPlan` / `proofLinks` on run
 results, and renders task-appropriate source/screenshot/API/file/external-action proof
 links in Run Workspace. Explicit HTTP/API URL tasks are routed to `http.request` and
-require structured/source proof rather than direct model-memory answers. The next
-implementation task is
-[`08-p2-conversation-memory-and-continuation.md`](tasks/08-p2-conversation-memory-and-continuation.md).
+require structured/source proof rather than direct model-memory answers. Conversation
+memory now emits `memory-use-resolved`, projects memory-source status into the Working /
+Decision Board, and renders run/conversation memory source panels so follow-ups show
+whether thread/profile/accepted-memory/Ledger context was used, stale, ignored, or
+insufficient. The next implementation task is
+[`09-p2-external-action-ux.md`](tasks/09-p2-external-action-ux.md).
 
 Updated target process:
 
@@ -78,7 +78,8 @@ flowchart TD
   F --> B["Working Decision Ledger"]
   B --> S["Search/source plan"]
   S --> SR["RunSourceRegistry\nnormalize, dedupe, reject"]
-  SR --> T["Tool calls through registry"]
+  SR --> MU["Memory-use projection\nrun, thread, profile, Ledger"]
+  MU --> T["Tool calls through registry"]
   T --> E["Evidence + artifacts"]
   E --> P["Proof policy"]
   P --> G["Grounded final answer"]
