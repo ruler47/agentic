@@ -5,6 +5,8 @@ import type {
   AgentRunRecord,
   ExternalActionPreparedSession,
   ExternalActionProposal,
+  ExternalActionBlocker,
+  ExternalActionFinalReportStatus,
   RunCreateContext,
   RunCreateResponse,
   RunDetailResponse,
@@ -58,6 +60,7 @@ export type ActionProposalQueueItem = {
     toolVersion?: string;
     contentPreview?: string;
     dataPreview?: unknown;
+    blocker?: ExternalActionBlocker;
   };
   preparationExecution?: {
     status: "completed" | "failed";
@@ -70,6 +73,7 @@ export type ActionProposalQueueItem = {
     dataPreview?: unknown;
     artifactIds?: string[];
     preparedSession?: ExternalActionPreparedSession;
+    blocker?: ExternalActionBlocker;
   };
   profileHydration?: {
     status: "approved";
@@ -95,6 +99,18 @@ export type ActionProposalQueueItem = {
     packageRef?: string;
     commitExecutor?: ExternalActionProposal["commitExecutor"];
     updatedAt: string;
+  };
+  finalReport?: {
+    status: ExternalActionFinalReportStatus;
+    summary: string;
+    target?: string;
+    targetUrl?: string;
+    action: string;
+    blocker?: ExternalActionBlocker;
+    nextAction?: string;
+    proofArtifactIds: string[];
+    diagnosticArtifactIds: string[];
+    createdAt: string;
   };
 };
 

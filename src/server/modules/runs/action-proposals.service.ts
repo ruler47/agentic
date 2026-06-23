@@ -713,6 +713,7 @@ export class ActionProposalsService {
         proposal,
         status: "committed",
         message: result.content,
+        proofArtifactIds: savedArtifactIds,
         parentSpanId: this.findProposalParentSpan(run, proposal.id),
       });
     }

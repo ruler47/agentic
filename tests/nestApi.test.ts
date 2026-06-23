@@ -250,13 +250,22 @@ test("Nest API supports external action approval and blocked commit trace", asyn
     );
     assert.equal(approved.proposal.proposal.status, "approved");
 
-    const blocked = await requestJson<{ proposal: { proposal: { status: string }; execution?: { status: string; reason?: string } } }>(
+    const blocked = await requestJson<{
+      proposal: {
+        proposal: { status: string };
+        execution?: { status: string; reason?: string; blocker?: string };
+        finalReport?: { status: string; blocker?: string; nextAction?: string };
+      };
+    }>(
       fixture.baseUrl,
       `/api/action-proposals/${encodeURIComponent(proposal.id)}/commit`,
       { method: "POST" },
     );
     assert.equal(blocked.proposal.proposal.status, "approved");
     assert.equal(blocked.proposal.execution?.status, "blocked");
+    assert.equal(blocked.proposal.execution?.blocker, "missing_data");
+    assert.equal(blocked.proposal.finalReport?.status, "blocked");
+    assert.equal(blocked.proposal.finalReport?.blocker, "missing_data");
     assert.match(
       blocked.proposal.execution?.reason ?? "",
       /fixture executor missing|missing_requirements|generated commit executor/i,
@@ -265,6 +274,7 @@ test("Nest API supports external action approval and blocked commit trace", asyn
     const updated = await runStore.get(run.id);
     assert.ok(updated?.events.some((event) => event.type === "external-action-proposal-approved"));
     assert.ok(updated?.events.some((event) => event.type === "external-action-commit-blocked"));
+    assert.ok(updated?.events.some((event) => event.type === "external-action-final-report-created"));
   } finally {
     await closeFixture(fixture);
   }

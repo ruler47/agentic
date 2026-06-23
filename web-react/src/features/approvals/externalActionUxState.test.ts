@@ -157,6 +157,37 @@ describe("buildExternalActionUxState", () => {
     expect(ux.primaryAction.dangerous).toBe(true);
     expect(ux.summary.proofArtifactIds).toEqual(["artifact-proof"]);
   });
+
+  it("uses final report blocker copy when an external submit is blocked", () => {
+    const ux = buildExternalActionUxState({
+      ...baseItem,
+      proposal: { ...baseItem.proposal, status: "approved" },
+      execution: {
+        status: "blocked",
+        actor: "coordinator",
+        decidedAt: "2026-05-25T00:00:00.000Z",
+        reason: "No concrete external submit control in iframe widget.",
+        blocker: "unsupported_widget",
+      },
+      finalReport: {
+        status: "blocked",
+        summary: "The provider uses a widget the current tools cannot safely automate.",
+        target: "Provider",
+        targetUrl: "https://provider.example/book",
+        action: "Book an appointment",
+        blocker: "unsupported_widget",
+        nextAction: "Choose another provider or improve browser automation.",
+        proofArtifactIds: [],
+        diagnosticArtifactIds: ["artifact-diagnostic"],
+        createdAt: "2026-05-25T00:00:00.000Z",
+      },
+    });
+
+    expect(ux.status).toBe("blocked");
+    expect(ux.title).toMatch(/widget/i);
+    expect(ux.description).toContain("Choose another provider");
+    expect(ux.summary.diagnosticArtifactIds).toEqual(["artifact-diagnostic"]);
+  });
 });
 
 function preparedSession(): ExternalActionPreparedSession {

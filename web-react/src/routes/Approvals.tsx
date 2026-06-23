@@ -50,8 +50,8 @@ export function ApprovalsPage() {
             <h2 className="text-base font-semibold">Approvals</h2>
             <p className="mt-1 text-xs text-app-text-muted">
               Operator decisions waiting on human confirmation. External actions are prepared
-              as proposals first; approval records the decision but does not commit the action
-              until a dedicated commit tool/lifecycle is wired.
+              as proposals first; approval prepares proof, and final external submit remains
+              an explicit separate action unless automode has enough proof and policy clearance.
             </p>
           </div>
           <button
@@ -518,7 +518,7 @@ function CommitControls({ item }: { item: ActionProposalQueueItem }) {
   const [jsonError, setJsonError] = useState<string>();
   const readiness = buildCommitReadiness(item);
   const ux = buildExternalActionUxState(item);
-  const canBuild = readiness.canBuildExecutor && item.executorBuild?.status !== "registered";
+  const canBuild = readiness.canBuildExecutor;
   const hasOperatorCommitInput = Boolean(fixtureConfirmation.trim() || jsonInput.trim());
   const canCommitWithOperatorInput =
     item.proposal.status === "approved" &&

@@ -478,7 +478,7 @@ function RunCommitControls({ item }: { item: ActionProposalQueueItem }) {
     readiness.status === "blocked" &&
     readiness.missingFields.length > 0 &&
     hasOperatorCommitInput;
-  const canBuild = readiness.canBuildExecutor && item.executorBuild?.status !== "registered";
+  const canBuild = readiness.canBuildExecutor;
   const primaryKind = ux.primaryAction.kind;
   const canPreparePrimary = primaryKind === "prepare" || primaryKind === "replay";
   const canBuildPrimary = primaryKind === "build_executor" && canBuild;

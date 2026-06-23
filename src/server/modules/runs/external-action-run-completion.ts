@@ -2,11 +2,21 @@ import type { AuditService } from "../../common/services/audit.service.js";
 import { sanitizeAuditMetadata } from "../../common/parsers.js";
 import type { ConversationThreadStore } from "../../../conversations/types.js";
 import type { AgentRunRecord, RunStore } from "../../../runs/types.js";
-import type { AgentRunResult, ExternalActionProposal, ExternalActionProposalStatus } from "../../../types.js";
+import type {
+  AgentRunResult,
+  ExternalActionBlocker,
+  ExternalActionFinalReportStatus,
+  ExternalActionProposal,
+  ExternalActionProposalStatus,
+} from "../../../types.js";
 import type { ToolServiceEventStore } from "../../../tools/toolServiceEventStore.js";
 import type { ToolServiceSupervisor } from "../../../tools/toolServiceSupervisor.js";
 import { buildRunOutboundDelivery } from "./run-outbound-delivery.js";
 import { recordRunOutboundDelivery } from "./run-outbound-event-recorder.js";
+import {
+  buildExternalActionFinalReport,
+  createExternalActionFinalReportEvent,
+} from "./action-proposal-final-report.js";
 
 export async function completeWaitingRunAfterExternalAction(input: {
   runs: RunStore;
@@ -16,16 +26,24 @@ export async function completeWaitingRunAfterExternalAction(input: {
   toolServiceEvents?: ToolServiceEventStore;
   run: AgentRunRecord;
   proposal: ExternalActionProposal;
-  status: "committed" | "rejected";
+  status: ExternalActionFinalReportStatus;
   message: string;
+  blocker?: ExternalActionBlocker;
+  nextAction?: string;
+  proofArtifactIds?: string[];
+  diagnosticArtifactIds?: string[];
   parentSpanId?: string;
 }): Promise<void> {
   const result = input.run.result;
   if (!result) return;
 
   const now = new Date().toISOString();
-  const proposalStatus: ExternalActionProposalStatus =
-    input.status === "committed" ? "committed" : "rejected";
+  const proposalStatus: ExternalActionProposalStatus | undefined =
+    input.status === "committed"
+      ? "committed"
+      : input.status === "rejected"
+        ? "rejected"
+        : undefined;
   const updatedResult: AgentRunResult = {
     ...result,
     finalAnswer: externalActionFinalAnswer({
@@ -35,7 +53,7 @@ export async function completeWaitingRunAfterExternalAction(input: {
     }),
     actionProposals: result.actionProposals?.map((proposal) =>
       proposal.id === input.proposal.id
-        ? { ...proposal, status: proposalStatus }
+        ? { ...proposal, ...(proposalStatus ? { status: proposalStatus } : {}) }
         : proposal,
     ),
     runStatus: "completed" as const,
@@ -43,6 +61,24 @@ export async function completeWaitingRunAfterExternalAction(input: {
   };
 
   await input.runs.complete(input.run.id, updatedResult);
+  await input.runs.appendEvent(
+    input.run.id,
+    createExternalActionFinalReportEvent({
+      run: input.run,
+      proposal: input.proposal,
+      parentSpanId: input.parentSpanId,
+      report: buildExternalActionFinalReport({
+        proposal: input.proposal,
+        status: input.status,
+        message: input.message,
+        blocker: input.blocker,
+        nextAction: input.nextAction,
+        proofArtifactIds: input.proofArtifactIds,
+        diagnosticArtifactIds: input.diagnosticArtifactIds,
+        createdAt: now,
+      }),
+    }),
+  );
   if (input.run.threadId) {
     await input.threads?.completeRun({
       threadId: input.run.threadId,
@@ -105,14 +141,26 @@ export async function completeWaitingRunAfterExternalAction(input: {
 
 function externalActionFinalAnswer(input: {
   finalAnswer: string;
-  status: "committed" | "rejected";
+  status: ExternalActionFinalReportStatus;
   message: string;
 }): string {
-  const prefix =
-    input.status === "committed"
-      ? "External action completed:"
-      : "External action did not run:";
+  const prefix = externalActionFinalAnswerPrefix(input.status);
   return [input.finalAnswer.trim(), "", `${prefix} ${input.message}`]
     .filter(Boolean)
     .join("\n");
+}
+
+function externalActionFinalAnswerPrefix(
+  status: ExternalActionFinalReportStatus,
+): string {
+  switch (status) {
+    case "committed":
+      return "External action completed:";
+    case "rejected":
+      return "External action did not run:";
+    case "blocked":
+      return "External action blocked:";
+    case "failed":
+      return "External action failed:";
+  }
 }

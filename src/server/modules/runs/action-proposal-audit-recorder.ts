@@ -12,8 +12,10 @@ import {
   limitJsonForAudit,
   type ExternalActionExecutorBuildRequest,
 } from "./action-proposals.shared.js";
+import { classifyExternalActionBlocker } from "./action-proposal-blockers.js";
 import { redactApprovedProfileCommandValues } from "./action-proposal-form-matching.js";
 import { redactExternalActionCommitInput } from "./action-proposal-commit-input.js";
+import { createExternalActionFinalReportEvent, buildExternalActionFinalReport } from "./action-proposal-final-report.js";
 
 export class ActionProposalAuditRecorder {
   constructor(
@@ -29,6 +31,7 @@ export class ActionProposalAuditRecorder {
   }): Promise<void> {
     const { run, proposal, executor, reason } = input;
     const now = new Date();
+    const blocker = classifyExternalActionBlocker(reason, executor);
     const event: AgentEvent = {
       id: `action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       spanId: `action-${proposal.id}-commit-blocked`,
@@ -54,16 +57,36 @@ export class ActionProposalAuditRecorder {
           status: "blocked",
           proposalId: proposal.id,
           reason,
+          blocker: blocker?.blocker,
           missing: executor.missing ?? [],
           nextRequirement: externalActionCommitNextRequirement(executor),
         },
         proposalId: proposal.id,
         executionStatus: "blocked",
         reason,
+        blocker: blocker?.blocker,
         commitExecutor: redactExternalActionCommitInput(executor),
       },
     };
     await this.runs.appendEvent(run.id, event);
+    await this.runs.appendEvent(
+      run.id,
+      createExternalActionFinalReportEvent({
+        run,
+        proposal,
+        parentSpanId: event.spanId,
+        report: buildExternalActionFinalReport({
+          proposal,
+          status: "blocked",
+          message: blocker?.userMessage ?? reason,
+          blocker: blocker?.blocker,
+          nextAction:
+            blocker?.nextAction ?? externalActionCommitNextRequirement(executor),
+          diagnosticArtifactIds: proposal.artifactIds,
+          createdAt: now.toISOString(),
+        }),
+      }),
+    );
     await this.audit.record({
       instanceId: run.instanceId,
       actorId: "coordinator",
@@ -79,6 +102,7 @@ export class ActionProposalAuditRecorder {
       summary: `External action commit blocked: ${proposal.title}`,
       metadata: sanitizeAuditMetadata({
         reason,
+        blocker,
         proposal,
         commitExecutor: redactExternalActionCommitInput(executor),
       }),
@@ -226,6 +250,7 @@ export class ActionProposalAuditRecorder {
       preparedSession,
     } = input;
     const now = new Date();
+    const blocker = classifyExternalActionBlocker(reason, result?.data);
     await this.runs.appendEvent(run.id, {
       id: `action-prep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       spanId: `action-${proposal.id}-prepare-failed`,
@@ -251,10 +276,12 @@ export class ActionProposalAuditRecorder {
         dataPreview: limitJsonForAudit(result?.data),
         artifactIds,
         preparedSession,
+        blocker: blocker?.blocker,
         input: { proposalId: proposal.id, toolInput: redactApprovedProfileCommandValues(toolInput) },
         output: {
           status: "failed",
           reason,
+          blocker: blocker?.blocker,
           content: result?.content,
           data: limitJsonForAudit(result?.data),
           artifactIds,
@@ -262,6 +289,23 @@ export class ActionProposalAuditRecorder {
         },
       },
     });
+    await this.runs.appendEvent(
+      run.id,
+      createExternalActionFinalReportEvent({
+        run,
+        proposal,
+        parentSpanId: `action-${proposal.id}-prepare-failed`,
+        report: buildExternalActionFinalReport({
+          proposal,
+          status: "blocked",
+          message: blocker?.userMessage ?? reason,
+          blocker: blocker?.blocker,
+          nextAction: blocker?.nextAction ?? "Retry preparation or choose another provider.",
+          diagnosticArtifactIds: artifactIds,
+          createdAt: now.toISOString(),
+        }),
+      }),
+    );
     await this.audit.record({
       instanceId: run.instanceId,
       actorId: toolName ?? "coordinator",
@@ -277,6 +321,7 @@ export class ActionProposalAuditRecorder {
       summary: `External action preparation failed: ${proposal.title}`,
       metadata: sanitizeAuditMetadata({
         reason,
+        blocker,
         proposal,
         toolName,
         toolVersion,
@@ -496,6 +541,7 @@ export class ActionProposalAuditRecorder {
     const { run, proposal, executor, reason, result, durationMs, artifactIds } =
       input;
     const now = new Date();
+    const blocker = classifyExternalActionBlocker(reason, result.data);
     const event: AgentEvent = {
       id: `action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       spanId: `action-${proposal.id}-commit-failed`,
@@ -523,6 +569,7 @@ export class ActionProposalAuditRecorder {
           status: "failed",
           proposalId: proposal.id,
           reason,
+          blocker: blocker?.blocker,
           content: result.content,
           data: limitJsonForAudit(result.data),
           artifactIds,
@@ -530,6 +577,7 @@ export class ActionProposalAuditRecorder {
         proposalId: proposal.id,
         executionStatus: "failed",
         reason,
+        blocker: blocker?.blocker,
         commitExecutor: redactExternalActionCommitInput(executor),
         toolName: executor.toolName,
         toolVersion: executor.toolVersion,
@@ -539,6 +587,24 @@ export class ActionProposalAuditRecorder {
       },
     };
     await this.runs.appendEvent(run.id, event);
+    await this.runs.appendEvent(
+      run.id,
+      createExternalActionFinalReportEvent({
+        run,
+        proposal,
+        parentSpanId: event.spanId,
+        report: buildExternalActionFinalReport({
+          proposal,
+          status: "failed",
+          message: blocker?.userMessage ?? reason,
+          blocker: blocker?.blocker,
+          nextAction:
+            blocker?.nextAction ?? "Retry the external submit or inspect the trace.",
+          diagnosticArtifactIds: artifactIds,
+          createdAt: now.toISOString(),
+        }),
+      }),
+    );
     await this.audit.record({
       instanceId: run.instanceId,
       actorId: executor.toolName ?? "coordinator",
@@ -554,6 +620,7 @@ export class ActionProposalAuditRecorder {
       summary: `External action commit failed: ${proposal.title}`,
       metadata: sanitizeAuditMetadata({
         reason,
+        blocker,
         proposal,
         commitExecutor: redactExternalActionCommitInput(executor),
         durationMs,

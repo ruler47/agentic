@@ -24,9 +24,8 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P2 External Action UX And Real-Provider Flow](09-p2-external-action-ux.md)
-2. [P2 Model Routing](10-p2-model-routing.md)
-3. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
+1. [P2 Model Routing](10-p2-model-routing.md)
+2. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
 
 Cross-cutting gates apply to every task:
 
@@ -43,7 +42,7 @@ flowchart TD
   B --> C["06 source/search discipline completed"]
   C --> D["07 proof policy and artifact links completed"]
   D --> E["08 conversation memory / continuation completed"]
-  C --> F["09 external actions UX"]
+  C --> F["09 external actions UX completed"]
   E --> F
   A --> G["10 model routing"]
   B --> H["11 tool builder redesign"]
@@ -51,6 +50,20 @@ flowchart TD
 
 ## Recently Completed
 
+- 2026-06-23: P2 External Action UX And Real-Provider Flow was completed and its
+  task file was removed from the active queue. Implementation added a provider-neutral
+  external-action blocker taxonomy, canonical
+  `external-action-final-report-created` events for committed/blocked/failed outcomes,
+  final-report projection in approval/run UI, clearer one-primary-action copy for
+  proposal/prepare/commit states, fixed the registered-but-unattached executor button
+  path, and ensured failed diagnostic artifacts stay visible in Agentic UI while being
+  withheld from outbound channel delivery. Focused coverage:
+  `tests/actionProposalBlockers.test.ts`, `tests/actionProposalFixture.test.ts`,
+  `tests/nestApi.test.ts`, `tests/runOutboundDelivery.test.ts`, and
+  `web-react/src/features/approvals/externalActionUxState.test.ts`. Manual smoke used
+  the local fixture action lifecycle: proposal -> approve -> auto-prepare -> attach
+  executor -> commit -> final report, and `/approvals` rendered the simplified copy
+  against the live dev stack.
 - 2026-06-23: P2 Conversation Memory, Prior Work, And Continuation Reliability was
   completed and its task file was removed from the active queue. Implementation:
   `src/agents/memoryUse.ts`, `memory-use-resolved` trace/span events in

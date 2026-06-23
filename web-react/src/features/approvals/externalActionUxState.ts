@@ -78,7 +78,10 @@ export function buildExternalActionUxState(
       tone: "danger",
       statusLabel: "rejected",
       title: "External action was rejected",
-      description: item.decision?.reason ?? "The run will not submit this external action.",
+      description:
+        item.finalReport?.summary ??
+        item.decision?.reason ??
+        "The run will not submit this external action.",
       summary,
       canReject: false,
     });
@@ -90,9 +93,24 @@ export function buildExternalActionUxState(
       tone: "ok",
       statusLabel: "submitted",
       title: "External action was submitted",
-      description: readiness.reason,
+      description: item.finalReport?.summary ?? readiness.reason,
       summary,
       canReject: false,
+    });
+  }
+
+  if (item.finalReport?.status === "blocked" || item.finalReport?.status === "failed") {
+    const copy = blockerCopy(item);
+    return uxState({
+      status: item.finalReport.status,
+      tone: item.finalReport.status === "failed" ? "danger" : "warn",
+      statusLabel: copy.statusLabel,
+      title: copy.title,
+      description: copy.description,
+      summary,
+      primaryAction: blockedPrimaryAction(readiness),
+      canReject,
+      advancedActions: readiness,
     });
   }
 
@@ -273,11 +291,20 @@ export function buildExternalActionSummary(
   const proofArtifactIds = uniqueStrings([
     ...(session?.proofArtifactIds ?? []),
     ...(draft?.proofArtifactIds ?? []),
+    ...(item.finalReport?.proofArtifactIds ?? []),
   ]);
   const diagnosticArtifactIds = uniqueStrings([
     ...(item.proposal.artifactIds ?? []),
     ...(item.preparationExecution?.artifactIds ?? []),
     ...(session?.artifactIds ?? []),
+    ...(item.finalReport?.diagnosticArtifactIds ?? []),
+  ]);
+  const missing = uniqueStrings([
+    ...(item.proposal.preparation?.missingInputs ?? []),
+    ...(session?.formFieldGaps ?? []).map(
+      (gap) => gap.label ?? gap.field ?? gap.name ?? gap.reason,
+    ),
+    ...(draft?.missingBeforeCommit ?? []),
   ]);
   return {
     target: item.proposal.target ?? draft?.target ?? "Not selected",
@@ -286,7 +313,7 @@ export function buildExternalActionSummary(
     data: data.length
       ? truncate(uniqueStrings(data).join("; "), 320)
       : "No form data prepared yet.",
-    missing: item.proposal.preparation?.missingInputs ?? [],
+    missing,
     proofArtifactIds,
     diagnosticArtifactIds,
   };
@@ -359,6 +386,81 @@ function operatorFacingSubmitBlockReason(
     return finalSubmitUnavailableReason(item);
   }
   return humanSubmitBlockReason(readinessReason || finalSubmitUnavailableReason(item));
+}
+
+function blockerCopy(item: ActionProposalQueueItem): {
+  statusLabel: string;
+  title: string;
+  description: string;
+} {
+  const report = item.finalReport;
+  const blocker = report?.blocker ?? item.execution?.blocker ?? item.preparationExecution?.blocker;
+  const base = report?.summary ?? item.execution?.reason ?? item.preparationExecution?.reason ?? "";
+  const next = report?.nextAction;
+  const suffix = next ? ` Next: ${next}` : "";
+  switch (blocker) {
+    case "missing_data":
+      return {
+        statusLabel: "needs details",
+        title: "External action needs more data",
+        description: `${base || "Required form data is missing."}${suffix}`,
+      };
+    case "login_required":
+      return {
+        statusLabel: "login required",
+        title: "Provider requires login",
+        description: `${base || "The provider requires an authenticated session."}${suffix}`,
+      };
+    case "captcha":
+      return {
+        statusLabel: "captcha",
+        title: "Provider blocked automation",
+        description: `${base || "The provider showed a CAPTCHA or anti-bot check."}${suffix}`,
+      };
+    case "payment_required":
+      return {
+        statusLabel: "payment required",
+        title: "Payment boundary reached",
+        description: `${base || "The provider requires payment details before continuing."}${suffix}`,
+      };
+    case "slot_unavailable":
+      return {
+        statusLabel: "slot unavailable",
+        title: "Requested slot is unavailable",
+        description: `${base || "The requested time or option is unavailable."}${suffix}`,
+      };
+    case "ambiguous_target":
+      return {
+        statusLabel: "ambiguous",
+        title: "Target needs clarification",
+        description: `${base || "The platform cannot safely choose the target."}${suffix}`,
+      };
+    case "proof_failed":
+      return {
+        statusLabel: "proof failed",
+        title: "Proof capture failed",
+        description: `${base || "The platform could not capture usable proof."}${suffix}`,
+      };
+    case "unsupported_widget":
+      return {
+        statusLabel: "unsupported",
+        title: "Provider widget is not supported yet",
+        description: `${base || "The current browser/commit tool cannot safely automate this provider flow."}${suffix}`,
+      };
+    case "policy_blocked":
+      return {
+        statusLabel: "policy blocked",
+        title: "External submit is blocked by policy",
+        description: `${base || "The platform stopped at the external-action boundary."}${suffix}`,
+      };
+    case "provider_error":
+    default:
+      return {
+        statusLabel: report?.status === "failed" ? "failed" : "blocked",
+        title: report?.status === "failed" ? "External submit failed" : "External action blocked",
+        description: `${base || "The provider or execution tool did not reach a safe final state."}${suffix}`,
+      };
+  }
 }
 
 function uniqueStrings(values: Array<string | undefined>): string[] {

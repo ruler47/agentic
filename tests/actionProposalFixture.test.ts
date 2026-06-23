@@ -241,6 +241,7 @@ test("fixture external-action approval mode resumes the same run after approved 
         proposal: { status: string };
         run: { id: string; status: string };
         execution?: { status: string; contentPreview?: string };
+        finalReport?: { status: string; summary: string; proofArtifactIds: string[] };
       };
     }>(
       fixture.baseUrl,
@@ -255,6 +256,8 @@ test("fixture external-action approval mode resumes the same run after approved 
     assert.equal(committed.proposal.proposal.status, "committed");
     assert.equal(committed.proposal.run.status, "completed");
     assert.equal(committed.proposal.execution?.status, "committed");
+    assert.equal(committed.proposal.finalReport?.status, "committed");
+    assert.match(committed.proposal.finalReport?.summary ?? "", /manual-fixture-confirmed/);
     assert.match(committed.proposal.execution?.contentPreview ?? "", /manual-fixture-confirmed/);
     assert.equal(commitInputs[0]?.proposalId, created.proposal.proposal.id);
     assert.deepEqual(commitInputs[0]?.operatorInput, {
@@ -271,6 +274,11 @@ test("fixture external-action approval mode resumes the same run after approved 
     assert.ok(fetched.run.events.some((event) => event.type === "external-action-executor-attached"));
     assert.ok(fetched.run.events.some((event) => event.type === "external-action-approval-auto-advance-completed"));
     assert.ok(fetched.run.events.some((event) => event.type === "external-action-committed"));
+    assert.ok(
+      fetched.run.events.some(
+        (event) => event.type === "external-action-final-report-created",
+      ),
+    );
   } finally {
     await fixture.app.close();
   }

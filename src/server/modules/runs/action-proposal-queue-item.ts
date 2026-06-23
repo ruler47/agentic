@@ -7,6 +7,7 @@ import {
   latestActionProposalPreparationExecution,
   latestAttachedExternalActionExecutor,
   latestExternalActionExecutorBuild,
+  latestExternalActionFinalReport,
   type ActionProposalQueueItem,
 } from "./action-proposals.shared.js";
 import { latestActionProposalProfileHydrationApproval } from "./action-proposal-hydration-approval.js";
@@ -53,5 +54,6 @@ export function buildActionProposalQueueItem(
       proposal.id,
     ),
     executorBuild,
+    finalReport: latestExternalActionFinalReport(run, proposal.id),
   };
 }

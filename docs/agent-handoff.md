@@ -15,7 +15,7 @@ new primary branch.
 - Active roadmap: `docs/roadmap-core-toolbelt.md`.
 - Active executable task queue: `docs/tasks/README.md`.
 - Active architecture map: `docs/current-architecture.md`.
-- Current active implementation task: `docs/tasks/09-p2-external-action-ux.md`.
+- Current active implementation task: `docs/tasks/10-p2-model-routing.md`.
 
 Do not use `claude/phase17-research-delegation` as the active base. It was audited on
 2026-06-18 and still contains a legacy `src/agents/universalAgent.ts` above 9k lines plus

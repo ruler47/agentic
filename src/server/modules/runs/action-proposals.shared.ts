@@ -1,6 +1,7 @@
 import type { AgentRunRecord } from "../../../runs/types.js";
 import type { ToolRegistry } from "../../../tools/registry.js";
 import type {
+  ExternalActionBlocker,
   ExternalActionCommitExecutor,
   ExternalActionCommitStatus,
   ExternalActionPreparedSession,
@@ -8,6 +9,7 @@ import type {
   ExternalActionProposalStatus,
 } from "../../../types.js";
 import { isRecord } from "../../common/parsers.js";
+import type { ExternalActionFinalReport } from "./action-proposal-final-report.js";
 import type { ActionProposalProfileHydrationApproval } from "./action-proposal-hydration-approval.js";
 
 export type ExternalActionExecutorBuildRequest = {
@@ -49,6 +51,7 @@ export type ActionProposalQueueItem = {
     toolVersion?: string;
     contentPreview?: string;
     dataPreview?: unknown;
+    blocker?: ExternalActionBlocker;
   };
   preparationExecution?: {
     status: "completed" | "failed";
@@ -61,6 +64,7 @@ export type ActionProposalQueueItem = {
     dataPreview?: unknown;
     artifactIds?: string[];
     preparedSession?: ExternalActionPreparedSession;
+    blocker?: ExternalActionBlocker;
   };
   profileHydration?: ActionProposalProfileHydrationApproval;
   executorBuild?: {
@@ -76,6 +80,7 @@ export type ActionProposalQueueItem = {
     commitExecutor?: ExternalActionCommitExecutor;
     updatedAt: string;
   };
+  finalReport?: ExternalActionFinalReport;
 };
 
 export function latestActionProposalPreparationExecution(
@@ -119,6 +124,7 @@ export function latestActionProposalPreparationExecution(
       preparedSession: isRecord(payload.preparedSession)
         ? (payload.preparedSession as ExternalActionPreparedSession)
         : undefined,
+      blocker: parseExternalActionBlocker(payload.blocker),
     };
   }
   return undefined;
@@ -191,6 +197,54 @@ export function latestActionProposalExecution(
           ? payload.contentPreview
           : undefined,
       dataPreview: payload.dataPreview,
+      blocker: parseExternalActionBlocker(payload.blocker),
+    };
+  }
+  return undefined;
+}
+
+export function latestExternalActionFinalReport(
+  run: AgentRunRecord,
+  proposalId: string,
+): ExternalActionFinalReport | undefined {
+  for (const event of [...run.events].reverse()) {
+    if (event.type !== "external-action-final-report-created") continue;
+    const payload =
+      event.payload && typeof event.payload === "object"
+        ? (event.payload as Record<string, unknown>)
+        : {};
+    if (payload.proposalId !== proposalId || !isRecord(payload.report)) {
+      continue;
+    }
+    return {
+      status: parseFinalReportStatus(payload.report.status),
+      summary:
+        typeof payload.report.summary === "string"
+          ? payload.report.summary
+          : event.detail ?? "External action final report.",
+      target:
+        typeof payload.report.target === "string"
+          ? payload.report.target
+          : undefined,
+      targetUrl:
+        typeof payload.report.targetUrl === "string"
+          ? payload.report.targetUrl
+          : undefined,
+      action:
+        typeof payload.report.action === "string"
+          ? payload.report.action
+          : "external action",
+      blocker: parseExternalActionBlocker(payload.report.blocker),
+      nextAction:
+        typeof payload.report.nextAction === "string"
+          ? payload.report.nextAction
+          : undefined,
+      proofArtifactIds: stringArray(payload.report.proofArtifactIds),
+      diagnosticArtifactIds: stringArray(payload.report.diagnosticArtifactIds),
+      createdAt:
+        typeof payload.report.createdAt === "string"
+          ? payload.report.createdAt
+          : event.timestamp,
     };
   }
   return undefined;
@@ -601,6 +655,44 @@ export function shouldListActionProposal(
   if (!proposal.approvalRequired) return true;
   if (run.status === "waiting_approval") return true;
   return (proposal.preparation?.missingInputs ?? []).length === 0;
+}
+
+function parseExternalActionBlocker(value: unknown): ExternalActionBlocker | undefined {
+  if (
+    value === "login_required" ||
+    value === "captcha" ||
+    value === "payment_required" ||
+    value === "missing_data" ||
+    value === "slot_unavailable" ||
+    value === "ambiguous_target" ||
+    value === "unsupported_widget" ||
+    value === "provider_error" ||
+    value === "policy_blocked" ||
+    value === "proof_failed"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function parseFinalReportStatus(
+  value: unknown,
+): ExternalActionFinalReport["status"] {
+  if (
+    value === "committed" ||
+    value === "rejected" ||
+    value === "blocked" ||
+    value === "failed"
+  ) {
+    return value;
+  }
+  return "blocked";
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 export async function withTimeout<T>(

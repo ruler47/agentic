@@ -277,7 +277,25 @@ export type ExternalActionCommitStatus =
   | "committed"
   | "failed";
 
+export type ExternalActionFinalReportStatus =
+  | "committed"
+  | "rejected"
+  | "blocked"
+  | "failed";
+
 export type ExternalActionExecutionMode = "auto" | "approval";
+
+export type ExternalActionBlocker =
+  | "login_required"
+  | "captcha"
+  | "payment_required"
+  | "missing_data"
+  | "slot_unavailable"
+  | "ambiguous_target"
+  | "unsupported_widget"
+  | "provider_error"
+  | "policy_blocked"
+  | "proof_failed";
 
 export type ExternalActionCommitExecutorKind = "generated_tool" | "manual_operator";
 
@@ -502,6 +520,7 @@ export type AgentEventType =
   | "external-action-commit-blocked"
   | "external-action-commit-failed"
   | "external-action-committed"
+  | "external-action-final-report-created"
   | "agent-candidate-use-repair-requested"
   | "planning-completed"
   | "worker-started"
