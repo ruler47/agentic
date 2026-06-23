@@ -45,6 +45,10 @@ function shouldOfferToolForFrame(
     return /browser[.\s-]*screenshot|browser-screenshot|artifact-image|screenshot/.test(text);
   }
 
+  if (explicitToolNeed === "http") {
+    return /http[.\s-]*request|http-json|external-api|structured-data/.test(text);
+  }
+
   if (frame.mode === "local_utility") {
     return /(?:^|\b)(?:file|document|data)[.\s-]|file-|document-|data-/.test(text);
   }

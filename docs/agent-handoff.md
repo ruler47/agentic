@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Status date: 2026-06-22.
+Status date: 2026-06-23.
 
 ## Active Base
 
@@ -15,7 +15,7 @@ new primary branch.
 - Active roadmap: `docs/roadmap-core-toolbelt.md`.
 - Active executable task queue: `docs/tasks/README.md`.
 - Active architecture map: `docs/current-architecture.md`.
-- Current active implementation task: `docs/tasks/07-p1-proof-policy-and-evidence-artifacts.md`.
+- Current active implementation task: `docs/tasks/08-p2-conversation-memory-and-continuation.md`.
 
 Do not use `claude/phase17-research-delegation` as the active base. It was audited on
 2026-06-18 and still contains a legacy `src/agents/universalAgent.ts` above 9k lines plus
@@ -125,6 +125,19 @@ Recent P0 fixes:
   result pages, and social/provider search pages are filtered from source discovery,
   skipped before broad-research `web.read`, and not promoted as board candidates unless
   the user explicitly asks about that host/source type.
+- Proof policy and evidence artifact linking are complete for the current P1 slice.
+  `src/agents/proofPolicy.ts` resolves `ProofPlan` by task frame and derives `ProofLink`
+  records from artifacts/source URLs/claim signals. Finalization emits
+  `proof-plan-created` and `proof-links-created`; run results expose `proofPlan` and
+  `proofLinks`; Run Workspace renders the proof plan plus proof links with mode/status,
+  source/artifact URLs, and stable source/claim ids. Structured source proof now carries
+  stable source and claim ids, so broad research does not have to pretend every proof is
+  a successful screenshot. Explicit HTTP/API URL commands now infer an `http.request`
+  tool need, avoid browser/screenshot tools unless visual proof is requested, and require
+  structured/source evidence before the return gate passes. Manual smoke:
+  `run_1782213246669_ycrbvo5l` completed a JSONPlaceholder GET with one `http.request`,
+  `http_request-structured-proof.json`, no screenshot, and a visible Run Workspace proof
+  panel.
 - Preinstalled tools now exist on the primary branch: `web.search`, `web.read`,
   `browser.operate`, `browser.screenshot`, `http.request`, `file.read`, `file.write`,
   `document.extract`, `data.transform`, `external.action.prepare`,

@@ -107,7 +107,7 @@ test("BaseAgent uses structured proof for API-only tasks without visual proof by
   const events: AgentEvent[] = [];
   const artifacts: AgentArtifact[] = [];
   const agent = new BaseAgent(llm as unknown as LlmClient, registry);
-  const result = await agent.run("Прочитай API https://jsonplaceholder.typicode.com/todos/1 и скажи title.", {
+  const result = await agent.run("Прочитай API https://jsonplaceholder.typicode.com/todos/1 и скажи title. Скриншот не нужен.", {
     runId: "run_no_screenshot_api",
     ledger,
     runContext: {
@@ -142,6 +142,15 @@ test("BaseAgent uses structured proof for API-only tasks without visual proof by
   assert.match(result.finalAnswer, /delectus aut autem/);
   assert.ok((result.artifacts ?? []).some((artifact) => artifact.filename === "http_request-structured-proof.json"));
   assert.equal(events.some((event) => event.type === "agent-proof-repair-requested"), false);
+  assert.equal(result.proofPlan?.required, true);
+  assert.equal(result.proofPlan?.preferredModes[0], "api_response");
+  assert.equal(result.proofPlan?.preferredModes.includes("screenshot"), false);
+  assert.equal(result.proofPlan?.acceptableModes.includes("screenshot"), false);
+  assert.deepEqual(
+    result.proofPlan?.sourceIds?.map((id) => id.replace(/^source:[^:]+:/, "")),
+    ["jsonplaceholder-typicode-com-todos-1"],
+  );
+  assert.equal(result.proofLinks?.some((link) => link.mode === "api_response" && link.status === "passed"), true);
 
   const workItems = await workLedger.listByRun("run_no_screenshot_api");
   assert.equal(workItems.length, 1);

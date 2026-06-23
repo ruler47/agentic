@@ -1,6 +1,6 @@
 # Current Architecture
 
-Status date: 2026-06-22.
+Status date: 2026-06-23.
 
 This document describes the active code path in `main`. Historical recursive/council
 runtime files and legacy tool-build queues are not active.
@@ -36,7 +36,9 @@ flowchart TD
   CT --> AR["ArtifactStore"]
   GT --> AR
   WL --> Stores
+  BA --> PP["ProofPolicy\nplan + proof links"]
   BA --> FG["Finalization gates\nproof, source grounding, raw tool syntax, truncation"]
+  PP --> FG
   FG --> RS
   RS --> API["Run result, trace events, artifacts, proposals"]
   WDB --> API
@@ -89,10 +91,14 @@ flowchart TD
   the runtime Ledger for passed/rejected prior evidence before normal tool execution,
   short-circuits source/artifact follow-ups when prior evidence is enough, and records
   applied reuse decisions as normal Work/Evidence records.
-- `src/agents/baseAgentFinalization.ts`: final-answer gates, action proposal creation,
-  result assembly.
+- `src/agents/baseAgentFinalization.ts`: final-answer gates, proof-plan/proof-link event
+  emission, action proposal creation, result assembly.
 - `src/agents/baseAgentEvidence.ts` and `src/agents/baseAgentProof.ts`: source/proof
   extraction, proof repair, screenshot/source checks.
+- `src/agents/proofPolicy.ts`: task-frame-aware proof mode resolver and stable
+  `ProofLink` derivation for artifacts, source URLs, and claim signals. It chooses among
+  source evidence, screenshot, API response, generated file, and external-action proof
+  modes without forcing every source-backed run into screenshot proof.
 - `src/agents/baseAgentThreadContext.ts`: follow-up rewriting so prior-thread questions
   can answer from conversation context instead of repeating work.
 - `src/agents/baseAgentTruncation.ts`: rolling context compaction and truncated-answer
@@ -172,6 +178,43 @@ Eligibility requires an implementation registered in `ToolRegistry`, metadata st
 `available`, runtime readiness `ok`, acceptable health, and a non-guarded runtime
 boundary. `external.action.commit` remains a guarded capability: the approval/commit
 orchestrator can call it, but ordinary agents do not receive it as a free tool.
+
+### Proof Policy And Artifact Links
+
+Proof is represented explicitly instead of being inferred from a loose artifact gallery.
+During finalization, `BaseAgent` resolves a `ProofPlan` from the task frame, source URLs,
+required artifact policy, and available proof evidence. When proof is relevant it emits
+`proof-plan-created`; after artifacts/proof fallback are known it derives `ProofLink`
+records and emits `proof-links-created`.
+
+```mermaid
+flowchart TD
+  TF["TaskFrame\nmode + proof contract"] --> Resolver["resolveProofPlan()"]
+  Resolver --> Plan["ProofPlan\nrequired, preferredModes, acceptableModes,\nsourceIds, claimIds"]
+  Artifacts["Run artifacts\nscreenshots, source JSON, files"] --> Links["ProofLink derivation"]
+  Evidence["Source URLs + proof signals"] --> Links
+  Links --> Result["AgentRunResult\nproofPlan + proofLinks"]
+  Result --> UI["Run Workspace proof panel"]
+  Result --> Channels["Channel delivery\npassed proof only"]
+```
+
+Current mode rules:
+
+- source-backed current/research/product-selection runs prefer `source_evidence` and can
+  accept `screenshot` when requested or available;
+- local utility/file tasks use `generated_file`;
+- API/protocol tasks use `api_response` or structured source proof. Explicit HTTP/API
+  URL commands are routed as an explicit `http.request` tool need, so a `direct_fact`
+  frame cannot finish from model memory;
+- external actions use `external_action_pre_submit` before commit and
+  `external_action_post_submit` after commit;
+- thread-context answers do not create fresh proof unless the follow-up itself asks for
+  it.
+
+Run Workspace renders the proof plan and each proof link with status, mode, source URL,
+artifact URL, stable source id, and claim/candidate ids where present. Failed diagnostic
+proof can stay visible in UI, while passed source/file/API proof remains the evidence the
+answer can cite.
 
 ### Persistence And Settings
 

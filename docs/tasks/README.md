@@ -1,6 +1,6 @@
 # Active Task Specs
 
-Status date: 2026-06-22.
+Status date: 2026-06-23.
 
 This directory is the execution queue for the active Agentic roadmap. Each active task
 file is a self-contained spec-first/test-first contract:
@@ -24,11 +24,10 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P1 Proof Policy And Evidence Artifact Linking](07-p1-proof-policy-and-evidence-artifacts.md)
-2. [P2 Conversation Memory, Prior Work, And Continuation Reliability](08-p2-conversation-memory-and-continuation.md)
-3. [P2 External Action UX And Real-Provider Flow](09-p2-external-action-ux.md)
-4. [P2 Model Routing](10-p2-model-routing.md)
-5. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
+1. [P2 Conversation Memory, Prior Work, And Continuation Reliability](08-p2-conversation-memory-and-continuation.md)
+2. [P2 External Action UX And Real-Provider Flow](09-p2-external-action-ux.md)
+3. [P2 Model Routing](10-p2-model-routing.md)
+4. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
 
 Cross-cutting gates apply to every task:
 
@@ -43,10 +42,9 @@ These tasks were created from the 2026-06-22 run analysis of
 flowchart TD
   A["04 metrics: time, tokens, cost visibility"] --> B["05 working decision ledger"]
   B --> C["06 source/search discipline completed"]
-  C --> D["07 proof policy and artifact links"]
-  B --> E["08 conversation memory / continuation"]
+  C --> D["07 proof policy and artifact links completed"]
+  D --> E["08 conversation memory / continuation"]
   C --> F["09 external actions UX"]
-  D --> F
   E --> F
   A --> G["10 model routing"]
   B --> H["11 tool builder redesign"]
@@ -54,6 +52,21 @@ flowchart TD
 
 ## Recently Completed
 
+- 2026-06-23: P1 Proof Policy And Evidence Artifact Linking was completed and its task
+  file was removed from the active queue. Implementation: `src/agents/proofPolicy.ts`,
+  proof-plan/proof-link contracts in `src/types.ts`, BaseAgent finalization wiring,
+  structured source-proof metadata in `src/agents/baseAgentProof.ts`, and Run Workspace
+  proof-policy rendering. Source-backed runs now emit `proof-plan-created` and
+  `proof-links-created`, final results expose `proofPlan` and `proofLinks`, failed
+  diagnostic screenshot proof can remain visible in UI while passed structured
+  source-evidence proof carries stable claim/source ids, and local/external/API proof
+  modes are represented explicitly. The same slice fixed explicit API/HTTP URL tasks so
+  they are routed to `http.request` and require `api_response`/source evidence instead
+  of completing from model memory, even when the user says a screenshot is not needed.
+  Focused coverage: `tests/proofPolicy.test.ts`, `tests/baseAgent.p0.test.ts`, and
+  BaseAgent source-evidence fallback regression coverage. Manual smoke:
+  `run_1782212526320_l8enrfme` for generated-file proof and
+  `run_1782213246669_ycrbvo5l` for API structured proof without screenshot.
 - 2026-06-22: P1 Source Acquisition, Search Discipline, And Source Cache was completed
   and its task file was removed from the active queue. Implementation:
   `TaskFrame.sourcePolicy`, `src/agents/sourceSearchPlan.ts`,

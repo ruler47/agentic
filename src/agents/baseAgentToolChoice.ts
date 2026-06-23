@@ -1,4 +1,5 @@
 import type { TaskFrame } from "./taskFrame.js";
+import { taskLooksLikeApiRequestTask } from "./baseAgentEvidence.js";
 
 export function shouldAnswerWithoutTools(input: {
   step: number;
@@ -19,9 +20,10 @@ export function shouldAnswerWithoutTools(input: {
     && input.taskFrame.researchContract.minSourceReadToolCalls === 0;
 }
 
-export type ExplicitToolNeed = "screenshot";
+export type ExplicitToolNeed = "screenshot" | "http";
 
 export function inferExplicitToolNeed(task: string): ExplicitToolNeed | undefined {
+  if (taskLooksLikeApiRequestTask(task)) return "http";
   if (/(?:сдела[йт]|сними|создай|получи|take|capture|make|create).{0,80}(?:скриншот|скрин|screenshot|screen shot)/iu.test(task)) {
     return "screenshot";
   }

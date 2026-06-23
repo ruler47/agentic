@@ -81,7 +81,9 @@ export async function saveStructuredDataProofArtifact(input: {
   proofEvidence: ProofEvidence[];
   saveArtifact: (artifact: ArtifactCreateInput) => Promise<AgentArtifact>;
 }): Promise<{ artifact?: AgentArtifact; error?: string }> {
-  const sourceUrls = input.sourceUrls.filter(isProofWorthySourceUrl).slice(0, PROOF_SOURCE_URL_LIMIT);
+  const evidenceSourceUrls = uniqueStrings(input.proofEvidence.map((entry) => entry.sourceUrl).filter(isProofWorthySourceUrl));
+  const sourceUrls = (evidenceSourceUrls.length ? evidenceSourceUrls : input.sourceUrls.filter(isProofWorthySourceUrl))
+    .slice(0, PROOF_SOURCE_URL_LIMIT);
   if (sourceUrls.length === 0) return {};
   const evidence = sourceUrls.flatMap((sourceUrl) => matchingProofEvidence(sourceUrl, input.proofEvidence));
   const signals = uniqueStrings(evidence.flatMap((entry) => entry.signals)).slice(0, 20);

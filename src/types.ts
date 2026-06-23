@@ -222,6 +222,40 @@ export type ArtifactCreateInput = {
   quality?: ArtifactQualityMetadata;
 };
 
+export type ProofMode =
+  | "source_evidence"
+  | "screenshot"
+  | "api_response"
+  | "generated_file"
+  | "external_action_pre_submit"
+  | "external_action_post_submit";
+
+export type ProofStatus = "passed" | "failed" | "blocked" | "partial";
+
+export type ProofPlan = {
+  required: boolean;
+  preferredModes: ProofMode[];
+  acceptableModes: ProofMode[];
+  reason: string;
+  targetClaimIds?: string[];
+  targetCandidateIds?: string[];
+  sourceIds?: string[];
+};
+
+export type ProofLink = {
+  proofId: string;
+  artifactId?: string;
+  evidenceId?: string;
+  sourceId?: string;
+  claimId?: string;
+  candidateId?: string;
+  sourceUrl?: string;
+  artifactFilename?: string;
+  status: ProofStatus;
+  mode: ProofMode;
+  summary: string;
+};
+
 export type ExternalActionType =
   | "reservation"
   | "appointment"
@@ -369,6 +403,8 @@ export type AgentRunResult = {
   workerResults: WorkerResult[];
   reviews: ReviewResult[];
   artifacts?: AgentArtifact[];
+  proofPlan?: ProofPlan;
+  proofLinks?: ProofLink[];
   toolCreationRequests?: Array<{
     toolName: string;
     toolVersion?: string;
@@ -426,6 +462,8 @@ export type AgentEventType =
   | "source-read-skipped"
   | "source-read-recorded"
   | "source-rejected"
+  | "proof-plan-created"
+  | "proof-links-created"
   | "proof-skipped"
   | "proof-degraded"
   | "agent-invocation-created"

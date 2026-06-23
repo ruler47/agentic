@@ -15,7 +15,7 @@ import { RunCandidateReviewPanel } from "@/features/run-workspace/RunCandidateRe
 import { WorkingDecisionBoard } from "@/features/run-workspace/WorkingDecisionBoard";
 import { hydrateMarkdownArtifactLinks } from "@/features/conversations/conversationArtifacts";
 import { formatDuration, formatRelative, formatTokenUsage, runDurationMs, truncate } from "@/lib/format";
-import type { AgentEvent, AgentRunRecord } from "@/api/types";
+import type { AgentEvent, AgentRunRecord, ProofLink } from "@/api/types";
 
 export function RunWorkspacePage() {
   const params = useParams<{ runId: string }>();
@@ -204,6 +204,8 @@ export function RunWorkspacePage() {
 
         <RunActionApprovalPanel run={data} />
 
+        <ProofPolicyPanel run={data} />
+
         <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-5">
           <h3 className="text-sm font-semibold">Final answer</h3>
           <div className="mt-2">
@@ -239,6 +241,78 @@ export function RunWorkspacePage() {
       </aside>
     </section>
   );
+}
+
+function ProofPolicyPanel({ run }: { run: AgentRunRecord }) {
+  const plan = run.result?.proofPlan;
+  const links = run.result?.proofLinks ?? [];
+  if (!plan && links.length === 0) return null;
+  return (
+    <article className="rounded-[var(--radius-card)] border border-app-border bg-app-surface p-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-app-text-muted">
+            Proof policy
+          </p>
+          <h3 className="text-sm font-semibold">
+            {plan?.required ? "Proof required" : "Proof optional"} · {links.length} link{links.length === 1 ? "" : "s"}
+          </h3>
+          {plan?.reason ? (
+            <p className="mt-1 text-xs text-app-text-muted">{plan.reason}</p>
+          ) : null}
+        </div>
+        {plan ? (
+          <dl className="grid min-w-0 gap-2 text-xs sm:grid-cols-2">
+            <MetricItem label="preferred" value={plan.preferredModes.join(", ") || "none"} />
+            <MetricItem label="acceptable" value={plan.acceptableModes.join(", ") || "none"} />
+          </dl>
+        ) : null}
+      </div>
+      {links.length ? (
+        <ul className="mt-3 grid gap-2 text-xs">
+          {links.map((link) => (
+            <ProofLinkRow key={link.proofId} link={link} runId={run.id} />
+          ))}
+        </ul>
+      ) : null}
+    </article>
+  );
+}
+
+function ProofLinkRow({ link, runId }: { link: ProofLink; runId: string }) {
+  const artifactUrl = link.artifactId
+    ? `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(link.artifactId)}`
+    : undefined;
+  return (
+    <li className="rounded-md border border-app-border bg-app-surface-2 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={["rounded-full px-2 py-0.5 text-[11px] font-semibold", proofStatusTone(link.status)].join(" ")}>
+          {link.status}
+        </span>
+        <span className="font-mono text-[11px] text-app-text-muted">{link.mode}</span>
+        {artifactUrl ? (
+          <a href={artifactUrl} target="_blank" rel="noreferrer" className="text-app-accent underline">
+            {link.artifactFilename ?? link.artifactId}
+          </a>
+        ) : null}
+        {link.sourceUrl ? (
+          <a href={link.sourceUrl} target="_blank" rel="noreferrer" className="min-w-0 truncate text-app-accent underline">
+            source
+          </a>
+        ) : null}
+      </div>
+      <p className="mt-1 text-[11px] text-app-text-muted">{truncate(link.summary, 220)}</p>
+      <p className="mt-1 break-all font-mono text-[10px] text-app-text-muted">
+        {[link.sourceId, link.claimId, link.candidateId].filter(Boolean).join(" · ")}
+      </p>
+    </li>
+  );
+}
+
+function proofStatusTone(status: ProofLink["status"]): string {
+  if (status === "failed" || status === "blocked") return "bg-app-danger-soft text-app-danger";
+  if (status === "partial") return "bg-app-warning-soft text-app-warning";
+  return "bg-app-accent-soft text-app-accent";
 }
 
 function RunMetricsPanel({ run }: { run: AgentRunRecord }) {

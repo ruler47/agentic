@@ -602,6 +602,7 @@ test("BaseAgent falls back to source-evidence proof when screenshot proof fails"
     },
   ]);
   const artifacts: AgentArtifact[] = [];
+  const events: AgentEvent[] = [];
   const agent = new BaseAgent(llm as unknown as LlmClient, registry);
   const result = await agent.run(
     "Подбери устройство в бюджете до 3000 долларов для работы, игр, батареи и веса.",
@@ -624,10 +625,12 @@ test("BaseAgent falls back to source-evidence proof when screenshot proof fails"
         artifacts.push(artifact);
         return artifact;
       },
+      onEvent: (event) => void events.push(event),
     },
   );
 
   assert.equal(result.runStatus, "completed");
+  assert.deepEqual([result.proofPlan?.required, result.proofPlan?.preferredModes.includes("source_evidence")], [true, true]);
   assert.match(result.finalAnswer, /Proof artifact: .*source-evidence\.json/i);
   const failedScreenshot = artifacts.find((artifact) => artifact.mimeType === "image/png");
   const sourceProof = artifacts.find((artifact) => artifact.filename.endsWith("-source-evidence.json"));
@@ -636,6 +639,9 @@ test("BaseAgent falls back to source-evidence proof when screenshot proof fails"
   assert.equal(sourceProof?.mimeType, "application/json");
   assert.equal(sourceProof?.quality?.status, "passed");
   assert.ok(sourceProof?.quality?.checks.some((check) => check.name === "source-evidence-claim-match" && check.ok));
+  assert.ok(result.proofLinks?.some((link) => link.mode === "screenshot" && link.status === "failed"));
+  assert.ok(result.proofLinks?.some((link) => link.mode === "source_evidence" && link.status === "passed"));
+  assert.ok(["proof-plan-created", "proof-links-created"].every((type) => events.some((event) => event.type === type)));
 });
 
 test("BaseAgent completes from preserved draft after a successful proof repair artifact", async () => {

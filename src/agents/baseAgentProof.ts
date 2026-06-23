@@ -4,6 +4,7 @@ import { emit } from "./baseAgentRuntime.js";
 import { findUnusedScopedCandidate } from "./baseAgentTrace.js";
 import { limitText, safeToolName } from "./baseAgentToolMessages.js";
 import { isProofWorthySourceUrl, PROOF_SOURCE_URL_LIMIT, urlsReferToSamePage } from "./proofSourceUrls.js";
+import { claimIdFromSignal, sourceIdFromUrl } from "./proofPolicy.js";
 import { isToolLifecycleOnlyTask, taskNeedsCurrentExternalData, type ResearchContractGap, type TaskFrame } from "./taskFrame.js";
 import type {
   BaseAgentToolCandidateAccepted,
@@ -25,6 +26,7 @@ import {
   normalizeProofSignal,
   normalizeSemanticSignal,
   shouldRequireProofArtifact,
+  taskLooksLikeApiRequestTask,
   taskShouldSkipVisualProofRepair,
 } from "./baseAgentEvidence.js";
 
@@ -134,10 +136,17 @@ export async function saveSourceEvidenceProofArtifact(input: {
     task: input.task,
     sourceUrl,
     createdAt: new Date().toISOString(),
-      matchedClaimSignals,
-      claimSignals: claimSignals.slice(0, 20),
-      proofEligibleClaimSignals: proofEligibleClaimSignals.slice(0, 20),
-      evidence: evidence.map((entry) => ({
+    proof: {
+      mode: "source_evidence",
+      status: "passed",
+      sourceId: sourceIdFromUrl(sourceUrl),
+      matchedClaimIds: matchedClaimSignals.map(claimIdFromSignal),
+      claimIds: claimSignals.slice(0, 20).map(claimIdFromSignal),
+    },
+    matchedClaimSignals,
+    claimSignals: claimSignals.slice(0, 20),
+    proofEligibleClaimSignals: proofEligibleClaimSignals.slice(0, 20),
+    evidence: evidence.map((entry) => ({
       sourceUrl: entry.sourceUrl,
       title: entry.title,
       focusText: entry.focusText,
@@ -241,6 +250,9 @@ export function shouldRequireExternalDataEvidence(input: {
 }): boolean | undefined {
   if (isToolLifecycleOnlyTask(input.task)) return undefined;
   if (input.taskFrame?.mode === "thread_context_answer") return undefined;
+  if (taskLooksLikeApiRequestTask(input.task)) {
+    return input.sourceUrls.filter(isProofWorthySourceUrl).length === 0 ? true : undefined;
+  }
   if (!taskNeedsCurrentExternalData(input.task)) return undefined;
   return input.sourceUrls.filter(isProofWorthySourceUrl).length === 0 ? true : undefined;
 }

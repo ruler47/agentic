@@ -10,11 +10,14 @@ import {
   finalAnswerWithProofUnavailableNote,
   inspectFinalAnswerConsistency,
   shouldRequireProofArtifact,
+  taskForbidsScreenshotProof,
+  taskLooksLikeApiRequestTask,
 } from "./baseAgentEvidence.js";
 import { saveSourceEvidenceProofArtifact, shouldRequireExternalDataEvidence, shouldRequireSourceGrounding } from "./baseAgentProof.js";
 import { emit } from "./baseAgentRuntime.js";
 import { limitText } from "./baseAgentToolMessages.js";
 import { findUnusedScopedCandidate, normalizeFinalAnswer, publicArtifactForTrace, publicProofEvidenceForTrace } from "./baseAgentTrace.js";
+import { proofLinksFromArtifacts, resolveProofPlan, shouldEmitProofPlan } from "./proofPolicy.js";
 import type {
   BaseAgentRunContext,
   BaseAgentRunOptions,
@@ -224,6 +227,40 @@ export async function finalizeBaseAgentRun(input: BaseAgentFinalizationInput): P
     });
   }
 
+  const proofPlan = resolveProofPlan({
+    taskFrame,
+    requiredArtifacts,
+    sourceUrls: [...externalEvidenceUrls],
+    proofEvidence: [...proofEvidenceByUrl.values()],
+    artifacts,
+    artifactSavingAvailable: Boolean(options.saveArtifact),
+    forbidsScreenshotProof: taskForbidsScreenshotProof(task),
+    requiresStructuredApiProof: taskLooksLikeApiRequestTask(task),
+  });
+  if (shouldEmitProofPlan(proofPlan)) {
+    await emit(options.onEvent, {
+      parentSpanId: rootSpanId,
+      type: "proof-plan-created",
+      actor: "base-agent",
+      activity: "agent",
+      status: "completed",
+      title: "Proof plan created",
+      detail: proofPlan.reason,
+      startedAt,
+      completedAt: new Date(),
+      payload: {
+        input: {
+          taskFrame,
+          requiredArtifacts,
+          sourceUrls: [...externalEvidenceUrls].slice(0, PROOF_SOURCE_URL_LIMIT),
+          artifactCount: artifacts.length,
+        },
+        output: proofPlan,
+        proofPlan,
+      },
+    });
+  }
+
   let missingProofArtifact = taskFrame.externalActionPolicy
     ? undefined
     : shouldRequireProofArtifact({
@@ -257,6 +294,35 @@ export async function finalizeBaseAgentRun(input: BaseAgentFinalizationInput): P
       finalAnswer = finalAnswerWithProofUnavailableNote(finalAnswer, sourceProof.warning, missingProofArtifact.sourceUrls);
       missingProofArtifact = undefined;
     }
+  }
+
+  const proofLinks = proofLinksFromArtifacts({
+    artifacts,
+    sourceUrls: [...externalEvidenceUrls],
+    proofEvidence: [...proofEvidenceByUrl.values()],
+  });
+  if (proofLinks.length > 0) {
+    await emit(options.onEvent, {
+      parentSpanId: rootSpanId,
+      type: "proof-links-created",
+      actor: "base-agent",
+      activity: "agent",
+      status: proofLinks.some((link) => link.status === "passed") ? "completed" : "failed",
+      title: "Proof links created",
+      detail: `${proofLinks.length} proof link(s) attached to this run result.`,
+      startedAt,
+      completedAt: new Date(),
+      payload: {
+        input: {
+          artifactIds: artifacts.map((artifact) => artifact.id),
+          sourceUrls: [...externalEvidenceUrls].slice(0, PROOF_SOURCE_URL_LIMIT),
+        },
+        output: {
+          proofLinks,
+        },
+        proofLinks,
+      },
+    });
   }
 
   const externalActionProposal = buildExternalActionProposal({
@@ -344,6 +410,8 @@ export async function finalizeBaseAgentRun(input: BaseAgentFinalizationInput): P
       externalEvidenceUrls: [...externalEvidenceUrls].slice(0, PROOF_SOURCE_URL_LIMIT),
       externalDataEvidenceUrls: [...externalDataEvidenceUrls].slice(0, PROOF_SOURCE_URL_LIMIT),
       finalConsistencyIssues,
+      proofPlan,
+      proofLinks,
       actionProposals,
       finalAnswerPreview: limitText(finalAnswer, 500),
       input: {
@@ -358,6 +426,8 @@ export async function finalizeBaseAgentRun(input: BaseAgentFinalizationInput): P
         externalEvidenceUrls: [...externalEvidenceUrls].slice(0, PROOF_SOURCE_URL_LIMIT),
         externalDataEvidenceUrls: [...externalDataEvidenceUrls].slice(0, PROOF_SOURCE_URL_LIMIT),
         finalConsistencyIssues,
+        proofPlan,
+        proofLinks,
         actionProposals,
       },
       output: {
@@ -460,6 +530,8 @@ export async function finalizeBaseAgentRun(input: BaseAgentFinalizationInput): P
         finalAnswer: limitText(finalAnswer, 4_000),
         failureReason,
         artifacts: artifacts.map(publicArtifactForTrace),
+        proofPlan,
+        proofLinks,
       },
     },
   });
@@ -476,6 +548,8 @@ export async function finalizeBaseAgentRun(input: BaseAgentFinalizationInput): P
     workerResults: [],
     reviews: [],
     artifacts,
+    proofPlan,
+    proofLinks,
     actionProposals,
     toolCreationRequests: toolCreationRequests.map((request) => ({
       toolName: request.toolName,

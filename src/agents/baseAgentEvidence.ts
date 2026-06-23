@@ -20,6 +20,7 @@ export function extractProofEvidenceForSourceUrls(
   input: Record<string, unknown>,
   result: ToolResult,
 ): ProofEvidence[] {
+  const proofSourceUrls = structuredHttpProofSourceUrls(input, result, sourceUrls) ?? sourceUrls;
   const signals = extractProofSignals(input, result);
   const focusText = bestSignalForFocusText(signals);
   const title = firstStringField(result.data, ["title", "pageTitle", "name"]);
@@ -28,7 +29,7 @@ export function extractProofEvidenceForSourceUrls(
     firstStringField(result.data, ["text", "content", "markdown", "description", "summary", "snippet"]),
     previewUnknown(result.data, 2_500),
   ].filter((entry): entry is string => Boolean(entry)).join("\n\n"), 4_000);
-  return sourceUrls
+  return proofSourceUrls
     .filter(isProofWorthySourceUrl)
     .slice(0, PROOF_SOURCE_URL_LIMIT)
     .map((sourceUrl) => ({
@@ -38,6 +39,52 @@ export function extractProofEvidenceForSourceUrls(
       title,
       contentPreview,
     }));
+}
+
+function structuredHttpProofSourceUrls(
+  input: Record<string, unknown>,
+  result: ToolResult,
+  sourceUrls: string[],
+): string[] | undefined {
+  if (!looksLikeStructuredHttpResult(result.data)) return undefined;
+  const targetUrls = uniqueStrings([
+    ...directObjectUrls(input),
+    ...directObjectUrls(result.data as Record<string, unknown>),
+  ]).filter(isProofWorthySourceUrl);
+  if (targetUrls.length === 0) return undefined;
+
+  const matched = uniqueStrings(sourceUrls.filter((url) =>
+    targetUrls.some((targetUrl) => urlsReferToSamePage(url, targetUrl)),
+  ));
+  return (matched.length ? matched : targetUrls).slice(0, PROOF_SOURCE_URL_LIMIT);
+}
+
+function looksLikeStructuredHttpResult(data: unknown): boolean {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  const record = data as Record<string, unknown>;
+  return (
+    typeof record.status === "number"
+    || typeof record.statusText === "string"
+    || Boolean(record.headers && typeof record.headers === "object")
+  ) && directObjectUrls(record).length > 0;
+}
+
+function directObjectUrls(value: Record<string, unknown>): string[] {
+  const urls: string[] = [];
+  for (const key of ["url", "finalUrl", "sourceUrl", "baseUrl"]) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && /^https?:\/\//i.test(candidate)) urls.push(cleanUrl(candidate));
+  }
+  const baseUrl = value.baseUrl;
+  const path = value.path;
+  if (typeof baseUrl === "string" && /^https?:\/\//i.test(baseUrl) && typeof path === "string") {
+    try {
+      urls.push(new URL(path, baseUrl).toString());
+    } catch {
+      // Ignore malformed derived URLs; direct URLs above are still usable.
+    }
+  }
+  return urls;
 }
 
 export function extractProofSignals(input: Record<string, unknown>, result: ToolResult): string[] {
@@ -204,13 +251,19 @@ export function taskForbidsAnyProof(task: string): boolean {
 }
 
 export function taskForbidsScreenshotProof(task: string): boolean {
-  return /(?:\bno\s+screenshot\b|\bwithout\s+screenshot\b|do\s+not\s+(?:take|capture|attach|provide|make).{0,24}(?:screenshot|screen\s+shot)|don't\s+(?:take|capture|attach|provide|make).{0,24}(?:screenshot|screen\s+shot)|не\s+(?:делай|надо|нужен|прикладывай|давай|снимай|создавай).{0,30}(?:скриншот|скрин)|без\s+(?:скриншот|скрина))/iu.test(task);
+  return /(?:\bno\s+screenshot\b|\bwithout\s+screenshot\b|(?:screenshot|screen\s+shot).{0,30}\b(?:not\s+needed|not\s+required|unnecessary)\b|do\s+not\s+(?:take|capture|attach|provide|make).{0,24}(?:screenshot|screen\s+shot)|don't\s+(?:take|capture|attach|provide|make).{0,24}(?:screenshot|screen\s+shot)|не\s+(?:делай|надо|нужен|прикладывай|давай|снимай|создавай).{0,30}(?:скриншот|скрин)|(?:скриншот|скрин).{0,30}не\s+(?:нужен|надо|требуется)|без\s+(?:скриншот|скрина))/iu.test(task);
 }
 
 export function taskLooksLikeApiOnlyProofTask(task: string): boolean {
-  return /(?:\bapi\b|\bjson\b|\bhttp\b|\bendpoint\b|\bcurl\b|апи|json|эндпоинт|http)/iu.test(task)
+  const visualProofRequested = taskExplicitlyRequestsScreenshot(task) && !taskForbidsScreenshotProof(task);
+  return taskLooksLikeApiRequestTask(task)
+    && !visualProofRequested;
+}
+
+export function taskLooksLikeApiRequestTask(task: string): boolean {
+  return /(?:\b(?:GET|POST|PUT|PATCH|DELETE|HEAD)\b|\bapi\b|\bjson\b|\bendpoint\b|\bcurl\b|\bhttp\s+(?:request|api|endpoint|call)\b|апи|json|эндпоинт|http\s+(?:запрос|апи|эндпоинт))/iu.test(task)
     && /https?:\/\//iu.test(task)
-    && !/(?:page|страниц|сайт|браузер|browser|visual|видим|скриншот|screenshot)/iu.test(task);
+    && !/(?:page|страниц|сайт|браузер|browser|visual|видим)/iu.test(task);
 }
 
 export function taskShouldSkipVisualProofRepair(task: string): boolean {

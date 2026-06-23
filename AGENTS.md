@@ -289,7 +289,11 @@ documentation.
   source evidence as proof by default. They must not trigger visual proof repair or call
   `browser.screenshot` / `browser.operate` unless the user explicitly asks for visual
   proof of a web page. They may still save a sanitized structured/source proof artifact
-  such as HTTP status, response fields, and source URL.
+  such as HTTP status, response fields, and source URL. Explicit HTTP/API URL commands
+  (`GET`, `POST`, cURL/API/JSON endpoint wording with a URL) are treated as an explicit
+  `http.request` tool need, even when the task otherwise frames as a direct fact. They
+  must not be answered from model memory; the return gate requires structured/source
+  evidence before completion.
 - BaseAgent is offered only tools whose `ToolCatalogEntry.agentEligibility.offered` is
   true. `loaded`, `disabled`, `failed`, unhealthy, runtime-missing, guarded-commit, and
   metadata-only generated tools remain visible in Tools for manual checks but are omitted

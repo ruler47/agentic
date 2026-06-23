@@ -365,7 +365,7 @@ test("BaseAgent resolves mixed safe names back to registered generated tool name
 
 test("BaseAgent saves browser.operate screenshots returned as Buffer content", async () => {
   const registry = new ToolRegistry();
-  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
+  const png = Buffer.from(noisyPngBase64(), "base64");
   const tool: Tool = {
     name: "browser.operate",
     description: "Browser automation.",
@@ -384,7 +384,7 @@ test("BaseAgent saves browser.operate screenshots returned as Buffer content", a
               filename: "example.png",
               mimeType: "image/png",
               content: png,
-              description: "Example screenshot",
+              description: "Viewport screenshot captured from https://example.com",
             },
           ],
         },
@@ -427,7 +427,7 @@ test("BaseAgent saves browser.operate screenshots returned as Buffer content", a
   assert.equal(result.artifacts?.length, 1);
   const toolEvent = events.find((event) => event.type === "tool-completed");
   assert.ok(toolEvent);
-  assert.match(toolEvent.detail ?? "", /<Buffer 11 bytes omitted>/);
+  assert.match(toolEvent.detail ?? "", /<Buffer \d+ bytes omitted>/);
   assert.doesNotMatch(toolEvent.detail ?? "", /"data":\s*\[137,80,78,71/);
 });
 

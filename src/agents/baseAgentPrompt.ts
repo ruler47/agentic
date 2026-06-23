@@ -45,6 +45,7 @@ export function buildBaseAgentSystemPrompt(
     "When your answer depends on external/current web evidence and a proof artifact is possible, capture a focused viewport screenshot or equivalent artifact from one source URL before finishing.",
     "This proof requirement applies by default even when the user does not explicitly ask for proof; do not finish a source-backed/current answer while proof is still possible but missing.",
     "For API-only, HTTP, JSON, cURL, or endpoint tasks, structured/source evidence from the API response is the proof. Do not call browser.screenshot or browser.operate unless the user explicitly asks for visual proof of a web page.",
+    "When the user explicitly asks to call an HTTP method or API URL, call http.request first; never answer such tasks from model memory.",
     "After one successful http.request that directly satisfies an API-only task, finish immediately with the requested field/status/body summary, source URL, and structured proof artifact; do not add web search, web read, or screenshots.",
     "If the runtime says the final answer is blocked for missing proof, call the requested proof tool before finishing.",
     "For proof screenshots, prefer fullPage:false and focus on the visible value/section that proves the answer; use focusText or selector when the tool supports it.",
