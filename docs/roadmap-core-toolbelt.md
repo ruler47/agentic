@@ -1,6 +1,6 @@
 # Core Toolbelt Roadmap
 
-Status date: 2026-06-23.
+Status date: 2026-06-24.
 
 ## Active Execution Queue
 
@@ -15,8 +15,9 @@ and decomposition.
 
 Current order:
 
-1. [`10-p2-model-routing.md`](tasks/10-p2-model-routing.md)
-2. [`11-p3-tool-builder-redesign.md`](tasks/11-p3-tool-builder-redesign.md)
+1. [`14-p2-resumable-external-actions-verification-handoff.md`](tasks/14-p2-resumable-external-actions-verification-handoff.md)
+2. [`13-p2-context-budgeted-run-decomposition.md`](tasks/13-p2-context-budgeted-run-decomposition.md)
+3. [`11-p3-tool-builder-redesign.md`](tasks/11-p3-tool-builder-redesign.md)
 
 Cross-cutting quality gate:
 
@@ -43,11 +44,13 @@ Priority order and intent:
 
 | Priority | Task | Outcome |
 | --- | --- | --- |
-| P2 | [Model Routing](tasks/10-p2-model-routing.md) | Tiers route by required capabilities such as vision, reasoning, coding, and tool-calling. |
+| P2 | [Resumable External Actions](tasks/14-p2-resumable-external-actions-verification-handoff.md) | Real-provider blockers become precise resumable handoffs instead of vague manual instructions. |
+| P2 | [Context-Budgeted Run Decomposition](tasks/13-p2-context-budgeted-run-decomposition.md) | Complex runs use bounded worker/state handoffs instead of one large prompt loop. |
 | P3 | [Tool Builder Redesign](tasks/11-p3-tool-builder-redesign.md) | Builder returns as a portable tool-package layer after the core run loop is reliable. |
 
-Tasks 04, 05, 06, 07, 08, the previous external-action UX task, and action-mode
-semantics are implemented, verified, and removed from the active task queue:
+Tasks 04, 05, 06, 07, 08, the previous external-action UX task, action-mode
+semantics, and the durable model-profile routing slice are implemented, verified, and
+removed from the active task queue:
 provider token/time metrics are visible in runs/conversations/traces, and the
 event-derived Working / Decision Board exposes objective, phase, facts, candidates,
 rejected evidence, open questions, next action, draft status, compact metrics, semantic
@@ -74,6 +77,12 @@ injected into task text and could turn ordinary research into a fake external-ac
 proposal. Task 09 moved mode to structured `externalActionMode` run context; ordinary
 research with auto selected stays research-only, while explicit booking/submission tasks
 can still receive an auto execution policy.
+
+Task 10 completed the durable operator-control slice for model routing:
+`model_profiles` persistence, `/api/model-profiles`, Models UI editing, catalog/profile
+merge, audit events, disabled-model rejection, and authoritative capability overrides in
+the tier resolver. Active probes, multimodal payload routing, and model benchmarking are
+later model-platform work, not blockers for the current run-quality queue.
 
 Updated target process:
 
@@ -405,12 +414,12 @@ P2: reduce friction and complexity.
 - Freeze/delete inactive builder paths only after tests prove they are not used by the
   core-toolbelt phase.
 
-P3: route models and revive builder later.
+P3: revive builder and later model-platform depth.
 
-- Route models by tier plus capability requirements: vision, reasoning, coding,
-  tool-calling, context window, and operator preference.
 - Redesign Tool Builder around the same manifest/version/runner/QA contract as the
   preinstalled tools. Do not make generated tools permanent app-source branches.
+- Add active model probes, multimodal payload routing, and benchmarking only after the
+  current durable profile/catalog routing baseline stays stable in real runs.
 
 This is the active product roadmap after the tool-builder/external-action stress phase.
 The immediate goal is to make agents useful with a stable, generic toolbelt before adding

@@ -5,6 +5,8 @@ import type {
   ModelProviderInput,
   ModelProviderRecord,
   ModelProviderUpdateInput,
+  ModelProfileInput,
+  ModelProfileRecord,
   ModelTier,
   ModelTierSettings,
 } from "@/api/types";
@@ -20,14 +22,25 @@ export type ModelCapability =
 export type CatalogModelRecord = {
   id: string;
   ownedBy?: string;
+  providerId?: string;
+  displayName?: string;
+  enabled?: boolean;
   capabilities?: ModelCapability[];
   capabilitySource?: "inferred" | "operator";
+  capabilitiesOverridden?: boolean;
+  preferredRoles?: string[];
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  operatorNotes?: string;
+  profileId?: string;
+  profileUpdatedAt?: string;
 };
 
 export type ModelCatalogResponse = {
   chat?: { baseUrl?: string; models?: CatalogModelRecord[] };
   embedding?: { provider?: string; model?: string; dimensions?: number; models?: CatalogModelRecord[] };
   providers?: ModelProviderRecord[];
+  profiles?: ModelProfileRecord[];
 };
 
 export function useModelTiers() {
@@ -114,6 +127,33 @@ export function useDeleteModelProvider() {
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.modelProviders });
+    },
+  });
+}
+
+export function useModelProfiles() {
+  return useQuery({
+    queryKey: queryKeys.modelProfiles,
+    queryFn: () =>
+      apiFetch<{ profiles: ModelProfileRecord[] }>("/api/model-profiles").then(
+        (data) => data.profiles ?? [],
+      ),
+    staleTime: 30_000,
+    refetchInterval: false,
+  });
+}
+
+export function useSaveModelProfile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ModelProfileInput) =>
+      apiFetch<{ profile: ModelProfileRecord }>("/api/model-profiles", {
+        method: "PUT",
+        body: input,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.modelProfiles });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.modelCatalog });
     },
   });
 }

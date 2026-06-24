@@ -9,8 +9,18 @@ export type ModelCapability =
 export type CatalogModelRecord = {
   id: string;
   ownedBy?: string;
+  providerId?: string;
+  displayName?: string;
+  enabled?: boolean;
   capabilities: ModelCapability[];
   capabilitySource: "inferred" | "operator";
+  capabilitiesOverridden?: boolean;
+  preferredRoles?: string[];
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  operatorNotes?: string;
+  profileId?: string;
+  profileUpdatedAt?: string;
 };
 
 export function inferModelCapabilities(modelId: string): ModelCapability[] {
@@ -54,17 +64,43 @@ function isLikelyToolCallingModelId(modelId: string): boolean {
 
 export type ModelCapabilityOverrides = Record<string, ModelCapability[]>;
 
+export type CatalogModelProfile = {
+  id: string;
+  providerId: string;
+  modelId: string;
+  displayName?: string;
+  enabled: boolean;
+  capabilities: ModelCapability[];
+  capabilitiesOverridden: boolean;
+  preferredRoles?: string[];
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  operatorNotes?: string;
+  updatedAt?: string;
+};
+
 export function decorateCatalogModel(
-  input: { id: string; ownedBy?: string },
+  input: { id: string; ownedBy?: string; providerId?: string },
   overrides: ModelCapabilityOverrides = {},
+  profile?: CatalogModelProfile,
 ): CatalogModelRecord {
   const override = overrides[input.id] ?? overrides[input.id.toLowerCase()];
   const inferred = inferModelCapabilities(input.id);
-  const capabilities = override ? mergeCapabilities(inferred, override) : inferred;
+  const profileCapabilities = profile?.capabilitiesOverridden ? normalizeProfileCapabilities(profile.capabilities) : undefined;
+  const capabilities = profileCapabilities ?? (override ? mergeCapabilities(inferred, override) : inferred);
   return {
     ...input,
+    displayName: profile?.displayName,
+    enabled: profile?.enabled ?? true,
     capabilities,
-    capabilitySource: override ? "operator" : "inferred",
+    capabilitySource: profileCapabilities || override ? "operator" : "inferred",
+    capabilitiesOverridden: profile?.capabilitiesOverridden ?? Boolean(override),
+    preferredRoles: profile?.preferredRoles,
+    contextWindow: profile?.contextWindow,
+    maxOutputTokens: profile?.maxOutputTokens,
+    operatorNotes: profile?.operatorNotes,
+    profileId: profile?.id,
+    profileUpdatedAt: profile?.updatedAt,
   };
 }
 
@@ -120,4 +156,9 @@ function normalizeCapability(value: string): ModelCapability | undefined {
   if (normalized === "tools" || normalized === "function-calling") return "tool-calling";
   if (normalized === "code") return "coding";
   return undefined;
+}
+
+function normalizeProfileCapabilities(capabilities: ModelCapability[]): ModelCapability[] {
+  if (capabilities.includes("embedding")) return ["embedding"];
+  return [...new Set(capabilities.filter((capability) => capability !== "embedding"))];
 }

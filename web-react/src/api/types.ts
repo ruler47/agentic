@@ -101,6 +101,9 @@ export type {
 } from "@server/settings/toolRuntimeSettings";
 
 export type {
+  ModelPreferredRole,
+  ModelProfileInput,
+  ModelProfileRecord,
   ModelProviderInput,
   ModelProviderKind,
   ModelProviderRecord,

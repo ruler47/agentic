@@ -26,6 +26,7 @@ export const queryKeys = {
   secretHandleStatuses: (handles: string[]) => ["secret-handles", "status", [...handles].sort()] as const,
   modelTiers: ["settings", "model-tiers"] as const,
   modelProviders: ["model-providers"] as const,
+  modelProfiles: ["model-profiles"] as const,
   modelCatalog: ["models", "catalog"] as const,
   users: ["users"] as const,
   memories: ["memories"] as const,

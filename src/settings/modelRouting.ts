@@ -34,6 +34,8 @@ export type ModelRouteRequest = {
   preferredCapabilities?: ModelCapability[];
   explicitModel?: string;
   capabilityOverrides?: ModelCapabilityOverrides;
+  authoritativeCapabilityOverrides?: ModelCapabilityOverrides;
+  disabledModels?: string[];
   policyForTier: (tier: ModelTier) => Promise<Required<ModelTierSettingsInput>>;
 };
 
@@ -43,6 +45,8 @@ export async function resolveModelRoute(request: ModelRouteRequest): Promise<Mod
   const requiredCapabilities = uniqueCapabilities(request.requiredCapabilities ?? []);
   const preferredCapabilities = uniqueCapabilities(request.preferredCapabilities ?? []);
   const capabilityOverrides = request.capabilityOverrides ?? parseModelCapabilityOverrides(process.env.LLM_MODEL_CAPABILITIES);
+  const authoritativeOverrides = request.authoritativeCapabilityOverrides ?? {};
+  const disabledModels = new Set((request.disabledModels ?? []).map((model) => model.toLowerCase()));
 
   if (request.explicitModel) {
     return {
@@ -78,8 +82,22 @@ export async function resolveModelRoute(request: ModelRouteRequest): Promise<Mod
 
   for (const tier of tiers) {
     const policy = await request.policyForTier(tier);
-    const candidates = uniqueModels(policy.models).map((model) => decorateCatalogModel({ id: model }, capabilityOverrides));
+    const candidates = uniqueModels(policy.models).map((model) =>
+      applyAuthoritativeCapabilities(
+        decorateCatalogModel({ id: model }, capabilityOverrides),
+        authoritativeOverrides,
+      ),
+    );
     const compatible = candidates.filter((candidate) => {
+      if (disabledModels.has(candidate.id.toLowerCase())) {
+        rejectedCandidates.push({
+          tier,
+          model: candidate.id,
+          capabilities: candidate.capabilities,
+          reason: "disabled by operator",
+        });
+        return false;
+      }
       const missing = missingCapabilities(candidate, requiredCapabilities);
       if (missing.length === 0) return true;
       rejectedCandidates.push({
@@ -91,9 +109,7 @@ export async function resolveModelRoute(request: ModelRouteRequest): Promise<Mod
       return false;
     });
 
-    const attemptCandidates = requiredCapabilities.length > 0
-      ? sortByPreferredCapabilities(compatible, preferredCapabilities)
-      : sortByPreferredCapabilities(candidates, preferredCapabilities);
+    const attemptCandidates = sortByPreferredCapabilities(compatible, preferredCapabilities);
 
     for (const candidate of attemptCandidates) {
       firstUnfilteredCandidate ??= { tier, model: candidate };
@@ -191,6 +207,19 @@ function sortByPreferredCapabilities(
     }))
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .map((item) => item.candidate);
+}
+
+function applyAuthoritativeCapabilities(
+  candidate: CatalogModelRecord,
+  overrides: ModelCapabilityOverrides,
+): CatalogModelRecord {
+  const override = overrides[candidate.id] ?? overrides[candidate.id.toLowerCase()];
+  if (!override) return candidate;
+  return {
+    ...candidate,
+    capabilities: [...override],
+    capabilitySource: "operator",
+  };
 }
 
 function repeatByPolicy(candidates: CatalogModelRecord[], maxAttempts: number): string[] {

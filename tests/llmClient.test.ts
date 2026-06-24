@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { LlmClient } from "../src/llm/client.js";
+import { InMemoryModelProfileStore } from "../src/settings/modelProfileStore.js";
 import { InMemoryModelTierSettingsStore } from "../src/settings/modelTierSettings.js";
 import type { ModelRouteDecision } from "../src/settings/modelRouting.js";
 
@@ -291,6 +292,67 @@ test("LlmClient reports a clear blocker when no tier candidate has a required ca
       }),
     /No compatible LLM model found for tier M requiring coding.*plain-text-model \(missing coding\)/,
   );
+});
+
+test("LlmClient uses durable model profile capabilities and disabled state for routing", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedModels: string[] = [];
+
+  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    requestedModels.push(body.model);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "profile ok" } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    const settings = new InMemoryModelTierSettingsStore([
+      {
+        tier: "M",
+        models: ["plain-disabled", "plain-enabled"],
+        maxAttempts: 1,
+        escalateOnFailure: false,
+      },
+    ]);
+    const profiles = new InMemoryModelProfileStore([
+      {
+        providerId: "local-chat",
+        modelId: "plain-disabled",
+        enabled: false,
+        capabilities: ["chat", "vision"],
+        capabilitiesOverridden: true,
+      },
+      {
+        providerId: "local-chat",
+        modelId: "plain-enabled",
+        capabilities: ["chat", "vision"],
+        capabilitiesOverridden: true,
+      },
+    ]);
+    const client = new LlmClient(
+      {
+        baseUrl: "http://llm.local/v1",
+        model: "fallback",
+        temperature: 0.2,
+        tierModels: {},
+        tierModelCandidates: {},
+      },
+      settings,
+      profiles,
+    );
+
+    const result = await client.complete([{ role: "user", content: "describe image" }], {
+      modelTier: "M",
+      requiredCapabilities: ["vision"],
+    });
+
+    assert.equal(result, "profile ok");
+    assert.deepEqual(requestedModels, ["plain-enabled"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("LlmClient preserves string error bodies from OpenAI-compatible servers", async () => {

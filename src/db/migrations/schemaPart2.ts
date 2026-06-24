@@ -46,6 +46,12 @@ export const MIGRATION_STATEMENTS_PART_2: MigrationStatement[] = [
     sql: "\n      create index if not exists model_providers_kind_status_idx\n      on model_providers(kind, status, updated_at desc);\n    ",
   },
   {
+    sql: "\n      create table if not exists model_profiles (\n        id text primary key,\n        provider_id text not null,\n        model_id text not null,\n        display_name text,\n        enabled boolean not null default true,\n        capabilities text[] not null default '{}',\n        capabilities_overridden boolean not null default false,\n        preferred_roles text[] not null default '{}',\n        context_window integer,\n        max_output_tokens integer,\n        operator_notes text,\n        verified_at timestamptz,\n        created_at timestamptz not null,\n        updated_at timestamptz not null,\n        unique (provider_id, model_id)\n      );\n    ",
+  },
+  {
+    sql: "\n      create index if not exists model_profiles_model_idx\n      on model_profiles(model_id, enabled, updated_at desc);\n    ",
+  },
+  {
     sql: "\n      create table if not exists tool_modules (\n        name text primary key,\n        display_name text,\n        version text not null,\n        description text not null,\n        capabilities text[] not null default '{}',\n        startup_mode text not null check (startup_mode in ('always-on', 'on-demand', 'ephemeral')),\n        input_schema jsonb,\n        output_schema jsonb,\n        module_path text,\n        test_path text,\n        source text not null check (source in ('builtin', 'generated')),\n        status text not null check (status in ('available', 'disabled', 'failed')),\n        last_health_ok boolean,\n        last_health_detail text,\n        required_configuration_keys text[] not null default '{}',\n        required_secret_handles text[] not null default '{}',\n        settings_schema jsonb,\n        storage_contract jsonb,\n        docs_markdown text,\n        change_summary text,\n        promotion_evidence jsonb,\n        examples jsonb not null default '[]',\n        package_manifest jsonb,\n        success_count integer not null default 0 check (success_count >= 0),\n        failure_count integer not null default 0 check (failure_count >= 0),\n        last_success_at timestamptz,\n        last_failure_at timestamptz,\n        updated_at timestamptz not null\n      );\n    ",
   },
   {

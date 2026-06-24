@@ -5,6 +5,7 @@ import {
   useDeleteModelProvider,
   useModelCatalog,
   useModelProviders,
+  useSaveModelProfile,
   useModelTiers,
   useSaveModelTiers,
 } from "@/api/models";
@@ -14,6 +15,16 @@ import type { ModelProviderInput, ModelProviderRecord, ModelTier, ModelTierSetti
 import type { CatalogModelRecord, ModelCapability, ModelCatalogResponse } from "@/api/models";
 
 const TIERS: ModelTier[] = ["S", "M", "L", "XL"];
+const MODEL_CAPABILITIES: ModelCapability[] = [
+  "chat",
+  "embedding",
+  "vision",
+  "reasoning",
+  "coding",
+  "tool-calling",
+];
+const MODEL_ROLES = ["classification", "planning", "coding", "vision", "synthesis", "tool-use"] as const;
+type ModelRole = (typeof MODEL_ROLES)[number];
 
 const TIER_DESCRIPTION: Record<ModelTier, string> = {
   S: "Cheap classification, simple direct answers.",
@@ -107,15 +118,145 @@ function CatalogModelChip({ model }: { model: CatalogModelRecord }) {
   return (
     <div className="min-w-0 rounded-md border border-app-border bg-app-surface px-2 py-1.5">
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        <span className="min-w-0 truncate font-mono text-[11px]">{model.id}</span>
+        <span className="min-w-0 truncate font-mono text-[11px]">{model.displayName || model.id}</span>
+        {model.enabled === false ? <GenericBadge tone="danger">disabled</GenericBadge> : null}
         {model.capabilitySource ? (
           <GenericBadge tone={model.capabilitySource === "operator" ? "ok" : "muted"}>
             {model.capabilitySource}
           </GenericBadge>
         ) : null}
       </div>
+      {model.displayName ? (
+        <p className="mt-1 truncate font-mono text-[10px] text-app-text-muted">{model.id}</p>
+      ) : null}
       <CapabilityBadges capabilities={model.capabilities ?? []} />
+      <CatalogModelProfileEditor model={model} />
     </div>
+  );
+}
+
+function CatalogModelProfileEditor({ model }: { model: CatalogModelRecord }) {
+  const save = useSaveModelProfile();
+  const [enabled, setEnabled] = useState(model.enabled !== false);
+  const [capabilities, setCapabilities] = useState<ModelCapability[]>(model.capabilities ?? []);
+  const [roles, setRoles] = useState<ModelRole[]>(filterModelRoles(model.preferredRoles));
+  const [notes, setNotes] = useState(model.operatorNotes ?? "");
+
+  useEffect(() => {
+    setEnabled(model.enabled !== false);
+    setCapabilities(model.capabilities ?? []);
+    setRoles(filterModelRoles(model.preferredRoles));
+    setNotes(model.operatorNotes ?? "");
+  }, [model]);
+
+  const toggleCapability = (capability: ModelCapability) => {
+    setCapabilities((current) =>
+      current.includes(capability)
+        ? current.filter((item) => item !== capability)
+        : [...current, capability],
+    );
+  };
+
+  const toggleRole = (role: ModelRole) => {
+    setRoles((current) =>
+      current.includes(role) ? current.filter((item) => item !== role) : [...current, role],
+    );
+  };
+
+  return (
+    <details className="mt-2 rounded border border-app-border bg-app-surface-2 px-2 py-1">
+      <summary className="cursor-pointer text-[10px] uppercase tracking-wider text-app-text-muted">
+        Profile
+      </summary>
+      <div className="mt-2 grid gap-2 text-[11px]">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) => setEnabled(event.target.checked)}
+          />
+          <span>Offer this model to routing</span>
+        </label>
+        <div>
+          <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
+            capabilities
+          </span>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {MODEL_CAPABILITIES.map((capability) => (
+              <label
+                key={capability}
+                className="inline-flex items-center gap-1 rounded border border-app-border bg-app-surface px-1.5 py-0.5"
+              >
+                <input
+                  type="checkbox"
+                  checked={capabilities.includes(capability)}
+                  onChange={() => toggleCapability(capability)}
+                />
+                <span>{capability}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div>
+          <span className="text-[10px] uppercase tracking-wider text-app-text-muted">
+            preferred roles
+          </span>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {MODEL_ROLES.map((role) => (
+              <label
+                key={role}
+                className="inline-flex items-center gap-1 rounded border border-app-border bg-app-surface px-1.5 py-0.5"
+              >
+                <input
+                  type="checkbox"
+                  checked={roles.includes(role)}
+                  onChange={() => toggleRole(role)}
+                />
+                <span>{role}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <textarea
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+          placeholder="Operator notes, caveats, or benchmark hints"
+          className="min-h-16 rounded border border-app-border bg-app-surface px-2 py-1 outline-none focus:border-app-accent/60"
+        />
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] text-app-text-muted">
+            {model.providerId ?? "local-chat"} · {model.profileUpdatedAt ? `saved ${formatRelative(model.profileUpdatedAt)}` : "not saved"}
+          </span>
+          <button
+            type="button"
+            disabled={save.isPending}
+            onClick={() =>
+              save.mutate({
+                providerId: model.providerId,
+                modelId: model.id,
+                enabled,
+                capabilities,
+                capabilitiesOverridden: true,
+                preferredRoles: roles,
+                operatorNotes: notes,
+              })
+            }
+            className="rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
+          >
+            {save.isPending ? "Saving…" : "Save profile"}
+          </button>
+        </div>
+        {save.isError ? (
+          <p className="text-[11px] text-app-danger">{save.error.message}</p>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+function filterModelRoles(values: string[] | undefined): ModelRole[] {
+  return (values ?? []).filter((value): value is ModelRole =>
+    MODEL_ROLES.includes(value as ModelRole),
   );
 }
 

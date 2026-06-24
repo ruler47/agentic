@@ -15,7 +15,7 @@ new primary branch.
 - Active roadmap: `docs/roadmap-core-toolbelt.md`.
 - Active executable task queue: `docs/tasks/README.md`.
 - Active architecture map: `docs/current-architecture.md`.
-- Current active implementation task: `docs/tasks/10-p2-model-routing.md`.
+- Current active implementation task: `docs/tasks/14-p2-resumable-external-actions-verification-handoff.md`.
 
 Do not use `claude/phase17-research-delegation` as the active base. It was audited on
 2026-06-18 and still contains a legacy `src/agents/universalAgent.ts` above 9k lines plus
@@ -117,8 +117,12 @@ Recent P0 fixes:
 - Run Workspace hydrates final-answer markdown artifact filenames to real run artifact
   URLs, matching the Conversation view and avoiding broken relative image links.
 - LLM routing now goes through a tier plus capability-aware resolver and emits
-  `model-route-selected` trace events. The durable profile/probe/multimodal work remains
-  open in `docs/tasks/10-p2-model-routing.md`.
+  `model-route-selected` trace events. Durable operator model profiles are implemented:
+  `/api/model-profiles` stores enabled state, capability overrides, preferred roles, and
+  notes; `/api/models/catalog` merges discovered/provider-declared models with those
+  profiles; and the resolver rejects disabled models and treats profile-overridden
+  capabilities as authoritative. Active probes, multimodal payload routing, and
+  benchmarking remain later model-platform work.
 - Follow-up questions about prior answers can frame as `thread_context_answer` and answer
   from thread summary/facts/open questions instead of doing a fresh lookup.
 - Thread-scoped prior-work recovery now asks the Work/Evidence Ledger for passed and
@@ -240,9 +244,10 @@ P2:
 - Keep the simplified external-action approval/preparation path stable. The first UI and
   runtime pass is complete: one primary proposal action, safe preparation/proof after
   approval, generic executor attach, one final submit action, and final confirmation.
-- Model routing: resolve from available local/remote providers by tier plus required
-  capability flags such as vision, reasoning, coding, tool-calling, context window, and
-  operator preferences.
+- Continue the next active P2 tasks: resumable external-action verification handoff, then
+  context-budgeted run decomposition. Durable model profiles are done for the current
+  slice; later model-platform work is probes, multimodal payload routing, and
+  benchmarking.
 
 P3:
 

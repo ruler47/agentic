@@ -4,6 +4,11 @@ import {
   ModelTierSettingsStore,
 } from "../settings/modelTierSettings.js";
 import type { ModelCapability } from "../settings/modelCatalog.js";
+import {
+  capabilityOverridesFromModelProfiles,
+  disabledModelIdsFromProfiles,
+  type ModelProfileStore,
+} from "../settings/modelProfileStore.js";
 import { resolveModelRoute, type ModelRouteDecision } from "../settings/modelRouting.js";
 
 type ChatCompletionResponse = {
@@ -80,6 +85,7 @@ export class LlmClient {
   constructor(
     private readonly config: LlmConfig,
     private readonly modelTierSettings?: ModelTierSettingsStore,
+    private readonly modelProfileStore?: ModelProfileStore,
   ) {}
 
   async complete(
@@ -254,12 +260,15 @@ export class LlmClient {
   }
 
   async modelAttemptsForTier(tier?: ModelTier, options?: LlmRouteOptions & { model?: string }): Promise<string[]> {
+    const profiles = this.modelProfileStore ? await this.modelProfileStore.list() : [];
     const decision = await resolveModelRoute({
       requestedTier: tier,
       defaultModel: this.config.model,
       explicitModel: options?.model,
       requiredCapabilities: options?.requiredCapabilities,
       preferredCapabilities: options?.preferredCapabilities,
+      authoritativeCapabilityOverrides: capabilityOverridesFromModelProfiles(profiles),
+      disabledModels: disabledModelIdsFromProfiles(profiles),
       policyForTier: (policyTier) => this.policyForTier(policyTier),
     });
     await options?.onRouteDecision?.(decision);

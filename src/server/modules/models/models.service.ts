@@ -9,10 +9,14 @@ import type {
   ModelProviderRecord,
   ModelProviderStore,
 } from "../../../settings/modelProviderStore.js";
+import type {
+  ModelProfileRecord,
+  ModelProfileStore,
+} from "../../../settings/modelProfileStore.js";
 import type { ModelTierSettingsStore } from "../../../settings/modelTierSettings.js";
 import type { ModelTierSettings } from "../../../types.js";
 import { AuditService } from "../../common/services/audit.service.js";
-import { MODEL_PROVIDER_STORE, MODEL_TIER_SETTINGS } from "../../persistence/tokens.js";
+import { MODEL_PROFILE_STORE, MODEL_PROVIDER_STORE, MODEL_TIER_SETTINGS } from "../../persistence/tokens.js";
 import type {
   CreateModelProviderDto,
   UpdateModelProviderDto,
@@ -23,6 +27,7 @@ import {
   parseModelCapabilityOverrides,
   type CatalogModelRecord,
 } from "../../../settings/modelCatalog.js";
+import type { UpsertModelProfileDto } from "./dto/model-profile.dto.js";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1";
 const DEFAULT_MODEL = "google/gemma-4-26b-a4b";
@@ -32,6 +37,7 @@ export class ModelsService {
   constructor(
     @Inject(MODEL_TIER_SETTINGS) private readonly tiers: ModelTierSettingsStore | undefined,
     @Inject(MODEL_PROVIDER_STORE) private readonly providers: ModelProviderStore | undefined,
+    @Inject(MODEL_PROFILE_STORE) private readonly profiles: ModelProfileStore | undefined,
     @Inject(AuditService) private readonly audit: AuditService,
   ) {}
 
@@ -143,20 +149,78 @@ export class ModelsService {
     return { deleted: true };
   }
 
+  async listProfiles(): Promise<ModelProfileRecord[]> {
+    return this.profiles ? this.profiles.list() : [];
+  }
+
+  async upsertProfile(dto: UpsertModelProfileDto): Promise<ModelProfileRecord> {
+    if (!this.profiles) {
+      throw new ServiceUnavailableException("Model profile store is not configured");
+    }
+    let profile: ModelProfileRecord;
+    try {
+      profile = await this.profiles.upsert({
+        providerId: dto.providerId,
+        modelId: dto.modelId,
+        displayName: dto.displayName,
+        enabled: dto.enabled,
+        capabilities: dto.capabilities,
+        capabilitiesOverridden: dto.capabilitiesOverridden,
+        preferredRoles: dto.preferredRoles,
+        contextWindow: dto.contextWindow,
+        maxOutputTokens: dto.maxOutputTokens,
+        operatorNotes: dto.operatorNotes,
+        verifiedAt: dto.verifiedAt,
+      });
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : "Invalid model profile",
+      );
+    }
+    await this.audit.record({
+      instanceId: "instance-local",
+      actorId: "user-admin",
+      actorType: "user",
+      action: "model_profile.upserted",
+      targetType: "model_profile",
+      targetId: profile.id,
+      status: "success",
+      summary: `Model profile saved: ${profile.modelId}`,
+      metadata: {
+        providerId: profile.providerId,
+        enabled: profile.enabled,
+        capabilities: profile.capabilities,
+        capabilitiesOverridden: profile.capabilitiesOverridden,
+      },
+    });
+    return profile;
+  }
+
   async catalog() {
     const baseUrl = process.env.LLM_BASE_URL ?? DEFAULT_BASE_URL;
     const embeddingBaseUrl = process.env.EMBEDDING_BASE_URL ?? baseUrl;
     const providers = this.providers ? await this.providers.list() : [];
+    const profiles = this.profiles ? await this.profiles.list() : [];
     const capabilityOverrides = parseModelCapabilityOverrides(process.env.LLM_MODEL_CAPABILITIES);
     const [rawChatModels, rawEmbeddingModels] = await Promise.all([
       this.listOpenAiCompatibleModels(baseUrl),
       this.listOpenAiCompatibleModels(embeddingBaseUrl),
     ]);
-    const chatModels = rawChatModels
-      .map((model) => decorateCatalogModel(model, capabilityOverrides))
+    const chatInputs = mergeCatalogInputs([
+      ...rawChatModels.map((model) => ({ ...model, providerId: "local-chat" })),
+      ...providerCatalogModels(providers, "chat"),
+      ...profiles.filter((profile) => profile.providerId && profile.modelId),
+    ]);
+    const embeddingInputs = mergeCatalogInputs([
+      ...rawEmbeddingModels.map((model) => ({ ...model, providerId: "memory-embedding" })),
+      ...providerCatalogModels(providers, "embedding"),
+      ...profiles.filter((profile) => profile.providerId && profile.modelId),
+    ]);
+    const chatModels = chatInputs
+      .map((model) => decorateCatalogModel(model, capabilityOverrides, profileForCatalog(profiles, model.providerId, model.id)))
       .filter((model) => model.capabilities.includes("chat"));
-    const embeddingModels = rawEmbeddingModels
-      .map((model) => decorateCatalogModel(model, capabilityOverrides))
+    const embeddingModels = embeddingInputs
+      .map((model) => decorateCatalogModel(model, capabilityOverrides, profileForCatalog(profiles, model.providerId, model.id)))
       .filter((model) => model.capabilities.includes("embedding"));
     return {
       chat: {
@@ -175,6 +239,7 @@ export class ModelsService {
         models: embeddingModels,
       },
       providers,
+      profiles,
     };
   }
 
@@ -198,4 +263,46 @@ export class ModelsService {
       return [];
     }
   }
+}
+
+function providerCatalogModels(
+  providers: ModelProviderRecord[],
+  kind: "chat" | "embedding",
+): Array<Pick<CatalogModelRecord, "id" | "ownedBy" | "providerId">> {
+  return providers
+    .filter((provider) => provider.kind === kind)
+    .flatMap((provider) =>
+      provider.modelIds.map((modelId) => ({
+        id: modelId,
+        ownedBy: provider.label,
+        providerId: provider.id,
+      })),
+    );
+}
+
+function mergeCatalogInputs(
+  inputs: Array<Pick<CatalogModelRecord, "id" | "ownedBy" | "providerId"> | ModelProfileRecord>,
+): Array<Pick<CatalogModelRecord, "id" | "ownedBy" | "providerId">> {
+  const byKey = new Map<string, Pick<CatalogModelRecord, "id" | "ownedBy" | "providerId">>();
+  for (const input of inputs) {
+    const id = "modelId" in input ? input.modelId : input.id;
+    const providerId = "providerId" in input ? input.providerId : undefined;
+    if (!id) continue;
+    const key = `${providerId ?? ""}:${id}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, { id, providerId, ownedBy: "ownedBy" in input ? input.ownedBy : undefined });
+    }
+  }
+  return [...byKey.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function profileForCatalog(
+  profiles: ModelProfileRecord[],
+  providerId: string | undefined,
+  modelId: string,
+): ModelProfileRecord | undefined {
+  return (
+    profiles.find((profile) => profile.providerId === providerId && profile.modelId === modelId) ??
+    profiles.find((profile) => profile.modelId === modelId)
+  );
 }

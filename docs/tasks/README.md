@@ -1,6 +1,6 @@
 # Active Task Specs
 
-Status date: 2026-06-23.
+Status date: 2026-06-24.
 
 This directory is the execution queue for the active Agentic roadmap. Each active task
 file is a self-contained spec-first/test-first contract:
@@ -24,8 +24,9 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P2 Model Routing](10-p2-model-routing.md)
-2. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
+1. [P2 Resumable External Actions And Verification Handoff](14-p2-resumable-external-actions-verification-handoff.md)
+2. [P2 Context-Budgeted Run Decomposition](13-p2-context-budgeted-run-decomposition.md)
+3. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
 
 Cross-cutting gates apply to every task:
 
@@ -42,14 +43,46 @@ flowchart TD
   B --> C["06 source/search discipline completed"]
   C --> D["07 proof policy and artifact links completed"]
   D --> E["08 conversation memory / continuation completed"]
-  C --> F["09 external actions UX completed"]
-  E --> F
-  A --> G["10 model routing"]
+  C --> F0["external actions UX completed"]
+  E --> F0
+  F0 --> F["09 action mode semantics"]
+  A --> G["10 model routing completed"]
   B --> H["11 tool builder redesign"]
 ```
 
+## Active Regression Anchor
+
+Task 09 was created after analyzing `thread_1782232645230_a59xpy0f`.
+The first run completed useful research without action proposals. The second run was a
+research-only continuation, but because the UI injected `Автомод:` into the task text the
+runtime created `Reservation proposal: Vibe coding рынок`, attached
+`external.action.commit`, and attempted an invalid automode commit. Task 09 fixes that
+mode semantics issue by moving mode into structured `externalActionMode` run context;
+manual smoke confirmed research-only auto stays research-only and explicit booking auto
+keeps an auto external-action policy.
+
+Follow-up regression from 2026-06-23: `thread_1782238426343_bla80wwj` was restarted
+from failed run `run_1782238958911_9fytbfml` into `run_1782239978110_4p2ifhzn`.
+The restart completed, but the contact-data continuation was framed as
+`product_selection` with no `externalActionPolicy`, so it produced no action proposal and
+could not exercise approval/automode. This is a continuation/action-intent inheritance
+bug and a context-budgeting trigger for task 13.
+
+Real-provider follow-up from the same investigation: a Booksy appointment flow could be
+prepared through service/date/time selection and account email entry, but the provider
+required phone/SMS verification before final booking. The assistant must treat that as a
+resumable external-action blocker with proof and a precise missing input, not as a manual
+"go book yourself" instruction. Task 14 covers this provider-neutral verification
+handoff path.
+
 ## Recently Completed
 
+- 2026-06-24: P2 Model Routing durable profile slice was completed and its task file was
+  removed from the active queue. Implementation added durable `model_profiles`
+  persistence, `/api/model-profiles`, Models UI editing, catalog/profile merge,
+  authoritative capability overrides, disabled-model rejection, and focused
+  routing/store/client tests. Manual API smoke verified profile create/list/catalog merge
+  against the live backend and cleaned up the smoke profile afterward.
 - 2026-06-23: P2 External Action UX And Real-Provider Flow was completed and its
   task file was removed from the active queue. Implementation added a provider-neutral
   external-action blocker taxonomy, canonical

@@ -14,6 +14,7 @@ import {
   CreateModelProviderDto,
   UpdateModelProviderDto,
 } from "./dto/model-provider.dto.js";
+import { UpsertModelProfileDto } from "./dto/model-profile.dto.js";
 import { UpdateTiersDto } from "./dto/update-tiers.dto.js";
 import { ModelsService } from "./models.service.js";
 
@@ -39,6 +40,16 @@ export class ModelsController {
   @Get("model-providers")
   async listProviders() {
     return { providers: await this.models.listProviders() };
+  }
+
+  @Get("model-profiles")
+  async listProfiles() {
+    return { profiles: await this.models.listProfiles() };
+  }
+
+  @Put("model-profiles")
+  async upsertProfile(@Body() dto: UpsertModelProfileDto) {
+    return { profile: await this.models.upsertProfile(dto) };
   }
 
   @Post("model-providers")

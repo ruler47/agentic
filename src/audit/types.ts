@@ -60,6 +60,7 @@ export type AuditAction =
   | "model_provider.created"
   | "model_provider.updated"
   | "model_provider.deleted"
+  | "model_profile.upserted"
   | "memory.created"
   | "memory.updated"
   | "memory.embeddings_rebuilt";

@@ -57,3 +57,27 @@ test("operator capability overrides do not convert embedding models into chat mo
 
   assert.deepEqual(model.capabilities, ["embedding"]);
 });
+
+test("durable model profile overrides inferred capabilities exactly", () => {
+  const model = decorateCatalogModel(
+    { id: "qwen/qwen2.5-vl-32b", providerId: "local-chat" },
+    {},
+    {
+      id: "local-chat:qwen/qwen2.5-vl-32b",
+      providerId: "local-chat",
+      modelId: "qwen/qwen2.5-vl-32b",
+      enabled: false,
+      capabilities: ["chat"],
+      capabilitiesOverridden: true,
+      preferredRoles: ["synthesis"],
+      operatorNotes: "Vision was disabled after manual failure.",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+    },
+  );
+
+  assert.equal(model.enabled, false);
+  assert.equal(model.capabilitySource, "operator");
+  assert.deepEqual(model.capabilities, ["chat"]);
+  assert.deepEqual(model.preferredRoles, ["synthesis"]);
+  assert.equal(model.operatorNotes, "Vision was disabled after manual failure.");
+});

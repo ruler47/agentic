@@ -267,6 +267,13 @@ documentation.
   Trace Lab renders these as arrows plus inspector call details. LLM route decisions are
   also trace-visible through `model-route-selected`, including the requested tier,
   selected model, matched capabilities, and rejected candidates.
+- Model routing has durable operator profiles. `model_profiles` persists provider/model
+  id, enabled state, capability overrides, preferred roles, context/output hints, and
+  notes; `/api/model-profiles` edits those records; `/api/models/catalog` merges
+  discovered/provider-declared models with profile metadata; and `LlmClient` passes
+  profile-disabled models plus authoritative capability overrides into
+  `src/settings/modelRouting.ts`. Name-based capability inference remains only a fallback
+  when the operator has not marked capabilities as overridden.
 - Runs also emit a Working / Decision Board projection through
   `src/agents/workingDecisionLedger.ts`. `RunsService` wraps the run event sink and
   derives `working-decision-*` events from task framing, prior-work reuse, LLM/tool
@@ -874,6 +881,8 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   comparison helpers.
 - `src/agents/modelTier.ts` - model tier selection policy.
 - `src/settings/modelRouting.ts` - tier plus capability-aware LLM route resolver.
+- `src/settings/modelProfileStore.ts` and `src/settings/postgresModelProfileStore.ts`
+  - durable operator model profiles used by model catalog and routing.
 - `src/llm/client.ts` - OpenAI-compatible LLM client.
 - `src/server/modules/runs/runs.service.ts` - run creation/execution/cancel/restart API
   orchestration.

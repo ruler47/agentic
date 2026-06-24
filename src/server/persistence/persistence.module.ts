@@ -16,6 +16,8 @@ import { InMemoryModelTierSettingsStore } from "../../settings/modelTierSettings
 import { PostgresModelTierSettingsStore } from "../../settings/postgresModelTierSettings.js";
 import { InMemoryModelProviderStore } from "../../settings/modelProviderStore.js";
 import { PostgresModelProviderStore } from "../../settings/postgresModelProviderStore.js";
+import { InMemoryModelProfileStore } from "../../settings/modelProfileStore.js";
+import { PostgresModelProfileStore } from "../../settings/postgresModelProfileStore.js";
 import { InMemoryToolRuntimeSettingsStore } from "../../settings/toolRuntimeSettings.js";
 import { PostgresToolRuntimeSettingsStore } from "../../settings/postgresToolRuntimeSettings.js";
 import { SkillMemory } from "../../memory/skillMemory.js";
@@ -66,6 +68,7 @@ import {
   EVIDENCE_LEDGER_STORE,
   GROUP_PROFILE_STORE,
   LLM_CLIENT,
+  MODEL_PROFILE_STORE,
   MODEL_PROVIDER_STORE,
   MODEL_TIER_SETTINGS,
   PG_POOL,
@@ -152,6 +155,12 @@ const providers: Provider[] = [
     inject: [PG_POOL],
     useFactory: (pool: PgPool | undefined) =>
       pool ? new PostgresModelProviderStore(pool) : new InMemoryModelProviderStore(),
+  },
+  {
+    provide: MODEL_PROFILE_STORE,
+    inject: [PG_POOL],
+    useFactory: (pool: PgPool | undefined) =>
+      pool ? new PostgresModelProfileStore(pool) : new InMemoryModelProfileStore(),
   },
   {
     provide: TOOL_RUNTIME_SETTINGS,
@@ -273,8 +282,9 @@ const providers: Provider[] = [
   },
   {
     provide: LLM_CLIENT,
-    inject: [MODEL_TIER_SETTINGS],
-    useFactory: (tierSettings) => new LlmClient(readLlmConfigFromEnv(), tierSettings),
+    inject: [MODEL_TIER_SETTINGS, MODEL_PROFILE_STORE],
+    useFactory: (tierSettings, modelProfiles) =>
+      new LlmClient(readLlmConfigFromEnv(), tierSettings, modelProfiles),
   },
   {
     provide: TOOL_CALLBACK_TOKEN_ISSUER,
