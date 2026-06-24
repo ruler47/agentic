@@ -48,6 +48,15 @@ export function buildActionApprovalPhase(
     readiness.status === "needs_executor"
   );
   if (blocked) {
+    if (isFinalSubmitBlocked(blocked.readiness.reason)) {
+      return {
+        title: isSubmitControlBlocker(blocked.readiness.reason)
+          ? "External action was not submitted: provider submit control was not detected"
+          : "External action was not submitted",
+        badge: "not submitted",
+        tone: blocked.readiness.tone,
+      };
+    }
     return {
       title: "External action is not ready to submit",
       badge: blocked.readiness.label.toLowerCase(),
@@ -92,4 +101,16 @@ export function buildActionApprovalPhase(
     badge: runStatus,
     tone: runStatus === "failed" ? "danger" : "ok",
   };
+}
+
+function isFinalSubmitBlocked(reason: string): boolean {
+  return /final submit|commit|submit\/control|external submit|proof artifact|provider phone\/SMS/i.test(
+    reason,
+  );
+}
+
+function isSubmitControlBlocker(reason: string): boolean {
+  return /submit\/control|concrete external submit control|clickable control|typed commit target/i.test(
+    reason,
+  );
 }

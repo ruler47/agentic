@@ -257,9 +257,9 @@ export function buildExternalActionUxState(
   return uxState({
     status: "blocked",
     tone: readiness.tone,
-    statusLabel: readiness.label.toLowerCase(),
-    title: readiness.label,
-    description: operatorFacingSubmitBlockReason(item, readiness.reason),
+    statusLabel: blockedReadinessStatusLabel(readiness.reason, readiness.label),
+    title: blockedReadinessTitle(readiness.reason, readiness.label),
+    description: blockedReadinessDescription(item, readiness.reason, readiness.label),
     summary,
     primaryAction: blockedPrimaryAction(readiness),
     canReject,
@@ -365,13 +365,18 @@ function blockedPrimaryAction(readiness: {
   canPrepare: boolean;
   canReplay: boolean;
   canBuildExecutor: boolean;
+  reason?: string;
 }): ExternalActionPrimaryAction | undefined {
+  const submitControlBlocked = isSubmitControlBlocker(readiness.reason ?? "");
   if (readiness.canReplay) {
     return {
       kind: "replay",
-      label: "Replay preparation and capture proof",
-      effect:
-        "Replays the prepared browser steps, captures proof, and still stops before submit.",
+      label: submitControlBlocked
+        ? "Try preparation again, no submit"
+        : "Replay preparation and capture proof",
+      effect: submitControlBlocked
+        ? "Retries provider-page preparation to find a real submit/control target. It still does not send the external action."
+        : "Replays the prepared browser steps, captures proof, and still stops before submit.",
     };
   }
   if (readiness.canPrepare) return prepareAction("Continue preparation and capture proof");
@@ -387,6 +392,42 @@ function operatorFacingSubmitBlockReason(
     return finalSubmitUnavailableReason(item);
   }
   return humanSubmitBlockReason(readinessReason || finalSubmitUnavailableReason(item));
+}
+
+function blockedReadinessStatusLabel(reason: string, fallback: string): string {
+  return isFinalSubmitBlocked(reason) ? "not submitted" : fallback.toLowerCase();
+}
+
+function blockedReadinessTitle(reason: string, fallback: string): string {
+  if (isSubmitControlBlocker(reason)) {
+    return "Not submitted: provider submit control was not detected";
+  }
+  if (isFinalSubmitBlocked(reason)) {
+    return "Not submitted yet";
+  }
+  return fallback;
+}
+
+function blockedReadinessDescription(
+  item: ActionProposalQueueItem,
+  reason: string,
+  fallback: string,
+): string {
+  const humanReason = operatorFacingSubmitBlockReason(item, reason || fallback);
+  if (!isFinalSubmitBlocked(reason)) return humanReason;
+  return `Your approval allowed preparation only. No reservation, email, order, or external change was submitted. ${humanReason}`;
+}
+
+function isFinalSubmitBlocked(reason: string): boolean {
+  return /final submit|commit|submit\/control|external submit|proof artifact|provider phone\/SMS/i.test(
+    reason,
+  );
+}
+
+function isSubmitControlBlocker(reason: string): boolean {
+  return /submit\/control|concrete external submit control|clickable control|typed commit target/i.test(
+    reason,
+  );
 }
 
 function blockerCopy(item: ActionProposalQueueItem): {

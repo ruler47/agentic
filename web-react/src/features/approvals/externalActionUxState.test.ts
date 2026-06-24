@@ -158,6 +158,57 @@ describe("buildExternalActionUxState", () => {
     expect(ux.summary.proofArtifactIds).toEqual(["artifact-proof"]);
   });
 
+  it("clearly says nothing was submitted when approved preparation cannot find a submit control", () => {
+    const ux = buildExternalActionUxState({
+      ...baseItem,
+      proposal: {
+        ...baseItem.proposal,
+        status: "approved",
+        commitExecutor: {
+          kind: "generated_tool",
+          toolName: "external.action.commit",
+          toolVersion: "1.0.0",
+          risk: "high",
+          ready: true,
+          reason: "Ready.",
+        },
+      },
+      decision: {
+        status: "approved",
+        decidedAt: "2026-05-25T00:00:00.000Z",
+        decidedBy: "user-admin",
+      },
+      preparationExecution: {
+        status: "completed",
+        actor: "tool",
+        decidedAt: "2026-05-25T00:00:00.000Z",
+        artifactIds: ["artifact-proof"],
+        preparedSession: {
+          ...preparedSession(),
+          formFieldGaps: [],
+          filledFields: [{ label: "Date", valuePreview: "Friday" }],
+          commitCandidates: [{ reason: "submit a reservation" }],
+          artifactIds: ["artifact-proof"],
+          proofArtifactIds: ["artifact-proof"],
+          actionDraft: {
+            status: "needs_more_input",
+            action: "Prepare to submit a reservation",
+            dataPreview: [],
+            missingBeforeCommit: ["concrete submit/control candidate"],
+            operatorNextStep:
+              "Resolve before final submit: concrete submit/control candidate.",
+          },
+        },
+      },
+    });
+
+    expect(ux.status).toBe("blocked");
+    expect(ux.statusLabel).toBe("not submitted");
+    expect(ux.title).toContain("Not submitted");
+    expect(ux.description).toContain("No reservation");
+    expect(ux.primaryAction.label).toBe("Try preparation again, no submit");
+  });
+
   it("uses final report blocker copy when an external submit is blocked", () => {
     const ux = buildExternalActionUxState({
       ...baseItem,

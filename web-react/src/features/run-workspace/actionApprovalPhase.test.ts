@@ -107,6 +107,58 @@ describe("buildActionApprovalPhase", () => {
     expect(phase.badge).toBe("ready to submit");
     expect(phase.tone).toBe("ok");
   });
+
+  it("clearly marks approved preparation as not submitted when submit control is missing", () => {
+    const item = {
+      ...baseItem(),
+      proposal: {
+        ...baseItem().proposal,
+        status: "approved" as const,
+        commitExecutor: {
+          kind: "generated_tool" as const,
+          toolName: "external.action.commit",
+          toolVersion: "1.0.0",
+          ready: true,
+          risk: "high" as const,
+          reason: "Executor ready.",
+        },
+      },
+      preparationExecution: {
+        status: "completed" as const,
+        actor: "tool",
+        decidedAt: "2026-05-22T00:00:00.000Z",
+        artifactIds: ["artifact-1"],
+        preparedSession: {
+          preparedAt: "2026-05-22T00:00:00.000Z",
+          toolName: "external.action.prepare",
+          currentUrl: "https://provider.example/book",
+          links: [],
+          formFields: [],
+          formFieldGaps: [],
+          availableProfileFields: [],
+          filledFields: [{ label: "Date", valuePreview: "Friday" }],
+          replaySteps: [],
+          commitCandidates: [{ reason: "submit a reservation" }],
+          artifactIds: ["artifact-1"],
+          proofArtifactIds: ["artifact-1"],
+          warnings: [],
+          actionDraft: {
+            status: "needs_more_input",
+            action: "Submit booking",
+            dataPreview: [],
+            missingBeforeCommit: ["concrete submit/control candidate"],
+            operatorNextStep:
+              "Resolve before final submit: concrete submit/control candidate.",
+          },
+        },
+      },
+    } satisfies ActionProposalQueueItem;
+
+    const phase = buildActionApprovalPhase([item], "waiting_approval");
+
+    expect(phase.title).toContain("not submitted");
+    expect(phase.badge).toBe("not submitted");
+  });
 });
 
 function baseItem(): ActionProposalQueueItem {
