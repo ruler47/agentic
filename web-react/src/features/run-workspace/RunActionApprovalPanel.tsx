@@ -90,6 +90,17 @@ function RunActionApprovalCard({ item }: { item: ActionProposalQueueItem }) {
         <GenericBadge tone={ux.tone}>{ux.statusLabel}</GenericBadge>
       </header>
 
+      {item.proposal.status === "approved" ? (
+        <div className="mt-3 rounded-md border border-app-accent/30 bg-app-bg p-3 text-[11px]">
+          <p className="font-semibold text-app-accent">Approval already recorded</p>
+          <p className="mt-1 text-app-text-muted">
+            There is no approve button now. The approved plan is still linked to this
+            run; the current blocker is shown below, and no external submit has happened
+            unless this card says submitted.
+          </p>
+        </div>
+      ) : null}
+
       <div className="mt-3 rounded-md border border-app-accent/30 bg-app-bg p-3 text-[11px]">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
