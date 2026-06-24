@@ -123,6 +123,12 @@ Recent P0 fixes:
   profiles; and the resolver rejects disabled models and treats profile-overridden
   capabilities as authoritative. Active probes, multimodal payload routing, and
   benchmarking remain later model-platform work.
+- External-action verification handoff has its first runtime slice: prepared sessions
+  infer structured `requiredOperatorInputs` from provider text/form gaps/proposal data,
+  `verification_required` covers phone/SMS/email-code boundaries, commit readiness blocks
+  final submit until required inputs are resolved, and the approval UI shows the exact
+  needed operator input. The remaining task is a first-class resume/apply-input path that
+  replays the preserved prepared session after the user supplies that input.
 - Follow-up questions about prior answers can frame as `thread_context_answer` and answer
   from thread summary/facts/open questions instead of doing a fresh lookup.
 - Thread-scoped prior-work recovery now asks the Work/Evidence Ledger for passed and
@@ -244,10 +250,10 @@ P2:
 - Keep the simplified external-action approval/preparation path stable. The first UI and
   runtime pass is complete: one primary proposal action, safe preparation/proof after
   approval, generic executor attach, one final submit action, and final confirmation.
-- Continue the next active P2 tasks: resumable external-action verification handoff, then
-  context-budgeted run decomposition. Durable model profiles are done for the current
-  slice; later model-platform work is probes, multimodal payload routing, and
-  benchmarking.
+- Continue the next active P2 tasks: finish the resumable external-action
+  apply-input/resume path, then context-budgeted run decomposition. Durable model
+  profiles are done for the current slice; later model-platform work is probes,
+  multimodal payload routing, and benchmarking.
 
 P3:
 

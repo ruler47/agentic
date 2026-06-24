@@ -8,6 +8,12 @@ test("external action blocker classifier maps common provider failures", () => {
     "captcha",
   );
   assert.equal(
+    classifyExternalActionBlocker(
+      "Crea tu cuenta de Booksy. Número de teléfono. Enviaremos un código de confirmación a tu número de teléfono.",
+    )?.blocker,
+    "verification_required",
+  );
+  assert.equal(
     classifyExternalActionBlocker("missing_requirements: phone is required")?.blocker,
     "missing_data",
   );

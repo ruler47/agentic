@@ -256,12 +256,15 @@ export class ActionProposalsService {
       buildRequest,
     );
     if (existingExecutor) {
+      const readinessSuffix = existingExecutor.ready
+        ? ""
+        : `, but it is not commit-ready yet: ${existingExecutor.reason}`;
       await this.actionProposalRecorder().recordExternalActionExecutorAttached({
         run,
         proposal: current.proposal,
         buildRequest,
         executor: existingExecutor,
-        reason: `Attached existing commit executor ${existingExecutor.toolName}${existingExecutor.toolVersion ? `@${existingExecutor.toolVersion}` : ""}.`,
+        reason: `Attached existing commit executor ${existingExecutor.toolName}${existingExecutor.toolVersion ? `@${existingExecutor.toolVersion}` : ""}${readinessSuffix}.`,
       });
       const updated = await this.runs.get(run.id);
       if (!updated)

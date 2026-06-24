@@ -162,7 +162,6 @@ test("Nest API no longer exposes legacy tool-build and tool-rework endpoints", a
     await requestJson(fixture.baseUrl, "/api/tool-build-requests", { expectedStatus: 404 });
     await requestJson(fixture.baseUrl, "/api/tool-investigations", { expectedStatus: 404 });
     await requestJson(fixture.baseUrl, "/api/tool-rework-waits", { expectedStatus: 404 });
-    await requestJson(fixture.baseUrl, "/api/tool-migrations", { expectedStatus: 404 });
   } finally {
     await closeFixture(fixture);
   }
@@ -268,7 +267,7 @@ test("Nest API supports external action approval and blocked commit trace", asyn
     assert.equal(blocked.proposal.finalReport?.blocker, "missing_data");
     assert.match(
       blocked.proposal.execution?.reason ?? "",
-      /fixture executor missing|missing_requirements|generated commit executor/i,
+      /fixture executor missing|missing_requirements|generated commit executor|prepared external-action session/i,
     );
 
     const updated = await runStore.get(run.id);

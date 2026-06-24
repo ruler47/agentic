@@ -262,6 +262,14 @@ function preparationSafetyBlockers(item: ActionProposalQueueItem): string[] {
   const session = item.preparationExecution?.preparedSession;
   if (!session) return [];
   const blockers: string[] = [];
+  const requiredInputs = session.requiredOperatorInputs ?? [];
+  if (requiredInputs.length) {
+    blockers.push(
+      `Prepared action requires operator input before final submit: ${requiredInputs
+        .map((input) => input.label)
+        .join(", ")}.`,
+    );
+  }
   if (session.actionDraft && session.actionDraft.status !== "ready_for_operator_review") {
     blockers.push(
       session.actionDraft.operatorNextStep ||

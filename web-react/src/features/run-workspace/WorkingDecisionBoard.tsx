@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import type {
   AgentEvent,
-  MemoryUseRecord,
   WorkingDecisionCandidate,
   WorkingDecisionFact,
   WorkingDecisionRejectedEvidence,
@@ -280,10 +279,18 @@ export function workingDecisionEventDuration(events: AgentEvent[]): string | und
   const snapshot = latestWorkingDecisionSnapshot(events);
   if (!snapshot?.metricsSummary) return undefined;
   const first = events.find((event) => event.type === "working-decision-snapshot-created");
-  const last = events.findLast((event) => isWorkingDecisionEvent(event));
+  const last = latestWorkingDecisionEvent(events);
   if (!first || !last) return undefined;
   const started = Date.parse(first.timestamp);
   const ended = Date.parse(last.timestamp);
   if (!Number.isFinite(started) || !Number.isFinite(ended) || ended < started) return undefined;
   return formatDuration(ended - started);
+}
+
+function latestWorkingDecisionEvent(events: AgentEvent[]): AgentEvent | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event && isWorkingDecisionEvent(event)) return event;
+  }
+  return undefined;
 }

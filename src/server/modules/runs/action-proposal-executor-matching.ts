@@ -37,6 +37,24 @@ export function findExistingExternalActionCommitExecutor(
       }) ?? [];
   const tool = candidates[0];
   if (!tool) return undefined;
+  if (!hasPreparedCommitContext(input.toolInput)) {
+    return {
+      kind: "generated_tool",
+      toolName: tool.name,
+      toolVersion: tool.version,
+      toolInput: input.toolInput,
+      ready: false,
+      risk: input.risk,
+      reason:
+        "A commit tool is registered, but no prepared external-action session is available yet.",
+      missing: [
+        "prepared browser/API session",
+        "proof artifact",
+        "concrete provider submit target",
+      ],
+      expectedProof: input.expectedProof,
+    };
+  }
   return {
     kind: "generated_tool",
     toolName: tool.name,
@@ -49,6 +67,15 @@ export function findExistingExternalActionCommitExecutor(
     missing: [],
     expectedProof: input.expectedProof,
   };
+}
+
+function hasPreparedCommitContext(toolInput: Record<string, unknown>): boolean {
+  const preparedSession = toolInput.preparedSession;
+  return (
+    typeof preparedSession === "object" &&
+    preparedSession !== null &&
+    !Array.isArray(preparedSession)
+  );
 }
 
 function requiredExecutorCapability(capabilities: string[]): string | undefined {

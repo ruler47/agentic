@@ -108,6 +108,17 @@ export function ActionProposalReview({ item }: { item: ActionProposalQueueItem }
                   Still missing: {truncate(draft.missingBeforeCommit.join(", "), 260)}
                 </p>
               ) : null}
+              {session.requiredOperatorInputs?.length ? (
+                <p className="mt-2 text-app-warning">
+                  Needed from operator:{" "}
+                  {truncate(
+                    session.requiredOperatorInputs
+                      .map((input) => `${input.label} (${input.kind.replace(/_/g, " ")})`)
+                      .join(", "),
+                    260,
+                  )}
+                </p>
+              ) : null}
               <p className="mt-2 text-app-text-muted">
                 After submit report must include:{" "}
                 {truncate(draft.postCommitReportRequirements.join("; "), 360)}

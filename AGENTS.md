@@ -301,6 +301,14 @@ documentation.
   preparation proof artifacts are visual-QA checked before they count as usable commit
   proof; failed/blocked screenshots can remain visible in UI diagnostics but are not
   returned as prepared-session proof ids.
+- External-action prepared sessions can carry structured `requiredOperatorInputs` for
+  provider form gaps, phone/SMS/email verification, CAPTCHA/security checks, login, and
+  payment boundaries. These inputs are resumable blockers, not final-submit permission:
+  commit readiness must block external submit while any required operator input remains,
+  and UI should show the exact missing input rather than a generic "book it yourself"
+  instruction. Follow-up contact/time/service details in a thread with a prior external
+  action should be framed as continuation context, not unrelated product-selection
+  research.
 - API/HTTP/JSON endpoint tasks and local-utility tasks should use structured protocol or
   source evidence as proof by default. They must not trigger visual proof repair or call
   `browser.screenshot` / `browser.operate` unless the user explicitly asks for visual

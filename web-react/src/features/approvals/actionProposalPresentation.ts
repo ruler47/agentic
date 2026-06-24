@@ -89,6 +89,9 @@ export function humanActionDraftBlockers(blockers: string[]): string[] {
     if (blocker === "proof artifact") {
       return "a proof screenshot/artifact still needs to be captured";
     }
+    if (blocker === "provider phone/SMS verification") {
+      return "the provider requires phone/SMS verification before this can continue";
+    }
     if (blocker === "concrete submit/control candidate") {
       return "the page submit/control target still needs to be detected";
     }
@@ -103,6 +106,9 @@ export function humanSubmitBlockReason(reason: string): string {
   }
   if (/proof artifact/i.test(trimmed)) {
     return "The platform still needs to capture a proof screenshot/artifact before final submit.";
+  }
+  if (/provider phone\/SMS verification/i.test(trimmed)) {
+    return "The provider requires a phone number, SMS code, or one-time verification step. The prepared action can resume after that verification input is provided.";
   }
   if (/concrete submit\/control candidate/i.test(trimmed)) {
     return "The platform still needs to detect the provider's real submit/control target before final submit.";

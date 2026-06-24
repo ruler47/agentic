@@ -266,6 +266,55 @@ test("BaseAgent treats contact details plus take-the-best follow-up as appointme
   assert.equal(result.actionProposals?.[0]?.preparation?.missingInputs.length, 0);
 });
 
+test("BaseAgent treats contact and time details as continuation of prior booking request", async () => {
+  const llm = new SequenceLlm([
+    {
+      content: [
+        "Подготовлена запись на стрижку в **Harrisons Barber Shop Marbella**.",
+        "Данные: Димитрий, +34617789419, 47ruler@gmail.com.",
+        "Окно: суббота или воскресенье после 14:00.",
+        "Перед финальной отправкой нужна проверка и подтверждение.",
+      ].join("\n"),
+      finishReason: "stop",
+      toolCalls: [],
+    },
+  ]);
+  const agent = new BaseAgent(llm as unknown as LlmClient, new ToolRegistry());
+
+  const result = await agent.run([
+    "Димитрий",
+    "+34617789419",
+    "47ruler@gmail.com",
+    "любой из двух дней, и время любое после 14.00.",
+    "всё равно мы скорее всего позже отменять будем.",
+  ].join("\n"), {
+    runId: "run_external_action_real_thread_contact_continuation",
+    maxSteps: 1,
+    runContext: {
+      runId: "run_external_action_real_thread_contact_continuation",
+      threadId: "thread_external_action_real_thread_contact_continuation",
+      externalActionMode: "approval",
+      thread: {
+        summary: [
+          "Latest request: найди где мне постричься на выходных",
+          "Latest request: Марбея, любой хороший барбершоп.",
+          "Latest request: ну забронируй мне в какомто из них на суббоут или вс после 14.00",
+          "Latest request: ну спроси меня что тебе надо, чего тебе не хватает из моег опрофиля я дам",
+        ].join("\n"),
+        acceptedFacts: [
+          "Previous run found bookable barbershops in Marbella.",
+        ],
+      },
+    },
+  });
+
+  assert.equal(result.actionProposals?.length, 1);
+  assert.equal(result.actionProposals?.[0]?.actionType, "appointment");
+  assert.equal(result.actionProposals?.[0]?.target, "Harrisons Barber Shop Marbella");
+  assert.equal(result.actionProposals?.[0]?.approvalRequired, true);
+  assert.equal(result.actionProposals?.[0]?.preparation?.missingInputs.length, 0);
+});
+
 test("BaseAgent does not source-ground user-provided booking details for approval proposals", async () => {
   const registry = new ToolRegistry();
   registry.register({

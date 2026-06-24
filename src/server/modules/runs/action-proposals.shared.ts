@@ -564,10 +564,24 @@ function externalActionCommitPayloadBlockReason(
   const preparedSession = isRecord(executor.toolInput.preparedSession)
     ? executor.toolInput.preparedSession
     : undefined;
-  if (!preparedSession) return undefined;
+  if (!preparedSession) {
+    return "Generated commit executor is missing a prepared external-action session; prepare the action before commit.";
+  }
   const actionDraft = isRecord(preparedSession.actionDraft)
     ? preparedSession.actionDraft
     : undefined;
+  const requiredOperatorInputs = Array.isArray(preparedSession.requiredOperatorInputs)
+    ? preparedSession.requiredOperatorInputs.filter(isRecord)
+    : [];
+  if (requiredOperatorInputs.length) {
+    const labels = requiredOperatorInputs
+      .map((item) => typeof item.label === "string" ? item.label.trim() : "")
+      .filter(Boolean)
+      .join(", ");
+    return `Prepared action requires operator input before external submit${
+      labels ? `: ${labels}` : ""
+    }.`;
+  }
   const draftStatus = actionDraft && typeof actionDraft.status === "string"
     ? actionDraft.status
     : undefined;
@@ -660,6 +674,7 @@ export function shouldListActionProposal(
 function parseExternalActionBlocker(value: unknown): ExternalActionBlocker | undefined {
   if (
     value === "login_required" ||
+    value === "verification_required" ||
     value === "captcha" ||
     value === "payment_required" ||
     value === "missing_data" ||

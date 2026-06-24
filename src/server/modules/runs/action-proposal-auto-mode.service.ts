@@ -26,6 +26,7 @@ export class ActionProposalAutoModeService {
       ) ?? [];
     const outcomes: ActionProposalQueueItem[] = [];
     for (const proposal of proposals) {
+      await this.prepareBeforeAutomodeCommit(proposal.id, rawCommitBody);
       outcomes.push(
         await this.actionProposals.commitActionProposal(
           proposal.id,
@@ -35,6 +36,19 @@ export class ActionProposalAutoModeService {
     }
     if (outcomes.length) await this.updateRunSummary(runId, outcomes);
     return outcomes;
+  }
+
+  private async prepareBeforeAutomodeCommit(
+    proposalId: string,
+    rawCommitBody: unknown,
+  ): Promise<void> {
+    try {
+      await this.actionProposals.prepareActionProposal(proposalId, rawCommitBody);
+    } catch {
+      // Commit readiness produces the operator-facing blocker. Automode should
+      // still attempt that diagnosis instead of failing before the proposal can
+      // explain why it did not submit.
+    }
   }
 
   private async updateRunSummary(

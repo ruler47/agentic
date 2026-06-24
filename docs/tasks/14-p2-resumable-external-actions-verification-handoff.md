@@ -4,7 +4,7 @@
 
 Status date: 2026-06-24.
 
-- State: spec-ready; implementation pending.
+- State: verification/operator-input handoff slice implemented; resume command still pending.
 - Priority: P2, before broader model routing and generated provider executors.
 - Trigger: real Booksy appointment investigation in `thread_1782238426343_bla80wwj`.
 - Depends on: task 09 action-mode semantics and completed external-action UX baseline.
@@ -142,21 +142,23 @@ flowchart TD
 
 Initial slice:
 
-- Update `ExternalActionBlocker` with `verification_required`.
-- Update blocker parsing/projection.
-- Detect SMS/OTP/phone verification in blocker classifier.
-- Infer prepared-session verification missing requirement from page text + form gaps.
-- Add UI copy for verification blockers.
-- Add tests for Booksy-like Spanish copy and prepared session readiness.
+- [done] Update `ExternalActionBlocker` with `verification_required`.
+- [done] Update blocker parsing/projection.
+- [done] Detect SMS/OTP/phone verification in blocker classifier.
+- [done] Infer prepared-session verification missing requirement from page text + form gaps.
+- [done] Add UI copy for verification blockers.
+- [done] Add tests for Booksy-like Spanish copy and prepared session readiness.
 
 Next slices:
 
-- Add a resumable input handoff model to prepared sessions:
+- [done] Add a resumable input handoff model to prepared sessions:
   `requiredOperatorInputs[]` with type `phone`, `sms_code`, `email_code`, `captcha`,
   `payment`, `login`.
-- Add conversation-visible continuation prompts that collect only the missing input.
-- Add resume command that replays the prepared session and applies the supplied input.
-- Add auto-mode guard tests for verification boundaries.
+- [partial] Add conversation-visible continuation prompts that collect only the missing
+  input: thread-context framing now treats contact/time-only follow-ups as continuations
+  of prior external actions, but the UI still needs a first-class missing-input form.
+- [pending] Add resume command that replays the prepared session and applies the supplied input.
+- [done] Add auto-mode guard tests for verification boundaries.
 - Add context-budgeted external-action decomposition: discovery -> prepare -> hydrate ->
   commit/report.
 
@@ -206,3 +208,18 @@ Second local slice:
   are still required, even if legacy blocker text is incomplete.
 - Approval UI surfaces "Needed from operator" separately from generic preparation
   blockers.
+
+Third local slice:
+
+- Follow-up messages containing contact/time/service details can inherit the prior
+  external-action context instead of being framed as unrelated product-selection research.
+- Existing commit executors are treated as not ready until a prepared session and proof
+  context exist, so the platform no longer exposes a final submit path before preparation.
+- Optional provider-field commands can fail as warnings during preparation, preserving
+  useful prepared-session state when the provider page still advanced far enough to
+  diagnose the blocker.
+- Focused verification: `tests/actionProposalBlockers.test.ts`,
+  `tests/actionProposalCommitReadiness.test.ts`,
+  `tests/actionProposalPreparationRunner.test.ts`,
+  `tests/actionProposalPreparationVerification.test.ts`,
+  `tests/baseAgentExternalActionGuard.test.ts`, and `tests/toolsController.test.ts`.

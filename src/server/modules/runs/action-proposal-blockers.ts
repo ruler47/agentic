@@ -25,6 +25,18 @@ export function classifyExternalActionBlocker(
       { providerSpecific: true, recoverableByUser: true },
     );
   }
+  if (
+    /\b(sms|text message|verification code|confirmation code|one[-\s]?time code|otp|phone verification|verify (?:your )?phone|confirm (?:your )?phone)\b/i.test(text) ||
+    /\b(c[oó]digo(?: de)? (?:confirmaci[oó]n|verificaci[oó]n)|verifica(?:r|ci[oó]n).*tel[eé]fono|confirmar.*tel[eé]fono|n[uú]mero de tel[eé]fono|enviaremos un c[oó]digo)\b/i.test(text)
+  ) {
+    return blockerInfo(
+      "verification_required",
+      "Phone/SMS verification required",
+      "The provider requires a phone number, SMS code, or one-time verification step before the external action can continue.",
+      "Provide the phone/SMS verification details or approve a supported verification route, then resume the prepared action from the captured proof.",
+      { providerSpecific: true, recoverableByUser: true },
+    );
+  }
   if (/\b(login|log in|sign in|signin|account required|authenticate|auth required|oauth)\b/i.test(text)) {
     return blockerInfo(
       "login_required",

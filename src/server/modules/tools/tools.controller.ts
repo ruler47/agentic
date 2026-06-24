@@ -11,6 +11,8 @@ import {
   Put,
   Query,
 } from "@nestjs/common";
+import { TOOL_MIGRATION_STORE } from "../../persistence/tokens.js";
+import type { ToolMigrationStatus, ToolMigrationStore } from "../../../tools/toolMigrationStore.js";
 import { ToolManualRunService } from "./tool-manual-run.service.js";
 import { ToolRegistryAdminService } from "./tool-registry-admin.service.js";
 import { ToolSettingsService } from "./tool-settings.service.js";
@@ -25,6 +27,7 @@ export class ToolsController {
     @Inject(ToolRegistryAdminService) private readonly toolAdmin: ToolRegistryAdminService,
     @Inject(ToolSettingsService) private readonly toolSettings: ToolSettingsService,
     @Inject(ToolVersionLifecycleService) private readonly toolVersions: ToolVersionLifecycleService,
+    @Inject(TOOL_MIGRATION_STORE) private readonly toolMigrations: ToolMigrationStore,
   ) {}
 
   @Get("tools")
@@ -66,6 +69,14 @@ export class ToolsController {
   @Get("tool-creations/:id")
   async getCreation(@Param("id") id: string) {
     return { creation: await this.tools.getToolCreation(decodeURIComponent(id)) };
+  }
+
+  @Get("tool-migrations")
+  async listMigrations(
+    @Query("toolName") toolName?: string,
+    @Query("status") status?: ToolMigrationStatus,
+  ) {
+    return { migrations: await this.toolMigrations.list({ toolName, status }) };
   }
 
   @Delete("tool-creations/:id")

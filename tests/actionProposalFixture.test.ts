@@ -462,6 +462,26 @@ test("profile field approval replays preparation before final submit", async () 
 test("fixture external-action automode blocks clearly when no executor exists", async () => {
   const fixture = await createFixture();
   try {
+    const registry = fixture.app.get<ToolRegistry>(TOOL_REGISTRY);
+    registry.unregister("external.action.commit");
+    registry.register({
+      name: "browser.operate",
+      version: "0.1.0",
+      description: "Fixture browser operate.",
+      capabilities: [
+        "browser-operate",
+        "browser-automation",
+        "browser-field-candidates",
+      ],
+      inputSchema: { type: "object", properties: {}, required: [] },
+      async run(input) {
+        return {
+          ok: true,
+          content: "Prepared fixture draft without final commit.",
+          data: preparedFixtureDraftData(input),
+        };
+      },
+    });
     const created = await requestJson<{
       proposal: {
         proposal: { executionMode?: string; approvalRequired: boolean; prohibitedWithoutApproval: string[] };
@@ -502,6 +522,24 @@ test("fixture external-action automode attaches an existing executor and commits
   try {
     const registry = fixture.app.get<ToolRegistry>(TOOL_REGISTRY);
     const target = `${fixture.baseUrl}/api/fixtures/external-actions/reservation`;
+    registry.register({
+      name: "browser.operate",
+      version: "0.1.0",
+      description: "Fixture browser operate.",
+      capabilities: [
+        "browser-operate",
+        "browser-automation",
+        "browser-field-candidates",
+      ],
+      inputSchema: { type: "object", properties: {}, required: [] },
+      async run(input) {
+        return {
+          ok: true,
+          content: "Prepared fixture draft without final commit.",
+          data: preparedFixtureDraftData(input),
+        };
+      },
+    });
     registry.register({
       name: "external.action.commit",
       version: "0.1.0",
@@ -555,6 +593,37 @@ test("fixture external-action automode attaches an existing executor and commits
     await fixture.app.close();
   }
 });
+
+function preparedFixtureDraftData(input: Record<string, unknown>): Record<string, unknown> {
+  return {
+    finalUrl: input.url,
+    pageTitle: "Restaurant reservation fixture",
+    extractedText: "Draft is filled. Confirm reservation remains the final boundary.",
+    links: [],
+    actionCandidates: [
+      {
+        text: "Confirm reservation",
+        selector: "#confirm",
+      },
+    ],
+    steps: Array.isArray(input.commands)
+      ? input.commands.map((command: Record<string, unknown>, index: number) => ({
+          index,
+          action: String(command.action),
+          ok: true,
+          detail: String(command.label ?? command.action),
+        }))
+      : [],
+    artifacts: [
+      {
+        filename: "reservation-draft-proof.txt",
+        mimeType: "text/plain",
+        content: Buffer.from("Prepared reservation draft proof"),
+        description: "Fixture proof artifact for prepared reservation draft.",
+      },
+    ],
+  };
+}
 
 async function createFixture(): Promise<Fixture> {
   process.env.TOOL_BUILD_WORKER = "disabled";

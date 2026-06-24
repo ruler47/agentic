@@ -1,5 +1,6 @@
 import type { AgentRunRecord } from "../../../runs/types.js";
 import type {
+  ExternalActionRequiredOperatorInput,
   ExternalActionPreparedSession,
   ExternalActionProposal,
 } from "../../../types.js";
@@ -93,6 +94,12 @@ export function buildPreparedSession(input: {
     data,
   );
   const warnings = inferPreparationWarnings(steps, input.proposal, data, formFieldGaps);
+  const requiredOperatorInputs = inferRequiredOperatorInputs({
+    proposal: input.proposal,
+    data,
+    formFieldGaps,
+    warnings,
+  });
   return {
     preparedAt: new Date().toISOString(),
     toolName: input.toolName,
@@ -120,6 +127,7 @@ export function buildPreparedSession(input: {
     proofArtifactIds: input.proofArtifactIds,
     artifactIds: input.artifactIds,
     warnings,
+    requiredOperatorInputs,
     actionDraft: buildActionDraft({
       proposal: input.proposal,
       currentUrl,
@@ -128,6 +136,7 @@ export function buildPreparedSession(input: {
       commitCandidates,
       artifactIds: input.proofArtifactIds ?? input.artifactIds,
       warnings,
+      requiredOperatorInputs,
       attemptedFieldPreparation: fieldCommands.length > 0,
     }),
   };
@@ -141,11 +150,13 @@ function buildActionDraft(input: {
   commitCandidates: ExternalActionPreparedSession["commitCandidates"];
   artifactIds: string[];
   warnings: string[];
+  requiredOperatorInputs: ExternalActionRequiredOperatorInput[];
   attemptedFieldPreparation: boolean;
 }): NonNullable<ExternalActionPreparedSession["actionDraft"]> {
   const proposalInputs = input.proposal.preparation?.collectedInputs ?? [];
   const missingBeforeCommit = uniqueStrings([
     ...(input.proposal.preparation?.missingInputs ?? []),
+    ...input.requiredOperatorInputs.map((item) => item.label),
     ...(input.formFieldGaps ?? []).map((gap) => gap.label ?? gap.name ?? gap.field ?? gap.reason),
     ...criticalPreparationWarnings(input.warnings),
     ...(input.attemptedFieldPreparation && input.filledFields.length === 0
@@ -180,6 +191,7 @@ function buildActionDraft(input: {
       })),
     ].slice(0, 30),
     missingBeforeCommit,
+    requiredOperatorInputs: input.requiredOperatorInputs,
     proofArtifactIds: input.artifactIds,
     commitControls: input.commitCandidates,
     operatorNextStep: operatorNextStep(status, missingBeforeCommit),
@@ -188,9 +200,17 @@ function buildActionDraft(input: {
 }
 
 function criticalPreparationWarnings(warnings: string[]): string[] {
-  return warnings
-    .filter((warning) => /safe-advance prepare failed|provider page still shows only selection controls/i.test(warning))
-    .map(() => "provider flow advance did not complete");
+  const critical: string[] = [];
+  for (const warning of warnings) {
+    if (/phone\/sms verification|sms verification|verification code|one-time verification/i.test(warning)) {
+      critical.push("provider phone/SMS verification");
+      continue;
+    }
+    if (/safe-advance prepare failed|provider page still shows only selection controls/i.test(warning)) {
+      critical.push("provider flow advance did not complete");
+    }
+  }
+  return critical;
 }
 
 function noPreparedFieldsBlocker(
@@ -496,7 +516,165 @@ function inferPreparationWarnings(
       `Missing inputs before commit: ${proposal.preparation.missingInputs.join(", ")}`,
     );
   }
+  const verificationWarning = inferVerificationWarning(data, gaps);
+  if (verificationWarning) warnings.push(verificationWarning);
   return warnings.slice(0, 10);
+}
+
+function inferVerificationWarning(
+  data: Record<string, unknown>,
+  gaps: ExternalActionPreparedSession["formFieldGaps"],
+): string | undefined {
+  const text = extractPreparedPageText(data);
+  const gapText = (gaps ?? [])
+    .map((gap) => `${gap.field ?? ""} ${gap.label ?? ""} ${gap.name ?? ""} ${gap.type ?? ""}`)
+    .join(" ");
+  const haystack = `${text}\n${gapText}`;
+  const mentionsPhone = /\b(phone|tel|telephone|mobile|contact_phone|tel[eé]fono|n[uú]mero de tel[eé]fono|m[oó]vil)\b/i.test(haystack);
+  const mentionsVerification =
+    /\b(sms|text message|verification code|confirmation code|one[-\s]?time code|otp|verify (?:your )?phone|confirm (?:your )?phone)\b/i.test(haystack) ||
+    /\b(c[oó]digo(?: de)? (?:confirmaci[oó]n|verificaci[oó]n)|enviaremos un c[oó]digo|confirmar.*tel[eé]fono|verifica(?:r|ci[oó]n).*tel[eé]fono)\b/i.test(haystack);
+  if (!mentionsVerification && !mentionsPhone) return undefined;
+  if (!mentionsVerification && !(gaps ?? []).some((gap) => gap.field === "contact_phone")) {
+    return undefined;
+  }
+  return "Provider requires phone/SMS verification before final submit.";
+}
+
+function inferRequiredOperatorInputs(input: {
+  proposal: ExternalActionProposal;
+  data: Record<string, unknown>;
+  formFieldGaps: ExternalActionPreparedSession["formFieldGaps"];
+  warnings: string[];
+}): ExternalActionRequiredOperatorInput[] {
+  const items: ExternalActionRequiredOperatorInput[] = [];
+  const pageText = extractPreparedPageText(input.data);
+  const warningText = input.warnings.join("\n");
+  const haystack = `${pageText}\n${warningText}`;
+
+  for (const missingInput of input.proposal.preparation?.missingInputs ?? []) {
+    items.push({
+      id: operatorInputId("proposal", missingInput),
+      kind: classifyOperatorInputKind(missingInput),
+      label: missingInput,
+      reason: "The original action proposal still needs this input before final submit.",
+      source: "proposal",
+      sensitivity: operatorInputSensitivity(classifyOperatorInputKind(missingInput)),
+      resumable: true,
+    });
+  }
+
+  for (const gap of input.formFieldGaps ?? []) {
+    const label = gap.label ?? gap.name ?? gap.field ?? "Required provider field";
+    const kind = classifyOperatorInputKind(`${gap.field ?? ""} ${gap.label ?? ""} ${gap.name ?? ""} ${gap.type ?? ""}`);
+    if (gap.profileAvailable) continue;
+    items.push({
+      id: operatorInputId("form", `${gap.field ?? ""}:${label}`),
+      kind,
+      label,
+      reason: gap.reason,
+      field: gap.field,
+      source: "provider_form",
+      sensitivity: operatorInputSensitivity(kind),
+      resumable: true,
+    });
+  }
+
+  const verificationKind = inferVerificationInputKind(haystack);
+  if (verificationKind) {
+    items.push({
+      id: operatorInputId("verification", verificationKind),
+      kind: verificationKind,
+      label: verificationKind === "sms_code"
+        ? "SMS verification code"
+        : verificationKind === "email_code"
+          ? "Email verification code"
+          : "Phone/SMS verification",
+      reason: verificationKind === "phone"
+        ? "The provider requires a phone number before it can send or complete verification."
+        : "The provider requires a one-time verification code before the prepared action can continue.",
+      source: "provider_text",
+      sensitivity: operatorInputSensitivity(verificationKind),
+      resumable: true,
+    });
+  }
+
+  if (/\b(captcha|recaptcha|security verification|cloudflare)\b/i.test(haystack)) {
+    items.push({
+      id: operatorInputId("policy", "captcha"),
+      kind: "captcha",
+      label: "Provider CAPTCHA/security check",
+      reason: "The provider requires a human security check before continuing.",
+      source: "provider_text",
+      sensitivity: "sensitive",
+      resumable: false,
+    });
+  }
+
+  if (/\b(payment|card|deposit|checkout|pay now|pagar|tarjeta|dep[oó]sito)\b/i.test(haystack)) {
+    items.push({
+      id: operatorInputId("policy", "payment"),
+      kind: "payment",
+      label: "Payment or deposit approval",
+      reason: "The provider requires payment details, a deposit, or payment approval before continuing.",
+      source: "provider_text",
+      sensitivity: "secret",
+      resumable: true,
+    });
+  }
+
+  return dedupeOperatorInputs(items).slice(0, 12);
+}
+
+function inferVerificationInputKind(text: string): ExternalActionRequiredOperatorInput["kind"] | undefined {
+  if (/\b(email verification code|email confirmation code|code sent to (?:your )?email)\b/i.test(text)) {
+    return "email_code";
+  }
+  if (/\b(sms|text message|verification code|confirmation code|one[-\s]?time code|otp)\b/i.test(text)) {
+    return "sms_code";
+  }
+  if (/\b(c[oó]digo(?: de)? (?:confirmaci[oó]n|verificaci[oó]n)|enviaremos un c[oó]digo)\b/i.test(text)) {
+    return "sms_code";
+  }
+  if (/\b(phone verification|verify (?:your )?phone|confirm (?:your )?phone|tel[eé]fono|n[uú]mero de tel[eé]fono)\b/i.test(text)) {
+    return "phone";
+  }
+  return undefined;
+}
+
+function classifyOperatorInputKind(text: string): ExternalActionRequiredOperatorInput["kind"] {
+  if (/\b(sms|text message|verification code|confirmation code|one[-\s]?time code|otp|c[oó]digo)\b/i.test(text)) {
+    return "sms_code";
+  }
+  if (/\b(email code|email verification|email confirmation)\b/i.test(text)) return "email_code";
+  if (/\b(phone|telephone|mobile|contact_phone|tel[eé]fono|m[oó]vil)\b/i.test(text)) return "phone";
+  if (/\b(password|login|sign in|signin|account|contrase[ñn]a)\b/i.test(text)) return "login";
+  if (/\b(payment|card|deposit|checkout|pay|tarjeta|dep[oó]sito)\b/i.test(text)) return "payment";
+  if (/\b(captcha|recaptcha|security verification|cloudflare)\b/i.test(text)) return "captcha";
+  if (text.trim()) return "form_field";
+  return "unknown";
+}
+
+function operatorInputSensitivity(kind: ExternalActionRequiredOperatorInput["kind"]): ExternalActionRequiredOperatorInput["sensitivity"] {
+  if (kind === "sms_code" || kind === "email_code" || kind === "login" || kind === "payment") return "secret";
+  if (kind === "phone" || kind === "captcha") return "sensitive";
+  return "normal";
+}
+
+function operatorInputId(prefix: string, value: string): string {
+  return `${prefix}:${value.toLowerCase().replace(/[^a-z0-9а-яё]+/giu, "-").replace(/^-|-$/g, "").slice(0, 48) || "input"}`;
+}
+
+function dedupeOperatorInputs(items: ExternalActionRequiredOperatorInput[]): ExternalActionRequiredOperatorInput[] {
+  const seen = new Set<string>();
+  const deduped: ExternalActionRequiredOperatorInput[] = [];
+  for (const item of items) {
+    const key = `${item.kind}:${item.field ?? ""}:${item.label.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+  return deduped;
 }
 
 function gapLabel(gap: NonNullable<ExternalActionPreparedSession["formFieldGaps"]>[number]): string {

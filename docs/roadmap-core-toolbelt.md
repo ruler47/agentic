@@ -84,6 +84,14 @@ merge, audit events, disabled-model rejection, and authoritative capability over
 the tier resolver. Active probes, multimodal payload routing, and model benchmarking are
 later model-platform work, not blockers for the current run-quality queue.
 
+Task 14 now has its verification/operator-input handoff slice implemented: provider
+phone/SMS/email verification, CAPTCHA/security, payment, and missing provider-form inputs
+are represented as structured `requiredOperatorInputs`; commit readiness blocks final
+submit until those inputs are resolved; approval UI surfaces the exact missing operator
+input; and contact/time-only follow-ups can inherit prior external-action thread context.
+The remaining Task 14 work is a first-class resume command and UI path that applies the
+operator-provided input to the preserved prepared session.
+
 Updated target process:
 
 ```mermaid

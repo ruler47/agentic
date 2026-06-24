@@ -301,6 +301,7 @@ export function buildExternalActionSummary(
   ]);
   const missing = uniqueStrings([
     ...(item.proposal.preparation?.missingInputs ?? []),
+    ...(session?.requiredOperatorInputs ?? []).map((input) => input.label),
     ...(session?.formFieldGaps ?? []).map(
       (gap) => gap.label ?? gap.field ?? gap.name ?? gap.reason,
     ),
@@ -404,6 +405,12 @@ function blockerCopy(item: ActionProposalQueueItem): {
         statusLabel: "needs details",
         title: "External action needs more data",
         description: `${base || "Required form data is missing."}${suffix}`,
+      };
+    case "verification_required":
+      return {
+        statusLabel: "verification required",
+        title: "Provider requires phone/SMS verification",
+        description: `${base || "The provider requires a phone number, SMS code, or one-time verification step before continuing."}${suffix}`,
       };
     case "login_required":
       return {

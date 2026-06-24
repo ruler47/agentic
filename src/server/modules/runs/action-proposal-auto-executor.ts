@@ -32,6 +32,9 @@ export async function attachExistingExecutorIfAvailable(input: {
     buildRequest,
   );
   if (!existing) return input.proposal;
+  const readinessSuffix = existing.ready
+    ? ""
+    : `, but it is not commit-ready yet: ${existing.reason}`;
   await input.recorder.recordExternalActionExecutorAttached({
     run: input.run,
     proposal: input.proposal,
@@ -39,7 +42,7 @@ export async function attachExistingExecutorIfAvailable(input: {
     executor: existing,
     reason: `Automode attached existing commit executor ${existing.toolName}${
       existing.toolVersion ? `@${existing.toolVersion}` : ""
-    }.`,
+    }${readinessSuffix}.`,
   });
   return { ...input.proposal, commitExecutor: existing };
 }

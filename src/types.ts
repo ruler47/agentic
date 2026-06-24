@@ -287,6 +287,7 @@ export type ExternalActionExecutionMode = "auto" | "approval";
 
 export type ExternalActionBlocker =
   | "login_required"
+  | "verification_required"
   | "captcha"
   | "payment_required"
   | "missing_data"
@@ -298,6 +299,25 @@ export type ExternalActionBlocker =
   | "proof_failed";
 
 export type ExternalActionCommitExecutorKind = "generated_tool" | "manual_operator";
+
+export type ExternalActionRequiredOperatorInput = {
+  id: string;
+  kind:
+    | "phone"
+    | "sms_code"
+    | "email_code"
+    | "captcha"
+    | "login"
+    | "payment"
+    | "form_field"
+    | "unknown";
+  label: string;
+  reason: string;
+  field?: string;
+  source: "provider_form" | "provider_text" | "proposal" | "policy";
+  sensitivity: "normal" | "sensitive" | "secret";
+  resumable: boolean;
+};
 
 export type ExternalActionCommitExecutor = {
   kind: ExternalActionCommitExecutorKind;
@@ -376,6 +396,7 @@ export type ExternalActionPreparedSession = {
   proofArtifactIds?: string[];
   artifactIds: string[];
   warnings: string[];
+  requiredOperatorInputs?: ExternalActionRequiredOperatorInput[];
   actionDraft?: {
     status: "needs_preparation" | "needs_more_input" | "ready_for_operator_review";
     target?: string;
@@ -383,6 +404,7 @@ export type ExternalActionPreparedSession = {
     pageUrl?: string;
     dataPreview: Array<{ label: string; value: string; source: "proposal" | "prepared_form" }>;
     missingBeforeCommit: string[];
+    requiredOperatorInputs?: ExternalActionRequiredOperatorInput[];
     proofArtifactIds: string[];
     commitControls: Array<{ label?: string; selector?: string; reason: string }>;
     operatorNextStep: string;

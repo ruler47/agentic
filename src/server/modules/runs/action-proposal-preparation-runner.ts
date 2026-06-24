@@ -132,6 +132,7 @@ export class ActionProposalPreparationRunner {
       );
       let saved = await this.saveFirstArtifact({ run, proposal, toolName: tool.name, toolInput, result });
       savedArtifactIds.push(...saved.artifactIds); proofArtifactIds.push(...saved.proofArtifactIds);
+      result = recoverOptionalCommandFailure(result, toolInput);
       if (result.ok && !explicitCommands && !replayRequested) {
         const candidateUrl = selectAdaptivePreparationUrl({
           actionType: proposal.actionType,
@@ -429,6 +430,44 @@ export class ActionProposalPreparationRunner {
       proofArtifactIds: saved.quality?.status === "failed" ? [] : [saved.id],
     };
   }
+}
+
+function recoverOptionalCommandFailure(
+  result: { ok: boolean; content: string; data?: unknown },
+  toolInput: Record<string, unknown>,
+): { ok: boolean; content: string; data?: unknown } {
+  if (result.ok || !isOptionalPreparationCommandFailure(result.content, toolInput)) {
+    return result;
+  }
+  return {
+    ...result,
+    ok: true,
+    content: `Optional preparation command failed and was treated as a warning. ${result.content}`,
+    data: withPreparationWarning(
+      result.data,
+      `Optional preparation command failed: ${result.content}`,
+    ),
+  };
+}
+
+function isOptionalPreparationCommandFailure(
+  content: string,
+  toolInput: Record<string, unknown>,
+): boolean {
+  const commands = Array.isArray(toolInput.commands)
+    ? toolInput.commands.filter(isRecord)
+    : [];
+  if (!commands.length) return false;
+  const match = /\bcommand\s+(\d+)\b/i.exec(content);
+  if (!match) return false;
+  const parsed = Number(match[1]);
+  if (!Number.isInteger(parsed)) return false;
+
+  // Browser tool errors have appeared with both zero-based and one-based command
+  // indexes across providers. Accept either only when the referenced command is
+  // explicitly optional.
+  const candidates = [commands[parsed], commands[parsed - 1]].filter(Boolean);
+  return candidates.some((command) => command.optional === true);
 }
 
 function preparationArtifactQuality(

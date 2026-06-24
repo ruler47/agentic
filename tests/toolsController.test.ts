@@ -21,6 +21,7 @@ test("ToolsController routes version activation through ToolsService lifecycle w
     {} as never,
     {} as never,
     lifecycle as never,
+    {} as never,
   );
 
   const body = { version: "0.1.5" };
@@ -49,6 +50,7 @@ test("ToolsController routes replacement promotion through ToolsService lifecycl
     {} as never,
     {} as never,
     lifecycle as never,
+    {} as never,
   );
 
   const body = { version: "0.2.0" };
