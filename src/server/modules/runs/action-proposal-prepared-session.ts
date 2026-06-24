@@ -52,19 +52,14 @@ export function buildPreparedSession(input: {
   const replaySteps = commands.length ? commands : steps;
   const currentUrl =
     parseOptionalText(data.finalUrl) ?? parseOptionalText(input.toolInput.url);
-  const textPreview = compactPreview(
-    parseOptionalText(data.extractedText) ??
-      parseOptionalText(data.text) ??
-      parseOptionalText(data.content),
-    1200,
-  );
+  const textPreview = compactPreview(extractPreparedPageText(data), 1200);
   const fieldCommands = commands
     .map((command, index) => ({ command, index }))
     .filter(({ command }) => {
       const name = commandName(command);
       return name === "fill" || name === "type";
     });
-  const filledFields = fieldCommands
+  const commandFilledFields = fieldCommands
     .filter(({ index }) => fieldCommandSucceeded(index, steps))
     .map(({ command }) => ({
       label:
@@ -79,6 +74,8 @@ export function buildPreparedSession(input: {
         : compactPreview(parseOptionalText(command.value), 160),
     }))
     .filter((field) => field.valuePreview);
+  const semanticFilledFields = extractSemanticFilledFields(data.formFills);
+  const filledFields = [...commandFilledFields, ...semanticFilledFields].slice(0, 30);
   const formFields = extractFormFields(data.forms);
   const formFieldGaps = buildFormFieldGaps({
     proposal: input.proposal,
@@ -108,7 +105,7 @@ export function buildPreparedSession(input: {
     pageTitle:
       parseOptionalText(data.pageTitle) ?? parseOptionalText(data.title),
     textPreview,
-    links: extractLinks(data.links),
+    links: extractLinks(data.links ?? data.extractedLinks),
     formFields,
     formFieldGaps,
     approvedProfileFields: approvedProfileFields({
@@ -319,6 +316,10 @@ export function extractLinks(value: unknown): Array<{ text?: string; href: strin
   if (!Array.isArray(value)) return [];
   const links: Array<{ text?: string; href: string }> = [];
   for (const item of value.filter(isRecord)) {
+    if (Array.isArray(item.links)) {
+      links.push(...extractLinks(item.links));
+      continue;
+    }
     const href = parseOptionalText(item.href);
     if (!href) continue;
     links.push({ text: parseOptionalText(item.text), href });
@@ -336,6 +337,10 @@ function inferCommitCandidates(
   const formSubmitCandidates = extractSubmitCandidates(forms);
   if (formSubmitCandidates.length) {
     return filterLikelyCommitCandidates(formSubmitCandidates).slice(0, 8);
+  }
+  const semanticSubmitCandidates = extractSemanticFormFillCommitCandidates(data?.formFills);
+  if (semanticSubmitCandidates.length) {
+    return filterLikelyCommitCandidates(semanticSubmitCandidates).slice(0, 8);
   }
   const globalActionCandidates = extractActionCandidates(actionCandidates);
   if (globalActionCandidates.length) {
@@ -355,6 +360,73 @@ function inferCommitCandidates(
   return proposal.prohibitedWithoutApproval.slice(0, 3).map((item) => ({
     reason: item,
   }));
+}
+
+function extractSemanticFilledFields(
+  value: unknown,
+): NonNullable<ExternalActionPreparedSession["filledFields"]> {
+  if (!Array.isArray(value)) return [];
+  const fields: NonNullable<ExternalActionPreparedSession["filledFields"]> = [];
+  for (const report of value.filter(isRecord)) {
+    for (const field of readSemanticChangedFields(report.filled, "filled")) {
+      fields.push(field);
+    }
+    for (const field of readSemanticChangedFields(report.selected, "selected")) {
+      fields.push(field);
+    }
+    for (const field of readSemanticCheckedFields(report.checked)) {
+      fields.push(field);
+    }
+  }
+  return fields;
+}
+
+function readSemanticChangedFields(
+  value: unknown,
+  action: "filled" | "selected",
+): NonNullable<ExternalActionPreparedSession["filledFields"]> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isRecord)
+    .map((item) => ({
+      label: parseOptionalText(item.field),
+      selector: parseOptionalText(item.selector),
+      valuePreview: compactPreview(parseOptionalText(item.valuePreview), 160),
+    }))
+    .filter((item) => item.label || item.selector || item.valuePreview);
+}
+
+function readSemanticCheckedFields(
+  value: unknown,
+): NonNullable<ExternalActionPreparedSession["filledFields"]> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isRecord)
+    .map((item) => ({
+      label: parseOptionalText(item.field),
+      selector: parseOptionalText(item.selector),
+      valuePreview: "checked",
+    }))
+    .filter((item) => item.label || item.selector);
+}
+
+function extractSemanticFormFillCommitCandidates(
+  value: unknown,
+): Array<{ label?: string; selector?: string; reason: string }> {
+  if (!Array.isArray(value)) return [];
+  const candidates: Array<{ label?: string; selector?: string; reason: string }> = [];
+  for (const report of value.filter(isRecord)) {
+    const beforeSubmit = Array.isArray(report.beforeSubmit)
+      ? report.beforeSubmit.map(parseOptionalText).filter((item): item is string => Boolean(item))
+      : [];
+    for (const label of beforeSubmit) {
+      candidates.push({
+        label,
+        reason: "Final submit/control was observed by semantic form preparation.",
+      });
+    }
+  }
+  return candidates;
 }
 
 function inferTextCommitCandidates(
@@ -508,6 +580,7 @@ function inferPreparationWarnings(
         .filter((item): item is string => Boolean(item))
     : [];
   warnings.push(...preparationWarnings);
+  warnings.push(...semanticFormFillWarnings(data.formFills));
   if (gaps?.length) {
     warnings.push(`Required form fields need review: ${gaps.map(gapLabel).join(", ")}`);
   }
@@ -519,6 +592,30 @@ function inferPreparationWarnings(
   const verificationWarning = inferVerificationWarning(data, gaps);
   if (verificationWarning) warnings.push(verificationWarning);
   return warnings.slice(0, 10);
+}
+
+function semanticFormFillWarnings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const warnings: string[] = [];
+  for (const report of value.filter(isRecord)) {
+    const blockers = Array.isArray(report.blockers)
+      ? report.blockers.map(parseOptionalText).filter((item): item is string => Boolean(item))
+      : [];
+    for (const blocker of blockers) {
+      if (/^stopped before final submit control/i.test(blocker)) continue;
+      warnings.push(blocker);
+    }
+    const skipped = Array.isArray(report.skipped)
+      ? report.skipped.filter(isRecord).slice(0, 5)
+      : [];
+    for (const item of skipped) {
+      const field = parseOptionalText(item.field);
+      const reason = parseOptionalText(item.reason);
+      if (!field && !reason) continue;
+      warnings.push(`Preparation skipped ${field ?? "field"}${reason ? `: ${reason}` : ""}`);
+    }
+  }
+  return warnings;
 }
 
 function inferVerificationWarning(

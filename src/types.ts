@@ -495,6 +495,7 @@ export type AgentEventType =
   | "memory-use-resolved"
   | "local-utility-fast-path-selected"
   | "current-fact-fast-path-selected"
+  | "external-action-fast-path-selected"
   | "current-fact-source-rejected"
   | "current-fact-synthesis-completed"
   | "current-fact-synthesis-failed"

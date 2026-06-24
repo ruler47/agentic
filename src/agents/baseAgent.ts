@@ -7,6 +7,7 @@ import { DEFAULT_AGENT_LOOP_TIER, DEFAULT_LLM_MAX_TOKENS, DEFAULT_TOOL_TIMEOUT_M
 import { emitBaseAgentContextEvents, emitMemoryUseResolvedEvent } from "./baseAgentContextEvents.js";
 import { inferRequiredArtifacts } from "./baseAgentEvidence.js";
 import { tryRunCurrentFactFastPath } from "./baseAgentCurrentFact.js";
+import { tryRunExternalActionFastPath } from "./baseAgentExternalActionFastPath.js";
 import { finalizeBaseAgentRun } from "./baseAgentFinalization.js";
 import { tryRunLocalUtilityFastPath } from "./baseAgentLocalUtility.js";
 import { prepareBaseAgentPriorWork } from "./baseAgentPriorWork.js";
@@ -149,6 +150,8 @@ export class BaseAgent {
     });
     if (priorWork.result) return priorWork.result;
 
+    const externalActionFastPathResult = await tryRunExternalActionFastPath({ task, options, runContext, taskFrame, startedAt, rootSpanId, maxSteps });
+    if (externalActionFastPathResult) return externalActionFastPathResult;
     const localUtilityResult = await tryRunLocalUtilityFastPath({ task, options, runContext, taskFrame, tools, registry: this.tools, startedAt, rootSpanId, maxSteps, toolTimeoutMs });
     if (localUtilityResult) return localUtilityResult;
     const currentFactResult = await tryRunCurrentFactFastPath({ task, options, runContext, taskFrame, tools, registry: this.tools, llm: this.llm, startedAt, rootSpanId, maxSteps, toolTimeoutMs });

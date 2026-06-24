@@ -15,13 +15,69 @@ and decomposition.
 
 Current order:
 
-1. [`14-p2-resumable-external-actions-verification-handoff.md`](tasks/14-p2-resumable-external-actions-verification-handoff.md)
-2. [`13-p2-context-budgeted-run-decomposition.md`](tasks/13-p2-context-budgeted-run-decomposition.md)
-3. [`11-p3-tool-builder-redesign.md`](tasks/11-p3-tool-builder-redesign.md)
+1. [`01-p0-external-action-real-booking-prepare.md`](tasks/01-p0-external-action-real-booking-prepare.md)
+2. [`02-p0-current-fact-answer-signal-fallback.md`](tasks/02-p0-current-fact-answer-signal-fallback.md)
+3. [`14-p2-resumable-external-actions-verification-handoff.md`](tasks/14-p2-resumable-external-actions-verification-handoff.md)
+4. [`13-p2-context-budgeted-run-decomposition.md`](tasks/13-p2-context-budgeted-run-decomposition.md)
+5. [`11-p3-tool-builder-redesign.md`](tasks/11-p3-tool-builder-redesign.md)
 
 Cross-cutting quality gate:
 
 - [`12-cross-cutting-code-hygiene.md`](tasks/12-cross-cutting-code-hygiene.md)
+
+## 2026-06-24 Manual Complex Smoke Update
+
+Manual tests on the live local stack re-prioritized two P0 items ahead of older P2/P3
+work:
+
+- [`01-p0-external-action-real-booking-prepare.md`](tasks/01-p0-external-action-real-booking-prepare.md):
+  approval-mode booking/appointment preparation is now the top active task. Recent
+  smokes verified that the platform can stop at `waiting_approval`, approve preparation,
+  fill the local appointment fixture, detect the final `Confirm reservation` control,
+  capture a proof artifact, and avoid final submit. The same smokes found and fixed:
+  semantic fill goal pollution, source URLs overriding the selected preparation URL, and
+  target extraction from status/form/button headings.
+- [`02-p0-current-fact-answer-signal-fallback.md`](tasks/02-p0-current-fact-answer-signal-fallback.md):
+  current-fact fast path needs answer-signal validation and fallback when a selected
+  source does not expose the requested value. This came from
+  `run_1782325936513_t9kpao4m`.
+
+Manual run notes:
+
+- `run_1782328992857_f4j7lnef`: reached `waiting_approval` with the explicit local
+  fixture URL; after approval, preparation filled visible form fields, detected
+  `Confirm reservation`, saved proof artifact `artifact_1782329054625_jsu6vtpu`, and
+  did not submit.
+- `run_1782329227878_8ghhknaf`: repeated the approval/prepare flow and exposed
+  submit-button target noise now covered by tests.
+- `run_1782329509801_uz33s1p1`: confirmed the same path can be slower than expected
+  for explicit local external-action tasks, which remains in task 01 as a deterministic
+  shortcut/decomposition requirement.
+- `run_1782331268320_hyen5hhw`: after the target-extraction fixes, reached
+  `waiting_approval` with the explicit fixture URL and no bogus provider target. Approval
+  auto-advanced into preparation, filled the local form through semantic
+  `browser.operate`, detected `Confirm reservation`, saved proof artifact
+  `artifact_1782331348656_mfhi3tz1`, attached `external.action.commit`, and stopped
+  before final submit. Metrics for the full paused run after approval were 3 LLM calls,
+  2 tool calls, 1 artifact, and 22,786 provider tokens. One non-critical failed
+  `http.request` occurred during pre-proposal analysis, so task 01 also tracks a
+  deterministic shortcut for explicit prepare URLs.
+- `run_1782332823871_2fh9uzh1`: after the deterministic shortcut, an explicit
+  prepare-only appointment form URL reached `waiting_approval` in about 1 second with 0
+  LLM calls, 0 tool calls, and 0 failed tools. The proposal normalized the requested
+  Friday window to `2026-06-26 after 17:00`; approval auto-prepared the form, filled
+  visible fields through semantic `browser.operate`, detected `Confirm reservation`,
+  saved proof artifact `artifact_1782332854998_l15vr3q0`, attached
+  `external.action.commit`, and stopped before final submit.
+
+Remaining known gaps from the same smoke:
+
+- benign date values can be over-redacted in prepared field previews;
+- provider target is generic when the user supplies only a raw form URL;
+- real provider pages still need broader form-widget fallback when the supplied URL is a
+  landing/listing page rather than a direct form URL;
+- real booking widgets still need broader matrix coverage before commit semantics are
+  considered reliable.
 
 ## 2026-06-22 Run-Quality Roadmap Update
 

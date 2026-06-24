@@ -10,6 +10,7 @@ import {
   prioritizedExternalActionSourceUrls,
   selectExternalActionPreparationUrl,
 } from "./externalActionUrls.js";
+import { inferDateTimeValue } from "./externalActionDateTime.js";
 import { PROOF_SOURCE_URL_LIMIT } from "./proofSourceUrls.js";
 import type { TaskFrame } from "./taskFrame.js";
 
@@ -149,6 +150,9 @@ function hasExternalActionExecutionIntent(
   if (/(?:вбей|ввести|введи|заполн(?:и|ить|яй)(?:\s+(?:форму|заявку))?|fill\s+(?:in\s+)?(?:the\s+)?(?:booking\s+|reservation\s+|appointment\s+)?form|enter\s+(?:my\s+)?details)/iu.test(task)) {
     return true;
   }
+  if (hasPrepareVerbNearExternalActionNoun(task)) {
+    return true;
+  }
   if (/(?:сразу\s+(?:забронируй|запиши|отправь|купи|сабмить|submit)|сам(?:а)?\s+(?:подтверди|забронируй|запиши|отправь|купи))/i.test(task)) {
     return true;
   }
@@ -179,6 +183,10 @@ function hasExternalActionExecutionIntent(
   return /(?:make\s+(?:a\s+)?reservation|place\s+an\s+order|book\s+me|reserve\s+me|schedule\s+me|сделай\s+брон|оформи\s+брон|запиши\s+меня|забронировать\s+мне)/i.test(
     normalizedTask,
   );
+}
+
+function hasPrepareVerbNearExternalActionNoun(task: string): boolean {
+  return /(?:prepare|draft|подготовь|собери).{0,140}(?:reservation|booking|appointment|order|purchase|submission|api\s+write|form\s+submission|брон|бронирование|резерв|запись|заказ|покупк|отправк|заявк|api[-\s]*запрос|сабмит)/iu.test(task);
 }
 
 function hasExternalActionPreparationIntent(
@@ -238,7 +246,11 @@ function buildExternalActionPreparation(input: {
   artifactIds: string[];
   createdAt: string;
 }): ExternalActionPreparation {
-  const collectedInputs = inferCollectedInputs(`${input.task}\n${input.finalAnswer}`, input.createdAt);
+  const collectedInputs = inferCollectedInputs(
+    `${input.task}\n${input.finalAnswer}`,
+    input.createdAt,
+    input.actionType,
+  );
   const missingInputs = requiredInputsForAction(input.actionType).filter(
     (required) => !collectedInputs.some((item) => item.label === required),
   );
@@ -290,7 +302,11 @@ function requiredInputsForAction(actionType: ExternalActionType): string[] {
   }
 }
 
-function inferCollectedInputs(task: string, createdAt: string): ExternalActionPreparation["collectedInputs"] {
+function inferCollectedInputs(
+  task: string,
+  createdAt: string,
+  actionType: ExternalActionType,
+): ExternalActionPreparation["collectedInputs"] {
   const inputs: ExternalActionPreparation["collectedInputs"] = [];
   const normalized = task.toLowerCase();
   const partySize = inferPartySize(task);
@@ -316,7 +332,10 @@ function inferCollectedInputs(task: string, createdAt: string): ExternalActionPr
   if (/(купить|buy|purchase|order|заказать)/iu.test(normalized)) {
     inputs.push({ label: "item_or_service", value: "purchase/order requested", source: "user_request" });
   }
-  if (/(напиши|сообщени|message|email|telegram|whatsapp|отправ)/iu.test(normalized)) {
+  if (
+    actionType === "outbound_message" &&
+    /(напиши|сообщени|message|email|telegram|whatsapp|отправ)/iu.test(normalized)
+  ) {
     inputs.push({ label: "message_body", value: "outbound message requested", source: "user_request" });
   }
   return inputs;
@@ -372,106 +391,25 @@ function firstExplicitTaskActionUrl(task: string): string | undefined {
   }
 }
 
-function inferDateTimeValue(task: string, createdAt: string): string | undefined {
-  const date = inferDate(task, createdAt);
-  const time = normalizeTime(
-    task.match(/(?:^|[\s,.;])(?:в|at)\s*(\d{1,2})(?::|\.)(\d{2})\b/iu) ??
-      task.match(/(?:^|[\s,.;])(?:в|at)\s*(\d{1,2})\b/iu) ??
-      task.match(/(?:после|after)\s*(\d{1,2})(?::|\.)(\d{2})?\b/iu) ??
-      // Bare HH:MM after a weekday/date ("на пятницу 17:30") — range
-      // validation in normalizeTime rejects port-like fragments.
-      task.match(/(?:^|[\s,.;(])(\d{1,2}):(\d{2})(?=$|[\s,.;)!?])/u),
-  );
-  const relativeWindow = inferRelativeDateWindow(task);
-  const timeWindow = task.match(/(?:после|after)\s*(\d{1,2})(?::|\.)(\d{2})?\b/iu)
-    ? `after ${time ?? "specified time"}`
-    : undefined;
-  return [date ?? relativeWindow, timeWindow ?? time].filter(Boolean).join(" ") || undefined;
-}
-
-function inferRelativeDateWindow(task: string): string | undefined {
-  const parts: string[] = [];
-  if (/(?:следующ(?:ей|ую)\s+недел|next\s+week)/iu.test(task)) {
-    parts.push("next week");
-  }
-  if (/(?:пн\s*(?:-|—|по|до)\s*чт|понедельник[а-я]*\s*(?:-|—|по|до)\s*четверг[а-я]*|mon(?:day)?\s*(?:-|to|through|until)\s*thu(?:rsday)?)/iu.test(task)) {
-    parts.push("Mon-Thu");
-  }
-  return parts.length ? parts.join(", ") : undefined;
-}
-
-function inferDate(task: string, createdAt: string): string | undefined {
-  const iso = task.match(/\b(\d{4})-(\d{2})-(\d{2})\b/u);
-  if (iso?.[0]) return iso[0];
-  const dotted = task.match(/\b(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\b/u);
-  const reference = validReferenceDate(createdAt);
-  if (dotted?.[1] && dotted[2]) {
-    const year = normalizeYear(dotted[3], reference);
-    return formatDate(year, Number(dotted[2]), Number(dotted[1]));
-  }
-  const relative = task.match(/(сегодня|завтра|послезавтра|today|tomorrow)/iu)?.[1]?.toLowerCase();
-  if (relative) {
-    const offset = relative === "сегодня" || relative === "today" ? 0 : relative === "послезавтра" ? 2 : 1;
-    const date = new Date(Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth(), reference.getUTCDate() + offset));
-    return formatDate(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
-  }
-  const monthMatch = task.match(/\b(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря|january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(\d{4}))?\b/iu);
-  if (monthMatch?.[1] && monthMatch[2]) {
-    const month = monthNumber(monthMatch[2]);
-    if (!month) return undefined;
-    const year = normalizeYear(monthMatch[3], reference);
-    return formatDate(year, month, Number(monthMatch[1]));
-  }
-  return undefined;
-}
-
 function inferContact(task: string): string | undefined {
-  return (
-    task.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu)?.[0] ??
-    task.match(/(?:\+?\d[\d\s().-]{7,}\d)/u)?.[0]?.replace(/\s+/g, " ").trim()
-  );
-}
-
-function normalizeTime(match: RegExpMatchArray | null): string | undefined {
-  if (!match?.[1]) return undefined;
-  const hour = Number(match[1]);
-  const minute = match[2] ? Number(match[2]) : 0;
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return undefined;
-  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-}
-
-function validReferenceDate(createdAt: string): Date {
-  const parsed = new Date(createdAt);
-  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
-}
-
-function normalizeYear(value: string | undefined, reference: Date): number {
-  if (!value) return reference.getUTCFullYear();
-  const year = Number(value);
-  return year < 100 ? 2000 + year : year;
-}
-
-function formatDate(year: number, month: number, day: number): string | undefined {
-  if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
-  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
-function monthNumber(value: string): number | undefined {
-  const months = new Map<string, number>([
-    ["января", 1], ["january", 1],
-    ["февраля", 2], ["february", 2],
-    ["марта", 3], ["march", 3],
-    ["апреля", 4], ["april", 4],
-    ["мая", 5], ["may", 5],
-    ["июня", 6], ["june", 6],
-    ["июля", 7], ["july", 7],
-    ["августа", 8], ["august", 8],
-    ["сентября", 9], ["september", 9],
-    ["октября", 10], ["october", 10],
-    ["ноября", 11], ["november", 11],
-    ["декабря", 12], ["december", 12],
-  ]);
-  return months.get(value.toLowerCase());
+  const explicitData = task.match(
+    /(?:данные|details?|contact|контакт(?:ы)?)\s*[:：]\s*([^\n]{3,220})/iu,
+  )?.[1];
+  const searchableContactText = explicitData ?? task.replace(/https?:\/\/\S+/giu, " ");
+  const email = searchableContactText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu)?.[0];
+  const phone = searchableContactText.match(/(?:\+?\d[\d\s().-]{7,}\d)/u)?.[0]?.replace(/\s+/g, " ").trim();
+  const name = explicitData
+    ?.split(/[,;|]/u)
+    .map((part) => part.trim())
+    .find((part) =>
+      part.length >= 3 &&
+      part.length <= 80 &&
+      !/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu.test(part) &&
+      !/(?:\+?\d[\d\s().-]{7,}\d)/u.test(part) &&
+      /\p{L}/u.test(part),
+    );
+  const contactParts = [name, email, phone].filter((part): part is string => Boolean(part));
+  return contactParts.length ? Array.from(new Set(contactParts)).join(", ") : undefined;
 }
 
 function commitBoundaryForAction(actionType: ExternalActionType): string {
@@ -709,14 +647,23 @@ function isLikelySourceLabelContext(value: string): boolean {
 
 function isExternalActionTargetFieldLabel(value: string): boolean {
   return /^(?:(?:selected|chosen|recommended|picked|выбранн(?:ый|ое|ая)|рекомендованн(?:ый|ое|ая)|лучший)\s+)?(?:restaurant|ресторан|venue|место|target|цель|salon|салон|barber|barbershop|барбер|барбершоп|name|название|заведение|business|place)$/iu.test(
-    value.replace(/[:：]+$/u, "").trim(),
+    normalizeExternalActionLabel(value),
   );
 }
 
 function isExternalActionNonTargetFieldLabel(value: string): boolean {
-  return /^(?:service|услуга|date|дата|time|время|party size|количество гостей|name|имя|full name|фио|phone|телефон|email|e-mail|почта|contact|контакт)$/iu.test(
-    value.replace(/[:：]+$/u, "").trim(),
+  return /^(?:status|статус|service|услуга|date|дата|time|время|party size|group size|guests?|people|persons|количество гостей|размер группы|число гостей|гости|name|имя|full name|фио|phone|телефон|email|e-mail|почта|contact|контакт|notes?|comment|message|заметк[аи]|примечани[ея]|комментар(?:ий)?|сообщение)$/iu.test(
+    normalizeExternalActionLabel(value),
   );
+}
+
+function normalizeExternalActionLabel(value: string): string {
+  return value
+    .replace(/^[«“"']+|[»”"']+$/gu, "")
+    .replace(/\([^)]*\)/gu, "")
+    .replace(/[:：]+$/u, "")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function isExternalActionNonTargetHeading(value: string): boolean {
@@ -724,10 +671,11 @@ function isExternalActionNonTargetHeading(value: string): boolean {
     .replace(/^[\s#>*|.-]+/gu, "")
     .replace(/\*\*/gu, "")
     .replace(/[`_]/gu, "")
+    .replace(/^[«“"']+|[»”"']+$/gu, "")
     .replace(/\([^)]*\)/gu, "")
     .replace(/[:：].*$/u, "")
     .trim();
-  return /^(?:details?|booking details?|reservation details?|appointment details?|action details?|search results?|results?|важная информация|детали(?: бронирования| записи| заказа)?|данные(?:\s+для\s+[а-яёa-z]+)?|информация|результат(?:ы)?(?: поиска)?|поиск|следующие шаги|чек[- ]?лист|почему\s+(?:это\s+)?(?:шикарно|подходит|выбрать)|предложени[ея](?:\s+по\s+[а-яёa-z]+)?|про\s+(?:мясо|меню|атмосферу)|бронирование)$/iu.test(
+  return /^(?:status|статус|commit\s+boundary|границ[аы]\s+(?:коммита|отправки)|what\s+(?:you|operator)\s+need(?:s)?(?:\s+to\s+(?:do|decide|confirm))?|что\s+нужно\s+(?:от\s+вас|решить|подтвердить|сделать).*|final\s+(?:confirmation|submit|submission).*|финальн(?:ое|ая|ый|ого|ой)\s+(?:подтверждени[ея]|отправк[аи]|сабмит|submit).*|confirm(?:\s+(?:reservation|booking|appointment|order|submission))?|submit(?:\s+(?:form|request|order|booking|reservation))?|send(?:\s+(?:form|request|message))?|continue|next|подтвердить(?:\s+(?:бронь|бронирование|запись|заказ))?|отправить(?:\s+(?:форму|заявку|сообщение))?|остановлено\s+перед\s+(?:кнопк|финальн).*|stopped\s+before\s+(?:button|final|submit).*|details?|booking details?|reservation details?|appointment details?|action details?|draft(?:\s+(?:payload|data))?|prepared draft|filled form|form draft|form|form\s+data|json\s*payload|payload|search results?|results?|важная информация|детали(?: бронирования| записи| заказа)?|данные(?:\s+(?:для\s+[а-яёa-z]+|форм[ыа]|черновик[а]?))?|информация|результат(?:ы)?(?: поиска)?|поиск|форма|черновик(?:\s+[а-яёa-z]+)?|json[-\s]*п[еэ]йлоад.*|п[еэ]йлоад.*|заполненн(?:ая|ой)\s+форм[аы]|запись\s+подготовлен[аы]?.*|брон(?:ь|ирование)?\s+подготовлен[ао]?.*|не\s+отправлен[аоы]?.*|готов[аоы]?\s+к\s+(?:отправке|сабмиту|подтверждению).*|следующие шаги|чек[- ]?лист|почему\s+(?:это\s+)?(?:шикарно|подходит|выбрать)|предложени[ея](?:\s+по\s+[а-яёa-z]+)?|про\s+(?:мясо|меню|атмосферу)|бронирование)$/iu.test(
     heading,
   );
 }

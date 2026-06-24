@@ -27,6 +27,7 @@ import {
   supportsBrowserFieldCandidates,
   supportsBrowserFormSchema,
   supportsBrowserSafeAdvance,
+  supportsSemanticFormFill,
   withPreparationWarning,
 } from "./action-proposal-preparation-input.js";
 import { buildPreparedSession, latestPreparedSession } from "./action-proposal-prepared-session.js";
@@ -77,6 +78,7 @@ export class ActionProposalPreparationRunner {
       previousSession,
       {
         useFieldCandidates: supportsBrowserFieldCandidates(tool),
+        useSemanticFormFill: supportsSemanticFormFill(tool),
         useSelectorFallback: !supportsBrowserFieldCandidates(tool),
         includeFormSchemaExtraction: supportsBrowserFormSchema(tool),
         prependNavigateCommand: requiresExplicitNavigateCommand(tool),
@@ -148,6 +150,7 @@ export class ActionProposalPreparationRunner {
                 includeCollectedInputs: supportsBrowserFieldCandidates(tool),
                 includeFormSchemaExtraction: supportsBrowserFormSchema(tool),
                 useFieldCandidates: supportsBrowserFieldCandidates(tool),
+                useSemanticFormFill: supportsSemanticFormFill(tool),
               }),
               {
                 url: candidateUrl,

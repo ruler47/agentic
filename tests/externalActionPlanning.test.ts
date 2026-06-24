@@ -178,6 +178,96 @@ test("external action planning extracts Cyrillic party size from user text and m
   );
 });
 
+test("external action planning recognizes prepare-only safety wording with an explicit form URL", () => {
+  const task = [
+    "Подготовь, но не отправляй, запись на стрижку через локальную форму",
+    "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+    "на пятницу 17:30.",
+    "Данные: Test User, test@example.com, +34 600 000 000.",
+    "Покажи что заполнено и остановись перед финальной отправкой.",
+  ].join(" ");
+  const frame = frameTask(task);
+
+  assert.equal(frame.externalActionPolicy?.actionType, "appointment");
+  assert.equal(frame.externalActionPolicy?.executionMode, "approval");
+  assert.equal(frame.externalActionPolicy?.requiresApprovalBeforeExecution, true);
+
+  const proposal = buildExternalActionProposal({
+    task,
+    finalAnswer: [
+      "**Запись:** Appointment booking fixture",
+      "Ссылка: http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+      "Данные: Test User, test@example.com, +34 600 000 000.",
+      "Время: пятница 17:30.",
+    ].join("\n"),
+    taskFrame: frame,
+    runContext: { runId: "run_prepare_only_fixture" },
+    artifacts: [],
+    sourceUrls: [],
+    createdAt: "2026-06-24T10:00:00.000Z",
+  });
+
+  assert.equal(proposal?.actionType, "appointment");
+  assert.equal(proposal?.approvalRequired, true);
+  assert.equal(
+    proposal?.preparation?.targetUrl,
+    "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+  );
+  assert.ok(
+    proposal?.preparation?.collectedInputs.some(
+      (item) => item.label === "date_or_time" && /17:30/.test(item.value),
+    ),
+  );
+  assert.ok(
+    proposal?.preparation?.collectedInputs.some(
+      (item) =>
+        item.label === "contact" &&
+        /Test User/.test(item.value) &&
+        /test@example\.com/.test(item.value) &&
+        /\+34 600 000 000/.test(item.value),
+    ),
+  );
+  assert.ok(
+    !proposal?.preparation?.collectedInputs.some((item) => item.label === "message_body"),
+  );
+});
+
+test("external action planning does not treat draft headings as appointment targets", () => {
+  const task = [
+    "Подготовь, но не отправляй, запись на стрижку через локальную форму",
+    "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+    "на пятницу 17:30.",
+    "Данные: Test User, test@example.com, +34 600 000 000.",
+  ].join(" ");
+  const proposal = buildExternalActionProposal({
+    task,
+    finalAnswer: [
+      "**Статус:** черновик готов, финальная отправка не выполнена.",
+      "Запись подготовлена и **не отправлена**.",
+      "**Черновик записи (Draft Payload)**",
+      "**Данные формы:**",
+      "| Поле | Значение |",
+      "| --- | --- |",
+      "| **Name** | `Test User` |",
+      "| **Email** | `test@example.com` |",
+      "| **Notes** | `Phone: +34 600 000 000` |",
+      "Остановлено перед кнопкой **«Confirm reservation»**.",
+    ].join("\n"),
+    taskFrame: frameTask(task),
+    runContext: { runId: "run_draft_heading_not_target" },
+    artifacts: [],
+    sourceUrls: [],
+    createdAt: "2026-06-24T10:00:00.000Z",
+  });
+
+  assert.equal(proposal?.target, undefined);
+  assert.equal(proposal?.title, "Appointment proposal");
+  assert.equal(
+    proposal?.preparation?.targetUrl,
+    "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+  );
+});
+
 test("external action planning does not confuse Russian dates with party size", () => {
   const task = [
     "Забронируй ресторан.",
@@ -572,6 +662,102 @@ test("fixture-style task: explicit URL, weekday+bare time, and clean draft label
     !(proposal.preparation?.missingInputs ?? []).includes("date_or_time"),
     `date_or_time missing: ${JSON.stringify(proposal.preparation?.missingInputs)}`,
   );
+  assert.ok(
+    proposal.preparation?.collectedInputs.some((item) => item.label === "date_or_time" && /2026-06-19 17:30/.test(item.value)),
+    `date_or_time was not normalized from weekday+time: ${JSON.stringify(proposal.preparation?.collectedInputs)}`,
+  );
   // A bold list label is not the booking target.
   assert.notEqual(proposal.target, "Данные для проверки:");
+});
+
+test("external action planning does not treat commit boundary labels as targets", () => {
+  const task =
+    "Подготовь запись, но не отправляй финально: форма http://127.0.0.1:3000/api/fixtures/external-actions/appointment. Данные: Dimitrii Belokon, 617789419, dimitriy.belokon@gmail.com, стрижка в пятницу после 17:00.";
+  const proposal = buildExternalActionProposal({
+    task,
+    finalAnswer: [
+      "Форма записи найдена. Ниже — подготовленный черновик.",
+      "",
+      "| Поле | Значение |",
+      "|---|---|",
+      "| **Name** | Dimitrii Belokon |",
+      "| **Date** | 2026-06-26 |",
+      "| **Time** | 17:00 |",
+      "",
+      "> **Commit boundary:** финальная отправка формы выполняется вами вручную.",
+      "[Форма записи](http://127.0.0.1:3000/api/fixtures/external-actions/appointment)",
+    ].join("\n"),
+    taskFrame: frameTask(task),
+    runContext: { runId: "run_commit_boundary_target_test" },
+    artifacts: [],
+    sourceUrls: [],
+    createdAt: "2026-06-24T19:00:00.000Z",
+  });
+
+  assert.ok(proposal);
+  assert.notEqual(proposal.target, "Commit boundary:");
+  assert.notEqual(proposal.preparation?.target, "Commit boundary:");
+  assert.equal(
+    proposal.preparation?.targetUrl,
+    "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+  );
+});
+
+test("external action planning does not treat operator instruction headings as targets", () => {
+  const task =
+    "Подготовь запись, но не отправляй финально: форма http://127.0.0.1:3000/api/fixtures/external-actions/appointment. Данные: Dimitrii Belokon, 617789419, dimitriy.belokon@gmail.com, стрижка в пятницу после 17:00.";
+  const proposal = buildExternalActionProposal({
+    task,
+    finalAnswer: [
+      "Форма записи найдена. Ниже — подготовленный черновик.",
+      "",
+      "### Что нужно от вас",
+      "- Подтвердите, что все данные верны.",
+      "- Когда будете готовы — нажмите кнопку **Confirm reservation**.",
+      "",
+      "[Форма записи](http://127.0.0.1:3000/api/fixtures/external-actions/appointment)",
+    ].join("\n"),
+    taskFrame: frameTask(task),
+    runContext: { runId: "run_operator_heading_target_test" },
+    artifacts: [],
+    sourceUrls: [],
+    createdAt: "2026-06-24T19:00:00.000Z",
+  });
+
+  assert.ok(proposal);
+  assert.notEqual(proposal.target, "Что нужно от вас:");
+  assert.notEqual(proposal.preparation?.target, "Что нужно от вас:");
+  assert.equal(
+    proposal.preparation?.targetUrl,
+    "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+  );
+});
+
+test("external action planning does not treat final confirmation status as target", () => {
+  const task =
+    "Подготовь запись, но не отправляй финально: форма http://127.0.0.1:3000/api/fixtures/external-actions/appointment. Данные: Dimitrii Belokon, 617789419, dimitriy.belokon@gmail.com, стрижка в пятницу после 17:00.";
+  const proposal = buildExternalActionProposal({
+    task,
+    finalAnswer: [
+      "Форма записи подготовлена.",
+      "",
+      "### Финальное подтверждение не выполнено",
+      "Я остановился перед реальной отправкой.",
+      "",
+      "[Форма записи](http://127.0.0.1:3000/api/fixtures/external-actions/appointment)",
+    ].join("\n"),
+    taskFrame: frameTask(task),
+    runContext: { runId: "run_final_confirmation_target_test" },
+    artifacts: [],
+    sourceUrls: [],
+    createdAt: "2026-06-24T19:00:00.000Z",
+  });
+
+  assert.ok(proposal);
+  assert.notEqual(proposal.target, "Финальное подтверждение не выполнено");
+  assert.notEqual(proposal.preparation?.target, "Финальное подтверждение не выполнено");
+  assert.equal(
+    proposal.preparation?.targetUrl,
+    "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+  );
 });

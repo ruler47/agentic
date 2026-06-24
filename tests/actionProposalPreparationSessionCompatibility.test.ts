@@ -210,7 +210,7 @@ test("external action preparation replays approved profile hydration without lea
   assert.equal(JSON.stringify(replayStarted?.payload).includes("dm***@example.com"), true);
 });
 
-test("form-fill capability enables canonical fill commands including split contact", async () => {
+test("form-fill capability enables semantic browser preparation with split contact", async () => {
   const runs = new InMemoryRunStore();
   const registry = new ToolRegistry();
   const inputs: Record<string, unknown>[] = [];
@@ -247,7 +247,7 @@ test("form-fill capability enables canonical fill commands including split conta
     userExplicitlyForbidsAction: false,
     allowedWithoutApproval: [],
     prohibitedWithoutApproval: [],
-    sourceUrls: [],
+    sourceUrls: ["https://barbarella.example/irrelevant-source"],
     artifactIds: [],
     preparation: {
       stage: "prepared_for_approval",
@@ -279,14 +279,129 @@ test("form-fill capability enables canonical fill commands including split conta
   }).prepare({ run, proposal, rawBody: {} });
 
   const commands = (inputs[0]?.commands ?? []) as Array<Record<string, unknown>>;
-  const fillFields = commands.filter((c) => c.action === "fill").map((c) => c.field);
-  for (const field of ["time", "service", "name", "email", "phone"]) {
-    assert.ok(fillFields.includes(field), `fill command for ${field} expected, got: ${JSON.stringify(fillFields)}`);
-  }
-  const email = commands.find((c) => c.field === "email") as { value?: string };
-  assert.equal(email?.value, "test@example.com");
-  const phone = commands.find((c) => c.field === "phone") as { value?: string };
-  assert.equal(phone?.value, "+34 600 000 000");
-  const name = commands.find((c) => c.field === "name") as { value?: string };
-  assert.equal(name?.value, "Test User");
+  assert.equal(
+    inputs[0]?.url,
+    "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+  );
+  const semantic = commands.find((c) => c.type === "fillFormSemantically") as
+    | {
+        goal?: string;
+        values?: Record<string, string>;
+        valuesText?: string;
+        submit?: boolean;
+        allowContinue?: boolean;
+      }
+    | undefined;
+  assert.ok(semantic, `fillFormSemantically command expected, got: ${JSON.stringify(commands)}`);
+  assert.equal(semantic.submit, false);
+  assert.equal(semantic.allowContinue, true);
+  assert.equal(semantic.values?.time, "17:30");
+  assert.equal(semantic.values?.service, "стрижка / haircut");
+  assert.equal(semantic.values?.name, "Test User");
+  assert.equal(semantic.values?.email, "test@example.com");
+  assert.equal(semantic.values?.phone, "+34 600 000 000");
+  assert.equal(semantic.values?.contact, undefined);
+  assert.equal(semantic.goal, "appointment");
+  assert.equal(String(semantic.goal ?? "").includes("Commit boundary"), false);
+  assert.equal(String(semantic.goal ?? "").includes("Stop before"), false);
+  assert.equal(String(semantic.goal ?? "").includes("provided values"), false);
+});
+
+test("prepared session accepts semantic form-fill reports as prepared fields and commit boundary", () => {
+  const proposal: ExternalActionProposal = {
+    id: "action_run_1_semantic_fill",
+    runId: "run_1",
+    actionType: "reservation",
+    status: "approved",
+    title: "Reservation proposal",
+    summary: "prepare reservation",
+    proposedAction: "Make a reservation",
+    target: "Provider",
+    approvalRequired: true,
+    userExplicitlyForbidsAction: false,
+    allowedWithoutApproval: ["research", "prepare"],
+    prohibitedWithoutApproval: ["submit final reservation"],
+    sourceUrls: ["https://provider.example/reserve"],
+    artifactIds: [],
+    preparation: {
+      stage: "ready_to_commit",
+      target: "Provider",
+      targetUrl: "https://provider.example/reserve",
+      objective: "Prepare reservation.",
+      collectedInputs: [
+        { label: "contact", value: "Test User, test@example.com", source: "user_request" },
+        { label: "date_or_time", value: "2026-06-27 19:00", source: "user_request" },
+      ],
+      missingInputs: [],
+      commitBoundary: "Do not submit final reservation.",
+      operatorChecklist: ["Review"],
+      proofPlan: ["screenshot"],
+    },
+    createdAt: new Date().toISOString(),
+    createdBy: "base-agent",
+  };
+
+  const session = buildPreparedSession({
+    proposal,
+    toolName: "browser.operate",
+    toolVersion: "1.0.0",
+    toolInput: {
+      url: "https://provider.example/reserve",
+      commands: [
+        { type: "navigate", url: "https://provider.example/reserve" },
+        { type: "fillFormSemantically", values: { email: "test@example.com" }, submit: false },
+        { type: "screenshot" },
+      ],
+    },
+    data: {
+      finalUrl: "https://provider.example/reserve",
+      title: "Restaurant reservation fixture",
+      extractedText: [
+        { label: "page", text: "Restaurant reservation\nEmail\nConfirm reservation" },
+      ],
+      formFills: [
+        {
+          label: "external-action-prepare",
+          status: "completed",
+          filled: [
+            {
+              field: "Email",
+              selector: 'input[type="email"]',
+              valuePreview: "t***@example.com",
+              reason: "Matched email field.",
+            },
+          ],
+          selected: [],
+          checked: [],
+          skipped: [],
+          clicked: [{ text: "Continue", reason: "Safe progress control clicked." }],
+          blockers: ["Stopped before final submit control(s): Confirm reservation."],
+          beforeSubmit: ["Confirm reservation"],
+        },
+      ],
+      steps: [
+        { index: 0, type: "navigate", status: "completed", summary: "Navigated." },
+        { index: 1, type: "fillFormSemantically", status: "completed", summary: "Semantic form fill completed." },
+      ],
+    },
+    artifactIds: ["artifact-1"],
+    proofArtifactIds: ["artifact-1"],
+  });
+
+  assert.deepEqual(session.filledFields, [
+    {
+      label: "Email",
+      selector: 'input[type="email"]',
+      valuePreview: "t***@example.com",
+    },
+  ]);
+  assert.deepEqual(session.commitCandidates, [
+    {
+      label: "Confirm reservation",
+      reason: "Final submit/control was observed by semantic form preparation.",
+    },
+  ]);
+  assert.equal(session.actionDraft?.status, "ready_for_operator_review");
+  assert.deepEqual(session.actionDraft?.missingBeforeCommit, []);
+  assert.equal(session.textPreview?.includes("Restaurant reservation"), true);
 });

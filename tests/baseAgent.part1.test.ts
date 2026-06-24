@@ -72,6 +72,14 @@ class StaticLlm {
     return this.reply;
   }
 }
+class ThrowingLlm {
+  calls = 0;
+
+  async completeWithTools(): Promise<LlmToolReply> {
+    this.calls += 1;
+    throw new Error("LLM should not be called for this test.");
+  }
+}
 class SequenceLlm {
   calls = 0;
   tools: LlmToolSchema[] = [];
@@ -656,6 +664,42 @@ test("BaseAgent creates an external action proposal for reservation tasks", asyn
   assert.equal(result.actionProposals?.[0]?.commitExecutor?.ready, false);
   assert.ok(result.actionProposals?.[0]?.commitExecutor?.missing?.some((item) => /generated commit tool/i.test(item)));
   assert.ok(events.some((event) => event.type === "external-action-proposal-created"));
+});
+
+test("BaseAgent fast-paths explicit prepare-only external action URLs without LLM or tool probing", async () => {
+  const events: AgentEvent[] = [];
+  const llm = new ThrowingLlm();
+  const agent = new BaseAgent(llm as unknown as LlmClient, new ToolRegistry());
+  const task =
+    "Подготовь запись, но не отправляй финально: форма http://127.0.0.1:3000/api/fixtures/external-actions/appointment. Данные: Dimitrii Belokon, 617789419, dimitriy.belokon@gmail.com, стрижка в пятницу после 17:00. Только подготовь форму, покажи что заполнено и остановись перед финальной отправкой.";
+
+  const result = await agent.run(task, {
+    runId: "run_external_action_fast_path",
+    runContext: { runId: "run_external_action_fast_path", threadId: "thread_external_action_fast_path" },
+    onEvent: (event) => {
+      events.push(event);
+    },
+  });
+
+  assert.equal(llm.calls, 0);
+  assert.equal(result.runStatus, "completed");
+  assert.equal(result.actionProposals?.length, 1);
+  assert.equal(result.actionProposals?.[0]?.id, "action_run_external_action_fast_path_1");
+  assert.equal(result.actionProposals?.[0]?.actionType, "appointment");
+  assert.equal(
+    result.actionProposals?.[0]?.preparation?.targetUrl,
+    "http://127.0.0.1:3000/api/fixtures/external-actions/appointment",
+  );
+  assert.equal(result.actionProposals?.[0]?.preparation?.missingInputs.length, 0);
+  assert.ok(
+    result.actionProposals?.[0]?.preparation?.collectedInputs.some(
+      (item) => item.label === "date_or_time" && /20\d{2}-\d{2}-\d{2} after 17:00/.test(item.value),
+    ),
+    `weekday date was not normalized: ${JSON.stringify(result.actionProposals?.[0]?.preparation?.collectedInputs)}`,
+  );
+  assert.equal(events.some((event) => event.type === "external-action-fast-path-selected"), true);
+  assert.equal(events.some((event) => event.activity === "llm"), false);
+  assert.equal(events.some((event) => event.activity === "tool"), false);
 });
 
 test("appointment proposals include prepare/commit boundaries", () => {

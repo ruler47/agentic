@@ -24,6 +24,8 @@ export class BrowserOperateHttpTool implements Tool {
     "browser-automation",
     "browser-navigation",
     "dom-extraction",
+    "form-fill",
+    "browser-safe-advance",
     "browser-screenshot",
     "artifact-generation",
   ];

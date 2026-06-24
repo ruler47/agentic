@@ -24,9 +24,11 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P2 Resumable External Actions And Verification Handoff](14-p2-resumable-external-actions-verification-handoff.md)
-2. [P2 Context-Budgeted Run Decomposition](13-p2-context-budgeted-run-decomposition.md)
-3. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
+1. [P0 External-Action Prepare For Real Booking Widgets](01-p0-external-action-real-booking-prepare.md)
+2. [P0 Current-Fact Answer Signal Fallback](02-p0-current-fact-answer-signal-fallback.md)
+3. [P2 Resumable External Actions And Verification Handoff](14-p2-resumable-external-actions-verification-handoff.md)
+4. [P2 Context-Budgeted Run Decomposition](13-p2-context-budgeted-run-decomposition.md)
+5. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
 
 Cross-cutting gates apply to every task:
 
@@ -51,6 +53,31 @@ flowchart TD
 ```
 
 ## Active Regression Anchor
+
+2026-06-24 manual complex smokes added two new P0 anchors:
+
+- `run_1782328992857_f4j7lnef` and `run_1782329227878_8ghhknaf` verified that
+  approval-mode external-action preparation can reach `waiting_approval`, then prepare
+  the local appointment fixture after approval, fill visible form fields, detect
+  `Confirm reservation`, save a proof artifact, and stop before final submit. The same
+  smokes exposed target-extraction noise from status/form/button headings and URL
+  priority bugs, now covered by focused tests.
+- `run_1782331268320_hyen5hhw` is the latest clean fixture anchor: it reached
+  `waiting_approval`, approval auto-prepared the form, saved
+  `artifact_1782331348656_mfhi3tz1`, attached the existing
+  `external.action.commit`, and still stopped before final submit. It also anchors the
+  remaining optimization gap: explicit prepare-URL tasks can still perform an
+  unnecessary failed `http.request` before proposal creation.
+- `run_1782332823871_2fh9uzh1` is the deterministic explicit-URL fast-path anchor: it
+  reached `waiting_approval` in about 1 second with 0 LLM calls, 0 tool calls, and 0
+  failed tools; approval then prepared the local form through semantic
+  `browser.operate`, saved `artifact_1782332854998_l15vr3q0`, detected
+  `Confirm reservation`, attached `external.action.commit`, and stopped before final
+  submit. This closes the previous explicit prepare-URL source-probing gap for direct
+  form URLs.
+- `run_1782325936513_t9kpao4m` exposed a current-fact weakness: a narrow BTC price task
+  can finish with a weak answer when the selected source/read does not expose the
+  expected numeric answer signal. Task 02 covers answer-signal validation and fallback.
 
 Task 09 was created after analyzing `thread_1782232645230_a59xpy0f`.
 The first run completed useful research without action proposals. The second run was a

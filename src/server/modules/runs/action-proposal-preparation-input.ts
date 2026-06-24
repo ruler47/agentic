@@ -17,6 +17,7 @@ export function buildPreparationToolInput(
   previousSession?: ExternalActionPreparedSession,
   options: {
     useFieldCandidates?: boolean;
+    useSemanticFormFill?: boolean;
     useSelectorFallback?: boolean;
     includeFormSchemaExtraction?: boolean;
     prependNavigateCommand?: boolean;
@@ -33,23 +34,28 @@ export function buildPreparationToolInput(
     replayRequested && previousSession?.replaySteps.length
       ? previousSession.replaySteps
       : undefined;
-  const preferredActionUrl = firstHttpUrl(
+  const payloadActionUrl = firstHttpUrl(
     prioritizedExternalActionSourceUrls({
       actionType: proposal.actionType,
       finalAnswer: proposal.payloadPreview ?? "",
-      sourceUrls: [
-        proposal.preparation?.targetUrl,
-        ...proposal.sourceUrls,
-        proposal.target,
-      ].filter((value): value is string => Boolean(value)),
+      sourceUrls: [],
+    }),
+  );
+  const sourceActionUrl = firstHttpUrl(
+    prioritizedExternalActionSourceUrls({
+      actionType: proposal.actionType,
+      finalAnswer: "",
+      sourceUrls: proposal.sourceUrls,
     }),
   );
   const previousSessionUrl = replayRequested ? previousSession?.currentUrl : undefined;
+  const explicitPreparationUrl = firstHttpUrl([proposal.preparation?.targetUrl]);
   const url =
     parseOptionalText(bodyInput.url) ??
-    preferredActionUrl ??
+    payloadActionUrl ??
+    explicitPreparationUrl ??
+    sourceActionUrl ??
     previousSessionUrl ??
-    firstHttpUrl([proposal.preparation?.targetUrl]) ??
     firstHttpUrl(proposal.sourceUrls) ??
     firstHttpUrl([proposal.target]);
   const canReplayPreviousSession =
@@ -91,12 +97,13 @@ export function buildPreparationToolInput(
         includeFormSchemaExtraction: Boolean(options.includeFormSchemaExtraction),
         useSelectorFallback: Boolean(options.useSelectorFallback),
         useFieldCandidates,
+        useSemanticFormFill: Boolean(options.useSemanticFormFill),
       }),
     {
       url,
       includeFormSchemaExtraction: Boolean(options.includeFormSchemaExtraction),
       prependNavigateCommand: Boolean(options.prependNavigateCommand),
-      supportsSemanticFill: Boolean(options.useFieldCandidates),
+      supportsSemanticFill: Boolean(options.useFieldCandidates || options.useSemanticFormFill),
     },
   );
   return {
@@ -119,6 +126,7 @@ export function buildPreparationToolInput(
     commands: preparedCommands,
   };
 }
+
 
 function mergePreparationCommands(
   commands: Record<string, unknown>[],
@@ -145,16 +153,18 @@ export function buildDefaultPreparationCommands(
     includeCollectedInputs?: boolean;
     includeFormSchemaExtraction?: boolean;
     useFieldCandidates?: boolean;
+    useSemanticFormFill?: boolean;
     useSelectorFallback?: boolean;
   } = {},
 ): Record<string, unknown>[] {
   return [
     { action: "dismissDialogs" },
-    ...(options.includeCollectedInputs ? buildCollectedInputCommands(proposal) : []),
-    ...(options.useFieldCandidates
+    ...(options.useSemanticFormFill ? [buildSemanticFormFillCommand(proposal)] : []),
+    ...(!options.useSemanticFormFill && options.includeCollectedInputs ? buildCollectedInputCommands(proposal) : []),
+    ...(!options.useSemanticFormFill && options.useFieldCandidates
       ? buildCanonicalCandidateFillCommands(proposal)
       : []),
-    ...(options.useSelectorFallback
+    ...(!options.useSemanticFormFill && options.useSelectorFallback
       ? buildCommonSelectorFillCommands(proposal)
       : []),
     { action: "extractText", limit: 8000 },
@@ -167,6 +177,65 @@ export function buildDefaultPreparationCommands(
       filename: `${proposal.id.replace(/[^a-zA-Z0-9_.-]/g, "-")}.png`,
     },
   ];
+}
+
+function buildSemanticFormFillCommand(
+  proposal: ExternalActionProposal,
+): Record<string, unknown> {
+  const collectedInputs = proposal.preparation?.collectedInputs ?? [];
+  const values = semanticValuesFromCollectedInputs(collectedInputs);
+  const valuesText = collectedInputs
+    .map((item) => `${item.label}: ${item.value}`)
+    .join("\n");
+  const goal = proposal.actionType;
+  return {
+    action: "fillFormSemantically",
+    type: "fillFormSemantically",
+    label: "external-action-prepare",
+    goal,
+    values,
+    valuesText,
+    allowContinue: true,
+    allowPolicyConsent: false,
+    submit: false,
+    maxRounds: 4,
+    timeoutMs: 7000,
+  };
+}
+
+function semanticValuesFromCollectedInputs(
+  inputs: Array<{ label: string; value: string }>,
+): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const item of inputs) {
+    const label = item.label.trim();
+    const value = item.value.trim();
+    if (!label || !value) continue;
+    const field = canonicalFieldForCollectedInput(label);
+    if (field === "date_or_time") {
+      const split = splitDateAndTime(value);
+      if (split.date) values.date = split.date;
+      if (split.time) values.time = split.time;
+      continue;
+    }
+    if (field === undefined && /contact|контакт/i.test(label)) {
+      const { name, email, phone } = splitContactValue(value);
+      if (name) values.name ??= name;
+      if (email) values.email ??= email;
+      if (phone) values.phone ??= phone;
+      continue;
+    }
+    if (field === "contact_email") values.email = value;
+    else if (field === "contact_phone") values.phone = value;
+    else if (field === "contact_name") values.name = value;
+    else if (field === "service") values.service = value;
+    else if (field === "message_body") values.message = value;
+    else if (field === "date") values.date = value;
+    else if (field === "time") values.time = value;
+    else if (field === "party_size") values.partySize = value;
+    else values[label] = value;
+  }
+  return values;
 }
 
 export function normalizePreparationCommands(
@@ -490,6 +559,10 @@ export function supportsBrowserFormSchema(tool: { capabilities?: string[] }): bo
 
 export function supportsBrowserSafeAdvance(tool: { capabilities?: string[] }): boolean {
   return Boolean(tool.capabilities?.includes("browser-safe-advance"));
+}
+
+export function supportsSemanticFormFill(tool: { capabilities?: string[] }): boolean {
+  return Boolean(tool.capabilities?.includes("form-fill"));
 }
 
 export function requiresExplicitNavigateCommand(tool: {
