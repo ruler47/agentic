@@ -343,20 +343,21 @@ function inferServiceValue(task: string): string | undefined {
 
 function inferPartySize(task: string): string | undefined {
   const numeric =
-    task.match(/(?:на|for)\s+(\d{1,3})\s*(?:человек|гост|персон|people|guests|persons)?/iu)?.[1] ??
-    task.match(/\b(\d{1,3})\s*(?:человек|гост(?:я|ей|ь)?|персон(?:ы)?|people|guests|persons)\b/iu)?.[1];
+    task.match(/(?:^|[^\p{L}\p{N}_])(?:на|for)\s+(\d{1,3})\s*(?:человек|гост(?:я|ей|ь)?|персон(?:ы)?|people|guests|persons)(?=$|[^\p{L}\p{N}_])/iu)?.[1] ??
+    task.match(/(?:^|[^\p{L}\p{N}_])(\d{1,3})\s*(?:человек|гост(?:я|ей|ь)?|персон(?:ы)?|people|guests|persons)(?=$|[^\p{L}\p{N}_])/iu)?.[1] ??
+    task.match(/(?:столик|table)\s+(?:на|for)\s+(\d{1,2})(?=$|[^\p{L}\p{N}_])/iu)?.[1];
   if (numeric) return numeric;
   const lower = task.toLowerCase();
   const wordNumbers: Array<[RegExp, string]> = [
-    [/\b(?:двоих|двоим|на\s+двоих|пара|couple|two)\b/iu, "2"],
-    [/\b(?:троих|троим|three)\b/iu, "3"],
-    [/\b(?:четверых|четверым|four)\b/iu, "4"],
-    [/\b(?:пятерых|пятерым|five)\b/iu, "5"],
-    [/\b(?:шестерых|шестерым|six)\b/iu, "6"],
-    [/\b(?:семерых|семерым|seven)\b/iu, "7"],
-    [/\b(?:восьмерых|восьмерым|eight)\b/iu, "8"],
-    [/\b(?:девятерых|девятерым|nine)\b/iu, "9"],
-    [/\b(?:десятерых|десятерым|ten)\b/iu, "10"],
+    [/(?:^|[^\p{L}\p{N}_])(?:двоих|двоим|на\s+двоих|пара|couple|two)(?=$|[^\p{L}\p{N}_])/iu, "2"],
+    [/(?:^|[^\p{L}\p{N}_])(?:троих|троим|three)(?=$|[^\p{L}\p{N}_])/iu, "3"],
+    [/(?:^|[^\p{L}\p{N}_])(?:четверых|четверым|four)(?=$|[^\p{L}\p{N}_])/iu, "4"],
+    [/(?:^|[^\p{L}\p{N}_])(?:пятерых|пятерым|five)(?=$|[^\p{L}\p{N}_])/iu, "5"],
+    [/(?:^|[^\p{L}\p{N}_])(?:шестерых|шестерым|six)(?=$|[^\p{L}\p{N}_])/iu, "6"],
+    [/(?:^|[^\p{L}\p{N}_])(?:семерых|семерым|seven)(?=$|[^\p{L}\p{N}_])/iu, "7"],
+    [/(?:^|[^\p{L}\p{N}_])(?:восьмерых|восьмерым|eight)(?=$|[^\p{L}\p{N}_])/iu, "8"],
+    [/(?:^|[^\p{L}\p{N}_])(?:девятерых|девятерым|nine)(?=$|[^\p{L}\p{N}_])/iu, "9"],
+    [/(?:^|[^\p{L}\p{N}_])(?:десятерых|десятерым|ten)(?=$|[^\p{L}\p{N}_])/iu, "10"],
   ];
   return wordNumbers.find(([pattern]) => pattern.test(lower))?.[1];
 }

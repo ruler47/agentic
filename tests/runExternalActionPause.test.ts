@@ -9,8 +9,8 @@ import { shouldListActionProposal } from "../src/server/modules/runs/action-prop
 import type { AgentRunRecord } from "../src/runs/types.js";
 import type { AgentRunResult, ExternalActionProposal } from "../src/types.js";
 
-test("external action approval pause waits only for concrete ready proposals", () => {
-  const blocked = resultWithProposal({
+test("external action approval pause waits for approval-mode proposals even when inputs need review", () => {
+  const incomplete = resultWithProposal({
     preparation: {
       stage: "prepared_for_approval",
       objective: "Prepare reservation.",
@@ -22,8 +22,8 @@ test("external action approval pause waits only for concrete ready proposals", (
     },
   });
 
-  assert.equal(shouldPauseForExternalActionApproval(blocked), false);
-  assert.deepEqual(externalActionApprovalProposalIds(blocked), []);
+  assert.equal(shouldPauseForExternalActionApproval(incomplete), true);
+  assert.deepEqual(externalActionApprovalProposalIds(incomplete), ["proposal_ready"]);
 
   const ready = resultWithProposal({
     preparation: {
@@ -45,7 +45,7 @@ test("external action approval pause waits only for concrete ready proposals", (
   assert.deepEqual(externalActionApprovalProposalIds(ready), ["proposal_ready"]);
 });
 
-test("external action proposal queue hides incomplete completed-run drafts", () => {
+test("external action proposal queue shows incomplete drafts once the run is waiting", () => {
   const proposal = resultWithProposal({
     preparation: {
       stage: "prepared_for_approval",

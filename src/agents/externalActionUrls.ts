@@ -78,7 +78,10 @@ function extractExternalActionUrlCandidates(text: string): Array<{ url: string; 
 }
 
 function cleanExternalActionUrl(rawUrl: string): string | undefined {
-  const trimmed = rawUrl.trim().replace(/[.,;:!?]+$/u, "");
+  const trimmed = rawUrl
+    .trim()
+    .replace(/^[<("'`*_]+/u, "")
+    .replace(/[>"'`*_)\]}.,;:!?]+$/u, "");
   if (!trimmed) return undefined;
   try {
     const parsed = new URL(trimmed);

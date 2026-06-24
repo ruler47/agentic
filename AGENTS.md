@@ -1033,7 +1033,10 @@ permissions. If that happens, use `npm run build` and then `node dist/cli.js ...
   fill/type tool steps as filled fields; skipped optional fields, missing selectors, and
   failed target interactions keep the action draft in `needs_more_input`. Run Workspace
   and `/approvals` must hide the final external-submit button until the shared commit
-  readiness gate says the proposal is ready.
+  readiness gate says the proposal is ready. Approval-mode proposed actions must leave
+  the run in `waiting_approval` whenever operator review is required, even when
+  preparation still has missing/reviewable inputs; missing inputs are visible blockers
+  inside the approval card, not a reason to hide the proposal inside a completed run.
 - External action intent must distinguish “find a place/API/service that can be booked
   or used online” from “book/use/submit it for me.” Informational availability lookups
   must not create `waiting_approval` proposals; only explicit execution or preparation

@@ -11,8 +11,7 @@ export function shouldPauseForExternalActionApproval(
       (proposal) =>
         actionProposalMode(proposal) === "approval" &&
         proposal.approvalRequired &&
-        proposal.status === "proposed" &&
-        actionProposalReadyForApprovalPause(proposal),
+        proposal.status === "proposed",
     ),
   );
 }
@@ -48,15 +47,12 @@ function approvalProposalIdsAndTitles(result: AgentRunResult): Proposal[] {
     result.actionProposals?.filter(
       (proposal) =>
         actionProposalMode(proposal) === "approval" &&
-        actionProposalReadyForApprovalPause(proposal),
+        proposal.approvalRequired &&
+        proposal.status === "proposed",
     ) ?? []
   );
 }
 
 function actionProposalMode(proposal: Proposal): "auto" | "approval" {
   return proposal.executionMode ?? (proposal.approvalRequired ? "approval" : "auto");
-}
-
-function actionProposalReadyForApprovalPause(proposal: Proposal): boolean {
-  return (proposal.preparation?.missingInputs ?? []).length === 0;
 }

@@ -148,6 +148,64 @@ test("external action planning reads target after selected service labels", () =
   assert.equal(proposal?.title, "Appointment proposal: Memento Barbershop");
 });
 
+test("external action planning extracts Cyrillic party size from user text and markdown tables", () => {
+  const task =
+    "забронируй ресторан на вечер субботы для 2 человек. Имейл 47ruler@mailinator.com";
+  const proposal = buildExternalActionProposal({
+    task,
+    finalAnswer: [
+      "## Подготовленное бронирование",
+      "| Параметр | Значение |",
+      "|---|---|",
+      "| **Ресторан** | Lobito de Mar by Dani García |",
+      "| **Дата** | Суббота, 27 июня 2026 |",
+      "| **Гостей** | 2 человека |",
+      "| **Email** | 47ruler@mailinator.com |",
+    ].join("\n"),
+    taskFrame: frameTask(task),
+    runContext: { runId: "run_party_size_ru" },
+    artifacts: [],
+    sourceUrls: ["https://lobitodemar.example/reservations"],
+    createdAt: "2026-06-24T10:00:00.000Z",
+  });
+
+  assert.ok(proposal);
+  assert.deepEqual(proposal.preparation?.missingInputs, []);
+  assert.ok(
+    proposal.preparation?.collectedInputs.some(
+      (item) => item.label === "party_size" && item.value === "2",
+    ),
+  );
+});
+
+test("external action planning does not confuse Russian dates with party size", () => {
+  const task = [
+    "Забронируй ресторан.",
+    "любая доступная дата на вечер субботы, 2 человек за столом.",
+    "имейл 47ruler@mailinator.com",
+  ].join(" ");
+  const proposal = buildExternalActionProposal({
+    task,
+    finalAnswer: [
+      "**Ресторан:** Lobito de Mar by Dani García",
+      "**Дата:** суббота, 27 июня 2026",
+      "**Гостей:** 2 человека",
+      "**Email:** 47ruler@mailinator.com",
+    ].join("\n"),
+    taskFrame: frameTask(task),
+    runContext: { runId: "run_party_size_not_date" },
+    artifacts: [],
+    sourceUrls: ["https://lobitorestaurants.com/en/marbella/book-a-table/"],
+    createdAt: "2026-06-24T10:00:00.000Z",
+  });
+
+  const partySize = proposal?.preparation?.collectedInputs.find(
+    (item) => item.label === "party_size",
+  );
+  assert.equal(partySize?.value, "2");
+  assert.deepEqual(proposal?.preparation?.missingInputs, []);
+});
+
 test("external action planning prefers final-answer action links over research source URLs", () => {
   const task = [
     "выбери лучший барбершоп и забронируй мне",
@@ -176,6 +234,28 @@ test("external action planning prefers final-answer action links over research s
   assert.equal(proposal?.target, "Memento Barbershop");
   assert.equal(proposal?.sourceUrls[0], directBookingUrl);
   assert.equal(proposal?.preparation?.targetUrl, directBookingUrl);
+});
+
+test("external action planning strips markdown emphasis from bare action URLs", () => {
+  const actionUrl = "https://lobitorestaurants.com/en/marbella/book-a-table/";
+  const task =
+    "забронируй ресторан на субботу на 2 человека, email test@example.com";
+  const proposal = buildExternalActionProposal({
+    task,
+    finalAnswer: [
+      "Я выбрал **Lobito de Mar by Dani García**.",
+      `**Ссылка для бронирования:** ${actionUrl}**`,
+      "Гостей: 2 человека.",
+    ].join("\n"),
+    taskFrame: frameTask(task),
+    runContext: { runId: "run_markdown_url_tail" },
+    artifacts: [],
+    sourceUrls: [],
+    createdAt: "2026-06-24T10:00:00.000Z",
+  });
+
+  assert.equal(proposal?.sourceUrls[0], actionUrl);
+  assert.equal(proposal?.preparation?.targetUrl, actionUrl);
 });
 
 test("external action planning normalizes booking inputs from user task", () => {
