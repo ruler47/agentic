@@ -24,6 +24,7 @@ import type {
   AgentArtifact,
   AgentRunRecord,
   ConversationThreadMessage,
+  TokenUsage,
   ToolServiceEventRecord,
 } from "@/api/types";
 
@@ -67,7 +68,11 @@ export function ConversationDetailPage() {
     event.preventDefault();
     if (!task.trim() || create.isPending) return;
     create.mutate(
-      { threadId: thread.id, task: applyExternalActionRunMode(task, externalActionMode) },
+      {
+        threadId: thread.id,
+        task: applyExternalActionRunMode(task, externalActionMode),
+        externalActionMode,
+      },
       { onSuccess: () => setTask("") },
     );
   };
@@ -91,7 +96,10 @@ export function ConversationDetailPage() {
               >
                 <div className="flex items-center justify-between gap-2">
                   <RunStatusBadge status={run.status} />
-                  {externalActionRunModeFromTask(run.task) === "auto" ? (
+                  {externalActionRunModeFromTask(
+                    run.task,
+                    run.externalActionMode,
+                  ) === "auto" ? (
                     <GenericBadge tone="ok">automode</GenericBadge>
                   ) : null}
                   <span className="font-mono text-[10px] text-app-text-muted">
@@ -211,7 +219,23 @@ export function ConversationDetailPage() {
   );
 }
 
-function aggregateThreadMetrics(runs: AgentRunRecord[]) {
+type ThreadMetricsAggregate = {
+  elapsedMs: number;
+  llmCalls: number;
+  toolCalls: number;
+  artifacts: number;
+  tokenUsage: TokenUsage;
+};
+
+function aggregateThreadMetrics(runs: AgentRunRecord[]): ThreadMetricsAggregate {
+  const initial: ThreadMetricsAggregate = {
+    elapsedMs: 0,
+    llmCalls: 0,
+    toolCalls: 0,
+    artifacts: 0,
+    tokenUsage: { source: "unavailable" },
+  };
+
   return runs.reduce(
     (sum, run) => {
       const metrics = run.metrics;
@@ -230,13 +254,7 @@ function aggregateThreadMetrics(runs: AgentRunRecord[]) {
       }
       return sum;
     },
-    {
-      elapsedMs: 0,
-      llmCalls: 0,
-      toolCalls: 0,
-      artifacts: 0,
-      tokenUsage: { source: "unavailable" as const },
-    },
+    initial,
   );
 }
 

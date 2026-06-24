@@ -1,4 +1,4 @@
-import { AgentEvent, AgentRunResult, ModelTier, TokenUsage } from "../types.js";
+import { AgentEvent, AgentRunResult, ExternalActionExecutionMode, ModelTier, TokenUsage } from "../types.js";
 
 export type RunStatus =
   | "queued"
@@ -21,6 +21,7 @@ export type AgentRunRecord = {
   sourceMessageId?: string;
   sourceChatId?: string;
   sourceThreadId?: string;
+  externalActionMode?: ExternalActionExecutionMode;
   createdAt: string;
   updatedAt: string;
   events: AgentEvent[];
@@ -67,6 +68,7 @@ export type RunCreateContext = {
   sourceMessageId?: string;
   sourceChatId?: string;
   sourceThreadId?: string;
+  externalActionMode?: ExternalActionExecutionMode;
 };
 
 export type RunMeta = {

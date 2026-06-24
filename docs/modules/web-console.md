@@ -83,11 +83,13 @@ content-type: application/json
 ```
 
 Dashboard and Conversation continuation composers expose an external-action mode
-selector. `Approval` keeps state-changing actions paused at the operator decision and
-commit boundary. `Automode` prepends an explicit automode directive to the submitted
-task so the existing agent policy may commit only when required inputs, a ready generated
-executor, confirmation handling, and proof are sufficient. A durable first-class
-`externalActionMode` request field is still a follow-up contract cleanup.
+selector. The selected mode is submitted as structured `externalActionMode` run context;
+the user task text is not rewritten with `Автомод:` or any other directive. `Approval`
+keeps state-changing actions paused at the operator decision and commit boundary.
+`Automode` changes execution policy only after `TaskFrame` detects an actual external
+action intent. Selecting auto for ordinary research must not create an action proposal;
+auto commit can happen only when required inputs, executor readiness, confirmation
+handling, and proof are sufficient.
 After an operator approves an approval-mode proposal, the backend automatically attempts
 the safe non-mutating follow-up chain: browser preparation/proof capture and generated
 commit-executor attach/build. The final external commit still requires the explicit

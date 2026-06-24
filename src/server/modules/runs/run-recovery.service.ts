@@ -101,6 +101,7 @@ export class RunRecoveryService {
       sourceMessageId: reloaded.sourceMessageId,
       sourceChatId: reloaded.sourceChatId,
       sourceThreadId: reloaded.sourceThreadId,
+      externalActionMode: reloaded.externalActionMode,
     };
     const restart = await this.runs.create(reloaded.task, context);
     await this.audit.record({

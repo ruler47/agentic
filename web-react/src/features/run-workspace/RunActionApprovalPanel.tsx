@@ -70,6 +70,7 @@ export function RunActionApprovalPanel({ run }: { run: AgentRunRecord }) {
 function RunActionApprovalCard({ item }: { item: ActionProposalQueueItem }) {
   const proposalDecision = useActionProposalDecision();
   const proposalPrepare = useActionProposalPrepare();
+  const [decisionReason, setDecisionReason] = useState("");
   const ux = buildExternalActionUxState(item);
   const canDecide =
     item.proposal.status === "proposed" &&
@@ -110,10 +111,23 @@ function RunActionApprovalCard({ item }: { item: ActionProposalQueueItem }) {
 
       {canDecide ? (
         <div className="mt-3 flex flex-wrap gap-2">
+          <label className="basis-full text-[11px] text-app-text-muted">
+            Optional note for this decision
+            <textarea
+              value={decisionReason}
+              onChange={(event) => setDecisionReason(event.target.value)}
+              placeholder="e.g. target and visible data look correct; do not submit yet"
+              className="mt-1 min-h-16 w-full resize-y rounded-md border border-app-border bg-app-surface px-2 py-1.5 text-app-text outline-none focus:border-app-accent/60"
+            />
+          </label>
           <button
             type="button"
             onClick={() =>
-              proposalDecision.mutate({ id: item.proposal.id, decision: "approve" })
+              proposalDecision.mutate({
+                id: item.proposal.id,
+                decision: "approve",
+                reason: decisionReason.trim() || undefined,
+              })
             }
             disabled={proposalDecision.isPending}
             className="rounded-md bg-app-accent px-2.5 py-1 text-[11px] font-semibold text-app-bg disabled:opacity-50"
@@ -123,7 +137,11 @@ function RunActionApprovalCard({ item }: { item: ActionProposalQueueItem }) {
           <button
             type="button"
             onClick={() =>
-              proposalDecision.mutate({ id: item.proposal.id, decision: "reject" })
+              proposalDecision.mutate({
+                id: item.proposal.id,
+                decision: "reject",
+                reason: decisionReason.trim() || undefined,
+              })
             }
             disabled={proposalDecision.isPending}
             className="rounded-md border border-app-danger/40 bg-app-danger-soft px-2.5 py-1 text-[11px] text-app-danger disabled:opacity-50"
@@ -250,6 +268,7 @@ function MainActionDraft({ item }: { item: ActionProposalQueueItem }) {
   const session = item.preparationExecution?.preparedSession;
   const draft = session?.actionDraft;
   const warnings = session?.warnings ?? [];
+  const requiredInputs = session?.requiredOperatorInputs ?? draft?.requiredOperatorInputs ?? [];
   if (!draft) return null;
   const visibleBlockers = humanActionDraftBlockers(draft.missingBeforeCommit);
   const diagnosticArtifactIds = uniqueStrings([
@@ -296,6 +315,21 @@ function MainActionDraft({ item }: { item: ActionProposalQueueItem }) {
             : "Ready for final operator review"}
         </CompactField>
       </dl>
+      {requiredInputs.length ? (
+        <div className="mt-3 rounded border border-app-warning/40 bg-app-warning-soft p-2 text-app-warning">
+          <p className="font-semibold">Needed from operator</p>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {requiredInputs.slice(0, 5).map((input) => (
+              <li key={input.id}>
+                {input.label}{" "}
+                <span className="text-app-text-muted">
+                  ({input.kind.replace(/_/g, " ")}, {input.resumable ? "resumable" : "manual boundary"})
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       <p className="mt-2 text-app-text-muted">
         Required final report:{" "}
         {truncate(draft.postCommitReportRequirements.join("; "), 320)}

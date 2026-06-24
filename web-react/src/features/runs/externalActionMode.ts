@@ -7,14 +7,16 @@ const EXPLICIT_APPROVAL_PATTERN =
 
 export function applyExternalActionRunMode(
   task: string,
-  mode: ExternalActionRunMode,
+  _mode: ExternalActionRunMode,
 ): string {
-  const trimmed = task.trim();
-  if (!trimmed || mode !== "auto" || AUTO_MODE_PATTERN.test(trimmed)) return trimmed;
-  return `Автомод: ${trimmed}`;
+  return task.trim();
 }
 
-export function externalActionRunModeFromTask(task: string): ExternalActionRunMode {
+export function externalActionRunModeFromTask(
+  task: string,
+  explicitMode?: ExternalActionRunMode,
+): ExternalActionRunMode {
+  if (explicitMode) return explicitMode;
   if (EXPLICIT_APPROVAL_PATTERN.test(task)) return "approval";
   return AUTO_MODE_PATTERN.test(task) ? "auto" : "approval";
 }

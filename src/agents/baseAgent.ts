@@ -55,7 +55,10 @@ export class BaseAgent {
     const sourceRegistry = new RunSourceRegistry();
     const sourceSearchLanguages = new Set<string>();
     let runContext = normalizeRunContext(options.runContext, options.runId, startedAt);
-    const taskFrame = frameTask(taskWithThreadContextForFraming(task, runContext));
+    const taskForFraming = taskWithThreadContextForFraming(task, runContext);
+    const taskFrame = frameTask(taskForFraming, {
+      externalActionMode: runContext.externalActionMode,
+    });
     const maxSteps = options.maxSteps ?? defaultMaxStepsForTaskFrame(taskFrame);
     const maxToolCalls = options.maxToolCalls ?? maxSteps * 4;
     const llmTimeoutMs = options.llmTimeoutMs;

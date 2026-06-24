@@ -109,6 +109,7 @@ export function contextSummary(context: BaseAgentRunContext, toolCount: number):
     `user=${context.requester?.displayName ?? context.requesterUserId ?? "unknown"}`,
     `channel=${context.channel ?? "unknown"}`,
     `thread=${context.threadId ?? "none"}`,
+    `externalActionMode=${context.externalActionMode ?? "approval"}`,
     `tools=${toolCount}`,
   ];
   if (context.inputArtifacts?.length) pieces.push(`inputArtifacts=${context.inputArtifacts.length}`);
@@ -123,6 +124,7 @@ export function publicContextSummary(context: BaseAgentRunContext): Record<strin
     requester: context.requester,
     channel: context.channel,
     threadId: context.threadId,
+    externalActionMode: context.externalActionMode,
     parentRunId: context.parentRunId,
     source: {
       sourceUserId: context.sourceUserId,

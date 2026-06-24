@@ -1062,8 +1062,9 @@ Current baseline:
   when required inputs, executor readiness, and proof capture are sufficient.
   Dashboard and Conversation composers now expose the mode as a visible Approval/
   Automode selector instead of relying only on the user remembering magic wording. The
-  selector currently writes the automode directive into the task text; the next cleanup is
-  storing a durable `externalActionMode` field on the run context.
+  selector submits a structured `externalActionMode` run field and does not rewrite the
+  user task text; auto mode only changes policy after a real external-action intent is
+  detected.
 - Approval-mode runs now auto-advance after operator approval through the safe
   non-mutating part of the lifecycle: prepare browser proof, capture artifacts, and
   attach/build a generated commit executor when possible. The final provider-changing

@@ -507,7 +507,10 @@ function ComposerCard() {
           event.preventDefault();
           if (!task.trim() || createRun.isPending) return;
           createRun.mutate(
-            { task: applyExternalActionRunMode(task, externalActionMode) },
+            {
+              task: applyExternalActionRunMode(task, externalActionMode),
+              externalActionMode,
+            },
             {
               onSuccess: () => {
                 setTask("");

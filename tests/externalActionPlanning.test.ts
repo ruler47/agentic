@@ -245,6 +245,28 @@ test("external action planning supports explicit automode", () => {
   assert.deepEqual(proposal?.prohibitedWithoutApproval, []);
 });
 
+test("structured automode does not turn research-only tasks into external actions", () => {
+  const task =
+    "проведи ресерч по рынкам и найди перспективную идею для вайбкодинга";
+
+  assert.equal(inferExternalActionPolicy(task, { externalActionMode: "auto" }), undefined);
+  assert.equal(frameTask(task, { externalActionMode: "auto" }).externalActionPolicy, undefined);
+  assert.equal(frameTask(`Автомод: ${task}`).externalActionPolicy, undefined);
+});
+
+test("structured automode applies only after external action intent is present", () => {
+  const task = "найди барбершоп в Марбелье и запиши меня на стрижку завтра после 17:00";
+  const policy = inferExternalActionPolicy(task, { externalActionMode: "auto" });
+
+  assert.equal(policy?.actionType, "appointment");
+  assert.equal(policy?.executionMode, "auto");
+  assert.equal(policy?.requiresApprovalBeforeExecution, false);
+  assert.equal(
+    frameTask(task, { externalActionMode: "auto" }).externalActionPolicy?.executionMode,
+    "auto",
+  );
+});
+
 test("external action planning does not pause informational bookable-place lookups", () => {
   for (const task of [
     "найди мне ресторан в марбее, который можно забронировать онлайн столик.",

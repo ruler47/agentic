@@ -17,24 +17,24 @@ export function ExternalActionModeSelector({
       <div className="flex flex-wrap gap-2">
         <ModeButton
           active={value === "approval"}
-          label="Approval"
-          description={
-            compact
-              ? "Pause before external commit."
-              : "Pause before booking, sending, paying, or writing to an external system."
-          }
-          onClick={() => onChange("approval")}
-        />
-        <ModeButton
-          active={value === "auto"}
-          label="Automode"
-          description={
-            compact
-              ? "Commit only with enough data, executor, confirmation, and proof."
-              : "Allow commit only when the agent has enough data, executor, confirmation parser, and proof."
-          }
-          onClick={() => onChange("auto")}
-        />
+        label="Ask before submit"
+        description={
+          compact
+              ? "Prepare, then pause before external submit."
+              : "For external actions: prepare the draft/proof, then pause before booking, sending, paying, or writing."
+        }
+        onClick={() => onChange("approval")}
+      />
+      <ModeButton
+        active={value === "auto"}
+        label="Act automatically"
+        description={
+          compact
+              ? "Submit only when action intent and safety gates are clear."
+              : "For explicit external actions only: allow submit when the agent has enough data, executor, confirmation parser, and proof."
+        }
+        onClick={() => onChange("auto")}
+      />
       </div>
     </fieldset>
   );

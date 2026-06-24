@@ -1,4 +1,5 @@
 import type { AgentArtifact, ArtifactUploadInput } from "../../../types.js";
+import type { ExternalActionExecutionMode } from "../../../types.js";
 import type { ConversationThreadContext, ConversationThreadRecord, ConversationThreadStore } from "../../../conversations/types.js";
 import { resolveConversationThread, type ThreadResolutionResult } from "../../../conversations/threadResolution.js";
 import type { UserRecord, UserStore } from "../../../instance/userStore.js";
@@ -38,6 +39,7 @@ export class RunContextResolver {
     const sourceMessageId = parseOptionalText(body.sourceMessageId);
     const sourceChatId = parseOptionalText(body.sourceChatId);
     const sourceThreadId = parseOptionalText(body.sourceThreadId);
+    const externalActionMode = parseExternalActionMode(body.externalActionMode);
     const requestedThreadId = parseOptionalText(body.threadId);
     let parentRunId = parseOptionalText(body.parentRunId);
     let thread: ConversationThreadRecord | undefined;
@@ -143,6 +145,7 @@ export class RunContextResolver {
       sourceMessageId,
       sourceChatId,
       sourceThreadId,
+      externalActionMode,
     };
 
     return {
@@ -264,4 +267,12 @@ export class RunContextResolver {
     });
   }
 
+}
+
+function parseExternalActionMode(
+  value: unknown,
+): ExternalActionExecutionMode | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "approval" || value === "auto") return value;
+  throw new RunContextError(400, "externalActionMode must be 'approval' or 'auto'");
 }

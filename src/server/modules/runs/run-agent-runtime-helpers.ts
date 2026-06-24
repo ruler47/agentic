@@ -439,6 +439,7 @@ export class RunAgentRuntimeHelpers {
       sourceMessageId: run?.sourceMessageId,
       sourceChatId: run?.sourceChatId,
       sourceThreadId: run?.sourceThreadId,
+      externalActionMode: run?.externalActionMode,
       currentDateTimeIso: new Date().toISOString(),
       timeZone: this.env.agentTimeZone,
       locale: "ru-RU",

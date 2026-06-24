@@ -1,3 +1,4 @@
+import type { ExternalActionExecutionMode } from "../types.js";
 import type { Tool } from "../tools/tool.js";
 import {
   inferExternalActionPolicy,
@@ -62,6 +63,10 @@ export type TaskFrame = {
 };
 type TaskFrameCore = Omit<TaskFrame, "sourcePolicy">;
 
+export type TaskFrameOptions = {
+  externalActionMode?: ExternalActionExecutionMode;
+};
+
 export type ResearchContractGap = {
   reason: string;
   missingResearchToolCalls: number;
@@ -89,8 +94,8 @@ export function taskNeedsCurrentExternalData(task: string): boolean {
     || /(?:биткоин|биткоина|btc|цена|цену|курс|акци[ия]|погод[ауы]|новост[ьи]|рынок|котировк[аи])/i.test(task);
 }
 
-export function frameTask(task: string): TaskFrame {
-  const frame = frameTaskCore(task);
+export function frameTask(task: string, options: TaskFrameOptions = {}): TaskFrame {
+  const frame = frameTaskCore(task, options);
   return {
     ...frame,
     sourcePolicy: buildSourceResearchPolicy({
@@ -102,7 +107,7 @@ export function frameTask(task: string): TaskFrame {
   };
 }
 
-function frameTaskCore(task: string): TaskFrameCore {
+function frameTaskCore(task: string, options: TaskFrameOptions): TaskFrameCore {
   if (task.includes(THREAD_CONTEXT_ANSWER_FRAME_MARKER)) {
     return {
       mode: "thread_context_answer",
@@ -204,7 +209,9 @@ function frameTaskCore(task: string): TaskFrameCore {
   const criteria = inferUserSuccessCriteria(task);
   const multiCriteria = criteria.length >= 3 || countCriteriaConnectors(normalized) >= 3;
   const localServiceSelection = /(?:restaurant|reservation|book a table|hotel|clinic|doctor|lawyer|venue|event|flight|table|barber|barbershop|salon|haircut|ресторан|столик|брон|отель|врач|клиник|юрист|площадк|мероприяти|рейс|барбер|барбершоп|салон|стриж)/i.test(task);
-  const externalActionPolicy = inferExternalActionPolicy(task);
+  const externalActionPolicy = inferExternalActionPolicy(task, {
+    externalActionMode: options.externalActionMode,
+  });
   const externalActionPreparation = Boolean(externalActionPolicy);
   const productSelection = selectionIntent && (budgetOrTradeoff || multiCriteria || localServiceSelection || externalActionPreparation);
 

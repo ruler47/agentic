@@ -214,6 +214,7 @@ export class RunsService implements OnApplicationBootstrap {
     const dedupKey = this.dedupKeyFor(
       context.threadId,
       context.requesterUserId,
+      context.externalActionMode,
       task,
     );
     const dedupNow = Date.now();
@@ -414,9 +415,10 @@ export class RunsService implements OnApplicationBootstrap {
   private dedupKeyFor(
     threadId: string | undefined,
     requesterUserId: string | undefined,
+    externalActionMode: string | undefined,
     task: string,
   ): string {
-    return `${threadId ?? "-"}::${requesterUserId ?? "-"}::${task.trim()}`;
+    return `${threadId ?? "-"}::${requesterUserId ?? "-"}::${externalActionMode ?? "approval"}::${task.trim()}`;
   }
 
   private gcDedupCache(now: number): void {
@@ -432,7 +434,8 @@ export class RunsService implements OnApplicationBootstrap {
         threadId: string | undefined,
         requesterUserId: string | undefined,
         task: string,
-      ) => this.dedupKeyFor(threadId, requesterUserId, task),
+        externalActionMode?: string,
+      ) => this.dedupKeyFor(threadId, requesterUserId, externalActionMode, task),
       gc: (now: number) => this.gcDedupCache(now),
       windowMs: DEDUP_WINDOW_MS,
     };

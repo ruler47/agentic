@@ -12,8 +12,13 @@ import assert from "node:assert/strict";
 
 class StubService {
   recentSubmissions = new Map<string, { runId: string; expiresAt: number }>();
-  dedupKeyFor(threadId: string | undefined, requesterUserId: string | undefined, task: string): string {
-    return `${threadId ?? "-"}::${requesterUserId ?? "-"}::${task.trim()}`;
+  dedupKeyFor(
+    threadId: string | undefined,
+    requesterUserId: string | undefined,
+    task: string,
+    externalActionMode?: string,
+  ): string {
+    return `${threadId ?? "-"}::${requesterUserId ?? "-"}::${externalActionMode ?? "approval"}::${task.trim()}`;
   }
   gcDedupCache(now: number): void {
     for (const [key, entry] of this.recentSubmissions) {
@@ -50,10 +55,17 @@ test("dedup key separates submissions with different task content", () => {
   assert.notEqual(a, b);
 });
 
+test("dedup key separates submissions with different external action modes", () => {
+  const svc = new StubService();
+  const a = svc.dedupKeyFor("thread_1", "user-admin", "task", "approval");
+  const b = svc.dedupKeyFor("thread_1", "user-admin", "task", "auto");
+  assert.notEqual(a, b);
+});
+
 test("dedup key tolerates undefined thread and requester ids", () => {
   const svc = new StubService();
   const k = svc.dedupKeyFor(undefined, undefined, "anonymous task");
-  assert.equal(k, "-::-::anonymous task");
+  assert.equal(k, "-::-::approval::anonymous task");
 });
 
 test("gc removes expired entries and keeps live ones", () => {

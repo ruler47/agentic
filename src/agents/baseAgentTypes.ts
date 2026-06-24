@@ -1,4 +1,4 @@
-import type { AgentArtifact, AgentEventSink, ArtifactCreateInput, ModelTier } from "../types.js";
+import type { AgentArtifact, AgentEventSink, ArtifactCreateInput, ExternalActionExecutionMode, ModelTier } from "../types.js";
 import type { SkillMemoryEntry } from "../types.js";
 import type { Tool, ToolExecutionContext, ToolResult } from "../tools/tool.js";
 import type { RuntimeLedgerCoordinator } from "../work-ledger/runtimeLedgerCoordinator.js";
@@ -17,6 +17,7 @@ export type BaseAgentRunContext = {
   sourceMessageId?: string;
   sourceChatId?: string;
   sourceThreadId?: string;
+  externalActionMode?: ExternalActionExecutionMode;
   currentDateTimeIso?: string;
   timeZone?: string;
   locale?: string;

@@ -15,6 +15,7 @@ type RunRow = {
   source_message_id: string | null;
   source_chat_id: string | null;
   source_thread_id: string | null;
+  external_action_mode: "approval" | "auto" | null;
   created_at: Date;
   updated_at: Date;
   result: AgentRunResult | null;
@@ -49,9 +50,9 @@ export class PostgresRunStore implements RunStore {
         insert into runs (
           id, task, status, instance_id, requester_user_id, channel, thread_id,
           parent_run_id, source_user_id, source_message_id, source_chat_id, source_thread_id,
-          created_at, updated_at
+          external_action_mode, created_at, updated_at
         )
-        values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
+        values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
       `,
       [
         id,
@@ -65,6 +66,7 @@ export class PostgresRunStore implements RunStore {
         context.sourceMessageId ?? null,
         context.sourceChatId ?? null,
         context.sourceThreadId ?? null,
+        context.externalActionMode ?? null,
         now,
       ],
     );
@@ -79,6 +81,7 @@ export class PostgresRunStore implements RunStore {
       select id, task, status, created_at, updated_at, result, error
            , instance_id, requester_user_id, channel, thread_id, parent_run_id
            , source_user_id, source_message_id, source_chat_id, source_thread_id
+           , external_action_mode
       from runs
       order by created_at desc
       limit 100
@@ -114,6 +117,7 @@ export class PostgresRunStore implements RunStore {
         select id, task, status, created_at, updated_at, result, error
              , instance_id, requester_user_id, channel, thread_id, parent_run_id
              , source_user_id, source_message_id, source_chat_id, source_thread_id
+             , external_action_mode
         from runs
         where id = $1
       `,
@@ -322,6 +326,7 @@ export class PostgresRunStore implements RunStore {
       sourceMessageId: row.source_message_id ?? undefined,
       sourceChatId: row.source_chat_id ?? undefined,
       sourceThreadId: row.source_thread_id ?? undefined,
+      externalActionMode: row.external_action_mode ?? undefined,
       createdAt: row.created_at.toISOString(),
       updatedAt: row.updated_at.toISOString(),
       events,

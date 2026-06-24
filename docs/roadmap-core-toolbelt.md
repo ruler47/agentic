@@ -46,7 +46,8 @@ Priority order and intent:
 | P2 | [Model Routing](tasks/10-p2-model-routing.md) | Tiers route by required capabilities such as vision, reasoning, coding, and tool-calling. |
 | P3 | [Tool Builder Redesign](tasks/11-p3-tool-builder-redesign.md) | Builder returns as a portable tool-package layer after the core run loop is reliable. |
 
-Tasks 04, 05, 06, 07, 08, and 09 are implemented, verified, and removed from the active task queue:
+Tasks 04, 05, 06, 07, 08, the previous external-action UX task, and action-mode
+semantics are implemented, verified, and removed from the active task queue:
 provider token/time metrics are visible in runs/conversations/traces, and the
 event-derived Working / Decision Board exposes objective, phase, facts, candidates,
 rejected evidence, open questions, next action, draft status, compact metrics, semantic
@@ -67,8 +68,12 @@ whether thread/profile/accepted-memory/Ledger context was used, stale, ignored, 
 insufficient. External-action UX now has provider-neutral blocker classification,
 canonical final-report events, clearer proposal/prepare/commit UI projection, executor
 attach recovery, and channel-safe proof filtering so failed diagnostic artifacts stay in
-Agentic UI but are not delivered as successful outbound proof. The next implementation
-task is [`10-p2-model-routing.md`](tasks/10-p2-model-routing.md).
+Agentic UI but are not delivered as successful outbound proof. Analysis of
+`thread_1782232645230_a59xpy0f` then exposed a product-level semantics bug: automode was
+injected into task text and could turn ordinary research into a fake external-action
+proposal. Task 09 moved mode to structured `externalActionMode` run context; ordinary
+research with auto selected stays research-only, while explicit booking/submission tasks
+can still receive an auto execution policy.
 
 Updated target process:
 

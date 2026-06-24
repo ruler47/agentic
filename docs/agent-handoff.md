@@ -86,6 +86,23 @@ ignored, available, or insufficient. Manual smoke: `run_1782223820553_bhej2jmg` 
 a code word in `thread_1782223820551_ptiv0rnp`; `run_1782223824632_wm6xfej8` answered
 the follow-up from thread memory and rendered `used thread` in both UI surfaces.
 
+Action-mode semantics regression found and fixed on 2026-06-23:
+
+- `thread_1782232645230_a59xpy0f` has two completed research runs.
+- `run_1782232645233_0ff1x3d1` behaved acceptably for broad research: no external
+  action proposal, one proof artifact, and visible metrics.
+- `run_1782233330951_t1zykvpl` was a research-only continuation but began with
+  `Автомод:`. The UI used to inject that prefix through `applyExternalActionRunMode()`.
+  `inferExternalActionPolicy()` treated it as external-action execution intent, created
+  `Reservation proposal: Vibe coding рынок`, attached `external.action.commit`, and
+  attempted an invalid automode commit. The research answer completed, but the action
+  branch was wrong.
+- Task 09 moved action mode into structured `externalActionMode` run context and stopped
+  UI task-text mutation. Manual smoke: `run_1782237037653_w7mqh0rf` kept a research-only
+  automode task as `exploratory_research` with no action policy/proposals, while
+  `run_1782237066239_shmfjcv1` framed an explicit booking task with
+  `externalActionPolicy.executionMode = "auto"`.
+
 Recent P0 fixes:
 
 - API/HTTP/JSON endpoint tasks use structured/source proof by default and no longer

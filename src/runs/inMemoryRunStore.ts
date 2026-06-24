@@ -19,6 +19,7 @@ export class InMemoryRunStore implements RunStore {
       sourceMessageId: context.sourceMessageId,
       sourceChatId: context.sourceChatId,
       sourceThreadId: context.sourceThreadId,
+      externalActionMode: context.externalActionMode,
       createdAt: now,
       updatedAt: now,
       events: [],

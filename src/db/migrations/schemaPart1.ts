@@ -75,6 +75,12 @@ export const MIGRATION_STATEMENTS_PART_1: MigrationStatement[] = [
     sql: "alter table runs add column if not exists source_thread_id text;",
   },
   {
+    sql: "alter table runs add column if not exists external_action_mode text;",
+  },
+  {
+    sql: "\n      alter table runs drop constraint if exists runs_external_action_mode_check;\n      alter table runs add constraint runs_external_action_mode_check\n        check (external_action_mode is null or external_action_mode in ('approval', 'auto'));\n    ",
+  },
+  {
     sql: "\n      update runs\n      set status = 'failed',\n          error = coalesce(error, 'Legacy tool rework wait status was removed during base rebuild.')\n      where status = 'waiting_tool_rework';\n    ",
   },
   {

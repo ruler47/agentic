@@ -12,9 +12,9 @@ describe("applyExternalActionRunMode", () => {
     );
   });
 
-  it("adds an automode directive once", () => {
+  it("does not inject automode directives into the user task text", () => {
     expect(applyExternalActionRunMode("забронируй столик", "auto")).toBe(
-      "Автомод: забронируй столик",
+      "забронируй столик",
     );
     expect(applyExternalActionRunMode("Автомод: забронируй столик", "auto")).toBe(
       "Автомод: забронируй столик",
@@ -24,6 +24,7 @@ describe("applyExternalActionRunMode", () => {
   it("detects automode tasks for run cards", () => {
     expect(externalActionRunModeFromTask("Автомод: забронируй столик")).toBe("auto");
     expect(externalActionRunModeFromTask("забронируй столик")).toBe("approval");
+    expect(externalActionRunModeFromTask("забронируй столик", "auto")).toBe("auto");
   });
 
   it("does not treat explicit no-submit-without-confirmation text as automode", () => {

@@ -29,7 +29,14 @@ type ExternalActionRunContext = {
   threadId?: string;
 };
 
-export function inferExternalActionPolicy(task: string): ExternalActionPolicy | undefined {
+export type ExternalActionPolicyOptions = {
+  externalActionMode?: ExternalActionExecutionMode;
+};
+
+export function inferExternalActionPolicy(
+  task: string,
+  options: ExternalActionPolicyOptions = {},
+): ExternalActionPolicy | undefined {
   const normalized = normalizeForExternalAction(task);
   const userExplicitlyForbidsAction = /(?:do not|don't|without booking|не\s+(?:бронируй|покупай|отправляй|создавай|сабмить|submit)|не\s+надо\s+(?:бронировать|покупать|отправлять)|не\s+делай\s+брон)/i.test(task);
   const executionIntent = hasExternalActionExecutionIntent(task, normalized);
@@ -45,7 +52,7 @@ export function inferExternalActionPolicy(task: string): ExternalActionPolicy | 
   if (!executionIntent && !preparationIntent) return undefined;
   const executionMode = userExplicitlyForbidsAction
     ? "approval"
-    : inferExternalActionExecutionMode(task);
+    : inferExternalActionExecutionMode(task, options);
   const prohibited = prohibitedExternalActions(actionType);
   return {
     actionType,
@@ -124,7 +131,11 @@ export function buildExternalActionProposal(input: {
   };
 }
 
-function inferExternalActionExecutionMode(task: string): ExternalActionExecutionMode {
+function inferExternalActionExecutionMode(
+  task: string,
+  options: ExternalActionPolicyOptions,
+): ExternalActionExecutionMode {
+  if (options.externalActionMode) return options.externalActionMode;
   if (/(?:авто\s*мод|automode|auto\s*mode|без\s+(?:апрува|подтверждения)|сразу\s+(?:забронируй|запиши|отправь|купи|сабмить|submit)|сам(?:а)?\s+(?:подтверди|забронируй|запиши|отправь|купи))/i.test(task)) {
     return "auto";
   }
@@ -138,7 +149,7 @@ function hasExternalActionExecutionIntent(
   if (/(?:вбей|ввести|введи|заполн(?:и|ить|яй)(?:\s+(?:форму|заявку))?|fill\s+(?:in\s+)?(?:the\s+)?(?:booking\s+|reservation\s+|appointment\s+)?form|enter\s+(?:my\s+)?details)/iu.test(task)) {
     return true;
   }
-  if (/(?:авто\s*мод|automode|auto\s*mode|сразу\s+(?:забронируй|запиши|отправь|купи|сабмить|submit)|сам(?:а)?\s+(?:подтверди|забронируй|запиши|отправь|купи))/i.test(task)) {
+  if (/(?:сразу\s+(?:забронируй|запиши|отправь|купи|сабмить|submit)|сам(?:а)?\s+(?:подтверди|забронируй|запиши|отправь|купи))/i.test(task)) {
     return true;
   }
   if (/(?:^|[.!?\n]\s*)(?:please\s+)?(?:book|reserve|schedule|buy|purchase|order|send|submit)\b/i.test(task)) {
