@@ -185,3 +185,27 @@ for tasks that are NOT framed as a current lookup, e.g. "did the iPhone 17 come 
 residual robustness backstop. It belongs in the BaseAgent repair ladder
 (`src/agents/baseAgent.ts`, alongside the proof/raw-syntax/candidate-use repairs) and should
 be implemented with the same care as those guards; left as the next step of this task.
+
+
+**FR-3 (concrete buy links, not advice) — done and verified live (2026-06-26).**
+User clarified the deliverable: no purchase/external action — just concrete product
+links where to buy. `taskNeedsCommerceLookup` tasks now get a SHOPPING answer contract
+inside `current_lookup` (`src/agents/taskFrame.ts`): mustDo = list direct product/listing
+URLs with seller/price/stock, rank official > retailer > marketplace, give the closest
+buyable alternative link if the exact config is unavailable; mustAvoid = naming a platform
+without a real URL, telling the user to search elsewhere, generic advice, memory-based
+existence claims. The research contract is kept satisfiable by search alone
+(minResearchToolCalls 1, minSourceReadToolCalls 0) because modern shop pages often block
+scraping — a product URL from a search result is a valid buy link. Tests:
+`tests/commerceFraming.test.ts`. verify 653 green.
+
+Live proof `run_1782424835825_vm28cybv` (same task): returned 3 concrete buy links — a
+specific eBay listing for the exact M3 Ultra 512GB config
+(https://www.ebay.com/itm/306182855808), a B&H Photo product page, and the Apple Store —
+with the verdict that Apple limited the official config to 256GB but the 512GB is available
+from those retailers/marketplaces. No "check eBay yourself" advice.
+
+Infra note: the buy-link runs failed twice mid-implementation because a stray host process
+`python3 -m http.server 8080 --bind 127.0.0.1` had grabbed 127.0.0.1:8080 (where
+`SEARXNG_BASE_URL` points), so every `web.search` hit a dead file server. Killing the
+squatter restored search; not a code issue.

@@ -520,6 +520,79 @@ function frameTaskCore(task: string, options: TaskFrameOptions): TaskFrameCore {
   }
 
   if (taskNeedsCurrentExternalData(task) || currentNeed) {
+    if (taskNeedsCommerceLookup(task)) {
+      // "Where to buy" tasks must END with concrete buy links, not advice.
+      // A live failure (run_1782421416298_2kkuuok3) searched well but read
+      // NEWS about a config being pulled and then told the user to "check
+      // eBay" / "did you mean SSD?" instead of opening real shop/marketplace
+      // listings and returning direct product URLs with seller/price/stock.
+      return {
+        mode: "current_lookup",
+        reason: "The task asks where to buy a product; it needs concrete current shopping listings.",
+        researchDepth: "single_source",
+        idealOutcome:
+          "Return a ranked list of CONCRETE places to buy the item: direct product/listing URLs with seller, price, and availability. Open real shop/marketplace pages — never just name a platform or tell the user to search.",
+        userSuccessCriteria: criteria.length
+          ? criteria
+          : ["direct product/listing links", "seller", "price", "in stock or not"],
+        likelyFailureModes: [
+          "answering from model memory",
+          "reading news/analysis instead of shop pages",
+          "naming platforms without a direct product link",
+          "telling the user where else to search instead of finding it",
+        ],
+        exceedExpectations: [
+          "several ranked buy links (official, retailer, marketplace)",
+          "current price and stock per link",
+        ],
+        requiredEvidence: ["opened retailer/marketplace product pages", "direct product/listing URLs"],
+        researchPlan: [
+          {
+            step: "Shopping search",
+            purpose: "Search retailers and marketplaces for the exact product in stock with price.",
+            expectedEvidence: "candidate shop/listing URLs",
+            preferredTools: ["web.search"],
+          },
+          {
+            step: "Open listing pages",
+            purpose: "Open the actual product/listing pages and extract seller, price, availability, and the direct buy URL.",
+            expectedEvidence: "direct product/listing URLs with price and stock",
+            preferredTools: ["web.read", "browser.operate", "browser.screenshot"],
+          },
+        ],
+        answerContract: {
+          mustDo: [
+            "list concrete buy links (direct product/listing URLs the user can open and purchase from) — take them from the search results or opened pages",
+            "for each link give seller, price, and availability/stock when visible",
+            "rank official store > reputable retailer > marketplace",
+            "if the exact config is unavailable, give the closest CONCRETE buyable alternative link, not advice",
+          ],
+          mustAvoid: [
+            "answering whether the product exists from model memory",
+            "naming a platform (eBay/Amazon) without a real product/listing URL",
+            "telling the user to search elsewhere or 'check' a site themselves",
+            "generic buying advice instead of concrete links",
+          ],
+          finalAnswerShape: [
+            "short verdict: where it can be bought",
+            "ranked list of direct buy links with seller / price / stock",
+            "closest buyable alternative link if the exact item is unavailable",
+          ],
+          proofStrategy: "Use the shop/listing pages found via search as the source of truth; a product URL from a search result is a valid buy link even if the page could not be fully read.",
+        },
+        externalActionPolicy,
+        // Keep the gate satisfiable by search alone: modern shop pages often
+        // block scraping, so requiring a successful page READ would fail the
+        // run instead of returning the product URLs the search already found.
+        researchContract: {
+          minResearchToolCalls: 1,
+          minIndependentSourceUrls: 1,
+          minSourceReadToolCalls: 0,
+          mustCheckFreshness: true,
+          requiresClaimBasedProof: false,
+        },
+      };
+    }
     return {
       mode: "current_lookup",
       reason: "The task depends on current external facts.",

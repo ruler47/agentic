@@ -18,7 +18,7 @@ const COMMERCE_TASKS = [
 ];
 
 for (const task of COMMERCE_TASKS) {
-  test(`commerce task requires a current lookup: ${task.slice(0, 40)}`, () => {
+  test(`commerce task requires a shopping lookup with concrete buy links: ${task.slice(0, 40)}`, () => {
     assert.equal(taskNeedsCommerceLookup(task), true, "commerce intent detected");
     const frame = frameTask(task);
     assert.notEqual(frame.mode, "direct_fact", `must not be direct_fact: got ${frame.mode}`);
@@ -26,9 +26,21 @@ for (const task of COMMERCE_TASKS) {
       frame.researchContract.minResearchToolCalls >= 1,
       `must require >= 1 research call, got ${frame.researchContract.minResearchToolCalls}`,
     );
+    // The deliverable is concrete buy links, not advice: demand direct
+    // product/listing URLs; forbid "search elsewhere" advice and memory-based
+    // existence claims. (The gate stays satisfiable by search alone because
+    // modern shop pages often block scraping.)
     assert.ok(
-      frame.answerContract.mustAvoid.some((item) => /model memory/i.test(item)),
-      "must forbid answering from model memory",
+      frame.answerContract.mustDo.some((item) => /buy link|product\/listing|direct product/i.test(item)),
+      "must require concrete buy links",
+    );
+    assert.ok(
+      frame.answerContract.mustAvoid.some((item) => /search elsewhere|search themselves|generic buying advice/i.test(item)),
+      "must forbid generic advice / telling the user to search elsewhere",
+    );
+    assert.ok(
+      frame.answerContract.mustAvoid.some((item) => /model memory|from memory/i.test(item)),
+      "must forbid answering existence from model memory",
     );
   });
 }
