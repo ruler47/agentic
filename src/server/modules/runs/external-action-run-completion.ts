@@ -60,7 +60,10 @@ export async function completeWaitingRunAfterExternalAction(input: {
     runFailureReason: undefined,
   };
 
-  await input.runs.complete(input.run.id, updatedResult);
+  // External-action resolution finalizing a paused/automode run; use the
+  // dedicated path so it works whether the run is still waiting_approval or
+  // already completed by an earlier phase.
+  await input.runs.finalizeExternalActionResult(input.run.id, updatedResult);
   await input.runs.appendEvent(
     input.run.id,
     createExternalActionFinalReportEvent({

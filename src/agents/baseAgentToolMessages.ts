@@ -303,10 +303,35 @@ export function sanitizeToolDataForPreview(value: unknown, depth = 0): unknown {
   return output;
 }
 
+/**
+ * Strip credential-shaped query params (api_key/token/secret/signature/
+ * session/password/auth) from a URL-shaped string, preserving everything
+ * else as-is (no host/case/order normalization, so non-secret URLs are
+ * unchanged). Persisted tool inputs often carry `?api_key=...`, which the
+ * key-based sanitizer below cannot see because the secret is inside a value.
+ */
+function stripUrlCredentialParams(value: string): string {
+  if (!/^https?:\/\//i.test(value.trim())) return value;
+  try {
+    const url = new URL(value.trim());
+    let changed = false;
+    for (const key of [...url.searchParams.keys()]) {
+      if (/(?:token|api[-_]?key|secret|signature|session|password|auth)/i.test(key)) {
+        url.searchParams.delete(key);
+        changed = true;
+      }
+    }
+    return changed ? url.toString() : value;
+  } catch {
+    return value;
+  }
+}
+
 export function sanitizeArtifactValue(value: unknown, depth = 0): unknown {
   if (Buffer.isBuffer(value)) return `<Buffer ${value.byteLength} bytes omitted>`;
   if (typeof value === "string") {
-    return value.length > 10_000 ? `${value.slice(0, 10_000)}\n<${value.length - 10_000} chars omitted>` : value;
+    const stripped = stripUrlCredentialParams(value);
+    return stripped.length > 10_000 ? `${stripped.slice(0, 10_000)}\n<${stripped.length - 10_000} chars omitted>` : stripped;
   }
   if (value === undefined || value === null || typeof value === "number" || typeof value === "boolean") return value;
   if (isSerializedBuffer(value)) return `<Buffer ${value.data.length} bytes omitted>`;

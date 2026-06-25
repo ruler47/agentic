@@ -1,5 +1,14 @@
 import { AgentEvent, AgentRunResult } from "../types.js";
-import { AgentRunRecord, RunCreateContext, RunStore } from "./types.js";
+import { AgentRunRecord, RunCreateContext, RunStatus, RunStore } from "./types.js";
+
+/**
+ * A run is still mutable while queued, running, or paused for approval. The
+ * waiting_approval pause is intentionally non-terminal: external-action
+ * commit later completes it. completed/failed/cancelled are terminal.
+ */
+function isActiveStatus(status: RunStatus): boolean {
+  return status === "queued" || status === "running" || status === "waiting_approval";
+}
 
 export class InMemoryRunStore implements RunStore {
   private readonly runs = new Map<string, AgentRunRecord>();
@@ -75,7 +84,10 @@ export class InMemoryRunStore implements RunStore {
 
   async complete(id: string, result: AgentRunResult): Promise<void> {
     const run = this.mustGet(id);
-    if (run.status === "cancelled") return;
+    // Terminal results are immutable: only an active run (incl. the
+    // waiting_approval pause) may move to completed; a late callback against
+    // an already terminal run is a no-op.
+    if (!isActiveStatus(run.status)) return;
     run.status = "completed";
     run.result = result;
     run.updatedAt = new Date().toISOString();
@@ -83,9 +95,20 @@ export class InMemoryRunStore implements RunStore {
 
   async fail(id: string, error: string): Promise<void> {
     const run = this.mustGet(id);
-    if (run.status === "cancelled") return;
+    if (!isActiveStatus(run.status)) return;
     run.status = "failed";
     run.error = error;
+    run.updatedAt = new Date().toISOString();
+  }
+
+  async finalizeExternalActionResult(id: string, result: AgentRunResult): Promise<void> {
+    const run = this.mustGet(id);
+    // Deliberate post-completion external-action write: may overwrite a
+    // completed run, but never a cancelled one.
+    if (run.status === "cancelled") return;
+    run.status = "completed";
+    run.result = result;
+    run.error = undefined;
     run.updatedAt = new Date().toISOString();
   }
 

@@ -93,6 +93,14 @@ export type RunStore = {
   fail(id: string, error: string): Promise<void>;
   cancel(id: string, reason: string): Promise<void>;
   /**
+   * Deliberate post-completion write for the external-action lifecycle:
+   * automode appends its commit result to an already-completed run, and the
+   * approval flow finalizes a waiting_approval run. Unlike complete()/fail()
+   * (which are immutable once terminal, to reject stray late callbacks), this
+   * may overwrite a completed run's result — but never a cancelled run.
+   */
+  finalizeExternalActionResult(id: string, result: AgentRunResult): Promise<void>;
+  /**
    * Sweep runs left in `queued` / `running` after a process restart and mark
    * them `failed` with the supplied reason. `staleAfterMs` (optional) filters
    * the sweep to runs whose `updated_at` is older than the threshold so a

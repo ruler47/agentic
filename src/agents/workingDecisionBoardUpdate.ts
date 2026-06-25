@@ -82,7 +82,10 @@ export function redactSensitiveText(value: string): string {
   return value
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[email]")
     .replace(/\+?\d[\d\s().-]{6,}\d/g, "[phone]")
-    .replace(/\b(?:api[_-]?key|token|authorization|password|secret)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    // Capture the key name (group 1) and consume an optional Bearer/Basic
+    // scheme word so "Authorization: Bearer <token>" redacts the token too,
+    // not just the scheme word.
+    .replace(/\b(api[_-]?key|token|authorization|password|secret)\s*[:=]\s*(?:Bearer\s+|Basic\s+)?\S+/gi, "$1=[redacted]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi, "Bearer [redacted]");
 }
 

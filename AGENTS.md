@@ -224,6 +224,17 @@ documentation.
   or generated-tool-only experiments. Core tools are synchronized into tool metadata as
   built-ins and should be directly offered to agents when metadata/readiness marks them
   available. Generated/package tools still use the manual QA/promotion flow.
+- Agent-originated tool CREATION (`createToolPackage({ source: "agent" })`) is frozen by
+  default and only runs when `AGENT_TOOL_CREATION=enabled` (task 11 freeze posture; see
+  `docs/tasks/15-p0-runtime-safety-hardening.md`). Reusing an already-built/operator-
+  promoted candidate is unaffected; only authoring a new package mid-run is gated. With the
+  flag off the agent reports the missing capability instead of building.
+- Durable Work/Evidence Ledger writes redact secrets: free-text fields go through
+  `redactSensitiveText`, source URLs and the `workKey` strip credential query params
+  (`api_key`/`token`/`secret`/...), and metadata redacts secret-shaped keys incl.
+  `cookie`/`authorization`/`credential`. Terminal run results are immutable —
+  `complete()`/`fail()` only mutate active runs; the external-action lifecycle uses
+  `RunStore.finalizeExternalActionResult` for its deliberate post-completion write.
 - `/api/tools` now returns normalized `ToolCatalogEntry` records from
   `src/tools/toolCatalog.ts`. Each record has a `catalogLayer`
   (`core`, `generated-active`, `generated-inactive`, or `legacy-reference`) plus

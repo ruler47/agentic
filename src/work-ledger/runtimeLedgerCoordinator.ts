@@ -714,7 +714,35 @@ export const RUNTIME_LEDGER_EVENT_TYPES: readonly RuntimeLedgerEventName[] = [
 ];
 
 export function workKeyForToolCall(toolName: string, kind: WorkLedgerKind, input: Record<string, unknown>): string {
-  return `${kind}:${toolName.toLowerCase()}:${stableKeyValue(input)}`;
+  // Strip credential query params before keying so the durable workKey never
+  // embeds a secret (a URL like ...?api_key=X is keyed by resource, not by
+  // the rotating credential). Deterministic, so claim and reuse lookups still
+  // produce matching keys.
+  return `${kind}:${toolName.toLowerCase()}:${stableKeyValue(stripKeySecrets(input) as Record<string, unknown>)}`;
+}
+
+function stripKeySecrets(value: unknown): unknown {
+  if (typeof value === "string") {
+    if (!/^https?:\/\//i.test(value.trim())) return value;
+    try {
+      const url = new URL(value.trim());
+      for (const key of [...url.searchParams.keys()]) {
+        if (/(?:token|api[-_]?key|secret|signature|session|password|auth)/i.test(key)) {
+          url.searchParams.delete(key);
+        }
+      }
+      return url.toString();
+    } catch {
+      return value;
+    }
+  }
+  if (Array.isArray(value)) return value.map((item) => stripKeySecrets(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, stripKeySecrets(nested)]),
+    );
+  }
+  return value;
 }
 
 function mapRuntimeKindToClaimKind(kind: WorkLedgerKind): ClaimCoordinatorKind {

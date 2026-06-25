@@ -5,8 +5,36 @@ import { workKeyForToolCall } from "../work-ledger/runtimeLedgerCoordinator.js";
 import type { EvidenceKind, EvidenceQaStatus, EvidenceRecord, WorkLedgerItem, WorkLedgerKind } from "../work-ledger/types.js";
 import { extractSourceUrls } from "./baseAgentEvidence.js";
 import { limitText, sanitizeArtifactValue } from "./baseAgentToolMessages.js";
+import { redactSensitiveText } from "./workingDecisionBoardUpdate.js";
+import { normalizeSourceUrl } from "./sourceQuality.js";
 
 const HTTP_REUSE_MAX_AGE_MS = 10 * 60 * 1000;
+
+/**
+ * Redact secret-shaped substrings from free text before it is persisted into
+ * the durable Work/Evidence Ledger or re-emitted in evidence events. Redact
+ * BEFORE truncation so a `Bearer ...` split by the length cap still matches.
+ */
+function redactedText(value: string | undefined, max: number): string {
+  return limitText(redactSensitiveText(value ?? ""), max);
+}
+
+/**
+ * Strip credential query params (api_key/token/secret/signature/session/...)
+ * from persisted source URLs; fall back to text redaction for non-URL strings.
+ */
+function redactedUrls(urls: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const url of urls) {
+    if (!url) continue;
+    const clean = normalizeSourceUrl(url) ?? redactSensitiveText(url);
+    if (seen.has(clean)) continue;
+    seen.add(clean);
+    out.push(clean);
+  }
+  return out;
+}
 
 export type BaseAgentToolLedgerClaim = {
   workItemId?: string;
@@ -144,7 +172,7 @@ export async function completeBaseAgentToolWork(input: {
   const workItemId = claim?.workItemId;
   if (!input.ledger || !workItemId) return;
 
-  const sourceUrls = sourceUrlsForTool(input.tool, input.toolInput, input.result);
+  const sourceUrls = redactedUrls(sourceUrlsForTool(input.tool, input.toolInput, input.result));
   const newArtifacts = input.artifacts.slice(claim.startedArtifactCount);
   const qaStatus = qaStatusForToolResult(input.result, newArtifacts);
   const primaryArtifact = newArtifacts[0];
@@ -154,11 +182,11 @@ export async function completeBaseAgentToolWork(input: {
   try {
     if (input.result.ok) {
       await input.ledger.markCompleted(workItemId, {
-        outputSummary: limitText(input.preview, 1_000),
+        outputSummary: redactedText(input.preview, 1_000),
         sourceUrls,
       });
     } else {
-      await input.ledger.markFailed(workItemId, limitText(input.result.content || "Tool returned a failed result.", 1_000));
+      await input.ledger.markFailed(workItemId, redactedText(input.result.content || "Tool returned a failed result.", 1_000));
     }
   } catch {
     // Ledger is observability; never fail user work because the ledger write failed.
@@ -174,8 +202,8 @@ export async function completeBaseAgentToolWork(input: {
         provider: input.tool.name,
         toolName: input.tool.name,
         title: `Tool result: ${input.tool.name}`,
-        summary: limitText(input.preview, 1_000),
-        contentPreview: limitText(input.result.content || input.preview, 2_000),
+        summary: redactedText(input.preview, 1_000),
+        contentPreview: redactedText(input.result.content || input.preview, 2_000),
         artifactId: primaryArtifact?.id,
         qaStatus,
         confidence: qaStatus === "passed" ? 0.9 : qaStatus === "failed" ? 0.2 : 0.6,
@@ -228,21 +256,22 @@ export async function completeBaseAgentToolWorkFromReuse(input: {
   const workItemId = input.claim?.workItemId;
   if (!input.ledger || !workItemId) return;
   try {
+    const reuseSourceUrls = redactedUrls(input.reuse.sourceUrls);
     await input.ledger.markCompleted(workItemId, {
-      outputSummary: limitText(input.reuse.preview, 1_000),
-      sourceUrls: input.reuse.sourceUrls,
+      outputSummary: redactedText(input.reuse.preview, 1_000),
+      sourceUrls: reuseSourceUrls,
     });
     const evidence = await input.ledger.recordEvidence(
       {
         workItemId,
         spanId: input.toolSpanId,
         kind: evidenceKindForTool(input.tool, undefined),
-        sourceUrl: input.reuse.sourceUrls[0],
+        sourceUrl: reuseSourceUrls[0],
         provider: input.tool.name,
         toolName: input.tool.name,
         title: `Reused tool result: ${input.tool.name}`,
-        summary: limitText(input.reuse.preview, 1_000),
-        contentPreview: limitText(input.reuse.result.content || input.reuse.preview, 2_000),
+        summary: redactedText(input.reuse.preview, 1_000),
+        contentPreview: redactedText(input.reuse.result.content || input.reuse.preview, 2_000),
         artifactId: input.reuse.artifactIds[0],
         qaStatus: "passed",
         confidence: 0.85,
@@ -267,7 +296,7 @@ export async function completeBaseAgentToolWorkFromReuse(input: {
         reusedFromWorkItemId: input.reuse.reusedFromWorkItemId,
         evidenceIds: evidence ? [evidence.id, ...input.reuse.evidenceIds] : input.reuse.evidenceIds,
         artifactIds: input.reuse.artifactIds,
-        sourceUrls: input.reuse.sourceUrls,
+        sourceUrls: reuseSourceUrls,
         toolName: input.tool.name,
       },
       input.toolSpanId,
@@ -289,7 +318,7 @@ export async function failBaseAgentToolWork(input: {
   const workItemId = input.claim?.workItemId;
   if (!input.ledger || !workItemId) return;
   try {
-    await input.ledger.markFailed(workItemId, limitText(input.error, 1_000));
+    await input.ledger.markFailed(workItemId, redactedText(input.error, 1_000));
     await input.ledger.recordEvidence(
       {
         workItemId,
@@ -298,11 +327,11 @@ export async function failBaseAgentToolWork(input: {
         provider: input.tool.name,
         toolName: input.tool.name,
         title: `Tool failed: ${input.tool.name}`,
-        summary: limitText(input.error, 1_000),
-        contentPreview: limitText(input.error, 2_000),
+        summary: redactedText(input.error, 1_000),
+        contentPreview: redactedText(input.error, 2_000),
         qaStatus: "failed",
         confidence: 0.1,
-        limitations: [limitText(input.error, 500)],
+        limitations: [redactedText(input.error, 500)],
         metadata: {
           toolName: input.tool.name,
           toolVersion: input.tool.version,
@@ -428,8 +457,8 @@ async function publishReusableToolWorkIndex(input: {
       title: `Reusable tool result: ${input.tool.name}`,
       ownerSpanId: `${input.toolSpanId}:reuse-index`,
       inputSummary: limitText(JSON.stringify(sanitizeArtifactValue(input.toolInput)), 1_000),
-      outputSummary: limitText(input.preview, 1_000),
-      sourceUrls: input.sourceUrls,
+      outputSummary: redactedText(input.preview, 1_000),
+      sourceUrls: redactedUrls(input.sourceUrls),
       artifactIds: input.artifacts.map((artifact) => artifact.id),
       evidenceIds: [input.evidence.id],
       freshnessExpiresAt: reusableFreshnessExpiresAt(input.tool),

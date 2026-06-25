@@ -69,7 +69,10 @@ export class ActionProposalAutoModeService {
       const outcome = outcomes.find((item) => item.proposal.id === proposal.id);
       return outcome?.proposal ?? proposal;
     });
-    await this.runs.complete(runId, {
+    // Automode appends its commit result to the already-completed agent run;
+    // use the external-action finalize path (complete() is immutable once
+    // terminal and would drop this deliberate post-completion write).
+    await this.runs.finalizeExternalActionResult(runId, {
       ...run.result,
       finalAnswer,
       actionProposals: proposals,

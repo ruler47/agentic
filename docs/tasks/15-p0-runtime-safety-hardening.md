@@ -266,4 +266,45 @@ development-convention rule for critical/quality fixes patched before the spec):
   `<|tool_call`, `tool_call|>`, `<|...|>` special tokens, and prose `call:tool.name{...}`.
   New `tests/rawToolCallSyntax.test.ts` (7 leak + 4 clean cases). `verify` 637/637.
 
-Implementation of FR-1..FR-4: _to be filled with run ids and final verify result._
+Implementation of FR-1..FR-4 (2026-06-25, branch
+`claude/verify-green-and-toolcall-leak`, `npm run verify` green at 644 tests):
+
+- **FR-2 terminal immutability.** `complete()`/`fail()` (Postgres + in-memory) now mutate
+  only `('queued','running','waiting_approval')`. Implementation discovered the
+  external-action automode flow deliberately re-completes an already-completed run (appends
+  "Automode external action result"), so a strict guard broke two fixture tests. Resolved
+  by adding `RunStore.finalizeExternalActionResult(id, result)` — an explicit
+  post-completion write that may overwrite a completed run but never a cancelled one — and
+  routing `action-proposal-auto-mode.service.ts` and `external-action-run-completion.ts`
+  through it. The normal agent completion (`runs.service.ts`) stays on the immutable
+  `complete()`. Tests: `tests/runStoreTerminalImmutability.test.ts`.
+- **FR-3 key set.** `cookie` added to `isSecretKey` (work-ledger) and `sanitizeObject`
+  (parsers) brought to the full set (`credential`/`authorization`/`auth`/`cookie`). Tests:
+  `tests/ledgerSecretRedaction.test.ts`.
+- **FR-1 ledger redaction.** Free-text (`summary`/`contentPreview`/`outputSummary`/error/
+  limitations) wrapped in `redactSensitiveText`; `sourceUrl(s)` through `normalizeSourceUrl`
+  at every write in `baseAgentToolLedger.ts`. The manual smoke then exposed two write paths
+  the unit test missed: (a) tool input URLs persisted in evidence `metadata.input` —
+  `sanitizeArtifactValue` now strips credential query params from URL-shaped string values;
+  (b) the durable `workKey` embedded the URL — `workKeyForToolCall` now strips credential
+  query params before keying (keys by resource, not credential; deterministic so reuse
+  matching is unchanged). Also fixed a latent bug in `redactSensitiveText` ("Authorization:
+  Bearer X" left the token after the scheme word; the capture group `$1` was empty). Tests:
+  `tests/ledgerSecretRedaction.test.ts`.
+- **FR-4 freeze flag.** Agent-originated `createToolPackage({ source: "agent" })` gated
+  behind `AGENT_TOOL_CREATION=enabled` (default off); reuse of an existing candidate is
+  unaffected. Tests: `tests/agentToolCreationFreezeFlag.test.ts`. Documented in `AGENTS.md`.
+
+Manual smoke (durable Postgres/MinIO stack, after restarting the API onto the new code —
+the previously-running server predated these changes and showed the leak):
+`run_1782402713421_77p4nypl` fetched
+`https://jsonplaceholder.typicode.com/todos/2?api_key=SMOKESECRET98765`; the durable Work
+Ledger (`workKey`, `sourceUrls`) and Evidence Ledger contain no `SMOKESECRET`, and the
+answer was correct.
+
+Follow-up (NOT in this task's scope; recommend a dedicated trace-redaction slice): the
+secret URL still appears in non-ledger TRACE EVENTS — `agent-task-framed`,
+`working-decision-*`, `tool-started`/`tool-completed` — because (a) the user's own task
+text contained the URL and is echoed verbatim into framing/board snapshots, and (b) tool
+event payloads echo tool input/output. The durable Work/Evidence Ledger (the audit's HIGH
+finding) is clean; broad trace-event payload redaction is a larger separate surface.

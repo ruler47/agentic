@@ -150,6 +150,23 @@ export class RunAgentRuntimeHelpers {
           promotionPolicy: "auto_on_success",
         };
       }
+      // Freeze posture (task 11 / task 15 FR-4): agent-originated tool
+      // CREATION is disabled by default and only enabled with an explicit
+      // opt-in flag. Reusing an already-built/operator-promoted candidate
+      // (handled above) is unaffected; only authoring a new package mid-run
+      // is gated. The agent receives a clear "not available" outcome and
+      // reports the capability as missing instead of silently building.
+      if (process.env.AGENT_TOOL_CREATION !== "enabled") {
+        return {
+          ok: false,
+          toolName: request.name,
+          toolVersion: request.version,
+          status: "failed",
+          message:
+            "Agent-originated tool creation is disabled (set AGENT_TOOL_CREATION=enabled to opt in). Report the missing capability instead of building a tool mid-run.",
+          error: "agent_tool_creation_disabled",
+        };
+      }
       const created = await this.toolsService.createToolPackage({
         name: request.name,
         version: request.version ?? "0.1.0",

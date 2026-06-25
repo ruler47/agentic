@@ -187,11 +187,16 @@ export class PostgresRunStore implements RunStore {
   }
 
   async complete(id: string, result: AgentRunResult): Promise<void> {
+    // Terminal results are immutable: only an active run (incl. the
+    // deliberate waiting_approval pause that commit later completes) may be
+    // moved to completed. A late callback against an already completed/
+    // failed/cancelled run is a no-op, so terminal results cannot be
+    // silently overwritten.
     await this.pool.query(
       `
         update runs
         set status = 'completed', result = $1, updated_at = $2, error = null
-        where id = $3 and status <> 'cancelled'
+        where id = $3 and status in ('queued', 'running', 'waiting_approval')
       `,
       [JSON.stringify(result), new Date(), id],
     );
@@ -202,9 +207,23 @@ export class PostgresRunStore implements RunStore {
       `
         update runs
         set status = 'failed', error = $1, updated_at = $2
-        where id = $3 and status <> 'cancelled'
+        where id = $3 and status in ('queued', 'running', 'waiting_approval')
       `,
       [error, new Date(), id],
+    );
+  }
+
+  async finalizeExternalActionResult(id: string, result: AgentRunResult): Promise<void> {
+    // External-action resolution may overwrite an already-completed run
+    // (automode appends its commit result) or finalize a waiting_approval
+    // run; only a cancelled run is left untouched.
+    await this.pool.query(
+      `
+        update runs
+        set status = 'completed', result = $1, updated_at = $2, error = null
+        where id = $3 and status <> 'cancelled'
+      `,
+      [JSON.stringify(result), new Date(), id],
     );
   }
 

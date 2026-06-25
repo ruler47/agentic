@@ -232,12 +232,19 @@ export function sanitizeObject(value: Record<string, unknown>): Record<string, u
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
     const lowerKey = key.toLowerCase();
+    // Keep this set aligned with work-ledger `isSecretKey`. Adds credential,
+    // authorization, auth, and cookie so audit metadata cannot persist a
+    // credential under any of those key names.
     if (
       lowerKey.includes("secret") ||
       lowerKey.includes("token") ||
       lowerKey.includes("password") ||
       lowerKey.includes("apikey") ||
-      lowerKey.includes("api_key")
+      lowerKey.includes("api_key") ||
+      lowerKey.includes("credential") ||
+      lowerKey.includes("authorization") ||
+      lowerKey.includes("cookie") ||
+      lowerKey === "auth"
     ) {
       result[key] = "[redacted]";
     } else if (isRecord(item)) {

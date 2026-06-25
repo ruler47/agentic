@@ -29,6 +29,7 @@ export function isSecretKey(key: string): boolean {
     lower.includes("api_key") ||
     lower.includes("credential") ||
     lower.includes("authorization") ||
+    lower.includes("cookie") ||
     lower === "auth"
   );
 }
