@@ -24,15 +24,40 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 
 Work from top to bottom unless a production blocker requires reordering:
 
-1. [P0 External-Action Prepare For Real Booking Widgets](01-p0-external-action-real-booking-prepare.md)
-2. [P0 Current-Fact Answer Signal Fallback](02-p0-current-fact-answer-signal-fallback.md)
-3. [P2 Resumable External Actions And Verification Handoff](14-p2-resumable-external-actions-verification-handoff.md)
-4. [P2 Context-Budgeted Run Decomposition](13-p2-context-budgeted-run-decomposition.md)
-5. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
+1. [P0 Runtime Safety Hardening](15-p0-runtime-safety-hardening.md)
+2. [P0 External-Action Prepare For Real Booking Widgets](01-p0-external-action-real-booking-prepare.md)
+3. [P0 Current-Fact Answer Signal Fallback](02-p0-current-fact-answer-signal-fallback.md)
+4. [P2 Resumable External Actions And Verification Handoff](14-p2-resumable-external-actions-verification-handoff.md)
+5. [P2 Context-Budgeted Run Decomposition](13-p2-context-budgeted-run-decomposition.md)
+6. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
+7. [P3 Container Produce Pipeline](16-p3-container-produce-pipeline.md)
 
 Cross-cutting gates apply to every task:
 
 - [Code Hygiene And Documentation Discipline](12-cross-cutting-code-hygiene.md)
+
+## 2026-06-25 Audit + Safety-Hardening Update
+
+A deep static + live audit of `main` (49fe49a) on 2026-06-25 added one P0 task and one P3
+companion task, and found two issues fixed immediately on branch
+`claude/verify-green-and-toolcall-leak`:
+
+- **`npm run verify` was RED on committed `main`** — the `test:types` step failed with 3
+  type errors in `tests/actionProposalAutoAdvance.test.ts`. Unit tests (626) plus
+  typecheck/lint/build were green, so the break was masked unless the full verify gate
+  ran. Fixed; verify is now 637/637 green with the new detector tests.
+- **Broad-research runs could ship raw tool-call syntax as the final answer.** A live
+  laptop-recommendation run returned `<|tool_call>call:browser.screenshot{...}<tool_call|>`
+  (gemma-4-26b pipe-token format) and the return gate passed it because
+  `containsRawToolCallSyntax` only matched `<tool_call>` without the pipe. Detector
+  extended; `tests/rawToolCallSyntax.test.ts` added.
+
+[Task 15](15-p0-runtime-safety-hardening.md) captures the remaining audit hardening
+(ledger free-text/URL secret redaction, terminal-status immutability, audit/ledger
+`cookie`/`auth` key set, and a feature flag that makes the agent-tool-creation freeze
+real). [Task 16](16-p3-container-produce-pipeline.md) is the describe-first container
+"produce" pipeline (build -> publish -> secure-run an `oci-image`) that complements the
+already-working OCI **run** runtime; it slots after task 11.
 
 ## Current Run-Quality Backlog
 

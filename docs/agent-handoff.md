@@ -33,6 +33,44 @@ Core tools are not hardcoded private pipelines. They should use the same manifes
 schema, version, runner, settings, secret-handle, artifact, health, and trace contracts
 that generated tools will use later.
 
+## 2026-06-25 Audit + Safety-Hardening Checkpoint
+
+A deep static + live audit of `main` (49fe49a) ran on 2026-06-25. Branch
+`claude/verify-green-and-toolcall-leak` carries two immediate fixes; the remaining
+hardening is specced in [`docs/tasks/15-p0-runtime-safety-hardening.md`](tasks/15-p0-runtime-safety-hardening.md)
+and the container "produce" plan in
+[`docs/tasks/16-p3-container-produce-pipeline.md`](tasks/16-p3-container-produce-pipeline.md).
+
+- **Correction: `npm run verify` was RED on committed `main`.** Unit tests (626),
+  typecheck, lint, and build were green, but the `test:types` step (`tsc -p
+  tsconfig.test.json`) failed with 3 type errors in
+  `tests/actionProposalAutoAdvance.test.ts`. Earlier notes that "verify passed" reflected
+  the individual steps, not the full gate. Fixed on the branch; verify is now 637/637.
+- **Broad-research raw tool-call leak fixed.** A live laptop-recommendation run shipped
+  `<|tool_call>call:browser.screenshot{...}<tool_call|>` (gemma-4-26b pipe-token format)
+  as its final answer and the return gate passed it. `containsRawToolCallSyntax`
+  (`src/agents/baseAgentTrace.ts`) only matched `<tool_call>` without the pipe; extended to
+  catch `<|tool_call`, `tool_call|>`, `<|...|>` tokens and prose `call:tool.name{...}`.
+  New `tests/rawToolCallSyntax.test.ts`.
+- **Confirmed HIGH gaps queued as task 15** (each reconfirmed at file:line before specing):
+  ledger free-text/sourceUrl secret leak (`src/agents/baseAgentToolLedger.ts` writes
+  `summary`/`contentPreview`/`sourceUrl` without `redactSensitiveText`/`normalizeSourceUrl`);
+  terminal-status mutability (`complete()`/`fail()` guard only `<> 'cancelled'`,
+  `src/runs/postgresRunStore.ts:193-205`); audit sanitizer missing `cookie`
+  (`src/server/common/parsers.ts`); and agent-originated tool creation running unflagged
+  (`src/server/modules/runs/run-agent-runtime-helpers.ts`), contradicting the task-11 freeze.
+- **Container readiness ≈ 40%.** The OCI **run** runtime (`src/tools/toolPackageRunnerOci.ts`)
+  is real and production-shaped; the **produce** side (build -> publish -> secure-run an
+  `oci-image`) does not exist (no `docker build` anywhere; the creation pipeline emits only
+  `source-bundle`; OCI runner off by default and never integration-tested against a real
+  daemon). Task 16 is the describe-first plan to close it via known-good source-bundle
+  tools first, keeping LLM authoring frozen.
+- Live matrix on the durable stack (2026-06-25) passed direct/http-json/local-utility-CSV/
+  current-fact-BTC/booking-prepare-to-`waiting_approval`/conversation-follow-up; broad
+  research exposed the tool-call leak above (now fixed); the generic
+  `external.action.commit` is a safe stub that refuses without `provider:"fixture"`, so a
+  raw-URL fixture commit stays paused in `waiting_approval` (frozen executor-creation area).
+
 ## Current Verified State
 
 `npm run verify` passed on 2026-06-19 from `main` after merging the split runtime and
