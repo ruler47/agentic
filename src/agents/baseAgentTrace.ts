@@ -52,6 +52,14 @@ export function containsRawToolCallSyntax(answer: string): boolean {
   if (!trimmed) return false;
   // LM Studio / Qwen-style XML tool-call leakage in prose output.
   if (/<tool_call>|<function=/i.test(trimmed)) return true;
+  // Gemma/local-model pipe-delimited special tokens leaked as prose:
+  //   <|tool_call>call:browser.screenshot{...}<tool_call|> with <|"|> quote
+  //   markers. Observed live on a broad-research run that the return gate
+  //   then PASSED as a final answer. Matches <|tool_call, tool_call|>, and
+  //   the <|...|> special-token style.
+  if (/<\|?tool_call\b|tool_call\|>|<\|[^>]*\|>/i.test(trimmed)) return true;
+  // Prose-style "call:tool.name{...}" tool invocation.
+  if (/\bcall:[a-z_][\w.]*\s*\{/i.test(trimmed)) return true;
   if (/\bfinish\s*\(\s*\{\s*answer\s*:/i.test(trimmed)) return true;
   if (/"tool_calls"\s*:/.test(trimmed)) return true;
   if (/"function"\s*:\s*\{[^}]*"arguments"\s*:/.test(trimmed)) return true;

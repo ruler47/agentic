@@ -16,7 +16,7 @@ test("approval auto-advance stops cleanly when proposal is cancelled during prep
   const result = await advanceApprovedActionProposal({
     proposalId: approved.id,
     runs: {
-      appendEvent: async (_id, event) => {
+      appendEvent: async (_id: string, event: AgentEvent) => {
         events.push(event);
       },
     } as unknown as RunStore,
@@ -44,7 +44,7 @@ test("approval auto-advance stops cleanly when proposal is cancelled during prep
     events.some(
       (event) =>
         event.type === "external-action-approval-auto-advance-completed" &&
-        /status changed to rejected/i.test(event.detail),
+        /status changed to rejected/i.test(event.detail ?? ""),
     ),
   );
 });
