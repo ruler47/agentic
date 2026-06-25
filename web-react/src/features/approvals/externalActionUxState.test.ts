@@ -195,8 +195,11 @@ describe("buildExternalActionUxState", () => {
             action: "Prepare to submit a reservation",
             dataPreview: [],
             missingBeforeCommit: ["concrete submit/control candidate"],
+            proofArtifactIds: ["artifact-proof"],
+            commitControls: [],
             operatorNextStep:
               "Resolve before final submit: concrete submit/control candidate.",
+            postCommitReportRequirements: [],
           },
         },
       },

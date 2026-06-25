@@ -42,8 +42,23 @@ export async function advanceApprovedActionProposal(input: {
   try {
     let current = input.actionProposalQueueItem(run, proposal);
     if (current.proposal.status !== "approved") return current;
-    if (current.preparationExecution?.status !== "completed")
+    if (current.preparationExecution?.status !== "completed") {
       current = await input.prepareActionProposal(input.proposalId, {});
+      if (current.proposal.status !== "approved") {
+        await input.runs.appendEvent(
+          run.id,
+          createApprovalAutoAdvanceCompletedEvent({
+            proposalId: input.proposalId,
+            startedAt,
+            prepared: current.preparationExecution?.status === "completed",
+            executorReady: false,
+            executorBuildStatus: current.executorBuild?.status,
+            stoppedReason: `Proposal status changed to ${current.proposal.status}; auto-advance stopped before executor build.`,
+          }),
+        );
+        return current;
+      }
+    }
     if (!current.proposal.commitExecutor?.ready)
       current = await input.buildActionProposalExecutor(input.proposalId, {
         mode: "create",
@@ -102,6 +117,7 @@ export function createApprovalAutoAdvanceCompletedEvent(input: {
   prepared: boolean;
   executorReady: boolean;
   executorBuildStatus?: string;
+  stoppedReason?: string;
 }): AgentEvent {
   const completedAt = new Date();
   return {
@@ -113,7 +129,9 @@ export function createApprovalAutoAdvanceCompletedEvent(input: {
     activity: "coordination",
     status: "completed",
     title: "Approval auto-advance completed",
-    detail: input.executorReady
+    detail: input.stoppedReason
+      ? input.stoppedReason
+      : input.executorReady
       ? "Preparation and commit executor are ready; the action is waiting for final commit."
       : "Auto-advance completed but the action is not ready to commit yet.",
     timestamp: completedAt.toISOString(),
@@ -125,6 +143,7 @@ export function createApprovalAutoAdvanceCompletedEvent(input: {
         prepared: input.prepared,
         executorReady: input.executorReady,
         executorBuildStatus: input.executorBuildStatus,
+        stoppedReason: input.stoppedReason,
       },
       proposalId: input.proposalId,
     },

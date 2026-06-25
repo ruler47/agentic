@@ -1,6 +1,6 @@
 # Current Architecture
 
-Status date: 2026-06-23.
+Status date: 2026-06-25.
 
 This document describes the active code path in `main`. Historical recursive/council
 runtime files and legacy tool-build queues are not active.
@@ -367,6 +367,15 @@ flowchart TD
   Ready -- "ready" --> Commit["external.action.commit\nfinal provider submit or fixture commit"]
   Commit --> Report["Final report\nsubmitted data summary, confirmation/status, proof, cancellation/location notes"]
 ```
+
+Run Workspace and `/approvals` render this lifecycle through one shared
+`ExternalActionOperatorCard`. The card separates four user-visible stages: review plan,
+prepare proof, review data, and final submit. It also shows an explicit external-world
+state (`not submitted`, `not submitted · ready`, `not submitted · blocked`, or
+`submitted`) so the operator can tell whether a provider was actually changed.
+Advanced diagnostics stay available but collapsed by default. Approved/prepared actions
+can be cancelled before final submit; cancellation completes the paused run without
+sending anything externally.
 
 ## Memory Model In Code
 

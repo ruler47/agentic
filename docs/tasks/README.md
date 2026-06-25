@@ -1,6 +1,6 @@
 # Active Task Specs
 
-Status date: 2026-06-24.
+Status date: 2026-06-25.
 
 This directory is the execution queue for the active Agentic roadmap. Each active task
 file is a self-contained spec-first/test-first contract:
@@ -75,6 +75,14 @@ flowchart TD
   `Confirm reservation`, attached `external.action.commit`, and stopped before final
   submit. This closes the previous explicit prepare-URL source-probing gap for direct
   form URLs.
+- `run_1782388658959_gyqpaz9e` is the shared-operator-card fixture anchor: the UI showed
+  one reviewed action card, approval prepared the form, the final submit control was
+  explicit, and fixture commit completed with confirmation. The same pass verified that
+  rejecting/cancelling a proposal removes it from the active operator queue without
+  external submit.
+- `run_1782388970107_6qr7qj9d`, `run_1782389012994_6cqr9pzu`, and
+  `run_1782389074701_7225uh97` are the latest UI smoke anchors for direct no-tool,
+  current-fact proof, and local JSON-to-CSV artifact runs after the approval UI pass.
 - `run_1782325936513_t9kpao4m` exposed a current-fact weakness: a narrow BTC price task
   can finish with a weak answer when the selected source/read does not expose the
   expected numeric answer signal. Task 02 covers answer-signal validation and fallback.

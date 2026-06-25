@@ -135,9 +135,23 @@ export class ActionProposalsService {
   ): Promise<ActionProposalQueueItem> {
     const { run, proposal } = await this.findActionProposal(proposalId);
     const current = this.actionProposalQueueItem(run, proposal);
-    if (current.proposal.status !== "proposed") {
+    if (current.execution?.status === "committed") {
       throw new ConflictException(
-        `Action proposal is already ${current.proposal.status}`,
+        "Action proposal is already committed",
+      );
+    }
+    if (decision === "approved" && current.proposal.status !== "proposed") {
+      throw new ConflictException(
+        `Action proposal must be proposed before approval; current status is ${current.proposal.status}`,
+      );
+    }
+    if (
+      decision === "rejected" &&
+      current.proposal.status !== "proposed" &&
+      current.proposal.status !== "approved"
+    ) {
+      throw new ConflictException(
+        `Action proposal cannot be rejected from status ${current.proposal.status}`,
       );
     }
     const reason =

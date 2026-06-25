@@ -370,6 +370,12 @@ test("prepared session accepts semantic form-fill reports as prepared fields and
               valuePreview: "t***@example.com",
               reason: "Matched email field.",
             },
+            {
+              field: "Date | date",
+              selector: 'input[name="date"]',
+              valuePreview: "**2*-0*-27",
+              reason: "Matched date field.",
+            },
           ],
           selected: [],
           checked: [],
@@ -393,6 +399,11 @@ test("prepared session accepts semantic form-fill reports as prepared fields and
       label: "Email",
       selector: 'input[type="email"]',
       valuePreview: "t***@example.com",
+    },
+    {
+      label: "Date | date",
+      selector: 'input[name="date"]',
+      valuePreview: "2026-06-27",
     },
   ]);
   assert.deepEqual(session.commitCandidates, [

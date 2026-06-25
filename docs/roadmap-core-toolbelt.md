@@ -1,6 +1,6 @@
 # Core Toolbelt Roadmap
 
-Status date: 2026-06-24.
+Status date: 2026-06-25.
 
 ## Active Execution Queue
 
@@ -69,6 +69,23 @@ Manual run notes:
   visible fields through semantic `browser.operate`, detected `Confirm reservation`,
   saved proof artifact `artifact_1782332854998_l15vr3q0`, attached
   `external.action.commit`, and stopped before final submit.
+- 2026-06-25 UI pass: approval-mode external actions now render through one shared
+  operator card in Run Workspace and `/approvals`. The card exposes the lifecycle as a
+  visible four-step state machine: review plan, prepare proof, review data, final submit.
+  It also shows an explicit external-world status so operators can tell whether the
+  provider was actually changed. Diagnostic details remain available but collapsed.
+  Approved/prepared actions can be cancelled before final submit; that completes the
+  paused run without sending anything to the external provider.
+- 2026-06-25 live UI smokes on the local Postgres stack:
+  - `run_1782388658959_gyqpaz9e`: local fixture external action completed proposal,
+    approval, preparation, final submit, and fixture confirmation.
+  - reject-path fixture smoke: cancelling/rejecting a proposal removed it from the active
+    operator queue without external submit.
+  - `run_1782388970107_6qr7qj9d`: direct no-tool task completed in 3.3s.
+  - `run_1782389012994_6cqr9pzu`: current BTC proof task completed in 18.9s with web
+    source, QA-passed screenshot, metrics, and one artifact.
+  - `run_1782389074701_7225uh97`: local JSON-to-CSV task completed in 303ms with 0 LLM
+    calls and a downloadable `smoke-ui.csv` artifact.
 
 Remaining known gaps from the same smoke:
 
@@ -78,6 +95,10 @@ Remaining known gaps from the same smoke:
   landing/listing page rather than a direct form URL;
 - real booking widgets still need broader matrix coverage before commit semantics are
   considered reliable.
+- editing approved proposal data is still indirect: cancel and restart works, but inline
+  draft-field editing plus replay is not implemented yet.
+- old unresolved/blocked external-action proposals remain in durable data; `/approvals`
+  now collapses stale details, but explicit archive/cleanup is not implemented yet.
 
 ## 2026-06-22 Run-Quality Roadmap Update
 

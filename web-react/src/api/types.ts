@@ -101,9 +101,6 @@ export type {
 } from "@server/settings/toolRuntimeSettings";
 
 export type {
-  ModelPreferredRole,
-  ModelProfileInput,
-  ModelProfileRecord,
   ModelProviderInput,
   ModelProviderKind,
   ModelProviderRecord,
@@ -111,6 +108,12 @@ export type {
   ModelProviderType,
   ModelProviderUpdateInput,
 } from "@server/settings/modelProviderStore";
+
+export type {
+  ModelPreferredRole,
+  ModelProfileInput,
+  ModelProfileRecord,
+} from "@server/settings/modelProfileStore";
 
 export type {
   SecretHandleInput,

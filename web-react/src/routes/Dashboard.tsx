@@ -335,11 +335,11 @@ function buildReadinessSnapshot(input: {
       run.status === "completed" && (run.result?.artifacts ?? []).some((artifact) => artifact.quality?.status === "passed")
     );
   const latestToolCreation = [...input.creations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-  const hasApiTool = generatedTools.some((tool) =>
-    tool.name === "weather.open-meteo" && tool.status === "available"
+  const hasApiTool = input.tools.some((tool) =>
+    isAgentOfferedTool(tool, "http.request")
   );
-  const hasWebRead = generatedTools.some((tool) =>
-    tool.name === "web.read" && tool.status === "available"
+  const hasWebRead = input.tools.some((tool) =>
+    isAgentOfferedTool(tool, "web.read")
   );
 
   return {
@@ -402,6 +402,24 @@ function buildReadinessSnapshot(input: {
       },
     ],
   };
+}
+
+function isAgentOfferedTool(tool: ToolModuleMetadata, name: string): boolean {
+  const catalogTool = tool as ToolModuleMetadata & {
+    agentEligibility?: { offered?: boolean };
+    catalogLayer?: string;
+  };
+  const runtimeReady = tool.runtimeReadiness?.ok ?? true;
+  return (
+    tool.name === name
+    && tool.status === "available"
+    && runtimeReady
+    && (
+      catalogTool.agentEligibility?.offered === true
+      || catalogTool.catalogLayer === "core"
+      || tool.source === "builtin"
+    )
+  );
 }
 
 function hasStructuredProofArtifact(run: AgentRunRecord): boolean {

@@ -284,6 +284,91 @@ test("fixture external-action approval mode resumes the same run after approved 
   }
 });
 
+test("approved external-action proposal can be cancelled before final submit", async () => {
+  const fixture = await createFixture();
+  try {
+    const registry = fixture.app.get<ToolRegistry>(TOOL_REGISTRY);
+    registry.register({
+      name: "browser.operate",
+      version: "0.1.0",
+      description: "Fixture browser operate.",
+      capabilities: [
+        "browser-operate",
+        "browser-automation",
+        "browser-field-candidates",
+      ],
+      inputSchema: { type: "object", properties: {}, required: [] },
+      async run(input) {
+        return {
+          ok: true,
+          content: "Prepared fixture draft without final commit.",
+          data: {
+            finalUrl: input.url,
+            pageTitle: "Restaurant reservation fixture",
+            extractedText: "Draft is filled. Confirm reservation remains the final boundary.",
+            links: [],
+            actionCandidates: [{ text: "Confirm reservation", selector: "#confirm" }],
+            steps: [],
+          },
+        };
+      },
+    });
+
+    const created = await requestJson<{
+      proposal: {
+        proposal: { id: string; status: string };
+        run: { id: string; status: string };
+      };
+    }>(fixture.baseUrl, "/api/action-proposals/fixture", {
+      method: "POST",
+      body: JSON.stringify({
+        actionType: "reservation",
+        fixtureBaseUrl: fixture.baseUrl,
+        mode: "approval",
+      }),
+      expectedStatus: 201,
+    });
+
+    const approved = await requestJson<{
+      proposal: { proposal: { status: string }; run: { status: string } };
+    }>(
+      fixture.baseUrl,
+      `/api/action-proposals/${created.proposal.proposal.id}/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason: "prepare only" }),
+      },
+    );
+    assert.equal(approved.proposal.proposal.status, "approved");
+    assert.equal(approved.proposal.run.status, "waiting_approval");
+
+    const cancelled = await requestJson<{
+      proposal: { proposal: { status: string }; run: { status: string } };
+    }>(
+      fixture.baseUrl,
+      `/api/action-proposals/${created.proposal.proposal.id}/reject`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason: "cancel before submit" }),
+      },
+    );
+    assert.equal(cancelled.proposal.proposal.status, "rejected");
+    assert.equal(cancelled.proposal.run.status, "completed");
+
+    const fetched = await requestJson<{
+      run: {
+        status: string;
+        result?: { finalAnswer?: string; actionProposals?: Array<{ status: string }> };
+      };
+    }>(fixture.baseUrl, `/api/runs/${created.proposal.run.id}`);
+    assert.equal(fetched.run.status, "completed");
+    assert.match(fetched.run.result?.finalAnswer ?? "", /External action did not run/);
+    assert.equal(fetched.run.result?.actionProposals?.[0]?.status, "rejected");
+  } finally {
+    await fixture.app.close();
+  }
+});
+
 test("profile field approval replays preparation before final submit", async () => {
   const fixture = await createFixture();
   try {

@@ -147,8 +147,11 @@ describe("buildActionApprovalPhase", () => {
             action: "Submit booking",
             dataPreview: [],
             missingBeforeCommit: ["concrete submit/control candidate"],
+            proofArtifactIds: ["artifact-1"],
+            commitControls: [],
             operatorNextStep:
               "Resolve before final submit: concrete submit/control candidate.",
+            postCommitReportRequirements: [],
           },
         },
       },

@@ -97,6 +97,16 @@ Manual smokes:
   Name/Date/Time/Email/Notes through semantic `browser.operate`, detected
   `Confirm reservation`, saved proof artifact `artifact_1782332854998_l15vr3q0`, attached
   `external.action.commit`, and still stopped before final submit.
+- 2026-06-25 operator UI pass: Run Workspace and `/approvals` now share one
+  `ExternalActionOperatorCard`. The card presents the lifecycle as four user-facing
+  stages — plan review, proof preparation, data review, and final submit — and always
+  shows the external-world state (`not submitted`, `not submitted · ready`,
+  `not submitted · blocked`, or `submitted`). The main controls are reduced to the
+  current safe next action, while replay, executor, readiness, and raw proposal details
+  stay in collapsed diagnostics. Approved/prepared actions can also be cancelled before
+  final submit through the same reviewed action card; cancellation completes the paused
+  run without sending anything to the external provider. Focused verification:
+  `web-react` typecheck, focused approval-state Vitest coverage, and lint.
 
 Known remaining gaps:
 
@@ -106,6 +116,9 @@ Known remaining gaps:
   supplied URL is a landing/listing page instead of a form URL;
 - real booking widgets need more live coverage: Booksy-like multi-step forms, restaurant
   widgets, CAPTCHA/verification, login walls, and missing provider fields.
+- editing already-approved proposal data is still indirect: operators can cancel and
+  restart with corrected details, but there is no inline "edit draft fields and replay"
+  form yet.
 
 ## Architecture
 
@@ -163,7 +176,8 @@ sequenceDiagram
    the action URL. Done for explicit prepare-only URL tasks.
 3. Fix secret redaction for benign dates/times in prepared field previews.
 4. Improve approval UI language: proposal, prepared draft, blocker, proof, and final
-   submit must be one clear state machine.
+   submit must be one clear state machine. Done for Run Workspace and `/approvals` via
+   the shared operator card, including post-approval cancellation before final submit.
 5. Run a matrix of real booking widgets:
    - simple local fixture;
    - Booksy-style appointment;

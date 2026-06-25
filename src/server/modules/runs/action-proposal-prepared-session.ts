@@ -7,6 +7,8 @@ import type {
 import { isRecord, parseOptionalText } from "../../common/parsers.js";
 import {
   buildFormFieldGaps,
+  canonicalValues,
+  classifyFormField,
   extractFormFields,
   type ActionPreparationProfileValue,
 } from "./action-proposal-form-matching.js";
@@ -74,7 +76,7 @@ export function buildPreparedSession(input: {
         : compactPreview(parseOptionalText(command.value), 160),
     }))
     .filter((field) => field.valuePreview);
-  const semanticFilledFields = extractSemanticFilledFields(data.formFills);
+  const semanticFilledFields = extractSemanticFilledFields(data.formFills, input.proposal);
   const filledFields = [...commandFilledFields, ...semanticFilledFields].slice(0, 30);
   const formFields = extractFormFields(data.forms);
   const formFieldGaps = buildFormFieldGaps({
@@ -364,14 +366,16 @@ function inferCommitCandidates(
 
 function extractSemanticFilledFields(
   value: unknown,
+  proposal: ExternalActionProposal,
 ): NonNullable<ExternalActionPreparedSession["filledFields"]> {
   if (!Array.isArray(value)) return [];
   const fields: NonNullable<ExternalActionPreparedSession["filledFields"]> = [];
+  const safeValues = safeSemanticPreviewValues(proposal);
   for (const report of value.filter(isRecord)) {
-    for (const field of readSemanticChangedFields(report.filled, "filled")) {
+    for (const field of readSemanticChangedFields(report.filled, safeValues)) {
       fields.push(field);
     }
-    for (const field of readSemanticChangedFields(report.selected, "selected")) {
+    for (const field of readSemanticChangedFields(report.selected, safeValues)) {
       fields.push(field);
     }
     for (const field of readSemanticCheckedFields(report.checked)) {
@@ -383,17 +387,54 @@ function extractSemanticFilledFields(
 
 function readSemanticChangedFields(
   value: unknown,
-  action: "filled" | "selected",
+  safeValues: Record<string, string>,
 ): NonNullable<ExternalActionPreparedSession["filledFields"]> {
   if (!Array.isArray(value)) return [];
   return value
     .filter(isRecord)
-    .map((item) => ({
-      label: parseOptionalText(item.field),
-      selector: parseOptionalText(item.selector),
-      valuePreview: compactPreview(parseOptionalText(item.valuePreview), 160),
-    }))
+    .map((item) => {
+      const label = parseOptionalText(item.field);
+      const selector = parseOptionalText(item.selector);
+      return {
+        label,
+        selector,
+        valuePreview: correctedSemanticValuePreview({
+          label,
+          selector,
+          valuePreview: parseOptionalText(item.valuePreview),
+          safeValues,
+        }),
+      };
+    })
     .filter((item) => item.label || item.selector || item.valuePreview);
+}
+
+function correctedSemanticValuePreview(input: {
+  label?: string;
+  selector?: string;
+  valuePreview?: string;
+  safeValues: Record<string, string>;
+}): string {
+  const canonical = classifyFormField({
+    label: input.label,
+    selector: input.selector,
+  });
+  const safeValue = canonical ? input.safeValues[canonical] : undefined;
+  if (safeValue) return compactPreview(safeValue, 160);
+  return compactPreview(input.valuePreview, 160);
+}
+
+function safeSemanticPreviewValues(
+  proposal: ExternalActionProposal,
+): Record<string, string> {
+  const values = canonicalValues(proposal);
+  const safeFields = ["date", "time", "party_size", "service", "item_or_service"] as const;
+  const output: Record<string, string> = {};
+  for (const field of safeFields) {
+    const value = values[field];
+    if (value) output[field] = value;
+  }
+  return output;
 }
 
 function readSemanticCheckedFields(

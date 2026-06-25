@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Status date: 2026-06-23.
+Status date: 2026-06-25.
 
 ## Active Base
 
@@ -15,7 +15,8 @@ new primary branch.
 - Active roadmap: `docs/roadmap-core-toolbelt.md`.
 - Active executable task queue: `docs/tasks/README.md`.
 - Active architecture map: `docs/current-architecture.md`.
-- Current active implementation task: `docs/tasks/14-p2-resumable-external-actions-verification-handoff.md`.
+- Current active implementation task:
+  `docs/tasks/01-p0-external-action-real-booking-prepare.md`.
 
 Do not use `claude/phase17-research-delegation` as the active base. It was audited on
 2026-06-18 and still contains a legacy `src/agents/universalAgent.ts` above 9k lines plus
@@ -102,6 +103,33 @@ Action-mode semantics regression found and fixed on 2026-06-23:
   automode task as `exploratory_research` with no action policy/proposals, while
   `run_1782237066239_shmfjcv1` framed an explicit booking task with
   `externalActionPolicy.executionMode = "auto"`.
+
+External-action operator UX was reworked on 2026-06-25:
+
+- Run Workspace and `/approvals` now render the same
+  `ExternalActionOperatorCard`, so the operator sees one approval model in both places.
+- The card presents the lifecycle as review plan -> prepare proof -> review data ->
+  final submit, and it explicitly states whether the external world is unchanged,
+  ready-but-not-submitted, blocked, or submitted.
+- Diagnostic/replay/executor details are collapsed by default. The visible primary
+  controls show only the current safe next action.
+- Approved or prepared actions can be cancelled before final submit. Cancellation
+  completes the paused run without sending anything to the provider.
+- Auto-advance rechecks proposal state after preparation. If the operator cancels while
+  preparation is in progress, the runtime stops instead of continuing toward executor
+  attach or commit.
+- Prepared-session previews restore benign canonical values such as date/time/service
+  from proposal input while still avoiding raw name/email/phone restoration.
+- Live UI smokes on the local Postgres stack:
+  - `run_1782388658959_gyqpaz9e`: fixture external action reached proposal,
+    approval, preparation, final submit, and fixture confirmation.
+  - reject-path fixture smoke: proposal was rejected and disappeared from the active
+    operator queue without external submit.
+  - `run_1782388970107_6qr7qj9d`: direct no-tool answer completed in 3.3s.
+  - `run_1782389012994_6cqr9pzu`: current BTC task completed in 18.9s with web source,
+    QA-passed screenshot, one artifact, and visible run metrics.
+  - `run_1782389074701_7225uh97`: local JSON -> CSV -> `smoke-ui.csv` finished through
+    deterministic local utility in 303ms with zero LLM calls and a downloadable artifact.
 
 Recent P0 fixes:
 
@@ -224,14 +252,15 @@ Recent P0 fixes:
 
 P0:
 
-- First P0 task completed on 2026-06-19: simple API/local/current-fact runs now use
-  bounded fast paths, avoid unnecessary browser/search, keep screenshot proof explicit,
-  and finish with structured/source/artifact proof. The completed task spec was removed
-  from `docs/tasks/`.
-- Ledger recovery/reuse is now active for source/artifact follow-ups and failed-evidence
-  retry guidance. Remaining P0/P1 continuation work moves to the explicit memory model:
-  accepted run/thread/user/group memories, artifact reuse policy, and clearer operator
-  controls for what becomes durable memory.
+- Current active P0 is external-action preparation for real booking widgets:
+  `docs/tasks/01-p0-external-action-real-booking-prepare.md`.
+- Simple API/local/current-fact runs already use bounded fast paths, avoid unnecessary
+  browser/search, keep screenshot proof explicit, and finish with structured/source/
+  artifact proof.
+- Ledger recovery/reuse and memory-use visibility are active for source/artifact
+  follow-ups and failed-evidence retry guidance.
+- Next P0 after the active external-action task:
+  `docs/tasks/02-p0-current-fact-answer-signal-fallback.md`.
 
 P1:
 
@@ -247,13 +276,13 @@ P1:
 
 P2:
 
-- Keep the simplified external-action approval/preparation path stable. The first UI and
-  runtime pass is complete: one primary proposal action, safe preparation/proof after
-  approval, generic executor attach, one final submit action, and final confirmation.
-- Continue the next active P2 tasks: finish the resumable external-action
-  apply-input/resume path, then context-budgeted run decomposition. Durable model
-  profiles are done for the current slice; later model-platform work is probes,
-  multimodal payload routing, and benchmarking.
+- Keep the simplified external-action approval/preparation path stable while real
+  provider coverage expands. The shared operator card is done; inline draft editing and
+  replay remain open.
+- Continue the next active P2 tasks after the active P0s: finish the resumable
+  external-action apply-input/resume path, then context-budgeted run decomposition.
+  Durable model profiles are done for the current slice; later model-platform work is
+  probes, multimodal payload routing, and benchmarking.
 
 P3:
 
@@ -264,9 +293,14 @@ P3:
 
 - Durable agent-level smoke through `/api/runs` now passes for direct answer, HTTP JSON,
   current web fact with screenshot proof, and data/file artifact tasks.
-- External-action UX no longer stops at confusing intermediate approval states in the
-  local fixture exam. Remaining work is real-provider blocker polish, automode fixture
-  exams, and making the final report richer for real provider confirmations.
+- External-action UX is clearer but not finished. Remaining work: inline edit plus
+  replay of prepared draft fields, broader real-provider blocker matrix
+  (Booksy-like widgets, restaurant widgets, CAPTCHA/security, login, SMS/email
+  verification, missing fields), automode fixture exams, and richer real-provider final
+  reports.
+- Old unresolved/blocked external-action proposals can still remain in durable data.
+  `/approvals` now prioritizes current actionable cards and collapses stale blocked
+  details, but an explicit cleanup/archive action is still missing.
 - Work/Evidence Ledger unit coverage and durable live UI/API verification are green for
   BaseAgent `http.request`, safe repeated `http.request` reuse, and `file.write` paths.
   Broader tool-family reuse coverage should be added as those flows are touched.
