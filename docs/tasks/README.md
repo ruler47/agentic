@@ -25,12 +25,13 @@ directory and update this index plus `docs/roadmap-core-toolbelt.md`.
 Work from top to bottom unless a production blocker requires reordering:
 
 1. [P0 Runtime Safety Hardening](15-p0-runtime-safety-hardening.md)
-2. [P0 External-Action Prepare For Real Booking Widgets](01-p0-external-action-real-booking-prepare.md)
-3. [P0 Current-Fact Answer Signal Fallback](02-p0-current-fact-answer-signal-fallback.md)
-4. [P2 Resumable External Actions And Verification Handoff](14-p2-resumable-external-actions-verification-handoff.md)
-5. [P2 Context-Budgeted Run Decomposition](13-p2-context-budgeted-run-decomposition.md)
-6. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
-7. [P3 Container Produce Pipeline](16-p3-container-produce-pipeline.md)
+2. [P0 Commerce / "Where To Buy" Framing + Existence Grounding](17-p0-commerce-and-existence-grounding.md) — FR-1 done; FR-2 follow-up open
+3. [P0 External-Action Prepare For Real Booking Widgets](01-p0-external-action-real-booking-prepare.md)
+4. [P0 Current-Fact Answer Signal Fallback](02-p0-current-fact-answer-signal-fallback.md)
+5. [P2 Resumable External Actions And Verification Handoff](14-p2-resumable-external-actions-verification-handoff.md)
+6. [P2 Context-Budgeted Run Decomposition](13-p2-context-budgeted-run-decomposition.md)
+7. [P3 Tool Builder Redesign](11-p3-tool-builder-redesign.md)
+8. [P3 Container Produce Pipeline](16-p3-container-produce-pipeline.md)
 
 Cross-cutting gates apply to every task:
 

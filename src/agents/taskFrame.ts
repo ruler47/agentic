@@ -91,7 +91,28 @@ export function isToolLifecycleOnlyTask(task: string): boolean {
 
 export function taskNeedsCurrentExternalData(task: string): boolean {
   return /\b(?:bitcoin|btc|price|stock|weather|news|exchange\s+rate|market|quote)\b/i.test(task)
-    || /(?:биткоин|биткоина|btc|цена|цену|курс|акци[ия]|погод[ауы]|новост[ьи]|рынок|котировк[аи])/i.test(task);
+    || /(?:биткоин|биткоина|btc|цена|цену|курс|акци[ия]|погод[ауы]|новост[ьи]|рынок|котировк[аи])/i.test(task)
+    || taskNeedsCommerceLookup(task);
+}
+
+/**
+ * Purchase / availability / "where to buy" / existence intent. These are
+ * inherently current external lookups — whether a product exists, who sells
+ * it, and at what price/availability cannot be answered from a model's
+ * (outdated) training memory. Generic intent verbs only, never product
+ * names. A live failure that motivated this: "найди где купить apple studio
+ * m3 ultra 512 gb" was framed as a no-tool direct answer and the model
+ * denied a real shipping product from stale memory without searching.
+ */
+export function taskNeedsCommerceLookup(task: string): boolean {
+  return (
+    /\b(?:buy|purchase|where\s+to\s+buy|for\s+sale|in[-\s]?stock|availab(?:le|ility)|price\s+of|cost\s+of|how\s+much\s+(?:is|are|does)|shop\s+for|order\s+online)\b/i.test(
+      task,
+    ) ||
+    /(?:купить|купи\b|где\s+(?:можно\s+)?купить|в\s+наличии|заказать|сколько\s+стоит|стоимость|цена\s+на|прайс|продаётся|продается|где\s+взять)/i.test(
+      task,
+    )
+  );
 }
 
 export function frameTask(task: string, options: TaskFrameOptions = {}): TaskFrame {
