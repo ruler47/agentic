@@ -161,6 +161,7 @@ function deriveResearchCoverage(events: AgentEvent[]): RunResearchCoverage {
   const discovered = new Set<string>();
   const opened = new Set<string>();
   const verified = new Set<string>();
+  const unavailable = new Set<string>();
   const blocked = new Set<string>();
   const failed = new Set<string>();
   const domains = new Set<string>();
@@ -191,6 +192,9 @@ function deriveResearchCoverage(events: AgentEvent[]): RunResearchCoverage {
           verified.add(url);
           addDomain(domains, url);
           if (sourceType) classes.add(sourceType);
+          if (typeof payload?.availability === "string" && payload.availability === "out_of_stock") {
+            unavailable.add(url);
+          }
         }
         break;
       case "source-rejected":
@@ -214,6 +218,7 @@ function deriveResearchCoverage(events: AgentEvent[]): RunResearchCoverage {
     discovered: discovered.size,
     opened: opened.size,
     verified: verified.size,
+    unavailable: unavailable.size,
     blocked: blocked.size,
     failed: failed.size,
     duplicate,
@@ -229,6 +234,7 @@ function sumResearchCoverage(parts: RunResearchCoverage[]): RunResearchCoverage 
       discovered: sum.discovered + part.discovered,
       opened: sum.opened + part.opened,
       verified: sum.verified + part.verified,
+      unavailable: sum.unavailable + part.unavailable,
       blocked: sum.blocked + part.blocked,
       failed: sum.failed + part.failed,
       duplicate: sum.duplicate + part.duplicate,
@@ -245,6 +251,7 @@ function emptyResearchCoverage(): RunResearchCoverage {
     discovered: 0,
     opened: 0,
     verified: 0,
+    unavailable: 0,
     blocked: 0,
     failed: 0,
     duplicate: 0,

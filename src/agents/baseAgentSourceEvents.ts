@@ -177,9 +177,20 @@ export async function emitSourceEventsForToolResult(input: {
       sourceId: record.sourceId,
       normalizedUrl: record.normalizedUrl,
       sourceType: record.sourceType,
+      availability: pageAvailabilityStatus(input.result),
       reason: input.result.ok ? undefined : input.result.content,
     },
   });
+}
+
+// The buy/in-stock status web.read attached to result.data.availability, if present.
+function pageAvailabilityStatus(result: ToolResult): string | undefined {
+  const data = result.data;
+  if (!data || typeof data !== "object") return undefined;
+  const availability = (data as Record<string, unknown>).availability;
+  if (!availability || typeof availability !== "object") return undefined;
+  const status = (availability as Record<string, unknown>).status;
+  return typeof status === "string" ? status : undefined;
 }
 
 export async function emitRejectedSourceForThrownRead(input: {

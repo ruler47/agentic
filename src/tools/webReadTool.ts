@@ -1,3 +1,4 @@
+import { extractPageAvailability } from "./pageAvailability.js";
 import { Tool, ToolInput, ToolResult } from "./tool.js";
 
 export class WebReadTool implements Tool {
@@ -30,6 +31,13 @@ export class WebReadTool implements Tool {
           contentType: { type: "string" },
           title: { type: "string" },
           links: { type: "array" },
+          availability: {
+            type: "object",
+            properties: {
+              status: { type: "string", enum: ["in_stock", "out_of_stock", "unknown"] },
+              signals: { type: "array" },
+            },
+          },
           truncated: { type: "boolean" },
         },
       },
@@ -72,6 +80,9 @@ export class WebReadTool implements Tool {
       const title = contentType.includes("html") ? extractTitle(body) : undefined;
       const links = contentType.includes("html") ? extractLinks(body, response.url).slice(0, 80) : [];
       const text = renderBody(body, contentType, format);
+      // Assess buy/in-stock availability from the RAW body, before html->text strips the
+      // <script> schema.org JSON-LD. Generic page metadata (like title/links), not routing.
+      const availability = extractPageAvailability(body, contentType);
 
       return {
         ok: response.ok,
@@ -85,6 +96,7 @@ export class WebReadTool implements Tool {
           contentType,
           title,
           links,
+          availability,
           truncated,
           bytesRead: Math.min(bytes.byteLength, maxBytes),
         },

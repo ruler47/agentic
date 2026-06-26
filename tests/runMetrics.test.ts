@@ -131,6 +131,7 @@ test("deriveRunMetrics projects research coverage from the source-* event stream
     discovered: 3, // apple/ebay/amazon (apple deduped)
     opened: 4, // apple, amazon (passed) + ebay, bh (rejected)
     verified: 2, // apple, amazon
+    unavailable: 0, // no availability signal in this stream
     blocked: 1, // ebay
     failed: 1, // bh
     duplicate: 1, // skipped_reuse
@@ -138,6 +139,31 @@ test("deriveRunMetrics projects research coverage from the source-* event stream
     sourceClassesCovered: 3, // official, retailer, marketplace
     replans: 1,
   });
+});
+
+test("deriveRunMetrics counts an opened out-of-stock page as unavailable", () => {
+  const run = baseRun([
+    {
+      id: "r1",
+      spanId: "r1-span",
+      type: "source-read-recorded",
+      actor: "web.read",
+      activity: "tool",
+      status: "completed",
+      title: "source-read-recorded",
+      timestamp: "2026-06-22T10:00:07.000Z",
+      payload: {
+        normalizedUrl: "https://www.apple.com/shop/product/g1cejll/a/refurbished-mac-studio",
+        sourceType: "official",
+        availability: "out_of_stock",
+        output: { status: "passed" },
+      },
+    },
+  ]);
+
+  const coverage = deriveRunMetrics(run).researchCoverage;
+  assert.equal(coverage.verified, 1);
+  assert.equal(coverage.unavailable, 1);
 });
 
 test("deriveRunMetrics reports zero research coverage for a no-research run", () => {
@@ -159,6 +185,7 @@ test("deriveRunMetrics reports zero research coverage for a no-research run", ()
     discovered: 0,
     opened: 0,
     verified: 0,
+    unavailable: 0,
     blocked: 0,
     failed: 0,
     duplicate: 0,

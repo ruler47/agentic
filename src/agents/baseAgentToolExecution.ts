@@ -571,6 +571,7 @@ export async function handleBaseAgentRegisteredToolCall(
   }
 
   const preview = renderToolResultForModel(result, tool, catalogEntry);
+  const availabilityNotice = sourceAvailabilityNotice(tool, result);
   let savedProofArtifactNotice: string | undefined;
   if (result.ok) {
     successfulToolCalls += 1;
@@ -701,6 +702,7 @@ export async function handleBaseAgentRegisteredToolCall(
     result.ok,
     [
       preview,
+      availabilityNotice,
       savedProofArtifactNotice,
       result.ok && !taskFrame.researchContract.requiresClaimBasedProof && !shouldRequireResearchContract({
         taskFrame,
@@ -745,6 +747,37 @@ function isSourceReadTool(tool: Tool): boolean {
   const haystack = `${tool.name} ${tool.description} ${tool.capabilities.join(" ")}`;
   return /web[.\s_-]*(?:read|extract)|web-read|web-extract|page[.\s_-]*(?:read|extract)|source[.\s_-]*(?:read|extract)/i
     .test(haystack);
+}
+
+// Turn the deterministic page-availability signal (web.read result.data.availability) into
+// an explicit verdict the model must heed before presenting a link as buyable. A general
+// "did the page you opened actually show this item as purchasable" check — the systemic cure
+// for presenting opened-but-out-of-stock listings (e.g. a 200 Apple refurb page that is
+// schema.org OutOfStock with a disabled Add to Bag) as "in stock".
+function sourceAvailabilityNotice(tool: Tool, result: ToolResult): string | undefined {
+  if (!result.ok || !isSourceReadTool(tool)) return undefined;
+  const data = result.data;
+  if (!data || typeof data !== "object") return undefined;
+  const availability = (data as Record<string, unknown>).availability;
+  if (!availability || typeof availability !== "object") return undefined;
+  const status = (availability as Record<string, unknown>).status;
+  const signalsRaw = (availability as Record<string, unknown>).signals;
+  const signals = Array.isArray(signalsRaw)
+    ? signalsRaw.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const signalText = signals.length ? ` (signals: ${signals.join("; ")})` : "";
+  if (status === "out_of_stock") {
+    return [
+      `AVAILABILITY CHECK (deterministic, from the page you just opened)${signalText}:`,
+      "this page signals the item is OUT OF STOCK / not buyable right now.",
+      "Do NOT present this link as a place to buy and do NOT claim it is in stock.",
+      "Drop it as a dead listing, or mention it only as explicitly unavailable, and find a link whose page shows the item actually purchasable.",
+    ].join(" ");
+  }
+  if (status === "in_stock") {
+    return `AVAILABILITY CHECK: this page signals the item is purchasable${signalText}. It is a valid candidate to present as a verified buy link.`;
+  }
+  return undefined;
 }
 
 function recordSourceSearchLanguage(

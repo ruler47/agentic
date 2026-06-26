@@ -42,6 +42,7 @@ export type RunResearchCoverage = {
   discovered: number; // distinct sources surfaced by search
   opened: number; // distinct sources a read was attempted on (passed + blocked + failed)
   verified: number; // distinct sources read successfully (passed)
+  unavailable: number; // distinct opened sources whose page signals out-of-stock / not buyable
   blocked: number; // distinct sources whose read was blocked (bot-wall / 403)
   failed: number; // distinct sources whose read errored / was unreachable
   duplicate: number; // reads skipped because the source was already read this run
