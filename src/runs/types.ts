@@ -34,6 +34,22 @@ export type PublicRunRecord = Omit<AgentRunRecord, "result"> & {
   result?: AgentRunResult;
 };
 
+// Per-run research breadth/quality projection (task 18, step 1: observability-first).
+// Read off run.metrics instead of reconstructing the discovered/opened/verified split
+// from raw source-* events. All counts are over DISTINCT normalized source URLs except
+// `duplicate` (skipped re-reads) and `replans` (adaptive search-plan repairs).
+export type RunResearchCoverage = {
+  discovered: number; // distinct sources surfaced by search
+  opened: number; // distinct sources a read was attempted on (passed + blocked + failed)
+  verified: number; // distinct sources read successfully (passed)
+  blocked: number; // distinct sources whose read was blocked (bot-wall / 403)
+  failed: number; // distinct sources whose read errored / was unreachable
+  duplicate: number; // reads skipped because the source was already read this run
+  distinctDomains: number; // distinct hostnames across discovered + opened
+  sourceClassesCovered: number; // distinct source classes (official/retailer/marketplace/...) opened
+  replans: number; // adaptive source-search-plan repairs requested this run
+};
+
 export type RunMetrics = {
   startedAt: string;
   completedAt?: string;
@@ -42,6 +58,7 @@ export type RunMetrics = {
   toolCalls: number;
   failedToolCalls: number;
   artifacts: number;
+  researchCoverage: RunResearchCoverage;
   tokenUsage: TokenUsage;
   models: Array<{
     model: string;

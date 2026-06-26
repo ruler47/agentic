@@ -1,5 +1,5 @@
 import type { AgentEvent, ModelTier, TokenUsage } from "../types.js";
-import type { AgentRunRecord, RunMetrics } from "./types.js";
+import type { AgentRunRecord, RunMetrics, RunResearchCoverage } from "./types.js";
 
 const SLOWEST_EVENT_LIMIT = 5;
 
@@ -71,6 +71,7 @@ export function deriveRunMetrics(run: AgentRunRecord): RunMetrics {
     toolCalls: toolEvents.length,
     failedToolCalls: toolEvents.filter((event) => event.status === "failed").length,
     artifacts: artifactCount(run, events),
+    researchCoverage: deriveResearchCoverage(events),
     tokenUsage,
     models: [...modelStats.values()]
       .map((entry) => ({
@@ -134,6 +135,9 @@ export function aggregateRunMetrics(runs: AgentRunRecord[]): RunMetrics {
     toolCalls: enriched.reduce((sum, metrics) => sum + metrics.toolCalls, 0),
     failedToolCalls: enriched.reduce((sum, metrics) => sum + metrics.failedToolCalls, 0),
     artifacts: enriched.reduce((sum, metrics) => sum + metrics.artifacts, 0),
+    researchCoverage: sumResearchCoverage(
+      enriched.map((metrics) => metrics.researchCoverage ?? emptyResearchCoverage()),
+    ),
     tokenUsage,
     models: [...modelStats.values()]
       .map((entry) => ({
@@ -148,6 +152,126 @@ export function aggregateRunMetrics(runs: AgentRunRecord[]): RunMetrics {
       .sort((a, b) => b.durationMs - a.durationMs)
       .slice(0, SLOWEST_EVENT_LIMIT),
   };
+}
+
+// Project the source-* event stream into a research-breadth summary. Pure over events:
+// no behavior change, just a number to read off run.metrics. Counts are over DISTINCT
+// normalized source URLs (deduped) so a re-read does not inflate `opened`.
+function deriveResearchCoverage(events: AgentEvent[]): RunResearchCoverage {
+  const discovered = new Set<string>();
+  const opened = new Set<string>();
+  const verified = new Set<string>();
+  const blocked = new Set<string>();
+  const failed = new Set<string>();
+  const domains = new Set<string>();
+  const classes = new Set<string>();
+  let duplicate = 0;
+  let replans = 0;
+
+  for (const event of events) {
+    if (event.type === "agent-source-search-plan-repair-requested") {
+      replans += 1;
+      continue;
+    }
+    const payload = payloadRecord(event.payload);
+    const url = typeof payload?.normalizedUrl === "string" ? payload.normalizedUrl : undefined;
+    const sourceType = typeof payload?.sourceType === "string" ? payload.sourceType : undefined;
+    const status = readStatusField(payload);
+
+    switch (event.type) {
+      case "source-discovered":
+        if (url) {
+          discovered.add(url);
+          addDomain(domains, url);
+        }
+        break;
+      case "source-read-recorded":
+        if (url) {
+          opened.add(url);
+          verified.add(url);
+          addDomain(domains, url);
+          if (sourceType) classes.add(sourceType);
+        }
+        break;
+      case "source-rejected":
+        if (url) {
+          opened.add(url);
+          addDomain(domains, url);
+          if (sourceType) classes.add(sourceType);
+          if (status === "blocked") blocked.add(url);
+          else failed.add(url);
+        }
+        break;
+      case "source-read-skipped":
+        if (status === "skipped_reuse") duplicate += 1;
+        break;
+      default:
+        break;
+    }
+  }
+
+  return {
+    discovered: discovered.size,
+    opened: opened.size,
+    verified: verified.size,
+    blocked: blocked.size,
+    failed: failed.size,
+    duplicate,
+    distinctDomains: domains.size,
+    sourceClassesCovered: classes.size,
+    replans,
+  };
+}
+
+function sumResearchCoverage(parts: RunResearchCoverage[]): RunResearchCoverage {
+  return parts.reduce<RunResearchCoverage>(
+    (sum, part) => ({
+      discovered: sum.discovered + part.discovered,
+      opened: sum.opened + part.opened,
+      verified: sum.verified + part.verified,
+      blocked: sum.blocked + part.blocked,
+      failed: sum.failed + part.failed,
+      duplicate: sum.duplicate + part.duplicate,
+      distinctDomains: sum.distinctDomains + part.distinctDomains,
+      sourceClassesCovered: sum.sourceClassesCovered + part.sourceClassesCovered,
+      replans: sum.replans + part.replans,
+    }),
+    emptyResearchCoverage(),
+  );
+}
+
+function emptyResearchCoverage(): RunResearchCoverage {
+  return {
+    discovered: 0,
+    opened: 0,
+    verified: 0,
+    blocked: 0,
+    failed: 0,
+    duplicate: 0,
+    distinctDomains: 0,
+    sourceClassesCovered: 0,
+    replans: 0,
+  };
+}
+
+function readStatusField(payload?: Record<string, unknown>): string | undefined {
+  const output = payloadRecord(payload?.output);
+  const status = output?.status;
+  return typeof status === "string" ? status : undefined;
+}
+
+function addDomain(set: Set<string>, url: string): void {
+  const host = hostFromUrl(url);
+  if (host) set.add(host);
+}
+
+function hostFromUrl(url: string): string | undefined {
+  try {
+    const host = new URL(url).host;
+    return host || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function addTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {

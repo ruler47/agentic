@@ -93,6 +93,105 @@ test("deriveRunMetrics marks old runs without usage as unavailable", () => {
   assert.deepEqual(metrics.tokenUsage, { source: "unavailable" });
 });
 
+test("deriveRunMetrics projects research coverage from the source-* event stream", () => {
+  const apple = "https://www.apple.com/shop/buy-mac/mac-studio";
+  const ebay = "https://www.ebay.com/itm/123";
+  const amazon = "https://www.amazon.com/dp/B0";
+  const bh = "https://www.bhphotovideo.com/c/product/1";
+
+  const run = baseRun([
+    srcEvent("d1", "source-discovered", apple, "official"),
+    srcEvent("d2", "source-discovered", ebay, "marketplace"),
+    srcEvent("d3", "source-discovered", amazon, "retailer"),
+    // duplicate discovery of the same normalized URL must not inflate `discovered`.
+    srcEvent("d4", "source-discovered", apple, "official"),
+    srcEvent("r1", "source-read-recorded", apple, "official", "passed"),
+    srcEvent("r2", "source-read-recorded", amazon, "retailer", "passed"),
+    // a bot-walled shop (403) is opened-but-blocked, not failed.
+    srcEvent("r3", "source-rejected", ebay, "marketplace", "blocked"),
+    // bhphoto was never discovered, only attempted and errored.
+    srcEvent("r4", "source-rejected", bh, "retailer", "failed"),
+    srcEvent("s1", "source-read-skipped", apple, "official", "skipped_reuse"),
+    {
+      id: "rp1",
+      spanId: "replan-1",
+      type: "agent-source-search-plan-repair-requested",
+      actor: "base-agent",
+      activity: "agent",
+      status: "completed",
+      title: "Replan source search",
+      timestamp: "2026-06-22T10:00:08.000Z",
+      payload: { reason: "low-yield" },
+    },
+  ]);
+
+  const coverage = deriveRunMetrics(run).researchCoverage;
+
+  assert.deepEqual(coverage, {
+    discovered: 3, // apple/ebay/amazon (apple deduped)
+    opened: 4, // apple, amazon (passed) + ebay, bh (rejected)
+    verified: 2, // apple, amazon
+    blocked: 1, // ebay
+    failed: 1, // bh
+    duplicate: 1, // skipped_reuse
+    distinctDomains: 4, // apple/ebay/amazon/bhphotovideo
+    sourceClassesCovered: 3, // official, retailer, marketplace
+    replans: 1,
+  });
+});
+
+test("deriveRunMetrics reports zero research coverage for a no-research run", () => {
+  const run = baseRun([
+    {
+      id: "e1",
+      spanId: "llm-1",
+      type: "agent-invocation-decision-selected",
+      actor: "base-agent",
+      activity: "llm",
+      status: "completed",
+      title: "LLM step 1",
+      timestamp: "2026-06-22T10:00:03.000Z",
+      payload: { output: { content: "ok" } },
+    },
+  ]);
+
+  assert.deepEqual(deriveRunMetrics(run).researchCoverage, {
+    discovered: 0,
+    opened: 0,
+    verified: 0,
+    blocked: 0,
+    failed: 0,
+    duplicate: 0,
+    distinctDomains: 0,
+    sourceClassesCovered: 0,
+    replans: 0,
+  });
+});
+
+function srcEvent(
+  id: string,
+  type: AgentRunRecord["events"][number]["type"],
+  normalizedUrl: string,
+  sourceType: string,
+  status?: string,
+): AgentRunRecord["events"][number] {
+  return {
+    id,
+    spanId: `${id}-span`,
+    type,
+    actor: "web.read",
+    activity: "tool",
+    status: "completed",
+    title: type,
+    timestamp: "2026-06-22T10:00:07.000Z",
+    payload: {
+      normalizedUrl,
+      sourceType,
+      ...(status ? { output: { status } } : {}),
+    },
+  };
+}
+
 function baseRun(events: AgentRunRecord["events"]): AgentRunRecord {
   return {
     id: "run_1",
