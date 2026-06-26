@@ -191,13 +191,22 @@ export function renderData(data: unknown): string {
   if (data === undefined || data === null) return "";
   if (typeof data === "string") return data.slice(0, 2_000);
   if (typeof data === "number" || typeof data === "boolean") return String(data);
-  if (Array.isArray(data)) return JSON.stringify(sanitizeToolDataForPreview(data.slice(0, 20))).slice(0, 2_000);
+  if (Array.isArray(data)) return jsonPreview(data.slice(0, 20), 2_000);
   if (typeof data !== "object") return "";
   const lines: string[] = [];
   for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
-    lines.push(`${key}: ${JSON.stringify(sanitizeToolDataForPreview(value)).slice(0, 1_000)}`);
+    lines.push(`${key}: ${jsonPreview(value, 1_000)}`);
   }
   return lines.join("\n");
+}
+
+// JSON.stringify returns undefined for undefined/function/symbol values, so calling
+// .slice on it directly crashes ("Cannot read properties of undefined (reading 'slice')").
+// Tool result objects can legitimately carry undefined-valued fields (e.g. web.read on a
+// 403 leaves finalUrl/contentType undefined), so any stringify-then-slice of tool data
+// must go through here. Keep this the single funnel for that pattern.
+function jsonPreview(value: unknown, max: number): string {
+  return (JSON.stringify(sanitizeToolDataForPreview(value)) ?? "").slice(0, max);
 }
 
 export function renderRepairableToolFailure(result: ToolResult): string {
@@ -244,7 +253,7 @@ export function extractPrimaryResultFields(
       toolVersion: tool?.version ?? catalogEntry?.version,
       path: entry.path,
       value: entry.value,
-      valuePreview: JSON.stringify(sanitizeToolDataForPreview(entry.value)).slice(0, 300),
+      valuePreview: jsonPreview(entry.value, 300),
     }));
 }
 
