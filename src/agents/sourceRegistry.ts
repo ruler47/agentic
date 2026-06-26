@@ -46,6 +46,18 @@ export class RunSourceRegistry {
     return normalizedUrl ? this.records.get(normalizedUrl) : undefined;
   }
 
+  // Breadth snapshot for the return-gate breadth check: how many distinct sources were
+  // surfaced by search vs actually opened (any read attempt, incl. blocked/out-of-stock).
+  coverageCounts(): { discovered: number; opened: number } {
+    let discovered = 0;
+    let opened = 0;
+    for (const record of this.records.values()) {
+      if (record.discoveredBy.length > 0) discovered += 1;
+      if (record.readAttempts.length > 0) opened += 1;
+    }
+    return { discovered, opened };
+  }
+
   shouldSkipRead(input: Record<string, unknown>): SourceReadSkip | undefined {
     const originalUrl = extractUrlFromToolInput(input);
     if (!originalUrl) return undefined;

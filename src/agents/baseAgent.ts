@@ -27,9 +27,11 @@ import { inferExplicitToolNeed, shouldAnswerWithoutTools } from "./baseAgentTool
 import { handleWorkingBoardToolCall } from "./baseAgentWorkingBoard.js";
 import { containsRawToolCallSyntax, createAgentSpanId, createLlmSpanId, failedResult, normalizeRunContext, publicArtifactForTrace, publicMessageForTrace, publicProofEvidenceForTrace } from "./baseAgentTrace.js";
 import { RunSourceRegistry } from "./sourceRegistry.js";
+import { requestResearchBreadthRepair } from "./baseAgentBreadth.js";
+import { requestResearchContractRepair } from "./baseAgentResearchContractRepair.js";
 import type { BaseAgentRunOptions, BaseAgentToolCandidateAccepted, CachedToolCall, FailedToolCall, ProofEvidence, ToolPrimaryResult, ToolCreationOutcome, ToolEditOutcome } from "./baseAgentTypes.js";
 import { PROOF_SOURCE_URL_LIMIT } from "./proofSourceUrls.js";
-import { defaultMaxStepsForTaskFrame, frameTask, researchContractRepairInstructionForModel, shouldRequireResearchContract } from "./taskFrame.js";
+import { defaultMaxStepsForTaskFrame, frameTask, shouldRequireResearchContract } from "./taskFrame.js";
 
 export type { BaseAgentToolCatalogEntry } from "./agentToolCatalog.js";
 export type { BaseAgentRunContext, BaseAgentRunOptions, BaseAgentToolCandidateAccepted, BaseAgentToolCreationRequest, BaseAgentToolCreationResult, BaseAgentToolEditRequest, BaseAgentToolEditResult } from "./baseAgentTypes.js";
@@ -73,6 +75,7 @@ export class BaseAgent {
     let successfulResearchToolCalls = 0;
     let successfulSourceReadToolCalls = 0;
     let researchRepairAttempts = 0;
+    let researchBreadthRepairAttempts = 0;
     let sourceGroundingRepairAttempts = 0;
     let sourceSearchPlanRepairAttempts = 0;
     let latestDraftAnswerForProof = "";
@@ -361,7 +364,7 @@ export class BaseAgent {
           finalAnswer = "";
           continue;
         }
-        const researchRepairInstruction = researchContractRepairInstructionForModel({
+        const researchRepair = await requestResearchContractRepair({
           taskFrame,
           finalAnswer,
           sourceUrls: [...externalDataEvidenceUrls],
@@ -370,40 +373,35 @@ export class BaseAgent {
           attemptedToolCalls,
           maxToolCalls,
           tools,
+          repairAttempts: researchRepairAttempts,
+          step,
+          maxSteps,
+          messages,
+          onEvent: options.onEvent,
+          parentSpanId: llmSpanId,
+          startedAt,
         });
-        if (
-          researchRepairInstruction &&
-          researchRepairAttempts < 2 &&
-          hasRemainingSteps(step, maxSteps) &&
-          hasRemainingToolCalls(attemptedToolCalls, maxToolCalls)
-        ) {
-          researchRepairAttempts += 1;
-          messages.push({ role: "assistant", content: finalAnswer });
-          messages.push({ role: "user", content: researchRepairInstruction });
-          await emit(options.onEvent, {
-            parentSpanId: llmSpanId,
-            type: "agent-research-contract-repair-requested",
-            actor: "base-agent",
-            activity: "agent",
-            status: "completed",
-            title: "Research contract repair requested",
-            detail: "Final answer was blocked until the broad-task research contract is satisfied.",
-            startedAt,
-            completedAt: new Date(),
-            payload: {
-              attempt: researchRepairAttempts,
-              taskFrame,
-              input: {
-                finalAnswer: limitText(finalAnswer, 4_000),
-                sourceUrls: [...externalDataEvidenceUrls].slice(0, PROOF_SOURCE_URL_LIMIT),
-                successfulResearchToolCalls,
-                successfulSourceReadToolCalls,
-              },
-              output: {
-                instruction: researchRepairInstruction,
-              },
-            },
-          });
+        if (researchRepair.repaired) {
+          researchRepairAttempts = researchRepair.repairAttempts;
+          finalAnswer = "";
+          continue;
+        }
+        const breadthRepair = await requestResearchBreadthRepair({
+          taskFrame,
+          coverage: sourceRegistry.coverageCounts(),
+          repairAttempts: researchBreadthRepairAttempts,
+          step,
+          maxSteps,
+          attemptedToolCalls,
+          maxToolCalls,
+          messages,
+          finalAnswer,
+          onEvent: options.onEvent,
+          parentSpanId: llmSpanId,
+          startedAt,
+        });
+        if (breadthRepair.repaired) {
+          researchBreadthRepairAttempts = breadthRepair.repairAttempts;
           finalAnswer = "";
           continue;
         }
@@ -576,7 +574,7 @@ export class BaseAgent {
             finalAnswer = "";
             continue;
           }
-          const researchRepairInstruction = researchContractRepairInstructionForModel({
+          const researchRepair = await requestResearchContractRepair({
             taskFrame,
             finalAnswer,
             sourceUrls: [...externalDataEvidenceUrls],
@@ -585,40 +583,37 @@ export class BaseAgent {
             attemptedToolCalls,
             maxToolCalls,
             tools,
+            repairAttempts: researchRepairAttempts,
+            step,
+            maxSteps,
+            messages,
+            onEvent: options.onEvent,
+            parentSpanId: llmSpanId,
+            startedAt,
+            toolCallId: call.id,
           });
-          if (
-            researchRepairInstruction &&
-            researchRepairAttempts < 2 &&
-            hasRemainingSteps(step, maxSteps) &&
-            hasRemainingToolCalls(attemptedToolCalls, maxToolCalls)
-          ) {
-            researchRepairAttempts += 1;
-            messages.push(toolMessage(call.id, false, researchRepairInstruction));
-            messages.push({ role: "user", content: researchRepairInstruction });
-            await emit(options.onEvent, {
-              parentSpanId: llmSpanId,
-              type: "agent-research-contract-repair-requested",
-              actor: "base-agent",
-              activity: "agent",
-              status: "completed",
-              title: "Research contract repair requested",
-              detail: "finish() was blocked until the broad-task research contract is satisfied.",
-              startedAt,
-              completedAt: new Date(),
-              payload: {
-                attempt: researchRepairAttempts,
-                taskFrame,
-                input: {
-                  finalAnswer: limitText(finalAnswer, 4_000),
-                  sourceUrls: [...externalDataEvidenceUrls].slice(0, PROOF_SOURCE_URL_LIMIT),
-                  successfulResearchToolCalls,
-                  successfulSourceReadToolCalls,
-                },
-                output: {
-                  instruction: researchRepairInstruction,
-                },
-              },
-            });
+          if (researchRepair.repaired) {
+            researchRepairAttempts = researchRepair.repairAttempts;
+            finalAnswer = "";
+            continue;
+          }
+          const breadthRepair = await requestResearchBreadthRepair({
+            taskFrame,
+            coverage: sourceRegistry.coverageCounts(),
+            repairAttempts: researchBreadthRepairAttempts,
+            step,
+            maxSteps,
+            attemptedToolCalls,
+            maxToolCalls,
+            messages,
+            finalAnswer,
+            onEvent: options.onEvent,
+            parentSpanId: llmSpanId,
+            startedAt,
+            toolCallId: call.id,
+          });
+          if (breadthRepair.repaired) {
+            researchBreadthRepairAttempts = breadthRepair.repairAttempts;
             finalAnswer = "";
             continue;
           }
