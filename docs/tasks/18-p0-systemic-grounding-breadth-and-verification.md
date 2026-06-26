@@ -259,3 +259,29 @@ Removed (folded into general mechanisms):
 Deferred (next wave, NOT this change): `isToolLifecycleOnlyTask` (`taskFrame.ts:91`),
 `looksLikeLocalUtilityTask` (`taskFrame.ts:811`), the per-mode budget table
 (`taskFrame.ts:80-88`), `baseAgentToolScope.ts` regex scoping.
+
+## Progress
+
+- **Step 1 (observability) — done, pushed (b577374).** `researchCoverage{discovered, opened,
+  verified, unavailable, blocked, failed, duplicate, distinctDomains, sourceClassesCovered,
+  replans}` on `run.metrics`, projected from the source-* event stream.
+- **Step 2a (availability signal) — done, pushed (4395f47).** `src/tools/pageAvailability.ts`
+  `extractPageAvailability(html)` → in_stock | out_of_stock | unknown from web standards
+  (schema.org Offer.availability, disabled add-to-cart) + a small EN/RU stock-status phrase
+  fallback; `web.read` attaches `data.availability`; the agent injects an explicit AVAILABILITY
+  verdict into the model's tool message; `researchCoverage.unavailable` counts opened
+  out-of-stock pages.
+- **Live end-to-end verification (2026-06-26).** Re-ran "найди где купить apple studio m3
+  ultra 512 gb" on the durable stack (after restarting it onto the fixed code AND killing a
+  recurring `python -m http.server 8080` squatter that was shadowing searxng on host IPv4 and
+  making `web.search` 404 — see project memory). Result `run_1782479898453_wrggxf37`:
+  completed (no `.slice` crash), discovered 28 / opened 15 / 23 domains; returned FIVE concrete
+  512GB buy links at third-party retailers (Apple discontinued the 512GB config). Independent
+  re-fetch of all five: 2 genuinely in_stock + 512GB (upgadget.ru, my-apple-store.ru), 1 live
+  (asbis.ua), 1 out_of_stock that the agent honestly labelled "coming soon" (rifastore.ru), 1
+  unreachable from the test host (store-apple.msk.ru — possible over-claim of "in stock"). A
+  large improvement over the earlier "all 3 links dead" failure.
+- **Still open (steps 3–6):** the deterministic block-the-run verify gate (existence +
+  presented-URL + out-of-stock), the frame detector/composer that deletes the regex zoo, and
+  the breadth budget + adaptive replan controller. Live coverage still shows
+  `sourceClassesCovered: 2` and `replans: 0` — breadth/strategy is not yet systemically forced.
