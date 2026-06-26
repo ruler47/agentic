@@ -79,6 +79,10 @@ export function defaultMaxStepsForTaskFrame(taskFrame: TaskFrame): number {
   // preparation + proof — observed live to exceed the selection budget.
   if (taskFrame.externalActionPolicy) return 18;
   if (taskFrame.mode === "local_utility") return 6;
+  // Commerce / "where to buy" must open and verify several candidate
+  // listings (search -> open each -> confirm live & buyable), which needs
+  // more room than a single-fact lookup.
+  if (taskFrame.mode === "current_lookup" && /where to buy a product/.test(taskFrame.reason)) return 16;
   return taskFrame.mode === "product_selection" || taskFrame.researchDepth === "structured_selection"
     ? 12
     : DEFAULT_MAX_STEPS;
@@ -562,23 +566,24 @@ function frameTaskCore(task: string, options: TaskFrameOptions): TaskFrameCore {
         ],
         answerContract: {
           mustDo: [
-            "list concrete buy links (direct product/listing URLs the user can open and purchase from) — take them from the search results or opened pages",
-            "for each link give seller, price, and availability/stock when visible",
-            "rank official store > reputable retailer > marketplace",
-            "if the exact config is unavailable, give the closest CONCRETE buyable alternative link, not advice",
+            "OPEN every link before you present it (web.read, then browser.operate if the page is blocked/empty) and confirm it loaded as a real product page for THIS item with a visible price and a buy/add-to-cart/in-stock signal",
+            "present ONLY links you opened and verified as live and buyable; for each give seller, price, and stock as seen on the opened page; rank official store > reputable retailer > marketplace",
+            "if a candidate link returns an error / 404 / 'sold' / 'listing ended' / 'no longer available' / a bot-block page, DROP it — do not present it",
+            "if you could not verify ANY link as currently buyable, say so honestly and give the closest alternative you DID verify is available (e.g. the nearest in-stock configuration), with its opened link",
           ],
           mustAvoid: [
+            "presenting a link you did not open and verify on this run",
+            "presenting a dead / sold / ended / error / out-of-stock listing as if it were buyable",
             "answering whether the product exists from model memory",
-            "naming a platform (eBay/Amazon) without a real product/listing URL",
-            "telling the user to search elsewhere or 'check' a site themselves",
-            "generic buying advice instead of concrete links",
+            "naming a platform (eBay/Amazon) without a verified product/listing URL",
+            "telling the user to search elsewhere or 'check' a site themselves instead of verifying it yourself",
           ],
           finalAnswerShape: [
-            "short verdict: where it can be bought",
-            "ranked list of direct buy links with seller / price / stock",
-            "closest buyable alternative link if the exact item is unavailable",
+            "short honest verdict: is it currently buyable and where (or 'not currently buyable, here is the closest verified-available option')",
+            "ranked list of VERIFIED-LIVE buy links with seller / price / stock as opened",
+            "if the exact item is unavailable: the closest configuration you verified is in stock, with its link",
           ],
-          proofStrategy: "Use the shop/listing pages found via search as the source of truth; a product URL from a search result is a valid buy link even if the page could not be fully read.",
+          proofStrategy: "The opened product/listing page (web.read or browser.operate render) is the source of truth. A search-result URL is only a CANDIDATE — it must be opened and confirmed live and buyable before it goes into the answer; an unopened or error/sold page must never be presented as a buy link.",
         },
         externalActionPolicy,
         // Keep the gate satisfiable by search alone: modern shop pages often

@@ -26,17 +26,21 @@ for (const task of COMMERCE_TASKS) {
       frame.researchContract.minResearchToolCalls >= 1,
       `must require >= 1 research call, got ${frame.researchContract.minResearchToolCalls}`,
     );
-    // The deliverable is concrete buy links, not advice: demand direct
-    // product/listing URLs; forbid "search elsewhere" advice and memory-based
-    // existence claims. (The gate stays satisfiable by search alone because
-    // modern shop pages often block scraping.)
+    // The deliverable is VERIFIED-live buy links, not advice or dead links:
+    // open each candidate, present only confirmed-buyable ones, drop
+    // error/sold/blocked pages, be honest if none verify. (Research contract
+    // stays lenient so the run does not fail when shops block scraping.)
     assert.ok(
-      frame.answerContract.mustDo.some((item) => /buy link|product\/listing|direct product/i.test(item)),
-      "must require concrete buy links",
+      frame.answerContract.mustDo.some((item) => /open every link|opened and verified/i.test(item)),
+      "must require opening/verifying each link",
     );
     assert.ok(
-      frame.answerContract.mustAvoid.some((item) => /search elsewhere|search themselves|generic buying advice/i.test(item)),
-      "must forbid generic advice / telling the user to search elsewhere",
+      frame.answerContract.mustDo.some((item) => /present only/i.test(item)),
+      "must present only verified-live buyable links",
+    );
+    assert.ok(
+      frame.answerContract.mustAvoid.some((item) => /did not open|dead \/ sold|out-of-stock/i.test(item)),
+      "must forbid presenting unverified / dead / out-of-stock links",
     );
     assert.ok(
       frame.answerContract.mustAvoid.some((item) => /model memory|from memory/i.test(item)),

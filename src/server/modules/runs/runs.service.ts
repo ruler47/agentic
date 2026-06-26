@@ -758,6 +758,13 @@ export class RunsService implements OnApplicationBootstrap {
         });
       }
     } catch (error) {
+      // An unexpected exception that escapes the agent loop and fails the run
+      // is a bug (e.g. an intermittent `.slice` on undefined while processing
+      // a web.read result). Log the stack so it can be diagnosed instead of
+      // surfacing only a bare message in run.error.
+      if (error instanceof Error) {
+        this.logger.error(`Run ${id} crashed: ${error.message}`, error.stack);
+      }
       const current = await this.runs.get(id);
       if (!current || current.status === "cancelled") return;
       const message =

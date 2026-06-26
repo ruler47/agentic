@@ -209,3 +209,31 @@ Infra note: the buy-link runs failed twice mid-implementation because a stray ho
 `python3 -m http.server 8080 --bind 127.0.0.1` had grabbed 127.0.0.1:8080 (where
 `SEARXNG_BASE_URL` points), so every `web.search` hit a dead file server. Killing the
 squatter restored search; not a code issue.
+
+**FR-4 (verify links before presenting; be honest) — done and verified live (2026-06-26).**
+Follow-up to FR-3: the agent was returning product URLs taken from search snippets WITHOUT
+opening them, so it presented dead/sold/blocked listings as buyable (live complaint: all 3
+links — an ended eBay item, a bot-blocked B&H page, and a discontinued Apple config — were
+unavailable). The commerce answer contract (`src/agents/taskFrame.ts`) now requires the
+agent to OPEN every candidate link (web.read, then browser.operate if blocked) and confirm
+it loaded as a live product page for the item with a price + buy/in-stock signal; present
+ONLY verified-live links; DROP error/404/sold/ended/blocked pages; and if NONE verify as
+buyable, say so honestly and give the closest alternative it verified is available. The
+commerce step budget was raised to 16 (search + open several candidates + synthesis); the
+research contract stays lenient (minSourceReadToolCalls 0) so the run does not fail when
+shops block scraping. Tests: `tests/commerceFraming.test.ts`.
+
+Live proof `run_1782459979372_pnyn3pje`: the agent opened 9 pages (Apple, Amazon, BestBuy,
+Ozon, eBay, B&H, CDW, ...) and returned an HONEST answer — "the 512 GB config is currently
+not buyable (Apple discontinued it in March 2026 due to a DRAM shortage); here is the
+closest VERIFIED-available configuration (M3 Ultra / 256 GB) with prices and links at Apple
+($7,299) and Amazon" — and explicitly noted the eBay listings were removed/unverifiable
+instead of presenting them as buyable. This is the correct outcome for a genuinely
+discontinued config: verify + be honest, never present dead links.
+
+Known intermittent reliability bug (separate follow-up): a heavy commerce run that opens
+many pages can crash with `TypeError: Cannot read properties of undefined (reading 'slice')`
+while processing a web.read result (observed on a 15-read run; the same 9-read task
+completed fine). It is nondeterministic (depends on a page's response shape). Added a stack
+trace log on run crash in `runs.service.ts` so the next occurrence is diagnosable; the fix
+is to guard the read-result processing path. Track as its own task.
