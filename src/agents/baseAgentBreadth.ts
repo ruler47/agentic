@@ -1,6 +1,8 @@
 import type { AgentEventSink, Message } from "../types.js";
 import { emit, hasRemainingSteps, hasRemainingToolCalls } from "./baseAgentRuntime.js";
 import { toolMessage } from "./baseAgentToolMessages.js";
+import type { RunSourceRegistry } from "./sourceRegistry.js";
+import { presentedLinkVerifyInstruction } from "./baseAgentVerifyLinks.js";
 import type { TaskFrame } from "./taskFrame.js";
 
 export type ResearchCoverageCounts = {
@@ -8,11 +10,14 @@ export type ResearchCoverageCounts = {
   opened: number; // distinct sources with >= 1 read attempt (passed/blocked/failed)
 };
 
-// Return-gate wrapper for the breadth check, mirroring requestSourceSearchPlanRepair: block
-// finish, push a corrective turn, and emit a repair event when research was too shallow.
-export async function requestResearchBreadthRepair(input: {
+// Return-gate wrapper for research quality, mirroring requestSourceSearchPlanRepair: block the
+// finish and push one corrective turn. Two checks in priority order — (1) breadth: open more of
+// what search discovered; (2) presented-link verification: drop/confirm links the answer shows
+// as buy/source links but never opened this run. Either blocks the finish; bounded attempts +
+// remaining budget keep it from looping.
+export async function requestResearchQualityRepair(input: {
   taskFrame: TaskFrame;
-  coverage: ResearchCoverageCounts;
+  sourceRegistry: RunSourceRegistry;
   repairAttempts: number;
   step: number;
   maxSteps?: number;
@@ -25,15 +30,23 @@ export async function requestResearchBreadthRepair(input: {
   startedAt: Date;
   toolCallId?: string;
 }): Promise<{ repaired: boolean; repairAttempts: number }> {
-  const instruction = researchBreadthRepairInstruction({
+  const breadth = researchBreadthRepairInstruction({
     taskFrame: input.taskFrame,
-    coverage: input.coverage,
+    coverage: input.sourceRegistry.coverageCounts(),
     attemptedToolCalls: input.attemptedToolCalls,
     maxToolCalls: input.maxToolCalls ?? Number.POSITIVE_INFINITY,
   });
+  const verify = breadth
+    ? undefined
+    : presentedLinkVerifyInstruction({
+        taskFrame: input.taskFrame,
+        finalAnswer: input.finalAnswer,
+        registry: input.sourceRegistry,
+      });
+  const instruction = breadth ?? verify;
   if (
     !instruction ||
-    input.repairAttempts >= 2 ||
+    input.repairAttempts >= 3 ||
     !hasRemainingSteps(input.step, input.maxSteps) ||
     !hasRemainingToolCalls(input.attemptedToolCalls, input.maxToolCalls)
   ) {
@@ -52,11 +65,13 @@ export async function requestResearchBreadthRepair(input: {
     actor: "base-agent",
     activity: "agent",
     status: "completed",
-    title: "Research breadth repair requested",
-    detail: "Final answer was blocked: discovered many sources but opened too few; opening more before answering.",
+    title: breadth ? "Research breadth repair requested" : "Presented-link verify repair requested",
+    detail: breadth
+      ? "Final answer was blocked: discovered many sources but opened too few; opening more before answering."
+      : "Final answer was blocked: presents links not opened/confirmed this run; verify or drop them.",
     startedAt: input.startedAt,
     completedAt: new Date(),
-    payload: { attempt: repairAttempts, input: { coverage: input.coverage }, output: { instruction } },
+    payload: { attempt: repairAttempts, output: { instruction } },
   });
   return { repaired: true, repairAttempts };
 }

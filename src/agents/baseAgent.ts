@@ -27,7 +27,7 @@ import { inferExplicitToolNeed, shouldAnswerWithoutTools } from "./baseAgentTool
 import { handleWorkingBoardToolCall } from "./baseAgentWorkingBoard.js";
 import { containsRawToolCallSyntax, createAgentSpanId, createLlmSpanId, failedResult, normalizeRunContext, publicArtifactForTrace, publicMessageForTrace, publicProofEvidenceForTrace } from "./baseAgentTrace.js";
 import { RunSourceRegistry } from "./sourceRegistry.js";
-import { requestResearchBreadthRepair } from "./baseAgentBreadth.js";
+import { requestResearchQualityRepair } from "./baseAgentBreadth.js";
 import { requestResearchContractRepair } from "./baseAgentResearchContractRepair.js";
 import type { BaseAgentRunOptions, BaseAgentToolCandidateAccepted, CachedToolCall, FailedToolCall, ProofEvidence, ToolPrimaryResult, ToolCreationOutcome, ToolEditOutcome } from "./baseAgentTypes.js";
 import { PROOF_SOURCE_URL_LIMIT } from "./proofSourceUrls.js";
@@ -75,7 +75,7 @@ export class BaseAgent {
     let successfulResearchToolCalls = 0;
     let successfulSourceReadToolCalls = 0;
     let researchRepairAttempts = 0;
-    let researchBreadthRepairAttempts = 0;
+    let researchQualityRepairAttempts = 0;
     let sourceGroundingRepairAttempts = 0;
     let sourceSearchPlanRepairAttempts = 0;
     let latestDraftAnswerForProof = "";
@@ -386,10 +386,10 @@ export class BaseAgent {
           finalAnswer = "";
           continue;
         }
-        const breadthRepair = await requestResearchBreadthRepair({
+        const qualityRepair = await requestResearchQualityRepair({
           taskFrame,
-          coverage: sourceRegistry.coverageCounts(),
-          repairAttempts: researchBreadthRepairAttempts,
+          sourceRegistry,
+          repairAttempts: researchQualityRepairAttempts,
           step,
           maxSteps,
           attemptedToolCalls,
@@ -400,8 +400,8 @@ export class BaseAgent {
           parentSpanId: llmSpanId,
           startedAt,
         });
-        if (breadthRepair.repaired) {
-          researchBreadthRepairAttempts = breadthRepair.repairAttempts;
+        if (qualityRepair.repaired) {
+          researchQualityRepairAttempts = qualityRepair.repairAttempts;
           finalAnswer = "";
           continue;
         }
@@ -597,10 +597,10 @@ export class BaseAgent {
             finalAnswer = "";
             continue;
           }
-          const breadthRepair = await requestResearchBreadthRepair({
+          const qualityRepair = await requestResearchQualityRepair({
             taskFrame,
-            coverage: sourceRegistry.coverageCounts(),
-            repairAttempts: researchBreadthRepairAttempts,
+            sourceRegistry,
+            repairAttempts: researchQualityRepairAttempts,
             step,
             maxSteps,
             attemptedToolCalls,
@@ -612,8 +612,8 @@ export class BaseAgent {
             startedAt,
             toolCallId: call.id,
           });
-          if (breadthRepair.repaired) {
-            researchBreadthRepairAttempts = breadthRepair.repairAttempts;
+          if (qualityRepair.repaired) {
+            researchQualityRepairAttempts = qualityRepair.repairAttempts;
             finalAnswer = "";
             continue;
           }

@@ -25,6 +25,7 @@ export type RunSourceRecord = {
     status: RunSourceReadStatus;
     reason?: string;
     maxBytes?: number;
+    availability?: string; // in_stock | out_of_stock | unknown (from web.read result.data.availability)
   }>;
   extractedTextPreview?: string;
   evidenceIds?: string[];
@@ -44,6 +45,30 @@ export class RunSourceRegistry {
   getByUrl(url: string): RunSourceRecord | undefined {
     const normalizedUrl = normalizeSourceUrl(url);
     return normalizedUrl ? this.records.get(normalizedUrl) : undefined;
+  }
+
+  // Verdict for a URL the final answer presents as a place to buy / a source, used by the
+  // presented-link verify gate. `known` = the run discovered or read it at all; `passed` = a
+  // successful read this run; `blocked` = a read attempt hit a bot-wall/403 (escape hatch:
+  // acceptable if disclosed); `outOfStock` = the opened page signalled not-buyable.
+  presentedLinkVerdict(url: string): {
+    known: boolean;
+    opened: boolean;
+    passed: boolean;
+    blocked: boolean;
+    outOfStock: boolean;
+  } {
+    const record = this.getByUrl(url);
+    if (!record) return { known: false, opened: false, passed: false, blocked: false, outOfStock: false };
+    const attempts = record.readAttempts;
+    const passed = attempts.some((attempt) => attempt.status === "passed");
+    return {
+      known: true,
+      opened: attempts.length > 0,
+      passed,
+      blocked: attempts.some((attempt) => attempt.status === "blocked"),
+      outOfStock: attempts.some((attempt) => attempt.availability === "out_of_stock"),
+    };
   }
 
   // Breadth snapshot for the return-gate breadth check: how many distinct sources were
@@ -132,6 +157,7 @@ export class RunSourceRegistry {
       status: input.status,
       reason: input.reason,
       maxBytes: input.maxBytes,
+      availability: availabilityFromResult(input.result),
     });
     record.extractedTextPreview = input.status === "passed"
       ? previewText(input.result?.content)
@@ -195,6 +221,15 @@ function hasMaterialRetrySignal(input: Record<string, unknown>): boolean {
     typeof input.strategy === "string" ||
     typeof input.selector === "string" ||
     Boolean(input.headers && typeof input.headers === "object" && !Array.isArray(input.headers));
+}
+
+function availabilityFromResult(result?: ToolResult): string | undefined {
+  const data = result?.data;
+  if (!data || typeof data !== "object") return undefined;
+  const availability = (data as Record<string, unknown>).availability;
+  if (!availability || typeof availability !== "object") return undefined;
+  const status = (availability as Record<string, unknown>).status;
+  return typeof status === "string" ? status : undefined;
 }
 
 function sourceId(normalizedUrl: string): string {

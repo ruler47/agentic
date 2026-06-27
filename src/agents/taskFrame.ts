@@ -85,7 +85,7 @@ export function defaultMaxStepsForTaskFrame(taskFrame: TaskFrame): number {
   // and per-candidate reads around that, a 16-step budget was observed live
   // (run_1782556793419: 7 searches + 3 reads exhausted it at step 17) to run
   // out before the gate could force more opening. Give breadth room to engage.
-  if (taskFrame.mode === "current_lookup" && /where to buy a product/.test(taskFrame.reason)) return 28;
+  if (taskFrame.mode === "current_lookup" && /where to buy a product/.test(taskFrame.reason)) return 100;
   return taskFrame.mode === "product_selection" || taskFrame.researchDepth === "structured_selection"
     ? 12
     : DEFAULT_MAX_STEPS;
