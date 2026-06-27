@@ -308,3 +308,23 @@ Deferred (next wave, NOT this change): `isToolLifecycleOnlyTask` (`taskFrame.ts:
   firing live (this run only presented opened links). Budget 100 is experimental — step 35 was
   used, so it can be tuned down (~40) once step 4 derives it from breadthNeed. Remaining: steps
   4–6 (frame detector + regex-zoo removal; the full breadth/source-class controller).
+
+## Live milestone — gpt-oss-120b, first live verify-gate firing (run_1782582040824)
+
+On a stronger local model (openai/gpt-oss-120b, ~13 min) the full systemic stack engaged as
+designed for "найди где купить ... в Европе":
+- **Breadth:** discovered **79** across **47 distinct domains**, opened **12** (verified 8).
+- **Gates fired LIVE three times:** 1× breadth repair + **2× presented-link verify repair** —
+  the first observed live firing of the verify gate; it forced the model to present ONLY links
+  it had opened this run. All 6 URLs in the final answer were opened+recorded in-run.
+- **Availability signal honest:** mediamarkt.es was read as out_of_stock and the answer labelled
+  it "не в наличии"; an independent re-fetch of all 6 links confirmed every one is live (HTTP
+  200) with none dead — a clean contrast to the original "all 3 links dead" failure.
+- **Honest structured deliverable:** a table of opened-and-confirmed listings with config / price
+  / availability per row.
+- **Caveats:** Apple IE was labelled "in stock" but an independent fetch now reads out_of_stock
+  (Apple stock fluctuates / page variance) — one imperfect availability claim. And the model
+  resolved the ambiguous "512 GB" as 512 GB SSD (96 GB RAM configs) rather than the scarce 512 GB
+  RAM config; defensible and honest about the actual config in the table, but a reminder the
+  frame should disambiguate spec terms (future work). Model quality dominates breadth: gpt-oss-120b
+  goes broad and the gates engage; small/fast models open fewer before answering.
