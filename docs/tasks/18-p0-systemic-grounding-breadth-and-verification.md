@@ -285,3 +285,26 @@ Deferred (next wave, NOT this change): `isToolLifecycleOnlyTask` (`taskFrame.ts:
   presented-URL + out-of-stock), the frame detector/composer that deletes the regex zoo, and
   the breadth budget + adaptive replan controller. Live coverage still shows
   `sourceClassesCovered: 2` and `replans: 0` — breadth/strategy is not yet systemically forced.
+
+## Progress (cont.) — step A (verify gate) + budget experiment, live on gemma-4-26b-a4b
+
+- **Step A (presented-link verify gate) — done, pushed (8640873).** Folded into the research
+  return-gate (`requestResearchQualityRepair`: breadth first, then link verification). Extracts
+  every URL the final answer presents and checks it against RunSourceRegistry; a link never
+  opened/confirmed this run (or opened-but-out-of-stock) blocks the finish; a 403/blocked read
+  is allowed via the honesty escape hatch. `RunSourceRegistry` now records per-read availability
+  and exposes `presentedLinkVerdict()`. Tests: `tests/verifyLinks.test.ts`.
+- **Step budget experiment (user request): commerce 28 -> 100.** The 16/28 budgets were
+  exhausted by the model over-searching before the gates could engage.
+- **Live `run_1782558560301` (gemma-4-26b-a4b, ~6 min):** discovered 31 / **opened 8** (breadth
+  target met — the budget headroom let the model open enough on its own, so the gate did not need
+  to fire) / 18 domains / finished at step 35 (no runaway). Answer was honest and grounded: the
+  512 GB config is discontinued, not available new in the EU; it presented TWO verified Apple
+  links and pointed to the used market honestly WITHOUT fabricating an "active" listing — the
+  earlier failure (presenting two unverifiable eBay item URLs as active, `run_1782557388297`) did
+  NOT recur. The availability signal flagged `materiel.net` as out_of_stock and it was correctly
+  left out of the answer.
+- **Open / next:** the verify gate is unit-proven and in place but has not yet been observed
+  firing live (this run only presented opened links). Budget 100 is experimental — step 35 was
+  used, so it can be tuned down (~40) once step 4 derives it from breadthNeed. Remaining: steps
+  4–6 (frame detector + regex-zoo removal; the full breadth/source-class controller).
