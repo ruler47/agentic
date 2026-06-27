@@ -80,9 +80,12 @@ export function defaultMaxStepsForTaskFrame(taskFrame: TaskFrame): number {
   if (taskFrame.externalActionPolicy) return 18;
   if (taskFrame.mode === "local_utility") return 6;
   // Commerce / "where to buy" must open and verify several candidate
-  // listings (search -> open each -> confirm live & buyable), which needs
-  // more room than a single-fact lookup.
-  if (taskFrame.mode === "current_lookup" && /where to buy a product/.test(taskFrame.reason)) return 16;
+  // listings (search -> open each -> confirm live & buyable). The breadth
+  // return-gate asks the model to open ~8 distinct sources; with the searches
+  // and per-candidate reads around that, a 16-step budget was observed live
+  // (run_1782556793419: 7 searches + 3 reads exhausted it at step 17) to run
+  // out before the gate could force more opening. Give breadth room to engage.
+  if (taskFrame.mode === "current_lookup" && /where to buy a product/.test(taskFrame.reason)) return 28;
   return taskFrame.mode === "product_selection" || taskFrame.researchDepth === "structured_selection"
     ? 12
     : DEFAULT_MAX_STEPS;
