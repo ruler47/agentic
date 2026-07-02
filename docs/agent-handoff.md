@@ -1,6 +1,6 @@
 # Agent Handoff
 
-Status date: 2026-06-25.
+Status date: 2026-07-02.
 
 ## Active Base
 
@@ -16,12 +16,79 @@ new primary branch.
 - Active executable task queue: `docs/tasks/README.md`.
 - Active architecture map: `docs/current-architecture.md`.
 - Current active implementation task:
-  `docs/tasks/01-p0-external-action-real-booking-prepare.md`.
+  `docs/tasks/18-p0-systemic-grounding-breadth-and-verification.md` (see the 2026-07-02
+  checkpoint below for exactly what is done and what is next).
 
 Do not use `claude/phase17-research-delegation` as the active base. It was audited on
 2026-06-18 and still contains a legacy `src/agents/universalAgent.ts` above 9k lines plus
 legacy Tool Builder paths. It may contain ideas or test references, but it should not be
 merged wholesale into the split rebuild.
+
+## 2026-07-02 Checkpoint — Task 18 (systemic grounding: breadth + verification)
+
+All work below is committed and pushed to `main` (through `f832cfe`); `npm run verify` is
+green at 679/679. Full spec + live-run notes: `docs/tasks/18-...md`.
+
+**Done and shipped (in order):**
+1. **Crash fix** (`5ce2f7d`) — `JSON.stringify(...).slice` on undefined in `renderData`
+   (`baseAgentToolMessages.ts`) crashed runs on 403 pages with undefined data fields; funnelled
+   through a null-safe `jsonPreview` helper.
+2. **Step 1 — observability** (`b577374`) — `run.metrics.researchCoverage {discovered, opened,
+   verified, unavailable, blocked, failed, duplicate, distinctDomains, sourceClassesCovered,
+   replans}` projected from source-* events (`src/runs/metrics.ts`).
+3. **Step 2a — availability signal** (`4395f47`) — `src/tools/pageAvailability.ts`
+   (`extractPageAvailability`) from schema.org + disabled buy-control + EN/RU stock phrases;
+   `web.read` attaches `data.availability`; the agent injects an AVAILABILITY verdict into the
+   model message so opened-but-out-of-stock pages aren't presented as buyable.
+4. **Step 3 — breadth return-gate** (`ef73…`, `b7585b8`) — `src/agents/baseAgentBreadth.ts`
+   blocks a grounding-hard finish that discovered many sources but opened few, and forbids
+   "go search it yourself" advice. Extracted the duplicated research-contract gate into
+   `baseAgentResearchContractRepair.ts` to stay under the 800-line budget.
+5. **Step A — presented-link verify gate** (`8640873`) — folded into
+   `requestResearchQualityRepair` (breadth → then link verification). `baseAgentVerifyLinks.ts`
+   drops/flags any URL the answer presents that was not opened+confirmed this run (403 = escape
+   hatch); `RunSourceRegistry.presentedLinkVerdict()` + per-read availability.
+6. **Commerce step budget** raised 16→28→**100 (experimental)** in
+   `defaultMaxStepsForTaskFrame` so the gates have room to fire.
+
+**Live proof it works** (`run_1782582040824`, gpt-oss-120b): discovered **79 / 47 domains**,
+opened 12, gates fired 3× (1 breadth + **2 verify — first live verify-gate firing**), all
+presented links opened+confirmed live, out-of-stock page honestly labelled. Contrast the
+original "all 3 links dead" failure.
+
+**Next (agreed):**
+- **Deterministic no-budget verify fallback** — the highest priority. The verify/breadth gates
+  only fire when step budget remains; a low-budget frame (`product_selection` = 12 steps) can
+  exhaust the budget and finish with unverified links (proved live: a laptop run presented 5
+  buy links, 0 opened, ≥4 wrong incl. an Amazon ASIN that was a *charger*). Add a finalization
+  fallback that deterministically strips/labels unverified presented links even when out of
+  budget, so a dead link never reaches the user.
+- **Step 4** — `assessExternalGrounding` detector + contract composer; delete the taskFrame
+  regex zoo (incl. the task-17 commerce patch); derive the step budget from `breadthNeed`
+  (retire the experimental 100 constant). Then steps 5–6 (source-class diversity K, saturation).
+- Tune the commerce budget back down (100 → ~40) once step 4 derives it.
+
+**Environment gotchas (NOT in git — reproduce per machine):**
+- Model routing is DB-backed: `model_tier_settings` table (all tiers). This machine was set to
+  `openai/gpt-oss-120b` for the last runs. Small-context models overflow the agent prompt
+  (system+tools ≈ 7K tokens; e.g. `ornith-1.0-35b@8K` failed with `n_keep ≥ n_ctx`) — use a
+  large-context model. `google/gemma-4-26b-a4b` is a good fast default; `gpt-oss-120b` goes
+  broadest but is ~13 min/run. Change via `UPDATE model_tier_settings SET models = '{model}'`
+  then restart the API.
+- **searxng squatter**: a stray `python -m http.server 8080 --bind 127.0.0.1` recurs and shadows
+  searxng on host IPv4, making `web.search` 404 (→ `discovered:0`, vague answers). If a run
+  looks shallow, `lsof -nP -iTCP:8080 -sTCP:LISTEN` and kill the Python PID (not `com.docke`).
+- Stack start: `npm run web` (loads `.env`/`.env.local`; API 3000 + UI 3001). Data containers
+  `docker start agentic-postgres-1 agentic-minio-1 agentic-redis-1 agentic-searxng-1`.
+
+**Closed investigation — LM Studio `store`/`previous_response_id` (do not re-open):** measured
+stateless (`/chat/completions`, full history) vs stateful (`/responses` + `store` +
+`previous_response_id`, delta only) across 4 scenarios incl. our real captured agent
+conversation, concurrency, and forced cache eviction. Speedup 0.58–1.00× — **no benefit**,
+because LM Studio's `/responses` rides the same llama.cpp KV/prefix cache as
+`/chat/completions`; `store` persists text by id but gives no privileged cache slot. Would only
+matter for a remote/hosted LLM where resent-history tokens are billed. Our client stays on
+stateless `/chat/completions` (`src/llm/client.ts`).
 
 ## Product Philosophy
 
